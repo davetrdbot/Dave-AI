@@ -5,3 +5,4 @@ export * from "./commands.js";
 export * from "./menu.js";
 export * from "./profile.js";
 export * from "./ea-file.js";
+export * from "./thinking-indicator.js";

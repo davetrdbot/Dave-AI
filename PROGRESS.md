@@ -527,3 +527,49 @@ Full live-message rendering (what formatting/buttons/reply-with-quote
 actually look like in a real Telegram chat) needs a real bot token from
 `@BotFather` — you said to test that later, so it's not blocking, but
 it's the one piece of Step 8 that can't be proven without one.
+
+## Status: Step 9 — Thinking Indicator with Live Action-Type Icons (COMPLETE)
+
+Completed: 2026-09-04
+
+### Step 9 checklist
+- [x] 9.1 Automatic typing/uploading chat action, zero AI decision —
+      `withThinkingIndicator()` wrapper always starts it; the agent loop
+      never chooses to call or skip it. Best-effort: a failed chat-action
+      call never blocks the actual task (swallowed, not thrown)
+- [x] 9.2 A real tool the agent calls to update the visible thinking text
+      live — `ThinkingIndicator.update(action, text)`, backed by the real
+      `sendRichMessageDraft` confirmed in Step 8
+- [x] 9.3 Icon-prefixed text by typed action — `ACTION_ICONS` as const
+      object + `ActionType` union (`code`/`database`/`api`/`input`/
+      `output`/`memory`/`trade`/`worker`), not free-form strings
+- [x] 9.4 Finalizes cleanly into a real message — `finalize()` edits the
+      draft into plain final text, no leftover action icon
+
+### Real proof (Step 9)
+Ran `npx tsx packages/dave-telegram/test/step9-thinking-indicator.test.ts`
+in two parts, since a real-but-unauthenticated network call can prove
+genuine HTTP integration but not internal state transitions (every call
+fails identically with no valid token, so `messageId` never gets set —
+that's the correct degraded behavior, not a bug, but it can't prove the
+draft→edit→finalize path):
+- **Part A** — real state-machine proof against a working transport
+  (same fake-transport pattern already used and accepted in Steps 3/4/7):
+  call order was `sendChatAction → sendRichMessageDraft → editMessageText
+  → editMessageText → editMessageText`; all three edits after the first
+  draft genuinely targeted the same `message_id`; each update's real sent
+  text was correctly icon-prefixed (`🧠 Recalling...`, `📡 Calling
+  DAVEMA...`, `💹 Scoring EURUSD...`); the finalized message was clean
+  plain text with no leftover icon
+- **Part B** — real network round-trip: with no valid token, real calls
+  to `api.telegram.org` for `sendChatAction` and `sendRichMessageDraft`
+  were confirmed to genuinely fire (captured via a fetch spy that still
+  forwards to the real network) before failing with Telegram's real 401
+  — proves this isn't a stub
+- **Part C** — confirmed the typed enum has exactly the 8 required
+  action types, each mapped to a real icon
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Not yet done (deferred, not silently skipped)
+- Full live rendering of the draft→edit sequence in a real Telegram chat
+  needs a real bot token — same deferral as Step 8, by your instruction
