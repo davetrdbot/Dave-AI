@@ -1499,3 +1499,103 @@ Ran `packages/dave-db/test/step16-database-automation.test.ts`:
   real Dave behavior (e.g. Step 18's dreaming cron, Step 19's security
   check) — this step built the real, tested mechanism; wiring specific
   triggers to specific behavior is those later steps' job
+
+## Status: Step 17 — Self-Improvement (COMPLETE)
+
+Completed: 2026-09-04
+
+One research subagent ran in parallel (the real `diff`/jsdiff npm
+package's API) while the DB-backed approval/versioning/backtest
+architecture was designed and written directly, since this step is
+almost entirely internal logic with no other external API surface to
+verify.
+
+### Step 17 checklist
+- [x] 17.1 Dave views its own code, proposes patches — new
+      `@dave/self-improve` package, `proposePatch()` generates a real
+      unified diff (`diff` v9, confirmed zero-dependency, TypeScript-
+      native) and self-verifies it: the diff library's own `applyPatch`
+      must reproduce the proposed new content from the old content
+      exactly, or the patch is refused as internally inconsistent
+      (`InconsistentPatchError`) rather than stored broken
+- [x] 17.2 Every patch tested in sandbox first — `testPatch()` writes
+      ONLY the candidate content into a real sandbox workspace (the
+      real file is never touched) and runs a real command via Step 6's
+      `runCode` (e.g. `node --check`); status becomes `"tested"` only
+      on a genuine exit code 0, `"test_failed"` otherwise. HARD GATE in
+      code: `applyPatchToFile()` throws `PatchNotTestedError` unless
+      status is genuinely `"tested"` — structurally impossible to reach
+      a real file write otherwise
+- [x] 17.3 Versioned releases with real lineage — every version
+      references `evolvedFrom` (its real parent), a full changelog
+      entry, `rollbackToVersion()` reverts the real file AND records
+      the rollback as its own new lineaged version (doesn't erase
+      history, honestly shows "we went back")
+- [x] 17.4 Every risky change asks the master prompt's exact template —
+      `"I need to do X. Reason: [why]. Yes or No?"` — verbatim, not
+      paraphrased. Auto-approval is a real per-user DB-backed toggle,
+      defaults off (verified: a fresh user's request genuinely comes
+      back `"pending"`, not silently approved)
+- [x] 17.5 Declined proposals remembered — re-requesting the identical
+      description with the identical reason throws
+      `DeclinedWithoutNewJustificationError` outright rather than
+      re-asking; a genuinely new reason is allowed through
+- [x] 17.6 Dynamic tool creation follows the SAME gate, provably — not
+      asserted, `testNewTool === testPatch` and `applyNewTool ===
+      applyPatchToFile` are checked as literal function identity in the
+      test, since `tool-creation.ts` is a thin named wrapper, not a
+      parallel implementation
+- [x] 17.7 Strategy-change proposals require MULTIPLE backtests — new
+      `backtest.ts`, `runMultipleBacktests()` throws
+      `InsufficientBacktestsError` below 2 windows. Per the master
+      prompt's own constraint (never author real trading rules), the
+      strategy itself is an injected function this module has no
+      knowledge of — only the harness (running it across multiple
+      historical windows and presenting a real min/max/avg range, never
+      a single number) is real code here
+
+### Real proof (Step 17)
+Ran `packages/dave-self-improve/test/step17-self-improvement.test.ts`:
+1. Full cycle: proposed a real patch, confirmed applying before testing
+   throws, ran a REAL sandbox `node --check`, confirmed applying before
+   approval throws, requested approval (got the exact real prompt
+   text), approved it, applied it — the REAL file on disk changed
+   content, a version was created with `evolvedFrom: null` (lineage
+   root)
+2. Rollback: reverted the real file back to the original content,
+   confirmed the rollback is its own new version referencing what it
+   evolved from and what it rolled back to; full 3-entry changelog
+   read back correctly
+3. A patch with a genuine JS syntax error was tested, genuinely failed
+   (`test_failed`, real non-empty stderr from real `node --check`), and
+   confirmed unapplyable
+4. Auto-approval toggled per-user in real time — before: `"pending"`,
+   after: `"approved"`, both against real DB state
+5. Declined-proposal memory: same description + same reason refused;
+   same description + new reason allowed through, both real DB queries
+6. Tool creation: proposed a new tool file, ran it through the real
+   sandbox test, got a real tool-creation approval prompt, applied it —
+   confirmed via literal function-identity assertions that it is not a
+   separate gate
+7. Backtest gate: a single window refused outright; 3 injected mock-
+   strategy windows produced a real range (min/max/avg PnL and win
+   rate), never a single number
+- `=== ALL ASSERTIONS PASSED ===`
+- Also fixed the admin panel's Self-Improvement tab (was still honestly
+  reporting "not built yet") — now shows real version lineage from the
+  same per-user `data/db/<userId>.db` Step 16 already uses; verified
+  live against a real running server
+- Full 18-file suite (Steps 3–17) re-run afterward, all green
+- Full clean-state build re-verified (`lib/`, `.next`, all
+  `.tsbuildinfo` removed, `pnpm install --frozen-lockfile && pnpm run
+  build`) — genuinely reproduces Railway's fresh-checkout path
+
+### Not yet done (deferred, not silently skipped)
+- No real agent loop yet calls any of this during actual operation —
+  same status as every other tool/skill package so far: real, tested
+  logic ahead of the runtime that will eventually call it on Dave's own
+  initiative
+- The specific "risky change" categories that should route through this
+  gate (which self-patches, which settings changes) aren't enumerated
+  yet — this step built the real, generic gate; deciding exactly what
+  triggers it in practice is part of wiring the agent loop later

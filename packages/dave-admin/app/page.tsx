@@ -58,7 +58,7 @@ export default function AdminPage() {
         {tab === "groups" && <GroupsPanel userId={userId} />}
         {tab === "teams" && <TeamsPanel userId={userId} />}
         {tab === "models" && <ModelsPanel userId={userId} />}
-        {tab === "selfimprove" && <PlaceholderPanel userId={userId} path="/api/self-improvement" title="Self-Improvement DNA Lineage" />}
+        {tab === "selfimprove" && <SelfImprovementPanel userId={userId} />}
         {tab === "db" && <DatabasePanel userId={userId} />}
         {tab === "mcp" && <McpPanel userId={userId} />}
         {tab === "settings" && <SettingsPanel />}
@@ -306,19 +306,33 @@ function ModelsPanel({ userId }: { userId: string }) {
   );
 }
 
-// --- Steps 16/17 -- honest "not built yet" panels ---
-function PlaceholderPanel({ userId, path, title }: { userId: string; path: string; title: string }) {
+// --- Self-Improvement (Step 17) ---
+function SelfImprovementPanel({ userId }: { userId: string }) {
   const api = useApi(userId);
   const [data, setData] = useState<any>(null);
 
   useEffect(() => {
-    api(path).then(setData);
-  }, [api, path]);
+    api("/api/self-improvement").then(setData);
+  }, [api]);
+
+  if (!data) return <div className="card">Loading...</div>;
 
   return (
     <div className="card">
-      <h2>{title}</h2>
-      <div className="placeholder">{data?.note ?? "Loading..."}</div>
+      <h2>Self-Improvement</h2>
+      <div className="stat-note">{data.note}</div>
+      <div className="stat-note">Pending patch proposals: {data.pendingPatches ?? 0}</div>
+      {data.lineage?.length ? (
+        data.lineage.map((v: any) => (
+          <div className="group-card" key={v.id}>
+            <strong>{v.targetFile}</strong>
+            <div className="stat-note">{v.changelogEntry}</div>
+            <div className="stat-note">evolved from: {v.evolvedFrom ?? "(lineage root)"}</div>
+          </div>
+        ))
+      ) : (
+        <div className="placeholder">No versions yet -- Dave hasn't applied a self-patch.</div>
+      )}
     </div>
   );
 }

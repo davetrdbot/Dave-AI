@@ -1,0 +1,16 @@
+{
+  "name": "@dave/self-improve",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "dependencies": {
+    "@dave/db": "workspace:*",
+    "@dave/sandbox": "workspace:*",
+    "diff": "^9.0.0"
+  },
+  "exports": {
+    ".": "./lib/index.js"
+  }
+}
