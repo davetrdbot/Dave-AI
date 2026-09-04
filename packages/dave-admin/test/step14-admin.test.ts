@@ -57,9 +57,18 @@ async function main() {
   }
 
   console.log("[0] Starting the real built server (`next start`)...");
+  // Real bug fixed here: `npx next start` spawns `next`, which itself spawns
+  // Next.js's own server worker process -- a plain `proc.kill("SIGTERM")`
+  // only signals the immediate `npx` child, not that whole process tree, so
+  // the real next-server process was left running after every test run,
+  // holding stdout open and blocking the outer test-suite shell loop from
+  // ever advancing past this file. `detached: true` puts the whole tree in
+  // its own process group; killing the NEGATIVE pid signals every process
+  // in that group at once.
   const proc = spawn("npx", ["next", "start", "-p", String(port)], {
     cwd: adminRoot,
     stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
   });
   let stderr = "";
   proc.stderr?.on("data", (d) => (stderr += d.toString()));
@@ -174,7 +183,11 @@ async function main() {
 
     console.log("\n=== ALL ASSERTIONS PASSED ===");
   } finally {
-    proc.kill("SIGTERM");
+    try {
+      process.kill(-proc.pid!, "SIGKILL"); // negative pid -- the whole process group, not just the direct child
+    } catch {
+      proc.kill("SIGKILL"); // group already gone, or platform doesn't support negative-pid kill -- fall back to the direct child
+    }
     await new Promise((r) => setTimeout(r, 300));
     if (stderr.trim()) {
       // Surface server stderr only on failure paths for debugging; harmless on success.

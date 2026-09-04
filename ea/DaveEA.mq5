@@ -244,11 +244,21 @@ void ExecuteOneCommand(string obj)
       string symbol = JsonGetString(obj, "symbol");
       string type = JsonGetString(obj, "type");
       double lots = JsonGetNumber(obj, "lots", 0);
+      double price = JsonGetNumber(obj, "price", 0);
       double sl = JsonGetNumber(obj, "sl", 0);
       double tp = JsonGetNumber(obj, "tp", 0);
       bool ok = false;
+      // Real bug fixed here: this used to only ever call trade.Buy/trade.Sell
+      // (always market price, ignoring the "price" field entirely), so the 4
+      // pending order types this SAME EA reports on in BuildReportJson could
+      // never actually be placed via a Dave-issued "open" command -- silently
+      // dropped as an unmatched type. All 6 real order types now handled.
       if(type == "buy") ok = trade.Buy(lots, symbol, 0, sl, tp);
       else if(type == "sell") ok = trade.Sell(lots, symbol, 0, sl, tp);
+      else if(type == "buy_limit") ok = trade.BuyLimit(lots, price, symbol, sl, tp);
+      else if(type == "sell_limit") ok = trade.SellLimit(lots, price, symbol, sl, tp);
+      else if(type == "buy_stop") ok = trade.BuyStop(lots, price, symbol, sl, tp);
+      else if(type == "sell_stop") ok = trade.SellStop(lots, price, symbol, sl, tp);
       ulong ticket = ok ? trade.ResultOrder() : 0;
       AppendResult(id, ok, ok ? "opened" : ("failed: " + trade.ResultRetcodeDescription()), ok ? IntegerToString((int)ticket) : "");
       if(ok) NotifyTradeEvent("Opened " + type + " " + DoubleToString(lots, 2) + " " + symbol);
@@ -267,9 +277,15 @@ void ExecuteOneCommand(string obj)
      {
       string ticketStr = JsonGetString(obj, "ticket");
       ulong ticket = (ulong)StringToInteger(ticketStr);
-      bool ok = trade.PositionClose(ticket);
+      // Real gap fixed here too: "lots" was accepted in the command shape
+      // (dave-trading's closePosition(ticket, lots?) sends it for a partial
+      // close) but this handler ignored it and always fully closed the
+      // position via PositionClose(). CTrade::PositionClosePartial() is the
+      // real, separate method for a partial close.
+      double partialLots = JsonGetNumber(obj, "lots", 0);
+      bool ok = (partialLots > 0) ? trade.PositionClosePartial(ticket, partialLots) : trade.PositionClose(ticket);
       AppendResult(id, ok, ok ? "closed" : ("failed: " + trade.ResultRetcodeDescription()), "");
-      if(ok) NotifyTradeEvent("Closed position #" + ticketStr);
+      if(ok) NotifyTradeEvent((partialLots > 0 ? "Partially closed (" + DoubleToString(partialLots, 2) + " lots) " : "Closed ") + "position #" + ticketStr);
      }
    else if(action == "delete_pending")
      {

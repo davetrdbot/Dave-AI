@@ -143,6 +143,18 @@ importers:
         specifier: workspace:*
         version: link:../dave-workers
 
+  packages/dave-rfeed:
+    dependencies:
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
+      '@dave/telegram':
+        specifier: workspace:*
+        version: link:../dave-telegram
+      '@dave/trading':
+        specifier: workspace:*
+        version: link:../dave-trading
+
   packages/dave-safety:
     dependencies:
       '@dave/crypto':

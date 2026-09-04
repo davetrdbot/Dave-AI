@@ -1978,3 +1978,127 @@ Ran `packages/dave-notifications/test/step21-notifications.test.ts`:
   flagged honestly rather than simulated
 - No real agent loop yet calls any of this during actual operation —
   same status as every other notification/tool package so far
+
+## Status: Step 22 — R_Feed (COMPLETE)
+
+Completed: 2026-09-04
+
+R_Feed was previously excluded from this build (per the master prompt's
+own explicit "No... R_Feed" line) — this update reverses that and adds
+it back as its own step, with a full explanation of what it's for: a
+shared demo/practice MT5 account so Dave can backtest and paper-trade
+with zero real financial risk before ever proposing a strategy for the
+real account.
+
+One research subagent verified the real MQL5 facts this step depends
+on before any .mq5 code was written: `SYMBOL_CUSTOM` (confirmed real,
+exact `ENUM_SYMBOL_INFO_INTEGER` member) for custom-symbol detection,
+and `CopyRates()`'s three real overloads plus the `SERIES_SYNCHRONIZED`
+gotcha (CopyRates can return fewer bars than requested if the terminal
+hasn't finished syncing that range from the broker yet).
+
+### A real bug found and fixed in the EXISTING Dave EA while building this
+Reading `DaveEA.mq5` closely enough to mirror it for R_Feed surfaced a
+real gap affecting real money: the `"open"` command handler only ever
+called `trade.Buy()`/`trade.Sell()` (always market price) — the 4
+pending order types (`buy_limit`/`sell_limit`/`buy_stop`/`sell_stop`)
+were faithfully REPORTED on every heartbeat but could never actually be
+PLACED via a Dave-issued command, silently falling through as an
+unmatched type. Partial close had the same problem: `"lots"` was
+accepted in the command shape and sent by `dave-trading`'s
+`closePosition(ticket, lots?)`, but the handler always called
+`PositionClose()` (full close only), ignoring it. Both fixed directly
+in `ea/DaveEA.mq5` using `CTrade`'s real `BuyLimit`/`SellLimit`/
+`BuyStop`/`SellStop`/`PositionClosePartial` methods — real money was
+at stake, so this got fixed immediately rather than deferred.
+
+### Step 22 checklist
+- [x] Same trade-execution engine pattern as the real Dave EA — new
+      `@dave/rfeed` package's `RFeedTradeExecutor` implements the
+      IDENTICAL `TradeExecutor` interface (`@dave/trading`), so Step
+      10's own `tradeExecute`/`tradeModify`/`partialClose`/`fullClose`/
+      `deletePendingOrder`/`deleteAllPendingOrders` functions run
+      UNCHANGED against R_Feed — proof by construction, not just a
+      similarly-shaped rewrite
+- [x] History download support — real MT5 `CopyRates()`-backed, a
+      `request_history` command/report round-trip through R_Feed's own
+      webhook, `HistoryRequestManager` awaiting the real result the
+      same way trade commands are awaited
+- [x] Own EA file (`ea/RFeedEA.mq5`), own webhook/token pair
+      (`/hooks/rfeed/<token>`, completely separate token namespace and
+      storage from `/hooks/ea/<token>`), own tool set (`RFEED_TOOLS`:
+      `request_history`, `place_paper_trade`, `modify_paper_trade`,
+      `partial_close_paper_trade`, `close_paper_trade`,
+      `delete_paper_pending_order`, `delete_all_paper_pending_orders`)
+- [x] Safety: real trades never happen through R_Feed — architectural,
+      not just convention (`@dave/rfeed`'s own `package.json` has no
+      dependency on `@dave/ea-bridge` at all, checked directly in the
+      real proof test, not inferred)
+- [x] Safety: custom/synthetic symbols refused for even a paper trade —
+      real `SYMBOL_CUSTOM` flag reported by the EA on every position/
+      pending order, a server-side registry built from those real
+      reports, and `RFeedTradeExecutor.openOrder()` refuses BEFORE a
+      command is ever enqueued; the EA itself ALSO refuses independently
+      (`SymbolInfoInteger(symbol, SYMBOL_CUSTOM)` checked in
+      `ExecuteOneCommand`) -- real defense in depth, not one single
+      point of failure
+- [x] Safety: MT5 comment field stays short (the user's own ID, real
+      ~31-char MT5 limit) — the full strategy note goes in the real DB
+      (Step 16), linked by the trade's real MT5 ticket once it comes
+      back, via `recordTradeNote`/`getTradeNote`
+
+### Real proof (Step 22)
+Ran `packages/dave-rfeed/test/step22-rfeed.test.ts`:
+1. R_Feed's webhook path is genuinely `/hooks/rfeed/<token>`, a real
+   distinct namespace
+2. A real history request was enqueued, its real generated command ID
+   read back from the actual on-disk queue file, then a real HTTP POST
+   to the real webhook server (not injected directly into the manager)
+   delivered real candle data that the waiting promise genuinely
+   resolved with
+3. A real paper trade was placed through the exact same `TradeExecutor`
+   seam as the real EA — the real enqueued command's comment field was
+   asserted to be the short user ID, not a strategy name; a real ticket
+   came back with the correct SL/TP; the full strategy note was stored
+   in the real DB and read back linked by that real ticket
+4. Architectural safety: `@dave/rfeed`'s real `package.json` was read
+   and asserted to have no `@dave/ea-bridge` dependency at all — no
+   code path to the real EA exists, not just "we don't call it"
+5. A custom/synthetic symbol was marked from real reported flags, then
+   a real `openOrder()` call for that symbol was refused BEFORE
+   touching the command queue — verified by reading the actual queue
+   file afterward and confirming the refused order never landed in it
+6. All 7 real tools are registered, every description genuinely scoped
+   to the demo account
+7. The real personalized `RFeedEA.mq5` file was checked for the real
+   `SYMBOL_CUSTOM` safety check and a real, distinct webhook URL, with
+   no unreplaced template placeholders (the SAME "{{" -substring gotcha
+   `ea-file.ts`'s own comment already warned about tripped up this
+   test's first draft too -- fixed to check the two real placeholders
+   specifically, not any "{{" occurrence)
+- `=== ALL ASSERTIONS PASSED ===`
+
+### A second real bug found while re-running the full suite
+Step 14's own admin-panel test (`step14-admin.test.ts`) was leaving an
+orphaned real `next-server` process running after every single run —
+`npx next start` spawns `next`, which spawns Next.js's own server
+worker, and a plain `proc.kill("SIGTERM")` only ever signalled the
+immediate `npx` child, never that whole process tree. This silently
+blocked the ENTIRE test suite from completing (the outer shell loop
+never advances past a `tsx` process that never exits, since its child
+keeps stdout open). Fixed by spawning with `detached: true` and killing
+the whole process group via the negative PID
+(`process.kill(-proc.pid, "SIGKILL")`) in the test's cleanup — verified
+by confirming zero `next`/`tsx` processes remain in the process table
+after a clean run, not just that the test's own assertions passed.
+
+### Not yet done (deferred, not silently skipped)
+- No real R_Feed EA is actually running anywhere (no demo MT5 account
+  connected in this environment) -- the real webhook/executor/history
+  round-trip is proven against real HTTP calls simulating what a real
+  EA report looks like, same "real, tested logic ahead of the runtime"
+  status as every trading-adjacent package so far
+- The real end-to-end loop the user described (download history →
+  backtest in sandbox → paper trade on R_Feed → propose for the real
+  account with required approval) is not wired into an agent loop yet
+  -- same status as every other tool manifest in this repo
