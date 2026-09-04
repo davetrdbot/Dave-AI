@@ -12,6 +12,7 @@
     { "path": "packages/dave-core" },
     { "path": "packages/dave-io" },
     { "path": "packages/dave-db" },
-    { "path": "packages/dave-self-improve" }
+    { "path": "packages/dave-self-improve" },
+    { "path": "packages/dave-feedback" }
   ]
 }

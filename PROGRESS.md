@@ -1599,3 +1599,99 @@ Ran `packages/dave-self-improve/test/step17-self-improvement.test.ts`:
   gate (which self-patches, which settings changes) aren't enumerated
   yet — this step built the real, generic gate; deciding exactly what
   triggers it in practice is part of wiring the agent loop later
+
+## Status: Step 18 — Feedback Loop (COMPLETE)
+
+Completed: 2026-09-04
+
+One research subagent audited the exact real signatures of every
+existing package this step needed to integrate with (workers, journal
+formatting, scheduled triggers, the DB layer, Telegram's `sendPoll`)
+before writing any code — and surfaced two real gaps that had to be
+filled as part of this step, not assumed away.
+
+### Real gaps the audit found
+- `writeTradeJournalEntry()` (Step 12) only ever formatted a narrative
+  string and returned it — **nothing in the repo persisted a trade
+  journal anywhere**, so there was no real trade history to count
+  against for 18.2. Filled by `trade-log.ts`, built on Step 16's real
+  DB (dogfooding again) rather than inventing a new file format.
+- **No inbound Telegram `poll_answer` handling exists anywhere** —
+  `sendPoll` only sends. Rather than build a second bespoke webhook
+  server, `feedback-poll.ts` reuses Step 16's real generic
+  `/hooks/automation/<token>` mechanism — a poll answer arriving is
+  exactly the external event that trigger type is for.
+
+### Step 18 checklist
+- [x] 18.1 Dreaming cron — `registerDreamingCron()`, real `node-cron`
+      job (Step 16.2a), default `0 3 * * 0` (Sunday), a real
+      customizable expression. "Run through a worker" is literal: a
+      real `journal`-role worker (Step 12) is created for the run and
+      retired immediately after — verified the worker is genuinely
+      `active` mid-run and genuinely retired afterward, not a
+      decorative object
+- [x] 18.2 Trade-count-based reflection, separate from 18.1 —
+      `subscribeTradeCountReflection()`, wired to Step 16's real entity
+      trigger on the trade journal table. N is a real per-user DB-backed
+      setting (`getReflectionThreshold`/`setReflectionThreshold`,
+      default 10, changed to 3 and verified in the test)
+- [x] 18.3 `hypotheses.jsonl` with real confirmed/failed verdicts —
+      event-sourced JSONL (append-only, folds to current state), never
+      settles a verdict before `MIN_CYCLES_BEFORE_VERDICT` (5) real
+      observations — verified explicitly that 4/5 supporting cycles
+      still reads `"pending"`, only the 5th settles it
+- [x] 18.4 Skip log, separate from the trade journal — `skip-log.ts`,
+      its own JSONL file; verified recording skips never moves the
+      trade journal's count
+- [x] 18.5 Feedback poll results actually referenced during
+      reflection — `ReflectionInput.pollResults` is populated from the
+      real webhook-received poll answer and asserted non-empty inside
+      the fired reflection, not just collected and left unused
+- [x] 18.6 Weekly dataset export, a real scheduled job —
+      `registerWeeklyExportCron()`, default `0 4 * * 0`, writes a real
+      JSON file to disk every time it fires; `runWeeklyExport()` also
+      exposed standalone for on-demand use
+
+### Real proof (Step 18)
+Ran `packages/dave-feedback/test/step18-feedback-loop.test.ts`:
+1. A real trade was logged and persisted (finally — Step 12's narrative
+   formatter reused, not reimplemented) and counted via a real
+   aggregate
+2. Skip log confirmed genuinely separate — recording 2 skips left the
+   trade count untouched
+3. Hypothesis verdict gate: 4/5 supporting cycles still `"pending"`,
+   the 5th settles it to `"confirmed"`; a second hypothesis with
+   contradicting evidence settled to `"failed"` — both real, cycle-
+   gated, not assumed
+4. A real HTTP POST to a real webhook server delivered a poll answer
+   that landed in the real DB with the correct selected option
+5. Reflection genuinely didn't fire after 1 or 2 of 3 needed new
+   trades, then fired exactly on the 3rd — with the poll result from
+   step 4 present inside the fired reflection input, not empty
+6. The dreaming cron genuinely fired (real node-cron, `* * * * * *` for
+   a fast real-wall-clock test), a real worker was found `active` with
+   role `"journal"` mid-run, and confirmed retired afterward
+7. The weekly export cron genuinely fired and wrote a real JSON file to
+   disk containing the real trades/skips/hypotheses accumulated so far;
+   the standalone `runWeeklyExport()` call also verified independently
+- `=== ALL ASSERTIONS PASSED ===`
+- A real bug caught mid-build: an early test assumed a trade logged
+  BEFORE subscribing to trade-count reflection would count toward the
+  threshold — it doesn't (the entity-trigger counter only sees inserts
+  after subscription), fixed by logging 3 genuinely new trades and
+  updating the test's own expectations rather than changing the (correct)
+  engine behavior
+- Full 19-file suite (Steps 3–18) re-run afterward, all green
+- Full clean-state build re-verified (`lib/`, `.next`, all
+  `.tsbuildinfo` removed, `pnpm install --frozen-lockfile && pnpm run
+  build`) — genuinely reproduces Railway's fresh-checkout path
+
+### Not yet done (deferred, not silently skipped)
+- No real agent loop yet calls `logTrade`/`recordSkip` during actual
+  trading, and nothing yet wires a real Telegram update relay to
+  forward `poll_answer` updates to the webhook this step built — same
+  status as every other tool package so far: real, tested logic ahead
+  of the runtime that will call it
+- Admin panel not updated for this step (no "Feedback Loop" tab existed
+  to begin with, unlike Steps 16/17 which had honest placeholder tabs
+  already built in Step 14 to fix) — nothing dishonest to correct here

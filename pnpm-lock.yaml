@@ -99,6 +99,18 @@ importers:
         specifier: ^1.30.0
         version: 1.30.0(zod@4.5.4)
 
+  packages/dave-feedback:
+    dependencies:
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
+      '@dave/telegram':
+        specifier: workspace:*
+        version: link:../dave-telegram
+      '@dave/workers':
+        specifier: workspace:*
+        version: link:../dave-workers
+
   packages/dave-io:
     dependencies:
       '@dave/sandbox':
