@@ -59,7 +59,12 @@ export function resolveUserWebhookToken(token: string): string | undefined {
 
 export interface WebhookPush {
   ts: number;
-  type: "file" | "image" | "journal-entry" | "settings-change";
+  // "heartbeat"/"snapshot" are what the real DaveEA.mq5 template sends
+  // today (ea/DaveEA.mq5, packages/dave-telegram/src/ea-file.ts) -- the
+  // other four are Dave-to-user pushes. Full EA protocol handling
+  // (positions, pending orders, results) is Step 11's job; this only
+  // needs the type vocabulary to honestly match what's real right now.
+  type: "file" | "image" | "journal-entry" | "settings-change" | "heartbeat" | "snapshot";
   payload: unknown;
 }
 
@@ -115,6 +120,16 @@ export function createHiddenWebhookServer(): Server {
       } catch {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "invalid JSON body" }));
+        return;
+      }
+      // TS's WebhookPush["type"] union is compile-time only -- validate
+      // it for real at runtime instead of trusting whatever string an
+      // arbitrary POST body claims, otherwise this route silently
+      // accepts and stores anything.
+      const validTypes: WebhookPush["type"][] = ["file", "image", "journal-entry", "settings-change", "heartbeat", "snapshot"];
+      if (!validTypes.includes(parsed.type)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `unknown push type "${parsed.type}"` }));
         return;
       }
       const push: WebhookPush = { ts: Date.now(), type: parsed.type, payload: parsed.payload };

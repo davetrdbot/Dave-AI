@@ -573,3 +573,81 @@ draft→edit→finalize path):
 ### Not yet done (deferred, not silently skipped)
 - Full live rendering of the draft→edit sequence in a real Telegram chat
   needs a real bot token — same deferral as Step 8, by your instruction
+
+## Follow-up: EA code review (requested after Step 9)
+
+You asked me to actually check my own Step 8 `/ea` work rather than take
+my word for it. Real review found real bugs — listed honestly below,
+all fixed and re-tested, not glossed over:
+
+### Bugs found in `ea/DaveEA.mq5`
+1. **Trailing-NUL bug**: `StringToCharArray(body, post, 0, StringLen(body))`
+   appends a terminating `\0` byte to the array, which `WebRequest` would
+   have sent as a stray null byte after the JSON body — a classic real
+   MQL5 gotcha that can break strict server-side JSON parsers. Fixed:
+   the extra byte is now trimmed before the request goes out.
+2. **`WebRequest`'s return status was completely ignored** — no error
+   handling at all, so a misconfigured "Allow WebRequest for listed URL"
+   setting (which the DAVEMA docs explicitly call out as required) would
+   fail every single push silently, forever, with zero diagnostic. Fixed:
+   now checks for `-1` (with the specific error 4014 case called out by
+   name) and non-200 responses, and logs clearly.
+3. **No guard against compiling the raw, un-personalized template** — if
+   someone attached the template file directly (skipping `/ea`), it would
+   silently try to push to the literal string `"{{WEBHOOK_URL}}"` forever.
+   Fixed: `OnInit()` now checks for leftover `{{` placeholders and refuses
+   to start (`INIT_PARAMETERS_INCORRECT`) with a clear message.
+4. **A redundant `X-EA-Token` header implied a security check that didn't
+   exist** — the real auth mechanism is the token embedded in the webhook
+   URL path itself; the header was never checked by the server. Removed
+   it rather than leave a misleading no-op.
+
+### A bug in `packages/dave-telegram/src/ea-file.ts`
+5. **`.replace()` instead of `.replaceAll()`** — only substitutes the
+   first occurrence of each placeholder. Worked today because each
+   placeholder appears exactly once in the template, but was fragile:
+   silently under-substituting the moment either placeholder appeared a
+   second time. Fixed, plus added a real guard that throws if either
+   specific placeholder token survives substitution.
+
+### An overstated claim in `packages/dave-memory/src/user-webhook.ts`
+6. I'd written "genuinely functional now, not a placeholder" about the
+   EA reusing Step 4's hidden webhook — but the webhook server's
+   `WebhookPush.type` union never included anything EA-shaped
+   (`heartbeat`/`snapshot`), and nothing had ever actually proven the
+   EA's real JSON payload round-trips through it. TypeScript's union type
+   isn't a runtime check, so it technically would have accepted any
+   string — meaning an EA push and a bad/malformed push were
+   indistinguishable at the time. Fixed: extended the type union, added a
+   real runtime validation that rejects unknown push types with 400
+   (proven: a bogus type is now genuinely rejected and NOT stored), and
+   added a test that posts the EA's exact real payload shape and confirms
+   it's accepted and lands correctly in the inbox.
+
+### Real proof
+`packages/dave-telegram/test/step8-ea-review.test.ts` — and while
+writing it, its own first assertion caught a bug in the fix itself: a
+blanket `content.includes("{{")` check false-positived against the new
+`OnInit()` guard's own `"{{"` string literal. Corrected to check the two
+specific placeholder tokens instead. Full output:
+- No leftover `{{WEBHOOK_URL}}`/`{{TOKEN}}` tokens; real values present
+- OnInit() placeholder guard, WebRequest status check, and the
+  StringToCharArray fix are all present in the actually-generated file
+  (not just the template on disk — the real personalized output)
+- The EA's real heartbeat payload posts to the real webhook server →
+  200, lands correctly in the inbox with `type: "heartbeat"`
+- A bogus push type now gets a real 400 and is confirmed NOT stored
+  (previously would have been silently accepted)
+- Re-ran the full existing test suite (Steps 3–9) afterward — all still
+  pass, no regressions from these fixes
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Still honestly open
+- The `.mq5` changes can't be compile-tested in this sandbox (no MT5
+  terminal/MetaEditor available) — the fixes are correct MQL5 as far as
+  static review can confirm, but "real proof" here means TS-side proof
+  plus careful manual review, not an actual MetaEditor F7 compile. Flag
+  this if you get a chance to compile it for real.
+- The `/ea` picker's two buttons ("Dave's default account" / "My own
+  account") still aren't wired to different behavior — correctly blocked
+  on Step 10.8's separate-credentials storage, not silently faked.
