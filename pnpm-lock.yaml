@@ -271,6 +271,9 @@ importers:
       '@dave/memory':
         specifier: workspace:*
         version: link:../dave-memory
+      '@dave/telegram':
+        specifier: workspace:*
+        version: link:../dave-telegram
       '@dave/trading':
         specifier: workspace:*
         version: link:../dave-trading

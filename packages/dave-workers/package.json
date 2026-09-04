@@ -8,7 +8,8 @@
   "dependencies": {
     "@dave/trading": "workspace:*",
     "@dave/brain": "workspace:*",
-    "@dave/memory": "workspace:*"
+    "@dave/memory": "workspace:*",
+    "@dave/telegram": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

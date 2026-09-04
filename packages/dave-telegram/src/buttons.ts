@@ -49,6 +49,18 @@ export interface SettingsOption {
   active: boolean;
 }
 
+/**
+ * Update 8: "whenever [Dave] wants to [change a setting] it should ask
+ * the user approve or decline, coloured buttons." Domain-agnostic --
+ * `pendingId` is whatever id the proposing domain (dave-trading's
+ * `proposeSettingsChange`, or any other) generated; the callback data
+ * carries it back so the handler knows exactly which pending change to
+ * approve/decline.
+ */
+export function approvalKeyboard(pendingId: string, domain: string): InlineKeyboardMarkup {
+  return keyboard([[coloredButton("✅ Approve", "green", `approve:${domain}:${pendingId}`), coloredButton("❌ Decline", "red", `decline:${domain}:${pendingId}`)]]);
+}
+
 export function settingsScreen(optionPairs: SettingsOption[][], backCallbackData: string): InlineKeyboardMarkup {
   const rows: InlineKeyboardButton[][] = optionPairs.map((pair) =>
     pair.map((opt) => ({

@@ -1,4 +1,14 @@
-import { setRiskMode, setTradingMode, setActiveGroup, setFallbackGroup, type RiskMode, type TradingMode } from "@dave/trading";
+import {
+  setRiskMode,
+  setTradingMode,
+  setActiveGroup,
+  setFallbackGroup,
+  proposeSettingsChange,
+  getAutoApprovalEnabled,
+  setAutoApprovalEnabled,
+  type RiskMode,
+  type TradingMode,
+} from "@dave/trading";
 import type { ToolDefinition } from "@dave/trading";
 
 /**
@@ -52,6 +62,37 @@ export const SETTINGS_TOOLS: ToolDefinition[] = [
     execute: async (args) => {
       if (args.slot === "active") setActiveGroup(args.userId as string, args.groupId as string);
       else setFallbackGroup(args.userId as string, args.groupId as string);
+      return { ok: true };
+    },
+  },
+  {
+    name: "propose_settings_change",
+    description: "Propose a settings change on YOUR OWN initiative (e.g. you decided the user's SL should be tighter). Unless the user has enabled auto-approval, this sends them real colored Approve/Decline buttons and does NOT apply until they respond. A user's own direct settings command should use set_risk_mode instead, not this.",
+    parameters: {
+      type: "object",
+      required: ["userId", "field", "mode", "reason"],
+      properties: {
+        userId: { type: "string" },
+        field: { type: "string", enum: ["sl", "tp", "lot"] },
+        mode: { type: "string", enum: ["off", "on", "auto"] },
+        value: { type: "number" },
+        reason: { type: "string" },
+      },
+    },
+    execute: async (args) => proposeSettingsChange(args.userId as string, args.field as "sl" | "tp" | "lot", args.mode as RiskMode, args.value as number | undefined, args.reason as string),
+  },
+  {
+    name: "get_auto_approval",
+    description: "Check whether the user has enabled auto-approval (Dave applies its own proposed settings changes without asking).",
+    parameters: { type: "object", required: ["userId"], properties: { userId: { type: "string" } } },
+    execute: async (args) => ({ enabled: getAutoApprovalEnabled(args.userId as string) }),
+  },
+  {
+    name: "set_auto_approval",
+    description: "Turn auto-approval on/off for the user -- same setting a user can toggle themselves.",
+    parameters: { type: "object", required: ["userId", "enabled"], properties: { userId: { type: "string" }, enabled: { type: "boolean" } } },
+    execute: async (args) => {
+      setAutoApprovalEnabled(args.userId as string, Boolean(args.enabled));
       return { ok: true };
     },
   },

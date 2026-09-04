@@ -73,30 +73,57 @@ export function setRiskMode(userId: string, field: "sl" | "tp" | "lot", mode: Ri
 }
 
 // --- Protected limits: max open trades, max daily loss ---
+// --- Update 8: generalized to any Dave-INITIATED settings change (SL/
+//     TP/lot mode included), gated by approve/decline by default, with
+//     an opt-in auto-approval switch. Protected limits stay extra-
+//     protected: they ALWAYS require explicit approval regardless of
+//     the auto-approval switch, per the existing SECURITY.md posture.
 
-interface PendingLimitChange {
-  id: string;
-  field: "maxOpenTrades" | "maxDailyLossPct";
-  newValue: number;
-  reason: string;
-  createdAt: number;
-}
+export type PendingSettingsChange =
+  | { id: string; field: "sl" | "tp" | "lot"; mode: RiskMode; value?: number; reason: string; createdAt: number }
+  | { id: string; field: "maxOpenTrades" | "maxDailyLossPct"; newValue: number; reason: string; createdAt: number };
+
+const PROTECTED_FIELDS = new Set<PendingSettingsChange["field"]>(["maxOpenTrades", "maxDailyLossPct"]);
 
 function pendingLimitPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "pending-limit-changes.json");
+  return join(process.cwd(), "data", "trading", userId, "pending-settings-changes.json");
 }
 
-function readPendingLimits(userId: string): PendingLimitChange[] {
+function readPendingLimits(userId: string): PendingSettingsChange[] {
   const path = pendingLimitPath(userId);
   if (!existsSync(path)) return [];
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function savePendingLimits(userId: string, changes: PendingLimitChange[]): void {
+function savePendingLimits(userId: string, changes: PendingSettingsChange[]): void {
   const path = pendingLimitPath(userId);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(path, JSON.stringify(changes, null, 2), "utf8");
+}
+
+function isModeField(change: PendingSettingsChange): change is Extract<PendingSettingsChange, { mode: RiskMode }> {
+  return change.field === "sl" || change.field === "tp" || change.field === "lot";
+}
+
+function applyPendingChange(userId: string, change: PendingSettingsChange): RiskSettings {
+  const settings = getRiskSettings(userId);
+  if (isModeField(change)) {
+    if (change.field === "sl") {
+      settings.slMode = change.mode;
+      settings.slValue = change.mode === "on" ? change.value : undefined;
+    } else if (change.field === "tp") {
+      settings.tpMode = change.mode;
+      settings.tpValue = change.mode === "on" ? change.value : undefined;
+    } else {
+      settings.lotMode = change.mode;
+      settings.lotValue = change.mode === "on" ? change.value : undefined;
+    }
+  } else {
+    settings[change.field] = change.newValue;
+  }
+  saveRiskSettings(userId, settings);
+  return settings;
 }
 
 /**
@@ -106,15 +133,15 @@ function savePendingLimits(userId: string, changes: PendingLimitChange[]): void 
  * setRiskMode()/general settings, and a prior approval never carries
  * over to a new proposed value.
  */
-export function proposeProtectedLimitChange(userId: string, field: "maxOpenTrades" | "maxDailyLossPct", newValue: number, reason: string): PendingLimitChange {
+export function proposeProtectedLimitChange(userId: string, field: "maxOpenTrades" | "maxDailyLossPct", newValue: number, reason: string): PendingSettingsChange {
   const changes = readPendingLimits(userId);
-  const change: PendingLimitChange = { id: `${Date.now()}-${changes.length}`, field, newValue, reason, createdAt: Date.now() };
+  const change: PendingSettingsChange = { id: `${Date.now()}-${changes.length}`, field, newValue, reason, createdAt: Date.now() };
   changes.push(change);
   savePendingLimits(userId, changes);
   return change;
 }
 
-export function listPendingLimitChanges(userId: string): PendingLimitChange[] {
+export function listPendingLimitChanges(userId: string): PendingSettingsChange[] {
   return readPendingLimits(userId);
 }
 
@@ -123,9 +150,7 @@ export function approveProtectedLimitChange(userId: string, changeId: string): R
   const changes = readPendingLimits(userId);
   const change = changes.find((c) => c.id === changeId);
   if (!change) throw new Error(`No pending limit change ${changeId} for ${userId}`);
-  const settings = getRiskSettings(userId);
-  settings[change.field] = change.newValue;
-  saveRiskSettings(userId, settings);
+  const settings = applyPendingChange(userId, change);
   savePendingLimits(userId, changes.filter((c) => c.id !== changeId));
   return settings;
 }
@@ -133,4 +158,65 @@ export function approveProtectedLimitChange(userId: string, changeId: string): R
 export function rejectProtectedLimitChange(userId: string, changeId: string): void {
   const changes = readPendingLimits(userId);
   savePendingLimits(userId, changes.filter((c) => c.id !== changeId));
+}
+
+// --- Auto-approval switch: OFF by default -- Dave must ask before it acts on its own initiative ---
+
+function autoApprovalPath(userId: string): string {
+  return join(process.cwd(), "data", "trading", userId, "auto-approval.json");
+}
+
+export function getAutoApprovalEnabled(userId: string): boolean {
+  const path = autoApprovalPath(userId);
+  if (!existsSync(path)) return false;
+  return (JSON.parse(readFileSync(path, "utf8")) as { enabled: boolean }).enabled;
+}
+
+export function setAutoApprovalEnabled(userId: string, enabled: boolean): void {
+  const path = autoApprovalPath(userId);
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, JSON.stringify({ enabled }, null, 2), "utf8");
+}
+
+export interface SettingsChangeDecision {
+  applied: boolean;
+  pendingId?: string;
+  settings?: RiskSettings;
+}
+
+/**
+ * Update 8: the entry point for a Dave-INITIATED settings change --
+ * "whenever it wants to do it, it should ask the user approve or
+ * decline ... unless auto-approval is on." SL/TP/lot respect the
+ * auto-approval switch; maxOpenTrades/maxDailyLossPct never do
+ * (PROTECTED_FIELDS), matching the existing extra-protection posture.
+ * A user calling setRiskMode()/proposeProtectedLimitChange() directly
+ * (their OWN action via a settings command) is unaffected -- this
+ * function is specifically for Dave proposing a change on its own.
+ */
+export function proposeSettingsChange(userId: string, field: "sl" | "tp" | "lot", mode: RiskMode, value: number | undefined, reason: string): SettingsChangeDecision {
+  if (mode === "on" && (value === undefined || value === null)) {
+    throw new OnModeRequiresValueError(field);
+  }
+  const change: PendingSettingsChange = { id: `${Date.now()}-${readPendingLimits(userId).length}`, field, mode, value, reason, createdAt: Date.now() };
+
+  if (!PROTECTED_FIELDS.has(field) && getAutoApprovalEnabled(userId)) {
+    const settings = applyPendingChange(userId, change);
+    return { applied: true, settings };
+  }
+
+  const changes = readPendingLimits(userId);
+  changes.push(change);
+  savePendingLimits(userId, changes);
+  return { applied: false, pendingId: change.id };
+}
+
+/** Generalized approve, covering SL/TP/lot as well as protected limits. */
+export function approveSettingsChange(userId: string, changeId: string): RiskSettings {
+  return approveProtectedLimitChange(userId, changeId);
+}
+
+export function declineSettingsChange(userId: string, changeId: string): void {
+  rejectProtectedLimitChange(userId, changeId);
 }

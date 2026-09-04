@@ -2569,3 +2569,65 @@ Ran `packages/dave-workers/test/step28-tool-requests.test.ts`:
   through Telegram -- same "real, tested logic ahead of the runtime"
   status as the rest of this build
 - No admin UI for reviewing/deciding pending requests yet
+
+## Status: Update 8 — Settings Change Approve/Decline + Auto-Approval (COMPLETE)
+
+User feedback, mid-session: Dave changing a setting like SL/TP on its
+own initiative should ask the user first (real colored Approve/Decline
+buttons), unless the user has turned on an auto-approval switch that
+lets Dave just do it. This generalizes Step 10.1's existing
+protected-limit propose/approve pattern (previously ONLY covering
+`maxOpenTrades`/`maxDailyLossPct`) to cover SL/TP/lot mode changes too
+-- a user's OWN direct settings command (`set_risk_mode`) is
+unaffected; this is specifically for changes DAVE proposes on its own.
+
+### What was built
+- [x] `dave-trading/src/risk-settings.ts` extended:
+      `getAutoApprovalEnabled`/`setAutoApprovalEnabled` (default OFF),
+      `proposeSettingsChange()` (the real entry point for a
+      Dave-initiated change -- applies immediately only if
+      auto-approval is on AND the field isn't protected; otherwise
+      queues a real pending change), `approveSettingsChange`/
+      `declineSettingsChange` (generalized versions of the existing
+      protected-limit approve/reject, same underlying storage)
+- [x] Protected limits (`maxOpenTrades`/`maxDailyLossPct`) deliberately
+      keep their EXTRA protection: they never auto-approve even with
+      the switch on, preserving the existing SECURITY.md posture
+- [x] `dave-telegram/src/buttons.ts` gained `approvalKeyboard()`,
+      reusing Step 8.3's real colored-button `style` field
+      (green="success"/red="danger") -- domain-agnostic, so any future
+      approval flow (not just trading) can reuse it
+- [x] `dave-workers/src/settings-tool.ts` gained three real tools:
+      `propose_settings_change`, `get_auto_approval`, `set_auto_approval`
+      -- the same parity the user asked for ("what a user can config in
+      settings bot can do it too")
+
+### Real proof (Update 8)
+Ran `packages/dave-workers/test/step29-settings-approval.test.ts`:
+1. Auto-approval defaults OFF for a fresh user
+2. Dave proposing a change via the tool genuinely does NOT apply it
+   immediately -- settings unchanged while pending
+3. The real colored keyboard Dave would send: `style: "success"`/
+   `"danger"` on the two buttons, real callback data carrying the
+   pending id
+4. A decline genuinely never applies the change, pending queue drained
+5. A second, separate proposal, approved -- genuinely applies
+6. Auto-approval turned ON via the real tool -- the very next proposal
+   applies immediately with NO pending-queue entry at all
+7. Protected limits genuinely still queue even with auto-approval on,
+   requiring their own separate explicit approval, exactly as before
+8. `OnModeRequiresValueError` still enforced through the new propose
+   path -- "on" without a value is refused
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 30-file test suite green afterward, clean `tsc -b` build, clean
+  `next build`
+
+### Not yet done (deferred, not silently skipped)
+- Not wired into a live Telegram callback handler yet (no live agent
+  loop exists to receive `approve:trading:<id>`/`decline:trading:<id>`
+  callback data and route it to `approveSettingsChange`/
+  `declineSettingsChange` -- same gap Update 9 below addresses for the
+  agent side)
+- Only `dave-trading`'s settings currently route through this pattern;
+  extending the same propose/approve shape to other domains (e.g.
+  provider settings) is straightforward but not yet done
