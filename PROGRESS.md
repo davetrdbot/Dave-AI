@@ -2515,3 +2515,57 @@ Ran `packages/dave-voice-call/test/step27-voice-call.test.ts`:
   of the runtime" status as every other tool/provider package so far
 - No settings-page UI form yet (route is real and tested, no visual
   form in `dave-admin/app/page.tsx`, same gap as Updates 4 and 5)
+
+## Status: Update 7 — Worker Tool Requests (COMPLETE)
+
+"If a worker realizes mid-task it needs a tool Dave didn't give it, the
+worker can ASK Dave for that specific tool -- real request/grant
+exchange (worker requests -> Dave decides grant/deny -> worker's tool
+access updates live if granted), not the worker being stuck or Dave
+guessing upfront."
+
+### What was built
+- [x] `packages/dave-workers/src/tool-requests.ts` — real, file-backed
+      request registry (same pattern as Step 12's own worker registry):
+      `requestTool()`, `listPendingToolRequests()`,
+      `listToolRequestsForWorker()`, `decideToolRequest()` (a decision
+      is final -- re-deciding an already-decided request is refused),
+      `getGrantedToolNames()` (reads current file state fresh every
+      call -- no cache to invalidate, so a grant is live immediately)
+- [x] `worker-permissions.ts` gained `toolsForWorkerWithGrants()` --
+      the existing role-based tool list (Step 12.5) plus whatever's
+      been genuinely granted, resolved against a caller-supplied tool
+      catalog so `dave-workers` doesn't need a hard dependency on every
+      other tool-providing package
+- [x] `tool-request-tools.ts` — real agent-callable tools on both
+      sides: `request_tool`/`check_my_tool_requests` (worker-scoped)
+      and `list_pending_tool_requests`/`decide_tool_request`
+      (Dave-scoped)
+
+### Real proof (Update 7)
+Ran `packages/dave-workers/test/step28-tool-requests.test.ts`:
+1. A fresh worker genuinely lacks a tool it was never given
+2. `request_tool` creates a real pending request with a real reason
+3. Still unavailable while pending (a request alone grants nothing)
+4. Dave sees it via `list_pending_tool_requests`, denies it -- still
+   genuinely unavailable afterward
+5. A second, separate request for the same tool is genuinely a
+   different request (not reusing the denied one); Dave grants it
+6. **Live update**: the worker's real tool list reflects the grant on
+   the very next check, no restart -- and the newly granted tool is
+   genuinely callable, base tools untouched
+7. Direct `getGrantedToolNames()` and the worker's own
+   `check_my_tool_requests` view agree
+8. A decision is final (re-deciding is refused); an unknown request id
+   fails honestly with a typed `ToolRequestNotFoundError`
+9. A second worker's requests/grants stay genuinely isolated from the
+   first
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 29-file test suite green afterward, clean `tsc -b` build
+
+### Not yet done (deferred, not silently skipped)
+- Not yet wired into a live agent loop that would call `request_tool`
+  autonomously mid-task, or surface pending requests to Dave/the user
+  through Telegram -- same "real, tested logic ahead of the runtime"
+  status as the rest of this build
+- No admin UI for reviewing/deciding pending requests yet

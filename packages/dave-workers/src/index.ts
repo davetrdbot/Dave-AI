@@ -4,3 +4,5 @@ export * from "./report-to-user.js";
 export * from "./journal-worker.js";
 export * from "./settings-tool.js";
 export * from "./comms.js";
+export * from "./tool-requests.js";
+export * from "./tool-request-tools.js";
