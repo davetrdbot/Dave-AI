@@ -155,9 +155,15 @@ const badTokenRes = await fetch(`http://127.0.0.1:${port}/hooks/user/deadbeef-no
 console.log(`    POST with an unknown token -> ${badTokenRes.status} (must reject)`);
 assert.equal(badTokenRes.status, 404);
 
+// Step 12.3 implemented the real worker route (this test predates it) --
+// an unknown worker/token combination is now a real 404 from the WORKER
+// handler specifically, still proving it's a genuinely separate route
+// from the user handler's own 404 (different error message).
 const workerRes = await fetch(`http://127.0.0.1:${port}/hooks/worker/martins/some-token`, { method: "POST", body: "{}" });
-console.log(`    POST to the reserved worker-webhook namespace -> ${workerRes.status} (distinct route, not the user handler)`);
-assert.equal(workerRes.status, 501, "worker webhook path must be a genuinely separate route, not silently handled by the user route");
+const workerJson = await workerRes.json();
+console.log(`    POST to the worker-webhook namespace with an unknown token -> ${workerRes.status} ${JSON.stringify(workerJson)}`);
+assert.equal(workerRes.status, 404);
+assert.equal(workerJson.error, "unknown worker or token", "must be the WORKER route's own 404, not the user route's");
 
 await new Promise<void>((resolve) => server.close(() => resolve()));
 console.log("    server closed cleanly");

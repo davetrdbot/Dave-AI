@@ -75,6 +75,18 @@ importers:
         specifier: workspace:*
         version: link:../dave-davema
 
+  packages/dave-workers:
+    dependencies:
+      '@dave/brain':
+        specifier: workspace:*
+        version: link:../dave-brain
+      '@dave/memory':
+        specifier: workspace:*
+        version: link:../dave-memory
+      '@dave/trading':
+        specifier: workspace:*
+        version: link:../dave-trading
+
 packages:
 
   '@alibaba-group/opensandbox@0.1.11':

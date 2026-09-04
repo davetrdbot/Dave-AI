@@ -1067,3 +1067,78 @@ Ran `packages/dave-ea-bridge/test/step11-ea-bridge.test.ts`:
 - `EaBridge`/`EaTradeExecutor` aren't wired into a running process yet —
   same "real, tested logic ahead of the transport" status most of
   dave-trading is already in, consistent with Step 10's own notes
+
+## Status: Step 12 — Workers (COMPLETE)
+
+Completed: 2026-09-04
+
+### Step 12 checklist
+- [x] 12.1 Named like people, created on the fly — `worker-factory.ts`,
+      a real name pool (20 first names) Dave draws from, not a fixed
+      "Worker-1"/"Worker-2" roster; explicit names collision-checked
+      against currently-active workers
+- [x] 12.2 Fixed (ongoing) vs temporary (one-off) — `assignment` field,
+      Dave's call at creation time; `retireWorker()` closes a worker out
+- [x] 12.3 Auto-generated per-worker endpoint — real now, not a stub:
+      implemented the actual `/hooks/worker/<workerId>/<token>` route in
+      `dave-memory/user-webhook.ts`, replacing the Step 4 501 placeholder
+      it explicitly deferred to this step. Separate token store from the
+      per-user webhook, so a leaked worker token only resolves that one
+      worker's identity
+- [x] 12.4 Not personality-locked — a design/prompt-level property (SOUL.md/
+      IDENTITY.md apply to workers same as Dave); nothing in this code
+      layer restricts a worker's tone, by design
+- [x] 12.5 Full feature parity except real trades unless designated a
+      trading worker — `worker-permissions.ts::toolsForWorker()`, real
+      filtering: a non-trading worker keeps analysis tools (`find_setup`,
+      `validate_order`) and loses only the trade-placing ones
+      (`trade_execute`, `partial_close`, etc.); a `role: "trading"`
+      worker gets the full set
+- [x] 12.6 `report_to_user` — `report-to-user.ts`, posts through the
+      worker's own real endpoint, tagged with its name (`#priya`)
+- [x] 12.7 Journal role — `journal-worker.ts::writeTradeJournalEntry()`,
+      real prose generation from supplied facts + Dave's own reasoning
+      points (never invents the reasoning itself — same trading-content
+      boundary as everywhere else in this build)
+- [x] 12.8 Settings tool, same permission as Dave — `settings-tool.ts`,
+      calls the exact same `dave-trading` functions Dave's own commands
+      use, not a separate weaker path, and deliberately NOT filtered by
+      the trade-placing permission check (settings ≠ placing a trade)
+
+### Real proof (Step 12)
+Ran `packages/dave-workers/test/step12-workers.test.ts`:
+- Created a temporary worker (auto-named "Mei" from the pool) and a
+  fixed journal-role worker (explicitly named "Priya"); confirmed a
+  second worker can't collide on an already-active name; confirmed
+  retiring a worker removes it from the active list
+- Permission filtering: journal-role worker's tool list included
+  `find_setup`/`validate_order` but excluded `trade_execute` and
+  `delete_all_pending_orders`; a `role: "trading"` worker's list
+  included `trade_execute` — proven by inspecting the actual filtered
+  arrays, not asserted in the abstract
+- Worker model routing confirmed never `airllm`
+- **Real per-worker webhook**: `reportToUser()` made a real HTTP POST
+  through Priya's own real endpoint, got back `{"ok":true,"tag":"#priya"}`,
+  and the stored report was genuinely tagged `#priya` with the real
+  content; filtering reports by a different (nonexistent) workerId
+  correctly returned zero, proving no cross-worker leakage
+- **Real readable journal writeup** — not a JSON dump: given raw facts
+  and Dave's own reasoning points, produced actual prose ("Here's the
+  read: ... On top of that, ... And the deciding factor: ...",
+  "Confluence came in at 82/100 -- about as clean a setup as this
+  gets.", "Risk: stop at 2645, target at 2665."); missing reasoning was
+  flagged honestly ("No reasoning was recorded...") rather than invented
+- Settings tool: a worker called `set_risk_mode` through the tool
+  interface, and the change genuinely took effect (verified by reading
+  it back via `getRiskSettings`), proving it's real access, not a stub
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 13-file suite (Steps 3–12) re-run afterward, all green; `tsc -b`
+  build re-verified clean
+
+### Not yet done (deferred, not silently skipped)
+- Worker-to-worker and worker-to-Dave direct messaging + the persistent
+  communication log are Step 13's job, not built here — `report_to_user`
+  (12.6) is worker→user output only, a different channel
+- No agent loop exists yet to actually decide when to spin up a worker
+  or route a task to one — same "real, tested logic ahead of the
+  runtime" status as dave-trading's tools

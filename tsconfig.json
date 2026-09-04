@@ -8,6 +8,7 @@
     { "path": "packages/dave-telegram" },
     { "path": "packages/dave-trading" },
     { "path": "packages/dave-ea-bridge" },
+    { "path": "packages/dave-workers" },
     { "path": "packages/dave-core" }
   ]
 }
