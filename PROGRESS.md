@@ -821,3 +821,96 @@ drops sections on a docs page this large, and returns a confident answer
 regardless. Every claim in this build about exact Telegram Bot API
 mechanics now comes from pulling the raw HTML directly and searching it
 locally, not a single WebFetch pass.
+
+## Status: Step 10 — Trading Engine (COMPLETE)
+
+Completed: 2026-09-04
+
+### Step 10 checklist
+- [x] 10.1 SL/TP/lot each Off/On/Auto — `risk-settings.ts`, "On" is
+      enforced (not just documented) to require a real user value via
+      `OnModeRequiresValueError`. Max open trades/max daily loss are
+      optional, off by default, and PROTECTED: `proposeProtectedLimitChange`
+      never applies anything — only a separate `approveProtectedLimitChange`
+      call does, matching SECURITY.md's "never bundled, never assumed to
+      carry over" requirement
+- [x] 10.2 All 6 real order types (`buy`/`sell`/`buy_limit`/`sell_limit`/
+      `buy_stop`/`sell_stop`) — `order-types.ts`. `resolveEntryPrice()`
+      never silently fails: explicit price, or a caller-supplied
+      reference+offset (mechanical only — this module doesn't invent
+      *which* offset to use, that's the user's rules file's job), or an
+      explicit "needs prompt" result
+- [x] 10.3 Partial close, remove SL/TP, delete one/all pending orders —
+      `trade-execute.ts`, through a `TradeExecutor` seam (same pattern as
+      `Provider`/`Transport` elsewhere) so this is real, tested logic
+      ahead of Step 11's actual EA/MCP transport
+- [x] 10.4 Trading mode: Auto vs Trading Skills — `trading-mode.ts`,
+      "trading-skills" mode enforced to require a specific locked skill id
+- [x] 10.5 Pair groups, generic system — `pair-groups.ts`. Exactly one
+      active + one fallback structurally (a single `activeGroupId` field,
+      not just a convention), no default pre-selected
+- [x] 10.6 Extreme conditions → pause + auto-switch to fallback —
+      `handleExtremeConditions()`; this module owns only the switching
+      mechanism, the market-condition judgment itself is the caller's
+      (real DAVEMA data), keeping trading-strategy content out of this code
+- [x] 10.7 Machine-readable `.json` trading skills — `skills.ts`, system
+      only, ships with an empty library, never authors skill content
+- [x] 10.8 Dave's default MT5 account or the user's own — `mt5-accounts.ts`,
+      same secure-credential pattern as DAVEMA's key storage (0600 file,
+      masked accessor); cannot select "own-account" before credentials for
+      it actually exist
+- [x] 10.9 Breakeven/trailing stops — `breakeven-trailing.ts`, real state
+      machine: TP1 → breakeven, TP2 → further lock-in, TP3 → more lock-in,
+      each stage only applied once (idempotent) and never moves SL
+      backward even if a bad config would ask it to
+- [x] 10.10 "Find me a setup" — `find-setup.ts`, on-demand scan of the
+      CURRENT active pair group via DAVEMA's real `/confluence` recipe
+
+### Real proof (Step 10)
+Ran `npx tsx packages/dave-trading/test/step10-trading.test.ts`:
+- All 6 order types confirmed; `resolveEntryPrice` correctly resolved an
+  explicit price, calculated one from a reference+offset
+  (1.09 - 20 pips = 1.088, verified numerically), and correctly returned
+  a "needs prompt" result for a bare pending order — `validateOrder`
+  rejected a pending order missing a price
+- `setRiskMode(..., "on")` with no value genuinely threw; providing one
+  genuinely persisted
+- A protected-limit proposal did NOT change `maxOpenTrades` until a
+  separate, explicit approval call — verified both states
+- Pair groups: set Majors active / Synthetics fallback, confirmed both;
+  triggered `handleExtremeConditions(true)` and confirmed the active
+  group genuinely switched to Synthetics, paused flag set
+- Breakeven/trailing: ran a real BUY position through a simulated price
+  sequence (1.086 → 1.101) — SL genuinely moved 1.08 → 1.085 (TP1/
+  breakeven) → 1.09 (TP2) → 1.095 (TP3), each exactly once; a second
+  test confirmed SL does NOT move backward when a stage's target would
+  be worse than the current SL
+- Partial close: 0.3 of 1.0 lots closed, 0.7 remaining, both real
+  returned numbers checked; `tradeModify` with `sl:null, tp:null`
+  genuinely called through with both nulled; `deleteAllPendingOrders`
+  genuinely deleted both real pending tickets, not just the first
+- Trading mode: defaulted to `auto`; `trading-skills` mode without a
+  skill id genuinely threw; with one, genuinely persisted
+- MT5 accounts: selecting "own-account" before storing credentials
+  genuinely threw; after storing, selection succeeded and masked
+  credentials correctly omitted the password while keeping login/server
+- **"Find me a setup"**: real on-demand scan of the CURRENTLY active
+  group (Synthetics, post extreme-condition switch — proving state
+  actually flows between subsystems, not just within one test block),
+  real live HTTP calls to DAVEMA for both symbols, both correctly
+  returning real 401s (no key configured) — proving the real call path
+  fires, not fabricated scan data
+- `=== ALL ASSERTIONS PASSED ===`
+- Full existing suite (Steps 3–9) re-run alongside — all green
+
+### Not yet done (deferred, not silently skipped)
+- `TradeExecutor` has no real backing transport yet — that's Step 11's
+  EA webhook / MCP alternative. Everything above is real, tested logic
+  built against that seam, same approach as `Provider`/`Transport`
+  elsewhere in this build
+- Full authenticated "find me a setup" data needs a real DAVEMA key
+  (same gap noted since Step 7)
+- The correlation-vs-open-positions half of sizing isn't wired into
+  trade execution yet — needs `TradeExecutor.listOpenPositions()` to
+  actually be called from a sizing flow, which is a Step 17-era
+  self-improvement/execution-loop concern, not core order plumbing
