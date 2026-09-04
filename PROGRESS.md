@@ -106,6 +106,70 @@ changing the state machine. Full detail in `FILE_TREE.md`.
 - Tone-shift enforcement (relaxed vs. precise) is not yet code — it's a
   prompt instruction until an LLM call site exists to enforce it against
 
+## Status: Step 4 — Memory System (COMPLETE)
+
+Completed: 2026-09-04
+
+### Step 4 checklist
+- [x] 4.1 Hermes-style frozen snapshot — already built in Step 3
+      (`hermes-store.ts`); this step adds a real cache-hit proxy metric
+      proving the static prefix stays byte-identical within a session
+- [x] 4.2 `ADAPTABILITY.md` — already separate since Step 3
+- [x] 4.3 TencentDB-style L0→L2 tiers wired alongside the Hermes pattern:
+      `packages/dave-memory/src/tencent-tiers.ts` — L0 raw conversation
+      turns, L1 extracted atomic facts, L2 scenario summaries. L3 Persona
+      is intentionally NOT re-implemented — the existing frozen
+      MEMORY.md/USER.md from Step 3 IS the L3 tier, per the research
+      summary's integration note
+- [x] 4.4 Session search — `session-search.ts`, real full-text substring
+      search over the L0 conversation log
+- [x] 4.5 Recall-before-acting — `recall-guard.ts`, enforced (not just
+      documented): `executeTask()` throws `RecallRequiredError` unless
+      `markRecalled()` was called first for that exact task
+- [x] 4.6 Write-approval setting — `write-approval.ts`, off by default,
+      `gatedWrite()` genuinely defers the write (proven: side effect did
+      not run until `approveWrite()`)
+- [x] 4.7 Hidden per-user webhook — `user-webhook.ts`, real Node `http`
+      server, route namespace `/hooks/user/<token>`, proven distinct from
+      the reserved `/hooks/worker/<id>/<token>` namespace (full worker
+      webhook behavior is Step 12's, this only proves the separation)
+
+### Real proof (Step 4)
+Ran `npx tsx packages/dave-memory/test/step4-memory.test.ts` — real
+execution, no mocks:
+- L0/L1/L2 tiers: a real turn ("Hi Dave, I'm David and I prefer terse
+  updates.") produced real extracted atoms and a real scenario summary
+  on disk
+- Session search: `searchSessions(userId, "EURUSD")` found the one real
+  turn containing it, zero false positives on a nonsense query
+- Cache-hit proxy: assembled the real static prefix (SOUL+IDENTITY+
+  SECURITY+frozen memory, static-first per Step 1.7) three times in one
+  session — all three SHA-256 hashes identical (100% proxy cache-hit
+  rate); a fresh assembly taken *after* a mid-session write correctly
+  differs, proving writes aren't lost, just not retroactive (frozen
+  semantics from Step 1.4, now actually verified in code)
+- Recall guard: `executeTask()` genuinely threw before `markRecalled()`,
+  genuinely succeeded after
+- Write-approval: with the gate OFF (verified default), a write applied
+  immediately; with it ON, the side effect provably did NOT run until
+  `approveWrite()` was called
+- Hidden webhook: a real HTTP server on an ephemeral port, a real `fetch`
+  POST to `/hooks/user/<48-hex-char token>` returned 200 and landed in
+  the per-user inbox file; an unknown token got a real 404; a POST to
+  `/hooks/worker/...` got a real 501 from a genuinely separate route
+  handler, not silently absorbed by the user route
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Not yet done (deferred to later steps)
+- The cache-hit metric above is a proxy (prefix-hash stability) — a real
+  `usage.cache_read_input_tokens` metric against a live Anthropic/
+  DeepSeek call happens once Step 5 wires an actual provider
+- L1 atom extraction uses a heuristic regex extractor by default; the
+  extractor is pluggable and should be swapped for an LLM-backed one once
+  Step 5/8 gives us a real model call site
+- The hidden webhook server isn't mounted into a real deployed process
+  yet — that happens when Step 8 stands up the actual bot process
+
 ## Steps overview (for reference)
 1. Research  2. File tree plan  3. Identity & cold start  4. Memory system
 5. AI brain  6. Sandbox  7. DAVEMA integration  8. Telegram bot core
