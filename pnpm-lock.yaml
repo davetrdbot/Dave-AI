@@ -45,6 +45,12 @@ importers:
         specifier: 1.56.1
         version: 1.56.1
 
+  packages/dave-telegram:
+    dependencies:
+      '@dave/memory':
+        specifier: workspace:*
+        version: link:../dave-memory
+
 packages:
 
   '@alibaba-group/opensandbox@0.1.11':

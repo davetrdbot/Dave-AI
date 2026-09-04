@@ -458,3 +458,72 @@ the `DavemaApiKeyFlow` built above through the bot itself.
 - The credential store is a real file-permission-restricted baseline, not
   a production KMS — same caveat as noted for the sandbox in Step 6,
   worth hardening before a real Railway deploy
+
+## Status: Step 8 — Telegram Bot Core (COMPLETE, live-bot test deferred per your request)
+
+Completed: 2026-09-04
+
+### Step 8 checklist
+- [x] 8.1 Exactly the 9 required commands (`/account /connection /providers
+      /models /settings /reset /help /status /ea`), nothing else registered
+      as a command — `commands.ts`
+- [x] 8.2 Full rich formatting: bold/italic/underline/strikethrough/spoiler/
+      code/pre/blockquote/expandable blockquote/links/mentions/custom emoji/
+      headings/lists/tables — `rich-format.ts`; real reply-with-quote via
+      `ReplyParameters.quote` on `client.ts`
+- [x] 8.3 Colored inline buttons — see correction below
+- [x] 8.4 Settings-screen pattern: two buttons per row, live state,
+      checkmark, Back row — `buttons.ts::settingsScreen()`
+- [x] 8.5 `/ea` button picker + personalized `.mq5` with webhook URL+token
+      pre-filled, shown again in caption — `ea-file.ts`, reuses Step 4's
+      real hidden webhook infra
+- [x] 8.6 `setMyCommands` + confirmed real per-user menu customization via
+      `BotCommandScopeChatMember` — `menu.ts`
+- [x] 8.7 Bot display-info update — see correction below
+
+### Corrections made before building (checked real docs first, per your
+"we'll test that later" — I still verified the API surface itself, just
+deferred the live-bot render test)
+- **`<tg-thinking>` and `setMyProfilePhoto`/`removeMyProfilePhoto` do not
+  exist in the real Bot API** — confirmed by fetching the actual docs.
+  These were hallucinated in the Step 1 research pass, exactly the kind
+  of thing flagged then for re-verification. There is genuinely no API
+  method for a bot to change its own profile photo — only manually via
+  `@BotFather`'s `/setuserpic`. `profile.ts::botProfilePhotoInstructions()`
+  says this plainly instead of faking a call. The display-info half of
+  8.7 (`setMyName`/`setMyDescription`/`setMyShortDescription`) IS real
+  and implemented for real.
+- **`InlineKeyboardButton` has no color field** — confirmed against the
+  real docs. "Colored buttons" are implemented the way every real bot
+  does it: an emoji prefix (🟢/🔴/🔵) carrying the semantic meaning,
+  documented as a workaround in `buttons.ts`, not presented as a native
+  color property.
+- **`sendRichMessageDraft`** and **`ReplyParameters.quote`** ARE both
+  real, confirmed in the docs — implemented as documented.
+
+### Real proof (Step 8)
+Ran `npx tsx packages/dave-telegram/test/step8-telegram.test.ts`:
+- Command registry: exactly the 9 required names, `parseCommand()`
+  correctly splits command from arguments
+- All 14 formatting helpers produce correct real HTML tags; confirmed
+  user content gets HTML-escaped (`<script>` → `&lt;script&gt;`) so
+  formatted text can't break `parse_mode: HTML` parsing
+- Table rendering via monospace `<pre>` (no native Telegram table)
+- Colored buttons: real JSON shape with the emoji-prefix workaround
+- Settings screen: 2 option rows + 1 Back row, exactly 2 buttons per
+  option row, the active option correctly carries the ✅
+- `/ea` file: real webhook URL (`https://dave.example.com/hooks/user/
+  <48-hex token>`) and token substituted into the real `ea/DaveEA.mq5`
+  template, zero leftover `{{...}}` placeholders, both real values
+  actually present in the generated file content
+- **Real network round-trip**: called the actual `api.telegram.org`
+  with a syntactically-invalid token — got back Telegram's real,
+  live `401: Unauthorized: invalid token specified`, proving the
+  client genuinely talks to the real API rather than a stub
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Deferred, by your instruction
+Full live-message rendering (what formatting/buttons/reply-with-quote
+actually look like in a real Telegram chat) needs a real bot token from
+`@BotFather` — you said to test that later, so it's not blocking, but
+it's the one piece of Step 8 that can't be proven without one.
