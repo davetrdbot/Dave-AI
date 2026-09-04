@@ -2285,3 +2285,66 @@ Ran `packages/dave-brain/test/step24-provider-list.test.ts`:
   against every single one of the 20+ real endpoints (would burn real
   API keys/quota) — the mechanism itself is proven real end-to-end
   against a local server standing in for a provider's real shape
+
+## Status: Update 4 — Provider Management as Real Agent Tools (COMPLETE)
+
+"Dave must be able to, as real callable tools not just admin-UI: create
+a brand new custom provider (endpoint+key), edit an EXISTING provider's
+endpoint/config, all exposed as agent tools AND admin UI has same
+capability." Built directly on Update 3's storage layer
+(`provider-keys.ts`) rather than duplicating it.
+
+### What was built
+- [x] `packages/dave-brain/src/custom-providers.ts` — a genuinely new
+      provider (not one of the static catalog's 26 entries): its own
+      `custom_providers` DB table (Step 16 pattern), real create/edit/
+      list/delete, and `generateWithCustomProvider()` which builds a
+      real `OpenAICompatibleProvider` from the stored endpoint+key
+- [x] `provider-keys.ts` gained `editProviderKey()` — edits an
+      EXISTING built-in provider's stored key config (base URL
+      override, model, the key itself) in place, preserving its health
+      history, rather than forcing a delete-and-re-add
+- [x] `packages/dave-brain/src/provider-tools.ts` — `PROVIDER_TOOLS`,
+      9 real agent-callable tools in the same `ToolDefinition` shape as
+      Step 10's `TRADING_TOOLS`/Step 22's `RFEED_TOOLS`:
+      `list_providers`, `add_provider_key`, `edit_provider_key`,
+      `remove_provider_key`, `list_provider_keys`,
+      `check_provider_key_health`, `create_custom_provider`,
+      `edit_custom_provider`, `delete_custom_provider`
+- [x] Admin UI gets the same capability: `/api/providers` (list
+      built-in + custom, create/edit/delete a custom provider) and
+      `/api/provider-keys` (add/edit/list/delete a stored key, trigger
+      a real health check) — both real Next.js routes using the exact
+      same `@dave/brain` functions the agent tools call, not a
+      separate reimplementation
+
+### Real proof (Update 4)
+Ran `packages/dave-brain/test/step25-provider-crud.test.ts`:
+1. `create_custom_provider` tool: real endpoint+key stored, then a real
+   `generate()` call through it genuinely reached a real local server
+   with the correct `Authorization`/model
+2. `edit_custom_provider` tool: edited the SAME provider (same id) in
+   place; the very next real call genuinely used the edited key/model,
+   proving the edit isn't cosmetic
+3. `edit_provider_key` tool: edited an EXISTING built-in provider's
+   stored key (`baseUrlOverride`/`model`), untouched fields (`apiKey`)
+   genuinely survived the edit
+4. Full lifecycle through the tools alone: list → remove →
+   `list_provider_keys` genuinely empty afterward; same for
+   `delete_custom_provider` → `list_providers`
+5. A direct module-level `editProviderKey()` call and the tool wrapper
+   operate on the exact same real DB row — confirms the tool is a thin
+   wrapper, not separate logic that could drift from it
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 26-file test suite re-verified green afterward, clean `tsc -b`
+  build, and a real `next build` of the admin panel picking up both
+  new `/api/providers` and `/api/provider-keys` routes
+
+### Not yet done (deferred, not silently skipped)
+- No admin panel UI PAGE/forms exist yet for these routes (the routes
+  themselves are real and tested; a visual CRUD panel in
+  `dave-admin/app/page.tsx` is still just Update 2's Models tab)
+- API keys are stored in plaintext in the local SQLite file (same
+  posture as every other credential in this build so far -- Step 10's
+  MT5 credentials are the one place encryption-at-rest was actually
+  built; a broader pass hasn't happened)

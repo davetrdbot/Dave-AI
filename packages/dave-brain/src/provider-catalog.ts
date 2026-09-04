@@ -153,6 +153,18 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     notes: "Confirmed: SigV4 signing is mandatory, no Bearer/API-key path exists for the native Converse API. apiKey field carries the AWS access key id.",
   },
   gemini: OPENAI_COMPAT("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.1-pro", "Real OpenAI-compatible endpoint confirmed (still beta per Google); native generateContent API also exists but this is simpler and uses the same generic class."),
+  custom: {
+    id: "custom",
+    displayName: "Custom provider",
+    baseUrl: "",
+    chatPath: "/chat/completions",
+    modelsPath: null,
+    authStyle: "bearer",
+    manualModelEntry: true,
+    defaultModel: "",
+    openAICompatible: true,
+    notes: "Update 4 -- a user-defined provider (see custom-providers.ts), not a static catalog entry with a fixed base URL.",
+  },
   cohere: {
     id: "cohere",
     displayName: "Cohere",

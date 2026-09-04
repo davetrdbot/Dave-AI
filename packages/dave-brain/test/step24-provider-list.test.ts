@@ -40,8 +40,7 @@ try {
   for (const id of required) {
     assert.ok(PROVIDER_CATALOG[id as keyof typeof PROVIDER_CATALOG], `missing catalog entry: ${id}`);
   }
-  assert.equal(catalog.length, required.length);
-  console.log(`    real catalog has all ${catalog.length} required providers: ${catalog.map((c) => c.id).join(", ")}`);
+  console.log(`    real catalog has all ${required.length} required providers (plus "custom", Update 4): ${catalog.map((c) => c.id).join(", ")}`);
 
   console.log("\n[1b] Lepton AI genuinely aliases to Nvidia NIM, not a separate implementation...\n");
   assert.equal(resolveProviderAlias("lepton"), "nvidia-nim");

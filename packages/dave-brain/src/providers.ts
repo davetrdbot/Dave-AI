@@ -67,7 +67,8 @@ export type ProviderName =
   | "openrouter"
   | "huggingface"
   | "orcarouter"
-  | "bedrock";
+  | "bedrock"
+  | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {
   return messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "image"));

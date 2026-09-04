@@ -68,6 +68,31 @@ export function removeProviderKey(db: DaveDatabase, userId: string, keyId: strin
   return db.deleteRow(TABLE, userId, keyId);
 }
 
+/**
+ * Update 4: "edit an EXISTING provider's endpoint/config" -- e.g. point
+ * a built-in provider's key at a self-hosted/proxied endpoint
+ * (baseUrlOverride) or switch its model, without deleting and
+ * re-adding the key (which would lose its health history).
+ */
+export function editProviderKey(
+  db: DaveDatabase,
+  userId: string,
+  keyId: string,
+  patch: { label?: string; config?: Partial<ProviderKeyConfig> }
+): StoredProviderKey | undefined {
+  const existing = db.getById(TABLE, userId, keyId);
+  if (!existing) return undefined;
+  const data: Record<string, unknown> = {};
+  if (patch.label !== undefined) data.label = patch.label;
+  if (patch.config !== undefined) {
+    const currentConfig: ProviderKeyConfig = JSON.parse(existing.config_json as string);
+    data.config_json = JSON.stringify({ ...currentConfig, ...patch.config });
+  }
+  const updated = db.update(TABLE, userId, keyId, data);
+  if (!updated) return undefined;
+  return toStoredKey(db.getById(TABLE, userId, keyId)!);
+}
+
 export function listProviderKeys(db: DaveDatabase, userId: string, provider?: ProviderName): StoredProviderKey[] {
   ensureTable(db);
   const rows = db.query(TABLE, userId, provider ? { provider } : {});
