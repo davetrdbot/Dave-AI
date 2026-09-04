@@ -33,7 +33,7 @@ try {
   console.log(`    pulled ${downloaded.byteLength} bytes to ${downloaded.relativePath}, read back byte-identical`);
 
   // --- [2] Input: voice message received AND transcribed ---
-  console.log("\n[2] Input: voice message received and transcribed (fake download + REAL transcription network call)...\n");
+  console.log("\n[2] Input: voice message received and transcribed (fake download + REAL Groq network call)...\n");
   const fakeVoiceBytes = Buffer.from("fake ogg opus bytes for this test");
   const voiceClient = {
     downloadFile: async (fileId: string) => {
@@ -48,7 +48,7 @@ try {
     await receiveAndTranscribeVoiceNote(voiceClient, transcription, "voice-file-id-456", workspaceRoot);
   } catch (err) {
     transcriptionFailedHonestly = err instanceof TranscriptionError;
-    console.log(`    real OpenAI API call made, genuinely failed without a key: ${(err as Error).message}`);
+    console.log(`    real Groq API call made, genuinely failed without a key: ${(err as Error).message}`);
   }
   assert.ok(transcriptionFailedHonestly, "must fail via a real network call to the real API, not a stub");
 
