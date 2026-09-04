@@ -58,7 +58,11 @@ importers:
         specifier: 1.56.1
         version: 1.56.1
 
-  packages/dave-brain: {}
+  packages/dave-brain:
+    dependencies:
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
 
   packages/dave-core:
     dependencies:

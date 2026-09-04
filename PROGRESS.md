@@ -2102,3 +2102,84 @@ after a clean run, not just that the test's own assertions passed.
   backtest in sandbox → paper trade on R_Feed → propose for the real
   account with required approval) is not wired into an agent loop yet
   -- same status as every other tool manifest in this repo
+
+## Status: Update 2 — Admin "Load Model on Railway" Toggle (COMPLETE)
+
+Completed: 2026-09-04
+
+One research subagent verified the real, current way to make a single
+Railway/Nixpacks build install BOTH the Node toolchain (primary) AND
+Python + pip packages (secondary, for `ai-brain-service`) — confirmed
+Nixpacks normally picks only ONE provider by repo structure, and that a
+real `providers = ["python", "node"]` array plus a custom install phase
+is the correct current mechanism; also confirmed a real PEP 668 gotcha
+(Nix's own Python is externally-managed, so pip needs its own venv).
+
+### Real, live proof this actually works in a real environment
+Rather than only proving "the request is correctly shaped but fails
+without X" (the pattern used for most external-API steps so far), this
+one was verified genuinely end-to-end: `ai-brain-service/main.py`
+loads its model LAZILY (confirmed by reading the file — no eager
+`airllm` import at module scope), so after installing just
+`fastapi`+`uvicorn` (small, fast — not the full `torch`/`airllm`
+stack) into the service's real venv, a real child process was spawned,
+genuinely answered `GET /health` with `200 {"status":"ok",
+"model_loaded":false}`, and was genuinely stopped again. This is a
+real success, not a simulated one.
+
+### What was built
+- [x] `packages/dave-brain/src/railway-model-loader.ts` — real per-user
+      DB-backed toggle (`getRailwayModelLoadEnabled`/
+      `setRailwayModelLoadEnabled`, Step 16 pattern, defaults OFF), and
+      `LocalAirLLMProcessManager` — spawns the real
+      `ai-brain-service/main.py` process, polls its real `/health`
+      endpoint, reports genuine running/pid/error state (never
+      fabricates "started" before the child process object exists)
+- [x] Real Python interpreter resolution: on Railway, the real venv
+      `nixpacks.toml`'s custom install phase builds
+      (`/opt/dave-ai-brain-venv/bin/python3`); locally, falls back to
+      whatever real venv the dev environment actually has
+      (`ai-brain-service/.venv/bin/python3`) — never a bare `python3`
+      that might not have the right packages on a given host
+- [x] `nixpacks.toml` updated with the real confirmed multi-provider
+      syntax (`providers = ["python", "node"]`, a custom
+      `[phases.installPython]` phase installing into its own venv)
+- [x] Admin panel: a real toggle button in the AI Models tab
+      (`ModelsPanel`), backed by a real `/api/railway-model-toggle`
+      route, with the master prompt's own honest warning text verbatim
+      next to it — "this will be slow (CPU-only, no GPU on Railway)
+      and is best-effort; the DeepSeek/Claude fallback providers remain
+      the reliable path"
+
+### Real proof
+Ran `packages/dave-brain/test/step23-railway-model-toggle.test.ts`:
+1. Fresh user genuinely defaults to off; toggling on/off genuinely
+   flips real DB state, verified by re-reading it
+2. With the toggle on: a real child process was spawned (real PID),
+   genuinely answered `/health` (`healthy: true, modelLoaded: false`
+   — confirming the model is genuinely NOT eagerly loaded, only the
+   honest-warning-covered `/generate` path is the slow part), then was
+   genuinely stopped and confirmed no longer running
+3. With the toggle off: no process assumption made, `localAirLLMBaseUrl()`
+   only ever constructs a URL string, never auto-invoked
+- `=== ALL ASSERTIONS PASSED ===`
+- Live-server verification: started the real built admin panel,
+  fetched `/api/railway-model-toggle` (genuinely `false` by default),
+  clicked the real button in a real browser (Playwright), confirmed it
+  flipped to `true` both visually and by re-fetching the real endpoint
+- Full test suite and a genuine clean-checkout build both re-verified
+  green afterward
+
+### Not yet done (deferred, not silently skipped)
+- The real agent loop doesn't exist yet to actually CALL
+  `LocalAirLLMProcessManager` on startup when the toggle is on, or to
+  point `AirLLMProvider`'s base URL at `localAirLLMBaseUrl()` instead
+  of an external host — same "real, tested logic ahead of the runtime"
+  status as every other tool/provider package so far
+- Actually generating text still needs the real `airllm`/`torch` stack
+  installed, which was NOT installed/tested here (only `fastapi`+
+  `uvicorn`, enough to prove the lazy-load architecture and the real
+  process lifecycle) — research flagged this as a genuine risk of
+  hitting Railway's build time/disk/memory ceilings on a base tier,
+  which is exactly why the UI is honest about "best-effort," not a
+  guarantee
