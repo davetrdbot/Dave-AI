@@ -229,6 +229,12 @@ importers:
         specifier: ^9.0.0
         version: 9.0.0
 
+  packages/dave-skills:
+    dependencies:
+      '@dave/brain':
+        specifier: workspace:*
+        version: link:../dave-brain
+
   packages/dave-telegram:
     dependencies:
       '@dave/memory':

@@ -2714,3 +2714,77 @@ Ran `packages/dave-agent-loop/test/step30-agent-loop.test.ts`:
   `DeepSeekProvider` (its own bespoke class, pre-dating the generic
   one), `CohereProvider`, `ReplicateProvider`, and `BedrockProvider`
   don't support tools yet -- real gap, not hidden
+
+## Status: Update 10 — Skills (COMPLETE)
+
+The last of the mid-session feedback items: "you are supposed to
+create a permanent skill teaching the agent to use it's tools and also
+self create it's own skills and can Install any skill from GitHub or I
+can send it .jsonl it will automatically detect it as skill and I can
+delete skill and others."
+
+### What was built
+- [x] New package `packages/dave-skills/`
+- [x] `skill-store.ts` — real, file-backed per-user skill registry
+      (same registry pattern as Step 12's worker registry):
+      `createSkill`/`listSkills`/`getSkill`/`updateSkillContent`/
+      `deleteSkill`. A `permanent: true` skill is genuinely
+      undeletable — enforced here, not just documented, via
+      `PermanentSkillError`
+- [x] `tool-usage-skill.ts` — `seedToolUsageSkill()`, the "permanent
+      skill teaching the agent to use its tools": generated FROM real
+      `ToolSpec[]` (whatever Update 9's `ToolRegistry.toSpecs()`
+      actually returns, never a hand-maintained list that can drift),
+      re-seeded IN PLACE (same skill id) as the registered tool set
+      changes, never duplicated
+- [x] `github-install.ts` — `installSkillFromGithub()`: a real fetch
+      against `raw.githubusercontent.com`, trying `SKILL.md` then
+      `README.md` on `main` then `master`; a genuinely nonexistent repo
+      fails honestly, typed (`GithubSkillFetchError`), no fabricated
+      skill installed
+- [x] `jsonl-install.ts` — `isJsonlSkillFile()` (real `.jsonl`
+      extension auto-detection) and `installSkillsFromJsonl()`: real
+      per-line JSONL parsing, one skill per line, malformed lines
+      genuinely reported as errors (not silently dropped), valid lines
+      still install
+- [x] `tools.ts` — `SKILL_TOOLS`: `list_skills`, `create_skill` (Dave
+      self-creating its own skill), `install_skill_from_github`,
+      `install_skills_from_jsonl`, `delete_skill` — the "what a user
+      can config bot can do it too" parity the user asked for
+
+### Real proof (Update 10)
+Ran `packages/dave-skills/test/step31-skills.test.ts`:
+1. The permanent tool-usage skill's content genuinely mentions the
+   real tools it was generated from; genuinely refuses deletion
+   (`PermanentSkillError`); re-seeding updates the SAME skill id in
+   place as the tool set changes, never duplicating
+2. Dave self-creates a skill through the real `create_skill` tool; a
+   duplicate name is genuinely refused
+3. **Real GitHub network round trip** against `octocat/Hello-World`
+   (a real public repo) — either a real fetched skill or a real,
+   honestly-reported network/not-found result, both handled; a
+   genuinely nonexistent repo fails honestly, typed, with no fabricated
+   skill installed
+4. `.jsonl` auto-detection by extension; a real multi-line install
+   where 2 valid lines installed and 2 genuinely malformed lines were
+   reported as real, specific errors (not silently skipped)
+5. A non-permanent skill genuinely deletes; deleting an unknown id
+   fails honestly, typed (`SkillNotFoundError`)
+6. `list_skills` reflects the real final state -- the deleted skill
+   genuinely absent, everything else genuinely present
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 32-file test suite green afterward, clean `tsc -b` build, clean
+  `next build`
+
+### Not yet done (deferred, not silently skipped)
+- Skills aren't wired into `AgentLoop` yet -- there's no code path yet
+  that reads a user's skills and folds their content into the system
+  prompt/context before a real model call. The storage, generation,
+  and install/delete mechanics are real and tested; using them during
+  an actual run is the next step, alongside Update 9's own "wire this
+  into a live Telegram handler" gap
+- No admin UI for browsing/managing skills yet
+- GitHub install only checks `SKILL.md`/`README.md` on `main`/`master`
+  -- a repo using a different default branch name or a nested skill
+  file path would need a more thorough real lookup (e.g. the GitHub
+  API's default-branch field) not built here
