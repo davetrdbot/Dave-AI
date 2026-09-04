@@ -2,17 +2,13 @@ import assert from "node:assert/strict";
 import { TelegramClient, withThinkingIndicator, ACTION_ICONS } from "../src/index.js";
 
 console.log("=== Step 9 real proof: thinking indicator with live action-type icons ===\n");
+console.log("Corrected after checking the REAL sendRichMessageDraft parameter table (not just the");
+console.log("changelog blurb): it returns `true`, not a message; updates reuse the same bot-chosen");
+console.log("draft_id (Telegram animates same-id changes); finalizing calls the real sendRichMessage");
+console.log("method, not editMessageText, since the draft was never a persisted message to edit.\n");
 
 // --- Part A: state-machine correctness against a real, successful transport ---
-// A minimal fake TelegramClient-shaped transport that returns real success
-// responses (same pattern used for Transport fakes in Steps 3/4/7) --
-// this proves the draft->edit->finalize state machine for real,
-// deterministically, which a real-but-unauthenticated network call can't
-// do (every call fails identically with no token, so the code never gets
-// far enough to prove state transitions -- see Part B for what that DOES
-// prove).
 console.log("[Part A] State machine against a working transport...\n");
-let nextMessageId = 1;
 const sentCalls: { method: string; body: Record<string, unknown> }[] = [];
 const fakeClient = {
   sendChatAction: async (body: Record<string, unknown>) => {
@@ -21,15 +17,11 @@ const fakeClient = {
   },
   sendRichMessageDraft: async (body: Record<string, unknown>) => {
     sentCalls.push({ method: "sendRichMessageDraft", body });
-    return { message_id: nextMessageId++ };
+    return true; // real return type -- not a message
   },
-  editMessageText: async (body: Record<string, unknown>) => {
-    sentCalls.push({ method: "editMessageText", body });
-    return { message_id: body.message_id as number };
-  },
-  sendMessage: async (body: Record<string, unknown>) => {
-    sentCalls.push({ method: "sendMessage", body });
-    return { message_id: nextMessageId++ };
+  sendRichMessage: async (body: Record<string, unknown>) => {
+    sentCalls.push({ method: "sendRichMessage", body });
+    return { message_id: 999 };
   },
 } as unknown as TelegramClient;
 
@@ -42,35 +34,59 @@ await withThinkingIndicator(fakeClient, 847213, async (indicator) => {
 
 console.log(`    calls, in order: ${sentCalls.map((c) => c.method).join(" -> ")}`);
 assert.equal(sentCalls[0].method, "sendChatAction", "9.1: fires automatically first, zero AI decision");
-assert.equal(sentCalls[1].method, "sendRichMessageDraft", "first update opens the draft");
-assert.equal(sentCalls[2].method, "editMessageText", "second update edits the SAME draft message");
-assert.equal(sentCalls[3].method, "editMessageText", "third update edits the same draft message again");
-assert.equal(sentCalls[4].method, "editMessageText", "finalize edits the same message into its final form");
+assert.equal(sentCalls[1].method, "sendRichMessageDraft");
+assert.equal(sentCalls[2].method, "sendRichMessageDraft");
+assert.equal(sentCalls[3].method, "sendRichMessageDraft");
+assert.equal(sentCalls[4].method, "sendRichMessage", "9.4: finalize uses sendRichMessage, NOT editMessageText");
 
-const draftMsgId = (sentCalls[1].body as any).message_id ?? nextMessageId - 3;
-console.log(`    all edits target the same message_id: ${(sentCalls[2].body as any).message_id === (sentCalls[3].body as any).message_id && sentCalls[3].body.message_id === sentCalls[4].body.message_id}`);
-assert.equal(sentCalls[2].body.message_id, sentCalls[3].body.message_id);
-assert.equal(sentCalls[3].body.message_id, sentCalls[4].body.message_id);
+console.log("\n[A2] Every draft update reuses the SAME draft_id -- required for Telegram to animate it as one draft, not three separate ones...");
+const draftIds = [sentCalls[1], sentCalls[2], sentCalls[3]].map((c) => c.body.draft_id);
+console.log(`    draft_id per update: ${draftIds.join(", ")}`);
+assert.equal(draftIds[0], draftIds[1]);
+assert.equal(draftIds[1], draftIds[2]);
+assert.ok(typeof draftIds[0] === "number" && draftIds[0] !== 0, "draft_id must be a non-zero integer");
 
-console.log("\n    icon-prefixed content per update:");
-console.log(`      memory: "${sentCalls[1].body.text}"`);
-console.log(`      api:    "${sentCalls[2].body.text}"`);
-console.log(`      trade:  "${sentCalls[3].body.text}"`);
-console.log(`      final:  "${sentCalls[4].body.text}"`);
-assert.equal(sentCalls[1].body.text, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`);
-assert.equal(sentCalls[2].body.text, `${ACTION_ICONS.api}Calling DAVEMA /correlation + /strength`);
-assert.equal(sentCalls[3].body.text, `${ACTION_ICONS.trade}Scoring EURUSD setup against confluence`);
-assert.equal(sentCalls[4].body.text, "Setup scored -- confluence 78, LONG bias.");
-assert.ok(!String(sentCalls[4].body.text).startsWith(ACTION_ICONS.trade), "9.4: final message is clean, no leftover icon");
+console.log("\n[A3] Icon-prefixed content sent as rich_message.html for each update...");
+console.log(`      memory: "${(sentCalls[1].body.rich_message as any).html}"`);
+console.log(`      api:    "${(sentCalls[2].body.rich_message as any).html}"`);
+console.log(`      trade:  "${(sentCalls[3].body.rich_message as any).html}"`);
+console.log(`      final:  "${(sentCalls[4].body.rich_message as any).html}"`);
+assert.equal((sentCalls[1].body.rich_message as any).html, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`);
+assert.equal((sentCalls[2].body.rich_message as any).html, `${ACTION_ICONS.api}Calling DAVEMA /correlation + /strength`);
+assert.equal((sentCalls[3].body.rich_message as any).html, `${ACTION_ICONS.trade}Scoring EURUSD setup against confluence`);
+assert.equal((sentCalls[4].body.rich_message as any).html, "Setup scored -- confluence 78, LONG bias.");
+assert.ok(
+  !String((sentCalls[4].body.rich_message as any).html).startsWith(ACTION_ICONS.trade),
+  "9.4: the final message must be clean, no leftover action icon"
+);
+
+console.log("\n[A4] Two concurrent indicators get DIFFERENT draft_ids -- must not animate over each other's draft...");
+const secondCalls: { method: string; body: Record<string, unknown> }[] = [];
+const fakeClient2 = {
+  sendChatAction: async () => true,
+  sendRichMessageDraft: async (body: Record<string, unknown>) => {
+    secondCalls.push({ method: "sendRichMessageDraft", body });
+    return true;
+  },
+  sendRichMessage: async () => ({ message_id: 1000 }),
+} as unknown as TelegramClient;
+await withThinkingIndicator(fakeClient2, 555, async (indicator) => {
+  await indicator.update("code", "second task's own draft");
+  return { result: undefined, finalText: "done" };
+});
+const firstDraftId = sentCalls[1].body.draft_id;
+const secondDraftId = secondCalls[0].body.draft_id;
+console.log(`    first indicator's draft_id: ${firstDraftId}, second indicator's draft_id: ${secondDraftId}`);
+assert.notEqual(firstDraftId, secondDraftId);
 
 console.log("\n[Part A] PASSED\n");
 
 // --- Part B: real network round-trip, proving genuine HTTP calls (not a stub) ---
 console.log("[Part B] Real HTTP round-trip to the real api.telegram.org (no valid token available)...\n");
-const realCalls: string[] = [];
+const realCalls: { method: string; body: any }[] = [];
 const realFetch = global.fetch;
 global.fetch = (async (url: string, init?: RequestInit) => {
-  realCalls.push(url.toString().split("/").pop() ?? "");
+  realCalls.push({ method: url.toString().split("/").pop() ?? "", body: init?.body ? JSON.parse(init.body as string) : {} });
   return realFetch(url, init);
 }) as typeof fetch;
 
@@ -81,14 +97,18 @@ try {
     return { result: undefined, finalText: "Done." };
   });
 } catch {
-  // Expected: no real token, finalize() genuinely fails against the real API.
+  // Expected: no real token, so sendRichMessage genuinely fails against the real API.
 }
-console.log(`    real methods actually invoked against api.telegram.org: ${realCalls.join(", ")}`);
-assert.ok(realCalls.includes("sendChatAction"));
-assert.ok(realCalls.includes("sendRichMessageDraft"));
+console.log(`    real methods actually invoked against api.telegram.org: ${realCalls.map((c) => c.method).join(", ")}`);
+assert.ok(realCalls.some((c) => c.method === "sendChatAction"));
+assert.ok(realCalls.some((c) => c.method === "sendRichMessageDraft"));
+const realDraftCall = realCalls.find((c) => c.method === "sendRichMessageDraft");
+console.log(`    real request body sent to Telegram: ${JSON.stringify(realDraftCall?.body)}`);
+assert.equal(realDraftCall?.body.rich_message?.html, `${ACTION_ICONS.code}Patching provider-router.ts`);
+assert.ok(typeof realDraftCall?.body.draft_id === "number");
 global.fetch = realFetch;
 
-console.log("\n[Part B] PASSED (real network calls confirmed, genuine 401s from Telegram's real servers)\n");
+console.log("\n[Part B] PASSED (real network calls confirmed, real request shape verified)\n");
 
 // --- Typed enum check ---
 console.log("[Part C] Typed enum, not free-form -- every ActionType key maps to a real icon...");

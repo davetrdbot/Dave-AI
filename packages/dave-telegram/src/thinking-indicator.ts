@@ -3,9 +3,20 @@ import type { TelegramClient } from "./client.js";
 /**
  * Step 9: thinking indicator with live action-type icons.
  *
- * 9.3: typed enum, not free-form text -- an agent can only pick one of
- * these action types, never invent its own icon/prefix.
+ * Corrected after checking the real sendRichMessageDraft parameter
+ * table (an earlier pass assumed it returns a message you then edit
+ * with editMessageText -- wrong on both counts):
+ *   - sendRichMessageDraft returns `true`, not a message/message_id.
+ *   - Updating a draft means calling sendRichMessageDraft AGAIN with the
+ *     SAME bot-chosen `draft_id` -- Telegram animates the change. There
+ *     is no message to editMessageText; the draft is an ephemeral
+ *     ~30-second preview, never a real persisted message.
+ *   - Finalizing means calling the real sendRichMessage method (not
+ *     editMessageText) with the complete content -- that's the method
+ *     that actually returns a real Message and persists it in the chat.
  */
+
+// 9.3: typed enum, not free-form -- an agent can only pick one of these.
 export const ACTION_ICONS = {
   code: "</> ",
   database: "\u{1F5C4}\u{FE0F} ", // 🗄️
@@ -23,15 +34,19 @@ export function iconize(action: ActionType, text: string): string {
   return `${ACTION_ICONS[action]}${text}`;
 }
 
+let draftIdCounter = 1;
+/** draft_id must be a non-zero integer the bot chooses -- unique per indicator instance so concurrent tasks don't animate over each other's drafts. */
+function nextDraftId(): number {
+  return draftIdCounter++;
+}
+
 /**
  * 9.1: automatic typing/uploading chat action on every message -- zero
- * AI decision in whether to show it. This is infrastructure the message
- * handler always runs, never something the agent loop chooses to call
- * or skip. Telegram's chat action only lasts ~5s, so it's kept alive on
- * a heartbeat for the duration of the task.
+ * AI decision in whether to show it. Infrastructure the message handler
+ * always runs, never something the agent loop chooses to call or skip.
  */
 export class ThinkingIndicator {
-  private messageId: number | undefined;
+  private readonly draftId = nextDraftId();
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private readonly updates: { action: ActionType; text: string }[] = [];
 
@@ -46,10 +61,9 @@ export class ThinkingIndicator {
   }
 
   /**
-   * Called automatically the moment a message handler starts working --
-   * not an agent decision. Best-effort: a failed "typing..." indicator
-   * (e.g. a transient Telegram error) must never block the actual task
-   * from running, so failures here are swallowed rather than thrown.
+   * Best-effort: a failed "typing..." indicator (e.g. a transient
+   * Telegram error) must never block the actual task from running, so
+   * failures here are swallowed rather than thrown.
    */
   async start(): Promise<void> {
     await this.client.sendChatAction({ chat_id: this.chatId, action: this.chatAction }).catch(() => {});
@@ -58,26 +72,30 @@ export class ThinkingIndicator {
     }, 4000);
   }
 
-  /** 9.2/9.3: the tool the agent calls to update the visible thinking text live, icon-prefixed by typed action. */
+  /**
+   * 9.2/9.3: the tool the agent calls to update the visible thinking
+   * text live, icon-prefixed by typed action. Every call reuses the same
+   * draft_id so Telegram animates the change on the same ephemeral
+   * draft, per the real sendRichMessageDraft contract.
+   */
   async update(action: ActionType, text: string): Promise<void> {
     const rendered = iconize(action, text);
     this.updates.push({ action, text });
-    if (this.messageId === undefined) {
-      const result = await this.client.sendRichMessageDraft({ chat_id: this.chatId, text: rendered, parse_mode: "HTML" });
-      this.messageId = result.message_id;
-    } else {
-      await this.client.editMessageText({ chat_id: this.chatId, message_id: this.messageId, text: rendered, parse_mode: "HTML" });
-    }
+    await this.client.sendRichMessageDraft({
+      chat_id: this.chatId,
+      draft_id: this.draftId,
+      rich_message: { html: rendered },
+    });
   }
 
-  /** 9.4: finalizes cleanly into a real message when done -- no more draft/thinking styling. */
+  /**
+   * 9.4: finalizes cleanly into a real, persisted message -- via the
+   * real sendRichMessage method (not editMessageText: the draft was
+   * never a real message to edit).
+   */
   async finalize(finalText: string): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
-    if (this.messageId === undefined) {
-      await this.client.sendMessage({ chat_id: this.chatId, text: finalText, parse_mode: "HTML" });
-    } else {
-      await this.client.editMessageText({ chat_id: this.chatId, message_id: this.messageId, text: finalText, parse_mode: "HTML" });
-    }
+    await this.client.sendRichMessage({ chat_id: this.chatId, rich_message: { html: finalText } });
   }
 
   stop(): void {

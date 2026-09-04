@@ -651,3 +651,71 @@ specific placeholder tokens instead. Full output:
 - The `/ea` picker's two buttons ("Dave's default account" / "My own
   account") still aren't wired to different behavior — correctly blocked
   on Step 10.8's separate-credentials storage, not silently faked.
+
+## Follow-up: sendRichMessageDraft update mechanics — real bug found
+
+You asked me to check whether the AI can actually update the thinking
+draft via `sendRichMessageDraft` the way I'd built it. It couldn't —
+Step 9's implementation had the wrong mental model, based on inferring
+behavior from a one-line changelog blurb instead of the real parameter
+table. Fetched the real, complete method definition this time (raw HTML,
+not the summarized WebFetch pass, since the docs page is too large for
+that tool's model to reach the actual Methods section) and found:
+
+- **`sendRichMessageDraft` returns `true`, not a message with a
+  `message_id`.** My code was doing
+  `const result = await sendRichMessageDraft(...); this.messageId =
+  result.message_id;` — `result.message_id` would have been `undefined`
+  against the real API.
+- **Updating a draft means calling `sendRichMessageDraft` again with the
+  SAME bot-chosen `draft_id`** (a required non-zero integer) — Telegram
+  animates the change. There is no message object to call
+  `editMessageText` on; the draft is an ephemeral ~30-second preview,
+  never a persisted message. My code's second-and-later `update()` calls
+  were calling `editMessageText` against a `message_id` that was never
+  real, which would have failed against the real API every time.
+- **Finalizing uses a different real method, `sendRichMessage`** (not
+  `editMessageText`) — that's the one that actually returns a real,
+  persisted `Message`. My `finalize()` was calling `editMessageText`
+  too, same problem.
+- **The content parameter is `rich_message: InputRichMessage`
+  (`{ html: "..." }`)**, not the plain `text`/`parse_mode` shape regular
+  `sendMessage`/`editMessageText` use.
+
+### Fixes
+- `client.ts`: corrected `sendRichMessageDraft`'s real parameter table
+  and return type (`draft_id`, `rich_message`, returns `true`); added
+  the real `sendRichMessage` method; added the real `RichMessage`
+  (`InputRichMessage`) type.
+- `thinking-indicator.ts`: each `ThinkingIndicator` now generates its own
+  stable `draft_id` (module-level counter, unique per instance so
+  concurrent tasks never animate over each other's draft); `update()`
+  calls `sendRichMessageDraft` with that same id every time;
+  `finalize()` calls `sendRichMessage`, not `editMessageText`.
+- Rewrote `step9-thinking-indicator.test.ts` end to end against the
+  corrected mechanics.
+
+### Real proof (corrected)
+- Part A (fake working transport): call order is now
+  `sendChatAction → sendRichMessageDraft → sendRichMessageDraft →
+  sendRichMessageDraft → sendRichMessage`; all three draft updates
+  genuinely reuse the same `draft_id`; a second, concurrently-run
+  indicator gets a genuinely different `draft_id` (1 vs 2) — proven, not
+  assumed, since silently colliding draft ids would have been a real bug
+  a fake-only test could easily miss
+- Part B (real network, no valid token): confirmed real calls to
+  `api.telegram.org` for both `sendChatAction` and `sendRichMessageDraft`,
+  and printed the exact real request body Telegram received:
+  `{"chat_id":847213,"draft_id":3,"rich_message":{"html":"</> Patching
+  provider-router.ts"}}` — matches the real parameter table exactly
+- Full existing suite (Steps 3–9, including the EA review fixes) re-run
+  afterward: no regressions
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Lesson carried forward
+The WebFetch tool's page-to-markdown-then-summarize pipeline silently
+truncates on a page this large and can miss the actual section being
+asked about while still returning a confident-sounding answer. For any
+future Telegram Bot API method whose exact mechanics matter, pull the
+raw HTML directly (`curl` + local string search) rather than trusting a
+single WebFetch summary — this is exactly how this bug was caught.

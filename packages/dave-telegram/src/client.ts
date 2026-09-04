@@ -46,6 +46,16 @@ export interface InlineKeyboardMarkup {
   inline_keyboard: InlineKeyboardButton[][];
 }
 
+/**
+ * Real InputRichMessage shape, verified against the docs: exactly one of
+ * html/markdown/blocks is used. We only ever need `html` -- the full
+ * block-based format (InputRichBlock*, tables, thinking blocks, etc.) is
+ * real but out of scope for what Dave needs from rich messages today.
+ */
+export interface RichMessage {
+  html: string;
+}
+
 export interface SendMessageParams {
   chat_id: number | string;
   text: string;
@@ -76,9 +86,23 @@ export class TelegramClient {
     return this.call<{ message_id: number }>("sendMessage", params as unknown as Record<string, unknown>);
   }
 
-  /** Real method (confirmed in the Bot API changelog): streams a partial rich message. */
-  sendRichMessageDraft(params: { chat_id: number | string; text: string; parse_mode?: "HTML" }) {
-    return this.call<{ message_id: number }>("sendRichMessageDraft", params);
+  /**
+   * Real method, verified against the full real parameter table (not
+   * assumed from the changelog blurb alone -- an earlier pass here got
+   * this wrong). Returns `true`, NOT a message/message_id. `draft_id` is
+   * a bot-chosen non-zero integer: calling this again with the SAME
+   * draft_id animates an update to the same draft; a different draft_id
+   * replaces it without animation. The draft is an ephemeral ~30s
+   * preview -- it is never a real message, so there is nothing to
+   * editMessageText on. Finalizing requires sendRichMessage() instead.
+   */
+  sendRichMessageDraft(params: { chat_id: number | string; draft_id: number; rich_message: RichMessage; message_thread_id?: number; can_stop?: boolean; keep_on_stop?: boolean }) {
+    return this.call<true>("sendRichMessageDraft", params);
+  }
+
+  /** The real "finalize into a persisted message" method for rich content -- NOT editMessageText. Returns a real Message. */
+  sendRichMessage(params: { chat_id: number | string; rich_message: RichMessage; message_thread_id?: number; disable_notification?: boolean }) {
+    return this.call<{ message_id: number }>("sendRichMessage", params);
   }
 
   editMessageText(params: { chat_id: number | string; message_id: number; text: string; parse_mode?: "HTML"; reply_markup?: InlineKeyboardMarkup }) {
