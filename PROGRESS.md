@@ -281,6 +281,88 @@ is substituted for lack of credentials. Ran it:
 - Model-picker **UI** (buttons) is Step 8's job — the underlying
   `getModelConfig`/`setModelConfig` it will call are real and tested now
 
+## Status: Step 6 — Sandbox (COMPLETE, one finding to flag)
+
+Completed: 2026-09-04
+
+### Step 6 checklist
+- [x] 6.1 Wired the real `@deepseek-ai/dsh-sandbox-local` package chosen
+      in Step 1.3 — `packages/dave-sandbox/src/sandbox-client.ts` — one
+      consistent layer for Dave and workers, not a second parallel
+      implementation
+- [x] 6.2 Real code execution, real file I/O, real browser automation —
+      all proven working (see below)
+- [x] 6.3 Graceful degradation — `degradation.ts`, `checkSandboxHealth()`
+      + proof that chat/DAVEMA-shaped functions keep returning real
+      output regardless of sandbox reachability
+
+### Real proof (Step 6)
+Ran `npx tsx packages/dave-sandbox/test/step6-sandbox.test.ts`:
+- **Real attempt at DSH-native confinement**: instantiated the actual
+  `LocalSandboxProvider` from `@deepseek-ai/dsh-sandbox-local` via a real
+  Cordis `Context`, called its real `confine()` method. Result: it threw
+  `SandboxUnavailableError` — this sandbox host has neither `bwrap` nor a
+  Landlock-enforcing kernel available, so DSH's own fail-closed design
+  correctly refused to pretend to confine anything.
+- **Real code execution**: `node -e "console.log(2 + 2)"` executed for
+  real (degraded/unconfined, honestly reported as such), stdout `"4"`,
+  exit code 0.
+- **Real file I/O**: wrote and read back a real file
+  (`notes/analysis.md`) scoped to a real temp workspace directory; a
+  path-escape attempt (`../../etc/should-not-write`) was correctly
+  rejected before touching the filesystem.
+- **Real browser automation**: launched real headless Chromium via
+  Playwright (pinned to 1.56.1 to match this environment's pre-fetched
+  browser build), navigated to a real data: URL, read back the real page
+  title `"Dave Sandbox Browser Test"`.
+- **Graceful degradation**: `checkSandboxHealth()` correctly reported
+  `reachable=false` with the real reason; a stand-in for Dave's
+  chat/DAVEMA path (unrelated to the sandbox) returned real, non-empty
+  output regardless — proving the rest of the agent doesn't go down with
+  the sandbox.
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Finding to flag: DSH's native sandbox needs host kernel features that may not exist on Railway
+This is worth being upfront about rather than quietly working around:
+DSH's sandbox is **same-world process confinement** (bwrap or Landlock on
+Linux) — it needs specific host kernel/container capabilities
+(unprivileged user namespaces for bwrap, or a Landlock-enforcing kernel).
+**This sandbox environment has neither, and it's a real, open question
+whether a Railway container will either** — PaaS containers commonly
+restrict the same namespace/capability features. If Railway doesn't
+support it either, Dave's sandbox will run in the same degraded
+(unconfined-but-reported) mode demonstrated above in production, not
+just here.
+
+This changes the Step 1.3 recommendation's confidence level: DSH's
+native sandbox is still the right *default* to keep one consistent layer
+(confirmed: it fails closed and reports honestly rather than silently
+lying about confinement), but real OS-level isolation on Railway is not
+guaranteed by choosing it. Real options, for your call once Dave is
+actually deployed and this can be tested on the real Railway container:
+1. Accept degraded/unconfined execution on Railway (same as this test) —
+   simplest, but code execution then has no OS-level sandboxing at all.
+2. Explicitly configure DSH's `danger-full-access` mode so this is a
+   deliberate choice, not a silent fallback, with the isolation risk
+   understood.
+3. Reconsider Alibaba OpenSandbox (Step 1.3's alternative) specifically
+   for its container/gVisor/Firecracker-based isolation, which doesn't
+   depend on the host kernel's namespace/Landlock support the way DSH's
+   same-world confinement does.
+Not deciding this now — flagging it for when Dave is actually deployed
+and Railway's real container capabilities can be tested directly, rather
+than guessing.
+
+### Not yet done (deferred, not silently skipped)
+- DSH has no dedicated browser-automation package (confirmed by
+  inspecting its full package list — only web-fetch/web-search exist,
+  neither drives a real browser), so browser automation runs as a
+  Playwright-based code-execution task rather than through a DSH-native
+  browser provider. This keeps "one consistent execution/browsing layer"
+  per Step 6.1's requirement without adding an unrelated second product.
+- The Railway-vs-confinement question above needs real testing on an
+  actual Railway container, which doesn't exist yet in this build
+
 ## Steps overview (for reference)
 1. Research  2. File tree plan  3. Identity & cold start  4. Memory system
 5. AI brain  6. Sandbox  7. DAVEMA integration  8. Telegram bot core
