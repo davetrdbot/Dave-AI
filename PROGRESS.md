@@ -34,6 +34,13 @@ trusted on search results alone.
   until the user uploads their own rules .md file.
 - DAVEMA skill/reference document has not yet been provided — Step 7 blocked until it is.
 
+## Status: Step 2 — File Tree Plan (AWAITING APPROVAL)
+
+Proposed full file/folder tree written to `FILE_TREE.md`, with rationale.
+Pending user sign-off before Step 3 implementation begins. One open item
+carried forward: `ai-brain-service` (AirLLM/Qwen3-235B) hosting target is
+unresolved — Railway has no GPUs, needs a real decision in Step 5.
+
 ## Steps overview (for reference)
 1. Research  2. File tree plan  3. Identity & cold start  4. Memory system
 5. AI brain  6. Sandbox  7. DAVEMA integration  8. Telegram bot core
