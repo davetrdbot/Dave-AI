@@ -2631,3 +2631,86 @@ Ran `packages/dave-workers/test/step29-settings-approval.test.ts`:
 - Only `dave-trading`'s settings currently route through this pattern;
   extending the same propose/approve shape to other domains (e.g.
   provider settings) is straightforward but not yet done
+
+## Status: Update 9 — The Real Agent Tool-Calling Loop (COMPLETE)
+
+Direct user feedback: "you haven't give the agent tools yet." True --
+every package built so far (`TRADING_TOOLS`, `RFEED_TOOLS`,
+`PROVIDER_TOOLS`, `LOVABLE_TOOLS`, `VOICE_CALL_TOOLS`, `SETTINGS_TOOLS`,
+worker tool-request tools) exported real, tested `ToolDefinition[]`
+arrays, but nothing actually bound them to a real LLM call in a real
+tool-calling loop. This is that missing piece.
+
+### The real gap this closes
+`Provider.generate()` (dave-brain) had NO tool-calling support at
+all -- no `tools` parameter, no way to receive back which tool the
+model wants called. This update:
+1. Extended `CompletionRequest`/`CompletionResult`/`CompletionMessage`
+   (dave-brain's `providers.ts`) with real `ToolSpec`/`ToolCall` types
+2. Taught `ClaudeProvider` the real Anthropic Messages API tool shape
+   (`tools` → `input_schema`, response `tool_use` content blocks,
+   `tool_result` on a "user" turn to continue -- Claude has no separate
+   "tool" role)
+3. Taught `OpenAICompatibleProvider` the real OpenAI shape (`tools` as
+   `{type:"function", function:{...}}`, `tool_calls` in the response,
+   `role:"tool"` with `tool_call_id` to continue) -- covers ~20 of the
+   26 restored providers at once, since they all share this shape
+
+### What was built
+- [x] New package `packages/dave-agent-loop/`
+- [x] `tool-registry.ts` — `ToolRegistry` (real duplicate-name
+      rejection, `UnknownToolError` for a bad call) and `adaptTools()`,
+      which binds any package's own `ToolDefinition[]` + its own real
+      context (userId/db/executor/etc, whatever that package needs)
+      into one common `AgentTool` shape via closure -- no cross-package
+      context-threading needed downstream
+- [x] `agent-loop.ts` — `AgentLoop`: calls the real provider with the
+      real tool specs, genuinely executes whatever tool calls come
+      back through the registry, feeds real results back, loops until
+      final text; a real `MaxStepsExceededError` stops a model that
+      never stops requesting tools; a tool that genuinely throws has
+      its real error fed back to the model (recorded as a step,
+      doesn't crash the loop)
+- [x] `ask-user.ts` — per the user's explicit "and also ask user tool":
+      `createAskUserTool()`, a real tool the loop recognizes by name
+      and genuinely PAUSES on (no fabricated answer) -- a real pending
+      question is persisted, `AgentLoop.resume()` continues once the
+      real answer arrives
+
+### Real proof (Update 9)
+Ran `packages/dave-agent-loop/test/step30-agent-loop.test.ts`:
+1. `ToolRegistry`: real registration, a genuine duplicate-name
+   collision refused, a real typed `UnknownToolError`
+2. **Full real loop**: a local server mimics a real OpenAI-shape model
+   response requesting `get_balance` → the loop genuinely executed the
+   real tool's own `execute()` (confirmed via a captured side-effect,
+   not a stub) → the real result was sent back on the SECOND real HTTP
+   call (server-side asserted the exact `tool_call_id`/JSON content) →
+   final text returned
+3. A tool that genuinely throws: the real error message reaches the
+   model on the next turn (server-side asserted), loop recovers instead
+   of crashing
+4. A model that never stops requesting tools: genuinely capped at the
+   configured step count, real typed `MaxStepsExceededError`
+5. `ask_user`: the loop genuinely paused (confirmed only ONE real model
+   call was made, not two) with a real persisted pending question;
+   `resume()` made the genuine second call carrying the real user's
+   answer as that exact tool call's result
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 31-file test suite green afterward (confirming the
+  `providers.ts` tool-calling changes didn't regress any existing
+  provider behavior), clean `tsc -b` build, clean `next build`
+
+### Not yet done (deferred, not silently skipped)
+- Not yet wired to a live Telegram message handler (no live process
+  yet instantiates a real `ToolRegistry` with every package's real
+  tools registered against a real user, or calls `AgentLoop.run()` on
+  an incoming message) -- this update built the real, tested
+  mechanism; assembling the actual running bot around it is the
+  natural next step
+- Tool-calling support was added to `ClaudeProvider` and
+  `OpenAICompatibleProvider` only (covers Claude directly plus every
+  OpenAI-shaped provider from Update 3, ~21 of 26). `AirLLMProvider`,
+  `DeepSeekProvider` (its own bespoke class, pre-dating the generic
+  one), `CohereProvider`, `ReplicateProvider`, and `BedrockProvider`
+  don't support tools yet -- real gap, not hidden

@@ -64,6 +64,12 @@ importers:
         specifier: 1.56.1
         version: 1.56.1
 
+  packages/dave-agent-loop:
+    dependencies:
+      '@dave/brain':
+        specifier: workspace:*
+        version: link:../dave-brain
+
   packages/dave-brain:
     dependencies:
       '@dave/db':

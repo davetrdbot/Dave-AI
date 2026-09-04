@@ -19,20 +19,45 @@ export interface TextContentBlock {
 
 export type ContentBlock = ImageContentBlock | TextContentBlock;
 
+/**
+ * Update 9: real, provider-agnostic tool-calling support -- this is
+ * the wire-shape both ClaudeProvider (native `tools`/`tool_use`) and
+ * OpenAICompatibleProvider (native `tools`/`tool_calls`) translate
+ * to/from their own real API shapes, so an agent loop built on top of
+ * `Provider` never has to know which provider it's talking to.
+ */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>; // JSON Schema
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface CompletionMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string | ContentBlock[];
+  /** Only meaningful on an "assistant" message that requested tool calls. */
+  toolCalls?: ToolCall[];
+  /** Only meaningful on a "tool" message -- which real tool call this is the result of. */
+  toolCallId?: string;
 }
 
 export interface CompletionRequest {
   messages: CompletionMessage[];
   maxTokens?: number;
+  tools?: ToolSpec[];
 }
 
 export interface CompletionResult {
   text: string;
   provider: ProviderName;
   latencyMs: number;
+  toolCalls?: ToolCall[];
 }
 
 /**
@@ -199,6 +224,32 @@ export class ClaudeProvider implements Provider {
     private readonly baseUrl = "https://api.anthropic.com"
   ) {}
 
+  /**
+   * Update 9: real Anthropic Messages API tool-calling translation.
+   * An "assistant" message carrying `toolCalls` becomes a real
+   * `tool_use` content block (with the SAME id Claude originally gave
+   * it -- required for Claude to match it to the tool_result that
+   * follows); a "tool" message becomes a `tool_result` content block
+   * on a "user" turn (Claude's real, confirmed shape -- there is no
+   * separate "tool" role in the Messages API).
+   */
+  private toClaudeMessages(messages: CompletionMessage[]): unknown[] {
+    return messages
+      .filter((m) => m.role !== "system")
+      .map((m) => {
+        if (m.role === "tool") {
+          return { role: "user", content: [{ type: "tool_result", tool_use_id: m.toolCallId, content: m.content }] };
+        }
+        if (m.role === "assistant" && m.toolCalls?.length) {
+          const blocks: unknown[] = [];
+          if (typeof m.content === "string" && m.content.length > 0) blocks.push({ type: "text", text: m.content });
+          for (const call of m.toolCalls) blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.arguments });
+          return { role: "assistant", content: blocks };
+        }
+        return { role: m.role, content: m.content };
+      });
+  }
+
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
     const start = Date.now();
     const systemMessage = req.messages.find((m) => m.role === "system");
@@ -206,7 +257,8 @@ export class ClaudeProvider implements Provider {
       throw new ProviderError("claude", "a system message must be plain text -- images belong on a user message, not the system prompt");
     }
     const system = systemMessage?.content as string | undefined;
-    const messages = req.messages.filter((m) => m.role !== "system");
+    const messages = this.toClaudeMessages(req.messages);
+    const tools = req.tools?.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -223,6 +275,7 @@ export class ClaudeProvider implements Provider {
             max_tokens: req.maxTokens ?? 512,
             system,
             messages,
+            tools,
           }),
         },
         timeoutMs
@@ -233,9 +286,12 @@ export class ClaudeProvider implements Provider {
     if (!res.ok) {
       throw new ProviderError("claude", `HTTP ${res.status}: ${await res.text()}`);
     }
-    const json = (await res.json()) as { content: { type: string; text: string }[] };
-    const text = json.content.find((b) => b.type === "text")?.text ?? "";
-    return { text, provider: "claude", latencyMs: Date.now() - start };
+    const json = (await res.json()) as { content: { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[] };
+    const text = json.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
+    const toolCalls = json.content
+      .filter((b) => b.type === "tool_use")
+      .map((b) => ({ id: b.id!, name: b.name!, arguments: b.input ?? {} }));
+    return { text, provider: "claude", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined };
   }
 }
 
@@ -260,8 +316,33 @@ export class OpenAICompatibleProvider implements Provider {
     private readonly chatPath = "/chat/completions"
   ) {}
 
+  /**
+   * Update 9: real OpenAI-shape tool-calling translation. A "tool"
+   * message maps straight to OpenAI's real `{role:"tool", tool_call_id,
+   * content}` shape; an assistant message with `toolCalls` becomes a
+   * real `tool_calls: [{id, type:"function", function:{name,
+   * arguments}}]` array (arguments is a JSON STRING on the wire, per
+   * OpenAI's real, confirmed shape -- not an object).
+   */
+  private toOpenAIMessages(messages: CompletionMessage[]): unknown[] {
+    return messages.map((m) => {
+      if (m.role === "tool") {
+        return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+      }
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        return {
+          role: "assistant",
+          content: typeof m.content === "string" && m.content.length > 0 ? m.content : null,
+          tool_calls: m.toolCalls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.arguments) } })),
+        };
+      }
+      return { role: m.role, content: m.content };
+    });
+  }
+
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
     const start = Date.now();
+    const tools = req.tools?.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -269,7 +350,7 @@ export class OpenAICompatibleProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: req.messages, max_tokens: req.maxTokens ?? 512 }),
+          body: JSON.stringify({ model: this.model, messages: this.toOpenAIMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
         },
         timeoutMs
       );
@@ -279,8 +360,12 @@ export class OpenAICompatibleProvider implements Provider {
     if (!res.ok) {
       throw new ProviderError(this.name, `HTTP ${res.status}: ${await res.text()}`);
     }
-    const json = (await res.json()) as { choices: { message: { content: string } }[] };
-    return { text: json.choices[0].message.content, provider: this.name, latencyMs: Date.now() - start };
+    const json = (await res.json()) as {
+      choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
+    };
+    const message = json.choices[0].message;
+    const toolCalls = message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
+    return { text: message.content ?? "", provider: this.name, latencyMs: Date.now() - start, toolCalls };
   }
 }
 
