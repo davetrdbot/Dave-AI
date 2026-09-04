@@ -80,6 +80,15 @@ importers:
         specifier: ^1.30.0
         version: 1.30.0(zod@4.5.4)
 
+  packages/dave-io:
+    dependencies:
+      '@dave/sandbox':
+        specifier: workspace:*
+        version: link:../dave-sandbox
+      '@dave/telegram':
+        specifier: workspace:*
+        version: link:../dave-telegram
+
   packages/dave-memory: {}
 
   packages/dave-sandbox:

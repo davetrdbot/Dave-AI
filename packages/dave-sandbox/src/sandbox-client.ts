@@ -109,6 +109,23 @@ export function readWorkspaceFile(workspaceRoot: string, relativePath: string): 
   return readFileSync(resolveInWorkspace(workspaceRoot, relativePath), "utf8");
 }
 
+/**
+ * Step 15: binary-safe variants for real file I/O (images, video, voice
+ * notes, PDFs) -- the text-only functions above would corrupt anything
+ * that isn't valid UTF-8.
+ */
+export function writeWorkspaceFileBuffer(workspaceRoot: string, relativePath: string, content: Buffer): string {
+  const target = resolveInWorkspace(workspaceRoot, relativePath);
+  const dir = dirname(target);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(target, content);
+  return target;
+}
+
+export function readWorkspaceFileBuffer(workspaceRoot: string, relativePath: string): Buffer {
+  return readFileSync(resolveInWorkspace(workspaceRoot, relativePath));
+}
+
 function resolveInWorkspace(workspaceRoot: string, relativePath: string): string {
   if (isAbsolute(relativePath)) throw new Error("workspace file paths must be relative");
   const target = join(workspaceRoot, relativePath);

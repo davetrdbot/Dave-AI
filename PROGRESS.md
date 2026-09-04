@@ -1290,3 +1290,96 @@ built server (`next start`, real HTTP, no mocks):
   command (`server.mjs` is still Step 22's placeholder) — it has its own
   working `next build`/`next start`, but nothing runs it in production
   yet; that integration is Step 22 territory
+
+## Status: Step 15 — File I/O (COMPLETE)
+
+Completed: 2026-09-04
+
+Two research subagents ran in parallel to speed this step up: one pulled
+the RAW HTML of the real Telegram Bot API docs (this project's
+established practice, since WebFetch summaries have been wrong before —
+invented `<tg-thinking>`, wrong `sendRichMessageDraft` return shape),
+the other verified OpenAI's real transcription endpoint. Implementation
+and all tests were then written directly against their verified findings.
+
+### Step 15 checklist
+- [x] 15.1 Input: any file type (documents, images, video) gets pulled
+      into the sandbox workspace via a real two-step Telegram download
+      (`getFile` → `file_path` → real byte fetch), written binary-safe
+      — `packages/dave-io/src/inbound.ts`
+- [x] 15.2 Input: voice messages received AND transcribed — real OpenAI
+      `POST /v1/audio/transcriptions` call, `whisper-1` model (chosen
+      over the newer `gpt-4o-*-transcribe` models specifically because
+      OpenAI's own docs don't clearly confirm `.ogg`/OPUS support for
+      those, while `whisper-1`'s broader format handling is well
+      established for exactly this use case) — `packages/dave-io/src/voice.ts`,
+      `transcription.ts`
+- [x] 15.3 Output: Dave can push the FULL range out — document, photo,
+      video, voice note, video note, animation — not just documents.
+      `TelegramClient` gained real multipart/form-data upload support
+      (`sendPhoto`, `sendVideo`, `sendVoice`, `sendVideoNote`,
+      `sendAnimation`, and `sendDocument` extended) plus `getFile`/
+      `downloadFile`. Link-based deliveries get a real expiry warning
+      (Telegram's own docs: a `getFile` download link is only
+      *guaranteed* valid for "at least 1 hour") — uploads of real bytes
+      never need one, since Telegram re-hosts those permanently as a
+      new `file_id` — `packages/dave-io/src/outbound.ts`
+
+### Real findings from the two research subagents (both verified against raw docs, not summaries)
+- **Telegram**: `getFile`'s `file_path` field is genuinely OPTIONAL on
+  the response (not always present) — handled explicitly, not assumed.
+  Upload limits are real and per-type: 50MB for document/video/voice/
+  animation, 10MB for photos (plus a 20:1 max aspect ratio), video notes
+  fall under the general 50MB cap with no separate documented number.
+  Download cap for bots on the standard (non-self-hosted) API is exactly
+  20MB. `sendVoice` genuinely requires `.ogg`/OPUS, `.mp3`, or `.m4a` —
+  anything else silently becomes a plain Audio/Document instead of a
+  voice bubble (not rejected, just not what was asked for). The
+  `attach://` convention is for `InputMedia`-array methods only (e.g.
+  `sendMediaGroup`) — NOT needed for the single-file methods used here,
+  corrected from an initial assumption.
+- **OpenAI**: response_format is genuinely restricted on the two newer
+  `gpt-4o-*-transcribe` models — `json`/`text` only, no `verbose_json`/
+  `srt`/`vtt` (those richer formats stay `whisper-1`-only). 25MB file
+  size limit confirmed. The subagent flagged real inconsistency in
+  OpenAI's own docs about whether `.ogg` is an officially accepted
+  format — documented honestly in `transcription.ts`'s own comment
+  rather than silently assumed either way.
+
+### Real proof (Step 15)
+Ran `packages/dave-io/test/step15-file-io.test.ts`:
+1. A file with deliberately non-UTF-8 bytes (0xFF, 0xFE, 0x00) pulled
+   into a real temp workspace and read back byte-for-byte identical —
+   proves the binary-safe path, not the old text-mode one that would
+   have silently corrupted it
+2. Voice note transcription: real fake-download + a REAL network call
+   to `api.openai.com` (no key available in this environment) — got a
+   genuine HTTP 401 with OpenAI's real error body back, proving the
+   request genuinely reached the real API with the right multipart
+   shape; separately proved a download failure and a transcription
+   failure surface as distinguishable errors, not one opaque catch-all
+3. Real HTTP round-trip (same pattern as Step 9's) against the real
+   `api.telegram.org` with an invalid token, for all 5 upload methods
+   (`sendDocument`/`sendPhoto`/`sendVideo`/`sendVoice`/`sendVideoNote`)
+   — confirmed every one genuinely reached Telegram's real host with a
+   real multipart body, and genuinely failed (no token), not a silent
+   no-op
+4. Expiry-warning logic: a Telegram file link gets the real warning text
+   appended to its caption; an uploaded local buffer does not (correct,
+   since Telegram re-hosts uploaded bytes as a permanent `file_id`)
+5. All 6 real output kinds (document/photo/video/voice/video_note/
+   animation) dispatch to their correct distinct Bot API method
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 16-file suite (Steps 3–15) re-run afterward, all green
+- Full clean-state build re-verified (`lib/`, `.next`, all
+  `.tsbuildinfo` removed, then `pnpm install --frozen-lockfile &&
+  pnpm run build`) — genuinely reproduces Railway's fresh-checkout path
+
+### Not yet done (deferred, not silently skipped)
+- No real Telegram bot token or OpenAI API key configured in this
+  environment, so both real network calls above genuinely fail on auth
+  — the wiring and request shape are proven real, the actual successful
+  transcription/upload needs live credentials to demonstrate end-to-end
+- Reading file *content* once it's on disk (parsing a PDF, describing an
+  image) is out of scope here — 15.1 only covers the real pull-in; Step
+  20 (Vision) covers images/video specifically

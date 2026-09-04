@@ -67,6 +67,22 @@ export interface SendMessageParams {
   disable_web_page_preview?: boolean;
 }
 
+/**
+ * Step 15: a local file about to be uploaded (raw bytes -- as opposed to
+ * a `file_id`/URL string, which Telegram just resolves server-side).
+ */
+export interface LocalFile {
+  buffer: Buffer;
+  filename: string;
+}
+
+/** Any of these methods accept either a previously-known file_id/URL (string), or real local bytes to upload. */
+export type FileInput = string | LocalFile;
+
+function isLocalFile(input: FileInput): input is LocalFile {
+  return typeof input !== "string";
+}
+
 export class TelegramClient {
   constructor(private readonly token: string, private readonly baseUrl = "https://api.telegram.org") {}
 
@@ -82,6 +98,41 @@ export class TelegramClient {
       throw new TelegramError(method, err.error_code, err.description);
     }
     return json.result as T;
+  }
+
+  /**
+   * Step 15.3: uploading real local bytes requires multipart/form-data --
+   * confirmed against the real docs' InputFile definition ("must be
+   * posted using multipart/form-data"), not plain JSON like every other
+   * call here. `fileField` is the method's own file parameter name
+   * (`document`, `photo`, `video`, `voice`, `video_note`, `animation`) --
+   * no `attach://` indirection needed for a single-file method (that
+   * convention is only for InputMedia-array methods like
+   * sendMediaGroup).
+   */
+  private async callMultipart<T>(method: string, fields: Record<string, unknown>, fileField: string, file: LocalFile): Promise<T> {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) {
+      if (value === undefined) continue;
+      form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+    }
+    form.append(fileField, new Blob([new Uint8Array(file.buffer)]), file.filename);
+
+    const res = await fetch(`${this.baseUrl}/bot${this.token}/${method}`, { method: "POST", body: form });
+    const json = await res.json();
+    if (!json.ok) {
+      const err = json as TelegramApiError;
+      throw new TelegramError(method, err.error_code, err.description);
+    }
+    return json.result as T;
+  }
+
+  /** Dispatches to JSON (file_id/URL) or multipart (real local bytes) depending on what was actually given. */
+  private sendFile<T>(method: string, fileField: string, fields: Record<string, unknown>, file: FileInput): Promise<T> {
+    if (isLocalFile(file)) {
+      return this.callMultipart<T>(method, fields, fileField, file);
+    }
+    return this.call<T>(method, { ...fields, [fileField]: file });
   }
 
   sendMessage(params: SendMessageParams) {
@@ -115,8 +166,75 @@ export class TelegramClient {
     return this.call<true>("answerCallbackQuery", params);
   }
 
-  sendDocument(params: { chat_id: number | string; document: string; caption?: string; parse_mode?: "HTML" }) {
-    return this.call<{ message_id: number }>("sendDocument", params);
+  /**
+   * Step 15.3: the FULL range of output types, each a real Bot API
+   * method, each accepting either a known file_id/URL or genuine local
+   * bytes (multipart) -- verified limits from the real docs:
+   *   - sendDocument/sendVideo/sendAnimation/sendVoice: up to 50MB
+   *   - sendPhoto: up to 10MB, ratio <=20:1
+   *   - sendVideoNote: up to 1 minute, square/round (falls under the 50MB cap)
+   * sendVoice specifically requires .ogg/OPUS, .mp3, or .m4a -- anything
+   * else is real but won't render as a voice bubble (Telegram treats it
+   * as a plain Audio/Document instead of silently rejecting it).
+   */
+  sendDocument(params: { chat_id: number | string; document: FileInput; caption?: string; parse_mode?: "HTML" }) {
+    const { document, ...fields } = params;
+    return this.sendFile<{ message_id: number }>("sendDocument", "document", fields, document);
+  }
+
+  sendPhoto(params: { chat_id: number | string; photo: FileInput; caption?: string; parse_mode?: "HTML" }) {
+    const { photo, ...fields } = params;
+    return this.sendFile<{ message_id: number }>("sendPhoto", "photo", fields, photo);
+  }
+
+  sendVideo(params: { chat_id: number | string; video: FileInput; caption?: string; parse_mode?: "HTML" }) {
+    const { video, ...fields } = params;
+    return this.sendFile<{ message_id: number }>("sendVideo", "video", fields, video);
+  }
+
+  sendVoice(params: { chat_id: number | string; voice: FileInput; caption?: string; parse_mode?: "HTML"; duration?: number }) {
+    const { voice, ...fields } = params;
+    return this.sendFile<{ message_id: number }>("sendVoice", "voice", fields, voice);
+  }
+
+  sendVideoNote(params: { chat_id: number | string; video_note: FileInput; duration?: number; length?: number }) {
+    const { video_note, ...fields } = params;
+    return this.sendFile<{ message_id: number }>("sendVideoNote", "video_note", fields, video_note);
+  }
+
+  sendAnimation(params: { chat_id: number | string; animation: FileInput; caption?: string; parse_mode?: "HTML" }) {
+    const { animation, ...fields } = params;
+    return this.sendFile<{ message_id: number }>("sendAnimation", "animation", fields, animation);
+  }
+
+  /**
+   * Step 15.1: the first half of downloading a user-sent file. Real
+   * shape confirmed against the docs' File object: `file_path` is
+   * OPTIONAL on the response (absent if Telegram can't resolve it), and
+   * the resulting download link is only GUARANTEED valid for at least 1
+   * hour -- callers that hold onto a link rather than downloading
+   * immediately should treat it as expiring and re-call getFile.
+   */
+  getFile(params: { file_id: string }) {
+    return this.call<{ file_id: string; file_unique_id: string; file_size?: number; file_path?: string }>("getFile", params);
+  }
+
+  /** Real download URL format, confirmed against the docs (distinct from the bot<TOKEN> API-call URL shape). */
+  getFileDownloadUrl(filePath: string): string {
+    return `${this.baseUrl}/file/bot${this.token}/${filePath}`;
+  }
+
+  /** getFile + the actual byte fetch, combined -- the real two-step download Telegram requires. */
+  async downloadFile(fileId: string): Promise<Buffer> {
+    const file = await this.getFile({ file_id: fileId });
+    if (!file.file_path) {
+      throw new TelegramError("getFile", 400, `file_id ${fileId} has no file_path -- Telegram could not resolve it`);
+    }
+    const res = await fetch(this.getFileDownloadUrl(file.file_path));
+    if (!res.ok) {
+      throw new TelegramError("downloadFile", res.status, `download failed for ${file.file_path}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
   }
 
   setMessageReaction(params: { chat_id: number | string; message_id: number; reaction: { type: "emoji"; emoji: string }[] }) {

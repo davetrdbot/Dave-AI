@@ -1,0 +1,15 @@
+{
+  "name": "@dave/io",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "dependencies": {
+    "@dave/sandbox": "workspace:*",
+    "@dave/telegram": "workspace:*"
+  },
+  "exports": {
+    ".": "./lib/index.js"
+  }
+}
