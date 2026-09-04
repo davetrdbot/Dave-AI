@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { EaBridge, getOrCreateEaWebhook, peekQueue, McpTradeExecutor, McpConnectionError } from "../src/index.js";
+import { EaBridge, getOrCreateEaWebhook, peekQueue, getLastKnownAccountSnapshot, McpTradeExecutor, McpConnectionError } from "../src/index.js";
 
 const DATA_DIR = join(process.cwd(), "data");
 rmSync(DATA_DIR, { recursive: true, force: true });
@@ -34,6 +34,9 @@ const res1 = await fetch(`${base}${hook.path}`, {
     type: "heartbeat",
     account: "12345678",
     balance: 10000,
+    equity: 10120,
+    margin: 250,
+    freeMargin: 9870,
     positions: [{ ticket: "T1", symbol: "EURUSD", type: "buy", lots: 0.5, openPrice: 1.085 }],
     pendingOrders: [],
   }),
@@ -42,6 +45,16 @@ const json1 = await res1.json();
 console.log(`    response: ${JSON.stringify(json1)}`);
 assert.equal(res1.status, 200);
 assert.deepEqual(json1.commands, []);
+
+// Real gap fixed: balance/equity/margin/freeMargin were reported by the EA
+// but never actually persisted anywhere -- nothing could read them back.
+console.log("\n[2b] Real gap fixed: balance/equity/margin/freeMargin are now genuinely persisted...");
+const snapshot = getLastKnownAccountSnapshot(USER_ID);
+console.log(`    real account snapshot read back: ${JSON.stringify(snapshot)}`);
+assert.equal(snapshot?.balance, 10000);
+assert.equal(snapshot?.equity, 10120);
+assert.equal(snapshot?.margin, 250);
+assert.equal(snapshot?.freeMargin, 9870);
 
 // --- 11.1: the executor's openOrder() enqueues a real command, waits for a real result ---
 console.log("\n[3] EaTradeExecutor.openOrder() enqueues a real command and awaits the EA's real result...");

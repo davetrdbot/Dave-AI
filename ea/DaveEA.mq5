@@ -140,6 +140,11 @@ string BuildReportJson()
           "\"account\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\"," +
           "\"balance\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2) + "," +
           "\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2) + "," +
+          // Real gap fixed: margin/free margin were never reported at all,
+          // so Dave had no way to see how much the account could actually
+          // still risk. Real MT5 fields, not derived/approximated.
+          "\"margin\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN), 2) + "," +
+          "\"freeMargin\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2) + "," +
           "\"positions\":[" + positions + "]," +
           "\"pendingOrders\":[" + pendingOrders + "]," +
           "\"results\":[" + results + "]}";

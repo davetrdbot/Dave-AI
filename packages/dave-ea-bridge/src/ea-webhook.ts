@@ -52,9 +52,21 @@ export interface EaReport {
   account: string;
   balance: number;
   equity?: number;
+  margin?: number;
+  freeMargin?: number;
   positions: EaPosition[];
   pendingOrders: EaPendingOrder[];
   results?: EaCommandResult[];
+}
+
+/** Real gap fixed: balance/equity/margin/freeMargin were reported by the EA but never actually PERSISTED anywhere -- nothing could read them back later (e.g. for /account). */
+export interface AccountSnapshot {
+  account: string;
+  balance: number;
+  equity?: number;
+  margin?: number;
+  freeMargin?: number;
+  updatedAt: number;
 }
 
 export type EaCommand =
@@ -73,6 +85,10 @@ function queuePath(userId: string): string {
 
 function lastKnownStatePath(userId: string): string {
   return join(process.cwd(), "data", "ea-bridge", userId, "last-known-state.json");
+}
+
+function accountSnapshotPath(userId: string): string {
+  return join(process.cwd(), "data", "ea-bridge", userId, "account-snapshot.json");
 }
 
 function readJson<T>(path: string, fallback: T): T {
@@ -137,6 +153,27 @@ function saveLastKnownState(userId: string, positions: EaPosition[], pendingOrde
   writeJson(lastKnownStatePath(userId), { positions, pendingOrders });
 }
 
+/**
+ * Real gap fixed: balance/equity/margin/freeMargin were reported by the
+ * EA on every heartbeat but never actually persisted anywhere -- there
+ * was no way to read the user's current account financials back later
+ * (e.g. for a real /account command). This is that persistence.
+ */
+export function getLastKnownAccountSnapshot(userId: string): AccountSnapshot | undefined {
+  return readJson<AccountSnapshot | undefined>(accountSnapshotPath(userId), undefined);
+}
+
+function saveAccountSnapshot(userId: string, report: EaReport): void {
+  writeJson(accountSnapshotPath(userId), {
+    account: report.account,
+    balance: report.balance,
+    equity: report.equity,
+    margin: report.margin,
+    freeMargin: report.freeMargin,
+    updatedAt: Date.now(),
+  } satisfies AccountSnapshot);
+}
+
 export interface EaReportHandlers {
   /**
    * Called for every report, with the state as it was BEFORE this
@@ -185,6 +222,7 @@ export function createEaWebhookServer(handlers: EaReportHandlers = {}): Server {
 
     const previous = getLastKnownState(userId);
     saveLastKnownState(userId, report.positions ?? [], report.pendingOrders ?? []);
+    saveAccountSnapshot(userId, report);
     handlers.onReport?.(userId, report, previous);
 
     const commands = drainQueue(userId);

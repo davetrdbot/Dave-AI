@@ -15,6 +15,7 @@ import {
   getTradeNote,
   RFEED_TOOLS,
   personalizeRFeedFile,
+  getLastKnownRFeedAccountSnapshot,
   type RFeedReport,
 } from "../src/index.js";
 
@@ -102,6 +103,9 @@ try {
     type: "heartbeat",
     account: "50012345",
     balance: 10000,
+    equity: 10042,
+    margin: 55,
+    freeMargin: 9987,
     positions: [{ ticket: "900001", symbol: "EURUSD", type: "buy", lots: 0.1, openPrice: 1.0855, sl: 1.08, tp: 1.095, isCustom: false }],
     pendingOrders: [],
     results: [{ commandId: openCommand.id, status: "ok", ticket: "900001" }],
@@ -111,6 +115,13 @@ try {
   const opened = await openPromise;
   assert.equal(opened.ticket, "900001");
   console.log(`    real paper trade executed on the demo account -- ticket ${opened.ticket}, correct SL/TP sent (1.08 / 1.095)`);
+
+  // Same real gap, same fix, on R_Feed's own webhook -- verified independently here too.
+  const rfeedSnapshot = getLastKnownRFeedAccountSnapshot(OWNER);
+  console.log(`    real R_Feed account snapshot persisted too: ${JSON.stringify(rfeedSnapshot)}`);
+  assert.equal(rfeedSnapshot?.equity, 10042);
+  assert.equal(rfeedSnapshot?.margin, 55);
+  assert.equal(rfeedSnapshot?.freeMargin, 9987);
 
   recordTradeNote(db, OWNER, opened.ticket, "Testing a London-open sweep idea -- full reasoning lives here, not in MT5's comment field.");
   const note = getTradeNote(db, OWNER, opened.ticket);

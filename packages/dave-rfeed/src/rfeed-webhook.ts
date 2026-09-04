@@ -73,10 +73,21 @@ export interface RFeedReport {
   account: string;
   balance: number;
   equity?: number;
+  margin?: number;
+  freeMargin?: number;
   positions: RFeedPosition[];
   pendingOrders: RFeedPendingOrder[];
   results?: RFeedCommandResult[];
   historyResults?: HistoryResult[];
+}
+
+export interface RFeedAccountSnapshot {
+  account: string;
+  balance: number;
+  equity?: number;
+  margin?: number;
+  freeMargin?: number;
+  updatedAt: number;
 }
 
 export type RFeedCommand =
@@ -96,6 +107,10 @@ function queuePath(userId: string): string {
 
 function lastKnownStatePath(userId: string): string {
   return join(process.cwd(), "data", "rfeed", userId, "last-known-state.json");
+}
+
+function accountSnapshotPath(userId: string): string {
+  return join(process.cwd(), "data", "rfeed", userId, "account-snapshot.json");
 }
 
 function readJson<T>(path: string, fallback: T): T {
@@ -151,6 +166,21 @@ function saveLastKnownState(userId: string, positions: RFeedPosition[], pendingO
   writeJson(lastKnownStatePath(userId), { positions, pendingOrders });
 }
 
+export function getLastKnownRFeedAccountSnapshot(userId: string): RFeedAccountSnapshot | undefined {
+  return readJson<RFeedAccountSnapshot | undefined>(accountSnapshotPath(userId), undefined);
+}
+
+function saveAccountSnapshot(userId: string, report: RFeedReport): void {
+  writeJson(accountSnapshotPath(userId), {
+    account: report.account,
+    balance: report.balance,
+    equity: report.equity,
+    margin: report.margin,
+    freeMargin: report.freeMargin,
+    updatedAt: Date.now(),
+  } satisfies RFeedAccountSnapshot);
+}
+
 export interface RFeedReportHandlers {
   onReport?: (userId: string, report: RFeedReport, previous: { positions: RFeedPosition[]; pendingOrders: RFeedPendingOrder[] }) => void;
 }
@@ -192,6 +222,7 @@ export function createRFeedWebhookServer(handlers: RFeedReportHandlers = {}): Se
 
     const previous = getLastKnownRFeedState(userId);
     saveLastKnownState(userId, report.positions ?? [], report.pendingOrders ?? []);
+    saveAccountSnapshot(userId, report);
     handlers.onReport?.(userId, report, previous);
 
     const commands = drainQueue(userId);
