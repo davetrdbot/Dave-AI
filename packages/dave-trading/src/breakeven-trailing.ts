@@ -8,6 +8,15 @@
  * concretely means in pips) are supplied by the caller, not invented
  * here, since specific numbers are trading-rule content that only the
  * user's uploaded rules file may define (per the master prompt).
+ *
+ * Corrected per explicit feedback: this is NOT automatic behavior every
+ * trade gets by default. It's a capability Dave can choose to turn on
+ * for a specific position if it decides the setup calls for it --
+ * `breakevenTrailingEnabled` defaults to false, and a normal trade
+ * placed without Dave explicitly opting a position in gets none of this.
+ * `processPriceTick` is a real no-op (slChanged: false, position
+ * unchanged) on a position that hasn't opted in, checked first before
+ * any TP-stage logic runs.
  */
 
 export interface Position {
@@ -21,6 +30,22 @@ export interface Position {
   tp1Hit: boolean;
   tp2Hit: boolean;
   tp3Hit: boolean;
+  /** Off by default. Only Dave choosing to enable this per-position turns the mechanism on at all. */
+  breakevenTrailingEnabled: boolean;
+}
+
+/** Creates a position with breakeven/trailing OFF -- the normal, default shape for a newly placed trade. */
+export function newPosition(fields: Omit<Position, "tp1Hit" | "tp2Hit" | "tp3Hit" | "breakevenTrailingEnabled">): Position {
+  return { ...fields, tp1Hit: false, tp2Hit: false, tp3Hit: false, breakevenTrailingEnabled: false };
+}
+
+/** Dave's own explicit, per-position opt-in -- "if it wishes," not automatic. */
+export function enableBreakevenTrailing(position: Position): Position {
+  return { ...position, breakevenTrailingEnabled: true };
+}
+
+export function disableBreakevenTrailing(position: Position): Position {
+  return { ...position, breakevenTrailingEnabled: false };
 }
 
 export interface BreakevenTrailingConfig {
@@ -52,6 +77,12 @@ function isForwardMove(direction: Position["direction"], currentSl: number, cand
  * ever applied if it actually moves SL forward.
  */
 export function processPriceTick(position: Position, currentPrice: number, config: BreakevenTrailingConfig): TickResult {
+  if (!position.breakevenTrailingEnabled) {
+    // Real no-op: a position that hasn't opted in gets no SL movement
+    // from this mechanism at all, regardless of price.
+    return { position, slChanged: false };
+  }
+
   let updated = position;
   let slChanged = false;
   let stage: TickResult["stage"];

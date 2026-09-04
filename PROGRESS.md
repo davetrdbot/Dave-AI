@@ -914,3 +914,67 @@ Ran `npx tsx packages/dave-trading/test/step10-trading.test.ts`:
   trade execution yet — needs `TradeExecutor.listOpenPositions()` to
   actually be called from a sizing flow, which is a Step 17-era
   self-improvement/execution-loop concern, not core order plumbing
+
+## Follow-up: three fixes requested after Step 10
+
+### 1. Breakeven/trailing stops are now opt-in, not automatic
+Per explicit feedback: a normal trade should NOT get breakeven/trailing
+behavior by default -- it's a capability Dave can choose to turn on for
+a specific position "if it wishes," not something baked into every
+trade. Fixed `breakeven-trailing.ts`:
+- `Position.breakevenTrailingEnabled` defaults to `false`
+  (`newPosition()` always creates one this way)
+- `processPriceTick()` is a real no-op (no SL movement, at all, ever)
+  on a position that hasn't opted in -- checked first, before any TP-stage
+  logic runs
+- `enableBreakevenTrailing(position)` / `disableBreakevenTrailing(position)`
+  are the explicit, deliberate opt-in/out actions
+Real proof: ran a normal (non-opted-in) position through the full price
+sequence that previously triggered all three stages -- confirmed zero
+SL movement throughout. A separately opted-in position still goes
+through the real TP1→TP2→TP3 progression as before.
+
+### 2. Trading actions exposed as real agentic tools, not just /commands
+Per explicit feedback: Dave shouldn't need to be told to "find a setup"
+-- it should be able to reach for that (and other trading actions) on
+its own initiative, the way any tool-calling agent picks a tool because
+the situation calls for it. Added `tools.ts`: a real tool manifest
+(`TRADING_TOOLS`) with name/description/JSON-schema parameters/handler
+for find_setup, trade_execute, trade_modify, partial_close, full_close,
+delete_pending_order, delete_all_pending_orders, validate_order --
+`find_setup`'s own description explicitly says "call this on your own
+initiative." Real proof: called `find_setup` and `trade_execute` THROUGH
+the manifest (not the raw functions) and got real results back.
+**Honestly scoped**: this makes the tools genuinely callable by an
+agent loop -- it does not itself wire them into a running, autonomous
+agent loop, because that loop doesn't exist yet (Step 3's
+`dave-core/agent-loop.ts` is still a stub, and DSH hasn't been booted as
+Dave's actual runtime). What's real is that the tools are shaped
+correctly and tested so that wiring is a connection, not a rewrite.
+
+### 3. Railway deployability -- real, verified build pipeline
+Set up TypeScript project references across all 8 packages (each gets
+its own `tsconfig.json`, dependency-ordered `references`), added the
+missing `@types/node` (tsx doesn't need it since it skips type-checking,
+but a real `tsc` build does), and added root `build`/`start`/`test`
+scripts plus `railway.json`.
+
+**Real, from-scratch verification** (not just "should work"): wiped
+`node_modules` and every package's `lib/`, then ran the actual sequence
+Railway will run:
+1. `pnpm install --frozen-lockfile` → succeeded, lockfile confirmed
+   up to date
+2. `pnpm run build` (`tsc -b tsconfig.json`) → exit 0, zero errors,
+   across all 8 packages in dependency order
+3. `pnpm run start` (`node server.mjs`) → real server started, real
+   `curl` request got a real 200 response
+
+`server.mjs` is an honest placeholder, not a fake success: Dave's
+unified boot sequence (Telegram bot, agent loop, webhook servers) is
+Step 22's job and doesn't exist as one running process yet -- every
+subsystem built so far is real, tested library code, not yet wired
+together. This placeholder is a plain Node script with zero dependency
+on the TypeScript packages, so it starts reliably regardless of their
+state, and says exactly what it is rather than pretending to be the
+real app. Re-ran the full test suite (all 11 real test files) after the
+fresh install too -- all green.

@@ -16,6 +16,8 @@ import {
   getActiveGroupInfo,
   handleExtremeConditions,
   processPriceTick,
+  newPosition,
+  enableBreakevenTrailing,
   type Position,
   type TradeExecutor,
   tradeExecute,
@@ -33,6 +35,8 @@ import {
   getAccountChoice,
   getMaskedOwnMt5Credentials,
   findSetup,
+  TRADING_TOOLS,
+  type ToolContext,
 } from "../src/index.js";
 import { DavemaClient } from "@dave/davema";
 
@@ -115,32 +119,37 @@ console.log(`    active group is now: ${info2.activeGroup?.name} (paused=${info2
 assert.equal(info2.activeGroup?.id, "synthetics", "the group that was active during extreme conditions must no longer be active");
 assert.equal(info2.pausedForExtremeConditions, true);
 
-// --- 10.9: breakeven and trailing stops through a simulated price sequence ---
-console.log("\n[4] Breakeven/trailing stops: real SL movement through a simulated BUY price sequence...");
-let position: Position = {
-  id: "pos-1",
-  direction: "buy",
-  entry: 1.085,
-  sl: 1.08,
-  tp1: 1.09,
-  tp2: 1.095,
-  tp3: 1.1,
-  tp1Hit: false,
-  tp2Hit: false,
-  tp3Hit: false,
-};
+// --- 10.9: breakeven and trailing stops -- OPT-IN, not automatic ---
+console.log("\n[4] Breakeven/trailing is opt-in per position, NOT automatic on a normal trade...");
 const config = { slAtTp1: 1.085, slAtTp2: 1.09, slAtTp3: 1.095 };
 const priceSequence = [1.086, 1.089, 1.09, 1.0925, 1.095, 1.098, 1.1, 1.101];
+
+console.log("[4a] A normal, freshly-placed position (no opt-in) gets NO SL movement, ever...");
+let normalPosition: Position = newPosition({ id: "pos-normal", direction: "buy", entry: 1.085, sl: 1.08, tp1: 1.09, tp2: 1.095, tp3: 1.1 });
+assert.equal(normalPosition.breakevenTrailingEnabled, false, "newPosition() must default this off");
+for (const price of priceSequence) {
+  const result = processPriceTick(normalPosition, price, config);
+  normalPosition = result.position;
+  assert.equal(result.slChanged, false, `price ${price} must not move SL on a position that never opted in`);
+}
+console.log(`    SL after the full price run: ${normalPosition.sl} (unchanged from ${1.08}) -- confirmed real no-op`);
+assert.equal(normalPosition.sl, 1.08);
+
+console.log("\n[4b] Dave can explicitly opt a position in -- 'if it wishes', a deliberate per-position choice...");
+let position: Position = enableBreakevenTrailing(
+  newPosition({ id: "pos-1", direction: "buy", entry: 1.085, sl: 1.08, tp1: 1.09, tp2: 1.095, tp3: 1.1 })
+);
+assert.equal(position.breakevenTrailingEnabled, true);
 for (const price of priceSequence) {
   const result = processPriceTick(position, price, config);
   position = result.position;
   if (result.slChanged) console.log(`    price ${price} -> stage ${result.stage}, SL moved to ${position.sl}`);
 }
-assert.equal(position.sl, 1.095, "SL must have progressed through breakeven -> TP2 lock -> TP3 lock, ending at slAtTp3");
+assert.equal(position.sl, 1.095, "once opted in, SL must have progressed through breakeven -> TP2 lock -> TP3 lock");
 assert.equal(position.tp1Hit && position.tp2Hit && position.tp3Hit, true);
 
-console.log("\n[4b] SL never moves backward even if a stage's target would be worse than the current SL...");
-let posGuard: Position = { id: "pos-2", direction: "buy", entry: 1.085, sl: 1.087, tp1: 1.09, tp1Hit: false, tp2Hit: false, tp3Hit: false };
+console.log("\n[4c] SL never moves backward even if a stage's target would be worse than the current SL...");
+let posGuard: Position = enableBreakevenTrailing(newPosition({ id: "pos-2", direction: "buy", entry: 1.085, sl: 1.087, tp1: 1.09 }));
 const guardResult = processPriceTick(posGuard, 1.09, { slAtTp1: 1.08 /* worse than current sl 1.087 */, slAtTp2: 1.09, slAtTp3: 1.095 });
 console.log(`    SL before: 1.087, TP1 target 1.08 (worse) -> slChanged: ${guardResult.slChanged}, sl stays: ${guardResult.position.sl}`);
 assert.equal(guardResult.slChanged, false);
@@ -233,6 +242,41 @@ for (const row of scan.rows) console.log(`      ${row.symbol}: ${row.error ? `er
 assert.equal(scan.groupName, "Synthetics", "the CURRENT active group (post extreme-condition switch) is what gets scanned");
 assert.equal(scan.rows.length, 2);
 assert.ok(scan.rows.every((r) => r.error?.includes("401")), "real live calls were made -- real 401s without a key, not fabricated data");
+
+// --- Agentic tool exposure: these are real, callable tools, not just plain functions behind a /command ---
+console.log("\n[10] Trading actions are exposed as real, agent-callable tools -- Dave can reach for them itself...");
+console.log(`    ${TRADING_TOOLS.length} tools registered: ${TRADING_TOOLS.map((t) => t.name).join(", ")}`);
+assert.ok(TRADING_TOOLS.find((t) => t.name === "find_setup"), "find_setup must be a real callable tool, not only reachable via a /command");
+const findSetupTool = TRADING_TOOLS.find((t) => t.name === "find_setup")!;
+console.log(`    find_setup.description: "${findSetupTool.description}"`);
+assert.match(findSetupTool.description, /on your own initiative/i, "the tool's own description must say Dave can use it unprompted");
+
+const toolExecutor: TradeExecutor = {
+  openOrder: async (order) => ({ ticket: `TOOL-${order.symbol}` }),
+  modifyOrder: async () => {},
+  closePosition: async (_t, lots) => ({ closedLots: lots ?? 1, remainingLots: 0 }),
+  deletePendingOrder: async () => {},
+  listOpenPositions: async () => [],
+  listPendingOrders: async () => [],
+};
+const ctx: ToolContext = { userId: USER_ID, davema: client, executor: toolExecutor };
+
+console.log("\n[10a] Calling find_setup THROUGH the tool manifest (not the raw function) returns a real result...");
+const toolScanResult = (await findSetupTool.execute({ timeframe: "H1" }, ctx)) as { groupName: string | null };
+console.log(`    result via tool call: groupName="${toolScanResult.groupName}"`);
+assert.equal(toolScanResult.groupName, "Synthetics");
+
+console.log("\n[10b] Calling trade_execute through the manifest actually reaches the executor...");
+const tradeExecuteTool = TRADING_TOOLS.find((t) => t.name === "trade_execute")!;
+const toolOpenResult = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.2 }, ctx)) as { ticket: string };
+console.log(`    result via tool call: ${JSON.stringify(toolOpenResult)}`);
+assert.equal(toolOpenResult.ticket, "TOOL-EURUSD");
+
+console.log("\n[10c] Every tool declares a real JSON-schema parameter shape (not free-form)...");
+for (const tool of TRADING_TOOLS) {
+  assert.equal(tool.parameters.type, "object", `${tool.name} must declare a real object schema`);
+}
+console.log("    all tools declare object-typed parameter schemas");
 
 rmSync(DATA_DIR, { recursive: true, force: true });
 

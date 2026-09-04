@@ -4,10 +4,13 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
+    "@types/node": "^26.4.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },
   "scripts": {
-    "test:step3": "tsx packages/dave-core/test/full-flow.test.ts"
+    "build": "tsc -b tsconfig.json",
+    "start": "node server.mjs",
+    "test": "for f in packages/*/test/*.test.ts; do echo \"=== $f ===\"; tsx \"$f\" || exit 1; done"
   }
 }

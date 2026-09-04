@@ -8,3 +8,4 @@ export * from "./trading-mode.js";
 export * from "./skills.js";
 export * from "./mt5-accounts.js";
 export * from "./find-setup.js";
+export * from "./tools.js";

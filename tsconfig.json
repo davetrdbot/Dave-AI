@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/dave-memory" },
+    { "path": "packages/dave-brain" },
+    { "path": "packages/dave-sandbox" },
+    { "path": "packages/dave-davema" },
+    { "path": "packages/dave-telegram" },
+    { "path": "packages/dave-trading" },
+    { "path": "packages/dave-core" }
+  ]
+}
