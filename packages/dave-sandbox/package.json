@@ -9,6 +9,7 @@
     "@deepseek-ai/cordis": "^4.0.0-rc.9",
     "@deepseek-ai/dsh-sandbox": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox-local": "^0.1.2-rc.1",
+    "@alibaba-group/opensandbox": "^0.1.11",
     "playwright": "1.56.1"
   }
 }

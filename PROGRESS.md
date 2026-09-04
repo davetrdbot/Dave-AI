@@ -363,6 +363,26 @@ than guessing.
 - The Railway-vs-confinement question above needs real testing on an
   actual Railway container, which doesn't exist yet in this build
 
+### Update — real OpenSandbox attempt (requested after Step 6)
+Installed the real Alibaba OpenSandbox SDK (`@alibaba-group/opensandbox`
+0.1.11 — confirmed this is the correct package; there's an unrelated npm
+package literally named `opensandbox` from a different project
+(diggerhq, E2B-compatible) that must not be confused with it).
+`packages/dave-sandbox/src/opensandbox-client.ts` is a real client using
+the real SDK (`Sandbox.create()`, `sandbox.commands.run()`,
+`sandbox.files.*`). Real, bounded connection attempt:
+`attemptOpenSandboxConnection()` against a local domain with no server
+running → real result: `TypeError: fetch failed` (no OpenSandbox service
+reachable), same honest-failure methodology as the AirLLM and DSH-
+sandbox attempts. **OpenSandbox is a client/server product** — real
+functional proof (create a sandbox, run a command, get a result) needs
+either a self-hosted OpenSandbox instance (their Docker compose) or a
+hosted instance with a real API key, neither of which exists yet. This
+gives Dave two real, code-complete sandbox backends
+(`sandbox-client.ts` for DSH-native, `opensandbox-client.ts` for
+OpenSandbox) to choose between once real infrastructure exists for
+either — a decision for when Dave is actually deployed, not resolved here.
+
 ## Steps overview (for reference)
 1. Research  2. File tree plan  3. Identity & cold start  4. Memory system
 5. AI brain  6. Sandbox  7. DAVEMA integration  8. Telegram bot core
@@ -370,3 +390,71 @@ than guessing.
 12. Workers  13. Worker comms  14. Admin panel  15. File I/O
 16. Database + automation  17. Self-improvement  18. Feedback loop
 19. Safety  20. Vision  21. Notifications  22. Final review
+
+## Status: Step 7 — DAVEMA Integration (COMPLETE)
+
+Completed: 2026-09-04
+
+### Step 7 checklist
+- [x] 7.1 Read the DAVEMA skill doc and full PDF documentation in full
+      (both provided this session) — 46 endpoints, base URL, auth, status
+      codes, response envelope, all confirmed consistent between the two
+      documents
+- [x] 7.2 Dave calls DAVEMA directly over HTTPS, no sandbox routing:
+      `packages/dave-davema/src/client.ts` — plain `fetch()`, nothing else
+- [x] 7.3 Correlation check before sizing: `correlation.ts`, pulls
+      `/correlation` + `/strength` per the skill doc's own recipe
+- [x] Extra (requested alongside Step 7): secure DAVEMA API key storage
+      (`credentials.ts`) + a transport-agnostic "ask for the key" flow
+      (`api-key-flow.ts`), same pattern as Step 3's `BootstrapFlow` —
+      ready for Step 8's real Telegram transport
+
+### Real proof (Step 7)
+Ran `npx tsx packages/dave-davema/test/step7-davema.test.ts` — real
+live HTTPS calls to the actual DAVEMA service (not mocked):
+- **Real `/ping` call** (no auth needed) returned a real live response:
+  `{"status":"ok","service":"davema","version":"3.1","time":"...",
+  "features":["multi_timeframe_confirmation","endpoint_bundles",
+  "relative_history_windows","all_endpoint","watchlist_stream"]}` —
+  confirms the service is live and reachable, and surfaces real features
+  not mentioned in the docs (multi-timeframe confirmation, endpoint
+  bundles, relative history windows) worth exploring later
+- **Real `/price` call with no key** → real `401`:
+  `{"error":"Missing x-api-key header"}`
+- **Real `/structure` call with a syntactically-valid but fake key** →
+  real `401`: `{"error":"Invalid or inactive API key"}` — confirms the
+  API genuinely validates keys server-side, not just checks presence
+- Key format validator correctly distinguishes valid/invalid formats;
+  masking never leaks the key body
+- Secure credential storage: a key stored via `storeDavemaKey()` is
+  retrievable in full only through `getDavemaKey()` (used solely to build
+  the outgoing header); every other accessor is masked
+- API key request flow: asked, rejected a malformed key with a plain
+  explanation, accepted a valid-format key with a masked confirmation
+  that never echoes the real value, and correctly ignored an unrelated
+  chat message rather than misrouting it into the key handler
+- Correlation check (7.3): real `/correlation` + `/strength` calls fired
+  (confirmed via the real 401 they returned — no key available, but the
+  code path genuinely executed against the live API)
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Real proof — what's still missing, and why
+**No real DAVEMA API key exists in this environment**, so the calls
+above prove the integration (real endpoint, real auth enforcement, real
+error shapes) but not real authenticated *data*. To close that gap
+either paste a real `sk_live_...` key in chat now (it'll be stored via
+the same secure path shown above, `data/credentials/`, gitignored, never
+committed) so I can re-run against 3+ endpoints with real returned
+fields, or hold off until Step 8 wires a real Telegram transport and use
+the `DavemaApiKeyFlow` built above through the bot itself.
+
+### Not yet done (deferred, not silently skipped)
+- Full authenticated real-data proof across 3+ endpoints — blocked on a
+  real key, per above
+- The correlation check's "compare against currently open positions"
+  half isn't wired yet — that needs Step 10's trading engine (position
+  state) to exist first; today it checks one symbol's correlation in
+  isolation, which is the correct scope for Step 7 alone
+- The credential store is a real file-permission-restricted baseline, not
+  a production KMS — same caveat as noted for the sandbox in Step 6,
+  worth hardening before a real Railway deploy
