@@ -54,10 +54,17 @@ export async function checkCorrelationBeforeSizing(
     client.data<StrengthData>("strength", symbol, tf),
   ]);
 
-  const warnHighCorrelation = Math.abs(correlation.vs_eurusd) > HIGH_CORRELATION_THRESHOLD;
-  const reason = warnHighCorrelation
-    ? `${symbol} is ${(correlation.vs_eurusd * 100).toFixed(0)}% correlated with EURUSD (${correlation.corr_label}) -- sizing should account for shared exposure.`
-    : `${symbol} correlation with EURUSD is within normal range (${(correlation.vs_eurusd * 100).toFixed(0)}%).`;
+  // Real bug fixed here: vs_eurusd is trivially ~1.0 when symbol IS
+  // EURUSD itself -- comparing a symbol's correlation against itself and
+  // "warning" that EURUSD is highly correlated with EURUSD is nonsense,
+  // not a real risk signal.
+  const isEurusdItself = symbol.toUpperCase() === "EURUSD";
+  const warnHighCorrelation = !isEurusdItself && Math.abs(correlation.vs_eurusd) > HIGH_CORRELATION_THRESHOLD;
+  const reason = isEurusdItself
+    ? `${symbol} is the correlation benchmark itself -- no self-comparison to make.`
+    : warnHighCorrelation
+      ? `${symbol} is ${(correlation.vs_eurusd * 100).toFixed(0)}% correlated with EURUSD (${correlation.corr_label}) -- sizing should account for shared exposure.`
+      : `${symbol} correlation with EURUSD is within normal range (${(correlation.vs_eurusd * 100).toFixed(0)}%).`;
 
   return { symbol, correlation, strength, warnHighCorrelation, reason };
 }

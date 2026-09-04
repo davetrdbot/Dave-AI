@@ -19,9 +19,15 @@ importers:
 
   packages/dave-core:
     dependencies:
+      '@dave/davema':
+        specifier: workspace:*
+        version: link:../dave-davema
       '@dave/memory':
         specifier: workspace:*
         version: link:../dave-memory
+      '@dave/sandbox':
+        specifier: workspace:*
+        version: link:../dave-sandbox
 
   packages/dave-davema: {}
 

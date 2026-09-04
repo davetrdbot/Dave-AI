@@ -6,7 +6,12 @@
  */
 
 function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Real bug fixed: the original version didn't escape double quotes.
+  // link()/mention() interpolate values inside href="...", so an
+  // unescaped `"` in a url/text lets it break out of the attribute --
+  // e.g. fmt.link("x", 'https://evil.com" onclick="...') would have
+  // produced a second, injected attribute instead of a harmless string.
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 export const fmt = {
@@ -22,7 +27,7 @@ export const fmt = {
   expandableBlockquote: (s: string) => `<blockquote expandable>${escapeHtml(s)}</blockquote>`,
   link: (text: string, url: string) => `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`,
   mention: (text: string, userId: number) => `<a href="tg://user?id=${userId}">${escapeHtml(text)}</a>`,
-  customEmoji: (fallback: string, customEmojiId: string) => `<tg-emoji emoji-id="${customEmojiId}">${escapeHtml(fallback)}</tg-emoji>`,
+  customEmoji: (fallback: string, customEmojiId: string) => `<tg-emoji emoji-id="${escapeHtml(customEmojiId)}">${escapeHtml(fallback)}</tg-emoji>`,
   /** No native <h1>/<h2> in Telegram HTML -- headings render as bold lines, the real workaround every Bot API client uses. */
   heading: (s: string) => `<b>${escapeHtml(s)}</b>`,
   list: (items: string[], ordered = false) =>

@@ -62,8 +62,13 @@ export interface RunCodeResult {
   confinement: ConfinementAttempt;
 }
 
-/** Step 6.2: real code execution, through the same confinement layer as everything else. */
-export async function runCode(command: string, args: string[], workspaceRoot: string): Promise<RunCodeResult> {
+/**
+ * Step 6.2: real code execution, through the same confinement layer as
+ * everything else. Bounded by a real timeout (default 30s) -- a hung or
+ * runaway process (e.g. an infinite loop in a proposed self-patch, Step
+ * 17) must not be able to block the agent loop forever with no recovery.
+ */
+export async function runCode(command: string, args: string[], workspaceRoot: string, timeoutMs = 30_000): Promise<RunCodeResult> {
   if (!existsSync(workspaceRoot)) mkdirSync(workspaceRoot, { recursive: true });
   const { attempt, confinedArgv } = await attemptConfinement([command, ...args], workspaceRoot);
   const [runCommand, ...runArgs] = confinedArgv;
@@ -72,10 +77,22 @@ export async function runCode(command: string, args: string[], workspaceRoot: st
     const child = spawn(runCommand, runArgs, { cwd: workspaceRoot });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
-    child.on("error", reject);
-    child.on("close", (exitCode) => resolve({ stdout, stderr, exitCode, confinement: attempt }));
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (exitCode) => {
+      clearTimeout(timer);
+      if (timedOut) stderr += `\n[sandbox] killed: exceeded ${timeoutMs}ms timeout`;
+      resolve({ stdout, stderr, exitCode, confinement: attempt });
+    });
   });
 }
 

@@ -6,6 +6,8 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "dependencies": {
-    "@dave/memory": "workspace:*"
+    "@dave/memory": "workspace:*",
+    "@dave/sandbox": "workspace:*",
+    "@dave/davema": "workspace:*"
   }
 }

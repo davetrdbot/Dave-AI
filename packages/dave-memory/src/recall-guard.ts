@@ -22,6 +22,17 @@ interface RecallRecord {
 // next action, not something that needs to survive a process restart.
 const recalls = new Map<string, Map<string, RecallRecord>>();
 
+/**
+ * How long a recall stays valid. Real bug this fixes: taskIds are
+ * caller-chosen strings (this module's own tests, and the Step 4 proof
+ * test, both use plain reusable strings like "check-account-balance"),
+ * not guaranteed-unique per invocation. Without a TTL, a recall from an
+ * hour ago would silently satisfy a brand-new call to executeTask() with
+ * the same taskId string, defeating the entire point of "recall BEFORE
+ * acting" -- it would really mean "recalled at some point, maybe long ago."
+ */
+export const RECALL_TTL_MS = 5 * 60 * 1000;
+
 /** Call this after actually pulling memory (frozen snapshot, tier search, etc.) for a task. */
 export function markRecalled(actorId: string, taskId: string, summary: string): void {
   if (!recalls.has(actorId)) recalls.set(actorId, new Map());
@@ -29,7 +40,13 @@ export function markRecalled(actorId: string, taskId: string, summary: string): 
 }
 
 export function hasRecalled(actorId: string, taskId: string): boolean {
-  return recalls.get(actorId)?.has(taskId) ?? false;
+  const record = recalls.get(actorId)?.get(taskId);
+  if (!record) return false;
+  if (Date.now() - record.recalledAt > RECALL_TTL_MS) {
+    recalls.get(actorId)?.delete(taskId); // expired -- stop treating it as satisfied
+    return false;
+  }
+  return true;
 }
 
 /**

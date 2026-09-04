@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isValidDavemaKeyFormat, maskDavemaKey } from "./endpoints.js";
 
@@ -46,6 +46,20 @@ export function getDavemaKey(userId: string): string | undefined {
 
 export function hasDavemaKey(userId: string): boolean {
   return existsSync(credentialPath(userId));
+}
+
+/**
+ * Real gap this fills: SECURITY.md requires "if a credential appears
+ * exposed anywhere, tell the user immediately" and the DAVEMA docs call
+ * out revoking a leaked key -- there was no way to actually remove a
+ * stored key at all, only overwrite it via storeDavemaKey() (which does
+ * work for rotation, but not for "just delete it").
+ */
+export function deleteDavemaKey(userId: string): boolean {
+  const path = credentialPath(userId);
+  if (!existsSync(path)) return false;
+  rmSync(path);
+  return true;
 }
 
 /** Safe to show the user or log -- e.g. "sk_live_4f9a2b1c****...9d3e". */

@@ -84,8 +84,19 @@ export function gatedWrite(userId: string, description: string, apply: () => voi
 // correct behavior for something that was never actually written yet.
 const gatedApplyFns = new Map<string, () => void>();
 
-export function listPendingWrites(userId: string): PendingWrite[] {
-  return readPending(userId).filter((w) => !w.applied);
+/**
+ * Real gap this fixes: pending writes persist to disk, but the actual
+ * apply() closures live only in memory (gatedApplyFns). After a process
+ * restart, listPendingWrites() would have kept showing writes from
+ * before the restart as approvable, but approveWrite() would then throw
+ * "process restarted?" -- a real UX dead end (a future settings UI could
+ * show "3 pending approvals" that are all silently impossible to
+ * approve). Now the recoverable flag tells callers which is which.
+ */
+export function listPendingWrites(userId: string): (PendingWrite & { recoverable: boolean })[] {
+  return readPending(userId)
+    .filter((w) => !w.applied)
+    .map((w) => ({ ...w, recoverable: gatedApplyFns.has(`${userId}:${w.id}`) }));
 }
 
 export function approveWrite(userId: string, id: string): void {
@@ -95,7 +106,11 @@ export function approveWrite(userId: string, id: string): void {
   if (record.applied) throw new Error(`Pending write ${id} was already applied`);
   const key = `${userId}:${id}`;
   const apply = gatedApplyFns.get(key);
-  if (!apply) throw new Error(`No deferred write function registered for ${key} (process restarted?)`);
+  if (!apply) {
+    throw new Error(
+      `Pending write ${id} can no longer be approved -- the process restarted since it was requested. Ask for the change again.`
+    );
+  }
   apply();
   record.applied = true;
   savePending(userId, pending);

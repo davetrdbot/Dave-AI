@@ -1,26 +1,37 @@
 import type { InlineKeyboardButton, InlineKeyboardMarkup } from "./client.js";
 
 /**
- * Step 8.3: "colored inline buttons used meaningfully." Verified against
- * the real Bot API docs before building this (Step 8 kickoff): there is
- * NO color field on InlineKeyboardButton -- Telegram doesn't support
- * button colors at the API level at all. Every real bot that appears to
- * have "colored buttons" is doing exactly what this does: a leading
- * emoji circle carrying the semantic meaning. Documented here rather
- * than silently faked as a real color property.
+ * Step 8.3: "colored inline buttons used meaningfully."
+ *
+ * CORRECTED: an earlier pass here concluded InlineKeyboardButton has no
+ * color field and built an emoji-prefix workaround instead -- that was
+ * wrong. Checked again by pulling the raw docs HTML directly (the same
+ * WebFetch-summary tool that produced the wrong answer the first time
+ * silently missed this field on a page too large for its summarizer to
+ * fully cover -- exactly the failure mode that also caused the
+ * sendRichMessageDraft bug). The real field: `style`, one of "danger"
+ * (red), "success" (green), or "primary" (blue). This is a genuine,
+ * native Telegram feature, not a workaround.
  */
 export type ButtonColor = "green" | "red" | "blue" | "neutral";
 
-const COLOR_PREFIX: Record<ButtonColor, string> = {
-  green: "\u{1F7E2}", // confirm / safe / go
-  red: "\u{1F534}", // danger / stop / cancel
-  blue: "\u{1F535}", // informational / neutral action
-  neutral: "",
+const COLOR_STYLE: Record<ButtonColor, InlineKeyboardButton["style"]> = {
+  green: "success",
+  red: "danger",
+  blue: "primary",
+  neutral: undefined,
 };
 
+// Telegram's real limit for callback_data, confirmed in the docs: 1-64 bytes.
+const CALLBACK_DATA_MAX_BYTES = 64;
+
 export function coloredButton(text: string, color: ButtonColor, callbackData: string): InlineKeyboardButton {
-  const prefix = COLOR_PREFIX[color];
-  return { text: prefix ? `${prefix} ${text}` : text, callback_data: callbackData };
+  const byteLength = new TextEncoder().encode(callbackData).length;
+  if (byteLength === 0 || byteLength > CALLBACK_DATA_MAX_BYTES) {
+    throw new Error(`callback_data must be 1-64 bytes, got ${byteLength} for "${callbackData}"`);
+  }
+  const style = COLOR_STYLE[color];
+  return style ? { text, callback_data: callbackData, style } : { text, callback_data: callbackData };
 }
 
 export function keyboard(rows: InlineKeyboardButton[][]): InlineKeyboardMarkup {

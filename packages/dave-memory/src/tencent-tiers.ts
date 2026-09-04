@@ -54,10 +54,20 @@ function appendJsonl(path: string, obj: unknown): void {
 
 function readJsonl<T>(path: string): T[] {
   if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as T);
+  const results: T[] = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line) continue;
+    try {
+      results.push(JSON.parse(line) as T);
+    } catch {
+      // A single truncated/corrupted line (e.g. a crash mid-append)
+      // must not take down every future read of this tier -- skip just
+      // that line rather than letting JSON.parse's throw propagate and
+      // make the whole memory tier permanently unreadable.
+      console.error(`[dave-memory] skipping unparseable line in ${path}`);
+    }
+  }
+  return results;
 }
 
 /** L0: record one raw conversation turn, unprocessed. */

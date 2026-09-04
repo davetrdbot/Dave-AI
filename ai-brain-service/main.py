@@ -19,7 +19,20 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 MODEL_ID = os.environ.get("DAVE_AIRLLM_MODEL_ID", "Qwen/Qwen3-235B-A22B")
-COMPRESSION = os.environ.get("DAVE_AIRLLM_COMPRESSION", "4bit")  # Step 5.5
+# Step 5.5 originally defaulted this to "4bit", but the real Step 5 sandbox
+# test found AirLLM 3.3.0's compression path hardcodes .cuda() regardless of
+# host capability (confirmed by reading the installed package source) --
+# it will always raise "Found no NVIDIA driver" on Railway's CPU-only
+# hosting, which is the confirmed deployment target. Defaulting to "none"
+# (uncompressed, CPU-compatible) so the service actually works out of the
+# box; "4bit"/"8bit" remain available for whoever deploys this on a GPU host.
+COMPRESSION = os.environ.get("DAVE_AIRLLM_COMPRESSION", "none")
+# Also confirmed by real testing: AirLLM's own device default is "cuda:0"
+# (its constructor's own default, per airllm_base.py), not auto-detected --
+# passing device='cpu' explicitly is what actually got past the CUDA error
+# in the real Step 5 sandbox attempt. Must be explicit here too, not relied
+# on as some auto-detected default.
+DEVICE = os.environ.get("DAVE_AIRLLM_DEVICE", "cpu")
 
 app = FastAPI(title="dave-ai-brain-service")
 
@@ -47,8 +60,17 @@ def _load_model(compression: str):
     global _model, _model_error
     from airllm import AutoModel  # imported lazily -- heavy import
 
+    # AirLLM's real signature (confirmed by reading the installed source,
+    # airllm_base.py) defaults compression to Python None, not the string
+    # "none" -- passing the literal string "none" through would be treated
+    # as a real (but unrecognized) compression mode, not "no compression".
+    compression_arg = None if compression in ("none", "", None) else compression
+
     try:
-        _model = AutoModel.from_pretrained(MODEL_ID, compression=compression)
+        kwargs = {"device": DEVICE}
+        if compression_arg is not None:
+            kwargs["compression"] = compression_arg
+        _model = AutoModel.from_pretrained(MODEL_ID, **kwargs)
         _model_error = None
     except Exception as exc:  # noqa: BLE001 -- we want the exact real error, not a swallowed one
         _model_error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
@@ -68,9 +90,20 @@ def generate(req: GenerateRequest):
     input_tokens = _model.tokenizer(
         prompt, return_tensors="pt", return_attention_mask=False, truncation=True, max_length=2048, padding=False
     )
+    # Real bug fixed here: hasattr(tensor, "cuda") is always True for a
+    # standard PyTorch tensor regardless of whether a GPU actually exists
+    # -- every CPU-only tensor still HAS a .cuda() method, it just raises
+    # "No CUDA GPUs are available" when called. The real check is whether
+    # CUDA is actually usable on this host.
+    import torch
+
+    input_ids = input_tokens["input_ids"]
+    if torch.cuda.is_available() and DEVICE != "cpu":
+        input_ids = input_ids.cuda()
+
     start = time.time()
     output = _model.generate(
-        input_tokens["input_ids"].cuda() if hasattr(input_tokens["input_ids"], "cuda") else input_tokens["input_ids"],
+        input_ids,
         max_new_tokens=req.max_tokens,
         use_cache=True,
         return_dict_in_generate=True,

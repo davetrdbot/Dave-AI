@@ -40,6 +40,8 @@ export interface InlineKeyboardButton {
   text: string;
   callback_data?: string;
   url?: string;
+  /** Real field, confirmed against the real docs -- Telegram DOES natively support colored buttons. */
+  style?: "danger" | "success" | "primary";
 }
 
 export interface InlineKeyboardMarkup {

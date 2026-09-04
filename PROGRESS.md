@@ -719,3 +719,105 @@ asked about while still returning a confident-sounding answer. For any
 future Telegram Bot API method whose exact mechanics matter, pull the
 raw HTML directly (`curl` + local string search) rather than trusting a
 single WebFetch summary — this is exactly how this bug was caught.
+
+## Follow-up: full audit pass across Steps 3-9
+
+You asked me to keep auditing rather than move on immediately. Real
+findings, most significant first:
+
+### Major correction: InlineKeyboardButton DOES have a real color field
+Step 8 claimed "Telegram has no color field on InlineKeyboardButton" and
+built an emoji-prefix workaround. **That was wrong.** Re-checked by
+pulling the raw docs HTML directly (not a WebFetch summary — the same
+tool that missed `sendRichMessageDraft`'s real mechanics earlier missed
+this too, on the same oversized page) and found a real `style` field:
+`"danger"` (red), `"success"` (green), `"primary"` (blue) — a genuine
+native Telegram feature, not something to fake. Fixed `buttons.ts` and
+`client.ts` to use it; `coloredButton()` no longer prefixes an emoji.
+Also added a real check for `callback_data`'s confirmed 1-64 byte limit
+(previously unvalidated — a caller could have silently produced a
+request Telegram would reject).
+
+### AirLLM service: two bugs that directly contradicted the Step 5 finding
+`ai-brain-service/main.py` defaulted `COMPRESSION` to `"4bit"` — but
+Step 5's own real sandbox test found AirLLM 3.3.0's compression path
+hardcodes `.cuda()` regardless of host, meaning **every single
+`/generate` call would have failed on Railway's confirmed CPU-only
+deployment.** Also: `input_ids.cuda() if hasattr(input_ids, "cuda")` is
+always true for any PyTorch tensor regardless of whether a GPU exists —
+the real check is `torch.cuda.is_available()`, confirmed to correctly
+return `False` on a CPU host by actually running it. Fixed both: default
+compression is now `"none"` (translated to Python `None`, not the
+literal string — confirmed against AirLLM's real constructor signature),
+device defaults to `"cpu"` explicitly, and `.cuda()` is only ever called
+when CUDA is actually available.
+
+### dave-core/pairing.ts
+`generateCode()` had no collision check against other pending codes —
+with enough simultaneously-pending users, two could get the same 6-digit
+code, and `approvePairing(code)` would approve whichever record `.find()`
+hit first. Fixed: regenerates on collision against currently-pending
+codes. Proven with 25 real pairing requests, zero collisions.
+
+### dave-memory
+- `recall-guard.ts`: `hasRecalled()` had no expiry — a recall from
+  arbitrarily long ago would silently satisfy a brand-new call with the
+  same taskId string (and taskIds aren't guaranteed unique — my own
+  Step 4 test used the plain reusable string `"check-account-balance"`).
+  Added a 5-minute TTL.
+- `write-approval.ts`: pending writes persist to disk, but their apply()
+  closures only live in memory. After a restart, `listPendingWrites()`
+  would keep showing old writes as approvable, and `approveWrite()`
+  would then hard-fail. Added a `recoverable` flag so callers can tell
+  the difference instead of hitting a dead end.
+- `tencent-tiers.ts`: `readJsonl()` let one corrupted/truncated line
+  (e.g. from a crash mid-append) throw and make the ENTIRE tier
+  permanently unreadable. Fixed to skip and log just the bad line.
+
+### dave-sandbox/sandbox-client.ts
+`runCode()` had no execution timeout — a hung or infinite-loop process
+(plausible from a bad self-patch proposal in Step 17) would block
+forever with no recovery. Added a real timeout (default 30s) that kills
+the process; proven by actually hanging a process and confirming it gets
+killed in ~800ms against an 800ms timeout, not the process's own
+999999ms delay.
+
+### dave-davema
+- No fetch timeout on `DavemaClient` at all — a hung DAVEMA call would
+  block indefinitely, and DAVEMA is called before every trade decision.
+  Added a real timeout, converted to the same `DavemaError` type callers
+  already handle (proven against an actually-unreachable host).
+- Key format regex was lowercase-hex-only (`[0-9a-f]`); the docs never
+  actually show real casing. Fixed to accept both cases defensively.
+- `DavemaApiKeyFlow` required the ENTIRE trimmed message to start with
+  `sk_live_` — a user pasting "here's my key: sk_live_..." would have
+  been silently ignored (no key saved, no error shown either). Added
+  `extractDavemaKey()` to find a key anywhere in the message.
+- No way to delete a stored key at all (only overwrite via re-submission,
+  which does work for rotation). Added `deleteDavemaKey()` — SECURITY.md
+  explicitly calls for handling exposed/leaked credentials.
+- `checkCorrelationBeforeSizing("EURUSD")` would nonsense-warn that
+  EURUSD is highly correlated with itself (vs_eurusd ≈ 1.0 trivially).
+  Fixed to recognize the self-comparison case.
+
+### rich-format.ts
+`escapeHtml()` didn't escape double quotes, and `customEmoji()`'s
+`emoji-id` attribute wasn't escaped at all — both are real attribute-
+injection risks (a value containing `"` could break out of `href="..."`
+or `emoji-id="..."` and inject adjacent attributes). Fixed both.
+
+### Real proof
+`packages/dave-core/test/audit-fixes.test.ts` proves items 1, and the
+memory/sandbox/DAVEMA fixes above, end to end against real files, a real
+hung process, and a real unreachable-host timeout. Full existing suite
+(Steps 3-9) re-run twice during this pass — all green throughout, no
+regressions introduced by any of these fixes.
+
+### Lesson reinforced
+Two of this session's real bugs (`sendRichMessageDraft`'s mechanics, and
+now the `InlineKeyboardButton` color field) both trace back to the same
+root cause: WebFetch's page-to-markdown-then-summarize pipeline silently
+drops sections on a docs page this large, and returns a confident answer
+regardless. Every claim in this build about exact Telegram Bot API
+mechanics now comes from pulling the raw HTML directly and searching it
+locally, not a single WebFetch pass.

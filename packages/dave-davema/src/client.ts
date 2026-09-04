@@ -31,15 +31,37 @@ export interface HistoryParams {
   to: string; // ISO-8601
 }
 
+/**
+ * No fetch has a timeout without this -- a hung DAVEMA request would
+ * otherwise block forever. DAVEMA is called before every trade decision
+ * (IDENTITY.md), so a stuck request here stalls the whole analysis
+ * pipeline, not just one call.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class DavemaClient {
   constructor(
     private readonly apiKey: string | undefined,
-    private readonly baseUrl: string = DAVEMA_BASE_URL
+    private readonly baseUrl: string = DAVEMA_BASE_URL,
+    private readonly timeoutMs: number = 10_000
   ) {}
 
   /** /ping needs no key, per the skill doc -- useful as a pre-flight health check. */
   async ping(): Promise<{ status: string; time: string }> {
-    const res = await fetch(`${this.baseUrl}/ping`);
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(`${this.baseUrl}/ping`, {}, this.timeoutMs);
+    } catch (err) {
+      throw new DavemaError(0, "ping", `request failed/timed out after ${this.timeoutMs}ms: ${err instanceof Error ? err.message : String(err)}`);
+    }
     if (!res.ok) throw new DavemaError(res.status, "ping", await res.text());
     return res.json();
   }
@@ -58,7 +80,15 @@ export class DavemaClient {
     const headers: Record<string, string> = {};
     if (this.apiKey) headers["x-api-key"] = this.apiKey;
 
-    const res = await fetch(`${this.baseUrl}/${endpoint}?${params.toString()}`, { headers });
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(`${this.baseUrl}/${endpoint}?${params.toString()}`, { headers }, this.timeoutMs);
+    } catch (err) {
+      // Includes AbortController timeouts -- converted to the same
+      // DavemaError type callers already handle, rather than leaking a
+      // raw AbortError that bypasses their `instanceof DavemaError` checks.
+      throw new DavemaError(0, endpoint, `request failed/timed out after ${this.timeoutMs}ms: ${err instanceof Error ? err.message : String(err)}`);
+    }
     if (!res.ok) {
       throw new DavemaError(res.status, endpoint, await res.text());
     }

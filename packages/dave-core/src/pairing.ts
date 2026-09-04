@@ -29,8 +29,18 @@ function saveAll(records: Record<string, PairingRecord>): void {
   writeFileSync(path, JSON.stringify(records, null, 2), "utf8");
 }
 
-function generateCode(): string {
-  return String(randomInt(100000, 999999));
+function generateCode(existing: Record<string, PairingRecord>): string {
+  // A bare randomInt() call has no uniqueness guarantee -- with enough
+  // simultaneously-pending users, two could get the same code, and
+  // approvePairing(code) would approve whichever record .find() hits
+  // first. Regenerate on collision against currently-pending codes
+  // rather than risk approving the wrong person.
+  const pendingCodes = new Set(Object.values(existing).filter((r) => r.status === "pending").map((r) => r.code));
+  let code: string;
+  do {
+    code = String(randomInt(100000, 1000000));
+  } while (pendingCodes.has(code));
+  return code;
 }
 
 /**
@@ -46,7 +56,7 @@ export function requestPairing(userId: string): PairingRecord {
 
   const record: PairingRecord = {
     userId,
-    code: generateCode(),
+    code: generateCode(records),
     status: "pending",
     requestedAt: Date.now(),
   };

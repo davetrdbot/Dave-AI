@@ -65,14 +65,24 @@ console.log(tbl);
 assert.match(tbl, /<pre>/);
 assert.match(tbl, /EURUSD/);
 
-// --- 8.3: colored buttons (emoji-simulated, documented as such) ---
-console.log("\n[3] Colored inline buttons (real API has no color field -- emoji-prefix workaround)...");
+// --- 8.3: colored buttons (real native "style" field, corrected during audit) ---
+console.log("\n[3] Colored inline buttons -- real native `style` field (danger/success/primary)...");
 const confirmBtn = coloredButton("Confirm trade", "green", "trade:confirm");
 const cancelBtn = coloredButton("Cancel", "red", "trade:cancel");
 console.log(`    ${JSON.stringify(confirmBtn)}`);
 console.log(`    ${JSON.stringify(cancelBtn)}`);
-assert.match(confirmBtn.text, /^\u{1F7E2}/u);
-assert.match(cancelBtn.text, /^\u{1F534}/u);
+assert.equal(confirmBtn.style, "success");
+assert.equal(cancelBtn.style, "danger");
+assert.equal(confirmBtn.text, "Confirm trade", "no emoji-prefix workaround needed now that style is real");
+
+console.log("\n[3b] callback_data length is validated against Telegram's real 1-64 byte limit...");
+let rejected = false;
+try {
+  coloredButton("x", "blue", "a".repeat(65));
+} catch {
+  rejected = true;
+}
+assert.equal(rejected, true);
 
 // --- 8.4: settings-screen pattern ---
 console.log("\n[4] Settings-screen pattern: two per row, live state, checkmark, Back row...");
