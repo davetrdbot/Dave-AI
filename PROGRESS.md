@@ -1383,3 +1383,119 @@ Ran `packages/dave-io/test/step15-file-io.test.ts`:
 - Reading file *content* once it's on disk (parsing a PDF, describing an
   image) is out of scope here — 15.1 only covers the real pull-in; Step
   20 (Vision) covers images/video specifically
+
+## Status: Step 16 — Database + Automation (COMPLETE)
+
+Completed: 2026-09-04
+
+Three research subagents ran in parallel to speed this step up: Groq's
+real transcription API (also fixing a Step 15 mistake, see below),
+`better-sqlite3`'s real current API and Railway-deployability, and
+real, current cron-scheduling libraries. Implementation was then
+written directly against their verified findings.
+
+### Correction carried over from Step 15
+User caught: voice transcription must use **Groq**, not OpenAI.
+`packages/dave-io/src/transcription.ts` now calls Groq's real
+OpenAI-compatible endpoint (`api.groq.com/openai/v1/audio/transcriptions`)
+with `whisper-large-v3-turbo` — confirmed via research to explicitly
+support `.ogg` (Telegram's real voice-note format), which was genuinely
+ambiguous in OpenAI's own docs. Re-verified with a real network
+round-trip against the real Groq API (genuine `401 Invalid API Key`
+with no key configured, proving the request itself is correctly
+shaped). Committed as its own fix commit before starting Step 16.
+
+### Step 16 checklist
+- [x] 16.1 Full database capability — new `@dave/db` package,
+      `DaveDatabase` class wrapping real SQLite (`better-sqlite3`
+      v13, confirmed via research to ship prebuilt native binaries with
+      NO install/postinstall script at all — verified this directly,
+      it loads and runs with zero `pnpm approve-builds` needed despite
+      pnpm's generic warning). Dave creates its own tables at runtime
+      (`createTable`), every record auto-gets `id`/`created_at`/
+      `updated_at` (never caller-supplied), real filter (`query`) and
+      real SQL aggregates (`aggregate` — SUM/COUNT/AVG/MIN/MAX), real
+      atomic transactions (`db.transaction()`). Row-level security is
+      real enforcement in the query layer itself (every table gets an
+      `owner_user_id` column, every read/write requires one and ANDs it
+      into the WHERE clause) — not a documented convention that could
+      be bypassed
+- [x] 16.2(a) Scheduled/time-based triggers — `registerScheduledTrigger`
+      via `node-cron` v4.6 (confirmed actively maintained, no
+      persistence needs of its own — re-registering on boot is
+      genuinely sufficient for restart survival), plus deterministic
+      next-fire-time computation via `cron-parser` v5.10 for fast,
+      non-wall-clock-dependent tests
+- [x] 16.2(b) Entity triggers — `DaveDatabase.onEntityEvent()`, fires
+      synchronously the instant a row is created/updated/deleted, real
+      event data (table/op/id/owner/row), no polling
+- [x] 16.2(c) Webhook/connector triggers — new `/hooks/automation/<token>`
+      namespace (distinct from Step 4's `/hooks/user/<token>` and Step
+      12's `/hooks/worker/<id>/<token>`), real HTTP server, fires a
+      registered handler on a genuine external POST
+- [x] 16.3 Multi-step workflows (call → wait → branch) — `WorkflowEngine`,
+      persists every step transition to a real `workflow_runs` table
+      (dogfooding 16.1). "Wait" schedules exactly one `setTimeout` for
+      the remaining delay (never an interval/poll loop). Restart
+      survival: `recoverPendingRuns()`, called once on boot, reloads
+      every run still "waiting" and reschedules one timer per run from
+      its persisted absolute resume timestamp (fires ~immediately if
+      the process was down past that time)
+
+### A real engine bug the test caught
+Initial branch design let the `ifTrue` arm's steps fall through into
+the `ifFalse` arm's steps, since both live in the same flat step array
+and "call" steps defaulted to `stepIndex + 1` — a test asserting only
+`notify_high` should fire caught `notify_high` AND `notify_low` both
+firing on one run. Fixed by adding an explicit `next?: number | "end"`
+field to call/wait steps instead of an implicit index+1 default,
+documented in `workflow.ts` with the exact failure it prevents.
+
+### Real proof (Step 16)
+Ran `packages/dave-db/test/step16-database-automation.test.ts`:
+1. Created a real table at runtime, inserted 5 rows, ran real SQL
+   SUM/COUNT/AVG aggregates against them, confirmed all three correct
+2. Row-level security: a second user's row is genuinely invisible to
+   the first user's queries AND aggregates (not just row reads)
+3. A real `db.transaction()` throw rolled back its insert — count
+   verified unchanged afterward
+4. Entity trigger fired synchronously with real event data on
+   create/update/delete, in order
+5. Scheduled trigger: a real `node-cron` job (every second) was
+   registered and genuinely fired multiple times across 2.2s of real
+   wall-clock waiting — not simulated; separately, deterministic
+   next-fire computation verified for "every Sunday 09:00"
+6. Webhook trigger: a real HTTP server was started on a real port, a
+   real `fetch()` POST hit `/hooks/automation/<token>`, and the
+   registered handler received the exact real payload
+7. Workflow: started a call→wait→branch run, confirmed it genuinely
+   paused (`status: "waiting"`) after the real 400ms wait step began;
+   simulated an actual process restart by shutting down the first
+   engine's timer and constructing a brand-new `WorkflowEngine` against
+   the same on-disk SQLite file; `recoverPendingRuns()` found the
+   waiting run and rescheduled it; the run completed correctly (right
+   branch taken, wrong branch never called) purely from persisted state
+- `=== ALL ASSERTIONS PASSED ===`
+- Also fixed the admin panel's Step 16 tab, which was still honestly
+  reporting "not built yet" — now calls the real `DaveDatabase`
+  against a per-user `data/db/<userId>.db` file and shows real
+  table/row-count data; verified live against a real running server
+  (created a table via a separate script, confirmed the panel's API
+  and screenshot reflected it) and marked `better-sqlite3` as a
+  `serverExternalPackages` entry (same native-binding class of fix as
+  Step 14's DSH sandbox natives)
+- Full 17-file suite (Steps 3–16) re-run afterward, all green
+- Full clean-state build re-verified (`lib/`, `.next`, all
+  `.tsbuildinfo` removed, `pnpm install --frozen-lockfile && pnpm run
+  build`) — genuinely reproduces Railway's fresh-checkout path
+
+### Not yet done (deferred, not silently skipped)
+- The SQLite `.db` file lives under `data/db/` — same as every other
+  per-user JSON store in this repo, meaning it needs a persistent
+  Railway volume mounted at deploy time to survive a redeploy (flagged
+  by the research subagent as a real risk to confirm at deploy time,
+  not something this step's code can control)
+- No actual scheduled/entity/webhook triggers are registered yet for
+  real Dave behavior (e.g. Step 18's dreaming cron, Step 19's security
+  check) — this step built the real, tested mechanism; wiring specific
+  triggers to specific behavior is those later steps' job

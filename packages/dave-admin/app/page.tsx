@@ -59,7 +59,7 @@ export default function AdminPage() {
         {tab === "teams" && <TeamsPanel userId={userId} />}
         {tab === "models" && <ModelsPanel userId={userId} />}
         {tab === "selfimprove" && <PlaceholderPanel userId={userId} path="/api/self-improvement" title="Self-Improvement DNA Lineage" />}
-        {tab === "db" && <PlaceholderPanel userId={userId} path="/api/database-automation" title="Database and Automation" />}
+        {tab === "db" && <DatabasePanel userId={userId} />}
         {tab === "mcp" && <McpPanel userId={userId} />}
         {tab === "settings" && <SettingsPanel />}
       </main>
@@ -319,6 +319,36 @@ function PlaceholderPanel({ userId, path, title }: { userId: string; path: strin
     <div className="card">
       <h2>{title}</h2>
       <div className="placeholder">{data?.note ?? "Loading..."}</div>
+    </div>
+  );
+}
+
+// --- Database + Automation (Step 16) ---
+function DatabasePanel({ userId }: { userId: string }) {
+  const api = useApi(userId);
+  const [data, setData] = useState<any>(null);
+
+  useEffect(() => {
+    api("/api/database-automation").then(setData);
+  }, [api]);
+
+  if (!data) return <div className="card">Loading...</div>;
+
+  return (
+    <div className="card">
+      <h2>Database and Automation</h2>
+      <div className="stat-note">{data.note}</div>
+      {data.tables?.length ? (
+        data.tables.map((t: string) => (
+          <div className="group-card" key={t}>
+            <strong>{t}</strong>
+            <div className="stat-note">{data.tableCounts?.[t] ?? 0} row(s)</div>
+          </div>
+        ))
+      ) : (
+        <div className="placeholder">No tables yet -- Dave creates them as it needs them.</div>
+      )}
+      <div className="stat-note">Active/waiting workflow runs: {data.activeWorkflowRuns ?? 0}</div>
     </div>
   );
 }

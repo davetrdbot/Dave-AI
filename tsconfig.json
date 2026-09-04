@@ -10,6 +10,7 @@
     { "path": "packages/dave-ea-bridge" },
     { "path": "packages/dave-workers" },
     { "path": "packages/dave-core" },
-    { "path": "packages/dave-io" }
+    { "path": "packages/dave-io" },
+    { "path": "packages/dave-db" }
   ]
 }
