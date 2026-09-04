@@ -34,12 +34,77 @@ trusted on search results alone.
   until the user uploads their own rules .md file.
 - DAVEMA skill/reference document has not yet been provided — Step 7 blocked until it is.
 
-## Status: Step 2 — File Tree Plan (AWAITING APPROVAL)
+## Status: Step 2 — File Tree Plan (APPROVED)
 
-Proposed full file/folder tree written to `FILE_TREE.md`, with rationale.
-Pending user sign-off before Step 3 implementation begins. One open item
-carried forward: `ai-brain-service` (AirLLM/Qwen3-235B) hosting target is
-unresolved — Railway has no GPUs, needs a real decision in Step 5.
+Proposed full file/folder tree written to `FILE_TREE.md`. User confirmed
+`ai-brain-service` runs on Railway CPU (AirLLM's disk-offload design is
+the point) — resolves the open hosting question from Step 1/2.
+
+## Status: Step 3 — Identity & Cold Start (COMPLETE)
+
+Completed: 2026-09-04
+
+### Step 3 checklist
+- [x] 3.1 Four prompt-tier files written verbatim: `prompts/SOUL.md`,
+      `prompts/IDENTITY.md`, `prompts/SECURITY.md`, `prompts/BOOTSTRAP.md`
+- [x] 3.2 Name fixed: Dave (baked into BOOTSTRAP flow's opening message)
+- [x] 3.3 Personality tone shift is textual in SOUL.md — real tone
+      enforcement in code happens at Step 8/17 (LLM call sites), not here
+- [x] 3.4 Memory files ship completely empty: `memory/MEMORY.md`,
+      `memory/USER.md`, `memory/ADAPTABILITY.md` committed as 0-byte
+      templates; `memory/goal.yaml` committed as an empty placeholder
+      with an explanatory comment only
+- [x] 3.5 Pairing flow implemented: `packages/dave-core/src/pairing.ts` —
+      unconfigured by default, first message issues a user ID + pairing
+      code, owner approves via `approvePairing(code)`
+- [x] 3.6 Cold-start conversation implemented exactly per BOOTSTRAP.md:
+      `packages/dave-core/src/bootstrap.ts` — one question at a time,
+      answers saved immediately (`appendUserFact`/`appendAdaptability` in
+      `packages/dave-memory`), closing summary message
+- [x] 3.7 Real-task-during-onboarding handling: bootstrap state machine
+      detects a task-shaped message, hands it off (transport-level stub
+      for now), notes onboarding isn't finished, and leaves the bootstrap
+      state open rather than silently advancing
+
+### Real proof (Step 3)
+Ran `npx tsx packages/dave-core/test/full-flow.test.ts` — a real,
+non-mocked execution against real files on disk (not a unit test with
+stubs for the memory layer). Full transcript:
+- Unpaired user's first contact → real pairing code issued → owner
+  approves by code → `isPaired()` flips true
+- Pairing confirmed → Dave sends the real opening message + Q1 unprompted
+- All 3 bootstrap questions asked one at a time, answers consumed in order
+- `USER.md` on disk after the flow: `- Prefers to be called: David`
+- `ADAPTABILITY.md` on disk after the flow: `- Communication style
+  preference: Terse, only check in when it matters`
+- Frozen-snapshot check: a snapshot taken mid-test did NOT pick up a
+  write made immediately after it (Hermes-pattern static-first behavior,
+  Step 1.4/4.1, verified in code now not just documented)
+- Second user: sent a task-shaped message before finishing onboarding →
+  bootstrap correctly did NOT consume it as an answer, sent the
+  "haven't finished getting to know you" note, and left bootstrap state
+  at `awaiting-name` (still open) instead of silently advancing
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Architecture note discovered during Step 3
+Installed and inspected the real `@deepseek-ai/dsh`/`cordis` packages
+(224 packages). `dsh-persona` is the real injection point for Dave's
+persona text (prefix-stable for caching); **`dsh-goal` is DSH's own
+internal task-tracking concept, unrelated to Dave's trading `goal.yaml`
+— kept these fully separate to avoid a wrong architecture**. DSH has no
+built-in Telegram transport (it's a coding-agent harness driven via
+stdio JSON-RPC), so Step 3's pairing/bootstrap/memory code was built
+against a small `Transport` interface — works today against an in-memory
+test transport, will take a real Telegram transport in Step 8 without
+changing the state machine. Full detail in `FILE_TREE.md`.
+
+### Not yet done (deferred to later steps, not silently skipped)
+- No real Telegram wiring yet — Step 8 owns that; Step 3's test proves
+  the pairing/bootstrap/memory logic itself, transport-agnostically
+- No DSH runtime boot yet — persona composition into `dsh-persona`
+  happens when Dave is actually wired onto the DSH agent loop (Step 8)
+- Tone-shift enforcement (relaxed vs. precise) is not yet code — it's a
+  prompt instruction until an LLM call site exists to enforce it against
 
 ## Steps overview (for reference)
 1. Research  2. File tree plan  3. Identity & cold start  4. Memory system

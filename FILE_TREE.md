@@ -99,6 +99,30 @@ Dave-AI/
   step is implemented, since the master prompt wants proof per-step, not
   a test suite built ahead of the code it covers.
 
+## Update from Step 3 — real DSH package inspection
+
+`@deepseek-ai/dsh` and `cordis` were installed for real and inspected (224
+packages under `@deepseek-ai/`). Two things this confirms/changes vs. the
+original plan:
+
+- **`dsh-persona` is the real mechanism to inject Dave's persona** (a
+  `deployment:persona` system-prompt section, prefix-stable for prompt
+  caching) — SOUL.md/IDENTITY.md/SECURITY.md content will be composed
+  into this row's `text` when Dave is wired onto the DSH runtime (Step 8).
+- **`dsh-goal` is DSH's own internal concept — "event-sourced same-session
+  goal state for the coding agent's own task tracking" — and has nothing
+  to do with Dave's trading-rules `goal.yaml`.** This is a naming
+  collision, not a match. Dave's `goal.yaml` (trading rules, user-uploaded)
+  stays entirely separate application config; it is never wired through
+  `dsh-goal`.
+- DSH is architecturally a coding-agent harness (like Claude Code itself)
+  driven via a stdio JSON-RPC SDK (`dsh-sdk-app`/`dsh-sdk-protocol`), not a
+  chatbot framework — Telegram is not a built-in transport. Step 3's
+  pairing/bootstrap/memory logic was therefore built transport-agnostically
+  (a small `Transport` interface) so it works against an in-memory test
+  transport now and a real Telegram transport in Step 8 without changing
+  the state machine.
+
 ## Open item carried over from Step 1
 
 `dave-brain`'s AirLLM provider and `ai-brain-service`'s actual deployment
