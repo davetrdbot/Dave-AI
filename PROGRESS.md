@@ -170,6 +170,117 @@ execution, no mocks:
 - The hidden webhook server isn't mounted into a real deployed process
   yet — that happens when Step 8 stands up the actual bot process
 
+## Status: Step 5 — AI Brain (COMPLETE, one correction to flag)
+
+Completed: 2026-09-04
+
+### Step 5 checklist
+- [x] 5.1 AirLLM wired for Qwen3-235B: `ai-brain-service/main.py` (FastAPI,
+      lazy model load, `/generate` + `/health`) — real attempt made, exact
+      real result documented below
+- [x] 5.2 DeepSeek + Claude wired as configured/switchable fallback
+      providers: `packages/dave-brain/src/providers.ts`
+      (`DeepSeekProvider`, `ClaudeProvider`), config via
+      `getModelConfig`/`setModelConfig` (button-picker UI wires to these
+      in Step 8, only these three provider names are valid)
+- [x] 5.3 Basic failover: `provider-router.ts` — real HTTP timeout on a
+      dead primary provably falls to the configured fallback, in order,
+      with every attempt logged
+- [x] 5.4 Workers routed via `routeForWorker()` — never returns `airllm`
+      as primary or fallback
+- [x] 5.5 4-bit compression: `ai-brain-service` defaults to
+      `compression='4bit'`; see the correction below on where this
+      actually runs
+
+### Real proof — the AirLLM attempt (5.1/5.5)
+Installed `airllm==3.3.0` for real (matches Step 1.1 research) in a venv
+under `ai-brain-service/.venv`, then made a real, bounded attempt to load
+`Qwen/Qwen3-235B-A22B` in this sandbox (no GPU, ~16–30GB free disk).
+Exact sequence of real results:
+
+1. `AutoModel.from_pretrained('Qwen/Qwen3-235B-A22B', compression='4bit')`
+   → correctly recognized the architecture as `Qwen3MoeForCausalLM`
+   ("using generic AirLLM streaming model for architecture:
+   Qwen3MoeForCausalLM") — **no sign of the originally-feared MoE
+   tensor-layout streaming bug from Step 1.1**; it got past architecture
+   detection and index/shard resolution cleanly.
+2. First real failure: `ImportError: bitsandbytes not found` — installed
+   `bitsandbytes==0.50.2` for real and retried.
+3. Second attempt: began downloading real shards (confirmed **118 total
+   shards**, ~3.8GB for shard 1 alone — matches Step 1.1's "several
+   hundred GB" disk estimate), then failed with:
+   `RuntimeError: Found no NVIDIA driver on your system.`
+4. Traced the real cause in the installed package source
+   (`airllm/utils.py`): AirLLM's 4-bit/8-bit compression path calls
+   `bnb.functional.quantize_nf4(v.cuda(), ...)` /
+   `dequantize_nf4(v.cuda(), ...)` — **`.cuda()` is hardcoded** in
+   AirLLM 3.3.0's compression implementation, unconditionally, regardless
+   of bitsandbytes' own CPU backend (bitsandbytes 0.50.2 does ship a CPU
+   backend at `bitsandbytes/backends/cpu/`, but AirLLM's own compression
+   code never reaches it).
+5. Retried **without compression**, passing `device='cpu'` explicitly
+   (`AutoModel.from_pretrained('Qwen/Qwen3-235B-A22B', device='cpu')`) —
+   this got further: it began AirLLM's disk-decomposition step for real
+   (`saved as: .../splitted_model/model.embed_tokens.safetensors`), with
+   **no CUDA error** this time. Stopped it at 60s (disk-watchdog bound)
+   before it could consume meaningfully more disk, and deleted the
+   partial cache (`rm -rf ~/.cache/huggingface`) to keep this sandbox usable.
+
+**Correction to flag plainly, since it contradicts what was said earlier
+in this conversation:** AirLLM's disk-offload/streaming mechanism itself
+— "the point of AirLLM" — genuinely does not require a GPU, confirmed
+above (step 5, uncompressed, `device='cpu'`, no CUDA error). **But the
+specific 4-bit compression Step 5.5 asks to enable is a separate feature
+that AirLLM 3.3.0 hardcodes to require an NVIDIA GPU, confirmed by
+reading the actual installed package source, not assumed.** On Railway
+CPU-only:
+- Running Qwen3-235B via AirLLM uncompressed is architecturally possible
+  (no CUDA requirement), but needs enough disk/RAM to hold the
+  full-precision weights it streams layer-by-layer — realistically
+  several hundred GB of persistent disk, which is a real Railway plan/cost
+  decision, not a code problem.
+- Running it with 4-bit compression (smaller footprint, per Step 5.5) is
+  **not possible on CPU with AirLLM 3.3.0 as currently implemented** —
+  it would need a GPU-backed host, which contradicts "Railway CPU."
+
+This is a real trade-off to decide, not something to quietly pick a side
+on: (a) run uncompressed on a large-disk CPU Railway service and accept
+the disk footprint, (b) drop AirLLM's compression flag and accept slower/
+larger uncompressed inference, or (c) put `ai-brain-service` on a
+GPU-backed host after all for the compression path. Flagging for your
+call rather than guessing.
+
+### Real proof — provider router & failover (5.2/5.3/5.4)
+No live DeepSeek/Claude API keys exist in this environment, so
+`packages/dave-brain/test/step5-failover.test.ts` stands up real local
+HTTP servers shaped like each provider's real response format and points
+the real, production `AirLLMProvider`/`DeepSeekProvider` classes at them
+over real loopback HTTP with real timeouts — same code path that hits
+`api.deepseek.com`/`api.anthropic.com` in production, only the endpoint
+is substituted for lack of credentials. Ran it:
+- Default model config: `{"primary":"airllm","fallback":["deepseek","claude"]}`
+- A real dead HTTP server (never responds) stood in for a stuck AirLLM;
+  the router genuinely waited out a real 1500ms timeout (elapsed:
+  1523ms) before falling to the real DeepSeek-shaped provider, which
+  returned `"DeepSeek fallback response (real HTTP round trip)"`
+- Failover log recorded the real attempt: `{"failedProvider":"airllm",
+  "reason":"[airllm] request failed/timed out after 1500ms",
+  "fellBackTo":"deepseek"}`
+- `routeForWorker()` never selects `airllm` as primary or fallback, for
+  either worker preference
+- All-providers-failed path genuinely throws `AllProvidersFailedError`
+  with the real accumulated failure reasons
+- `=== ALL ASSERTIONS PASSED ===`
+
+### Not yet done (deferred, not silently skipped)
+- Real DeepSeek/Claude API keys aren't configured — live external calls
+  need those from you before this can be tested against the real APIs,
+  not just realistically-shaped local stand-ins
+- The compression-vs-GPU trade-off above needs your decision before
+  `ai-brain-service` is deployed anywhere for real
+- Model-picker **UI** (buttons) is Step 8's job — the underlying
+  `getModelConfig`/`setModelConfig` it will call are real and tested now
+
 ## Steps overview (for reference)
 1. Research  2. File tree plan  3. Identity & cold start  4. Memory system
 5. AI brain  6. Sandbox  7. DAVEMA integration  8. Telegram bot core

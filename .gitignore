@@ -5,3 +5,6 @@ dist/
 .env
 /data/
 .DS_Store
+ai-brain-service/.venv/
+__pycache__/
+*.pyc

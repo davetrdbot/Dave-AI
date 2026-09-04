@@ -1,0 +1,3 @@
+airllm
+fastapi
+uvicorn[standard]
