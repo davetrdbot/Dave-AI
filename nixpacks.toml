@@ -1,0 +1,7 @@
+# Step 20.2: ffmpeg is required for real scene-aware keyframe extraction
+# (packages/dave-vision) but is NOT included by default in a Nixpacks
+# Node.js build (confirmed via research against Railway's own docs) --
+# `...` merges this with Nixpacks' auto-detected Node toolchain rather
+# than replacing it.
+[phases.setup]
+nixPkgs = ["...", "ffmpeg"]

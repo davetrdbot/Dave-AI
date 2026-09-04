@@ -1803,3 +1803,96 @@ Ran `packages/dave-safety/test/step19-safety.test.ts`:
   variable at deploy time — this repo never generates or stores that
   key itself, by design (it's exactly the kind of master secret that
   must not live in anything this repo writes to disk)
+
+## Status: Step 20 — Vision (COMPLETE)
+
+Completed: 2026-09-04
+
+Two research subagents ran in parallel: one verified the real current
+Claude Messages API image-content-block shape AND checked whether
+DeepSeek's real chat API has any vision support (an assumption worth
+verifying, not guessing); the other verified real ffmpeg scene-
+detection syntax and confirmed ffmpeg needs to be explicitly added to
+Railway's Nixpacks build (it's not included by default). ffmpeg was
+also installed directly in this dev environment so the real proof test
+could actually run it, not mock it.
+
+### Step 20 checklist
+- [x] 20.1 Images: the raw file goes straight into the model call — no
+      OCR, no captioning pre-step. `packages/dave-vision/src/image.ts`
+      base64-encodes the real downloaded bytes into a real Anthropic
+      image content block (`{type: "image", source: {type: "base64",
+      media_type, data}}`, exact field names confirmed against current
+      docs), checked against the real 10MB base64 size limit. `@dave/brain`'s
+      `CompletionMessage.content` was extended to `string | ContentBlock[]`
+      to actually carry this through to a real provider call — a real
+      gap, since it was string-only before this step
+- [x] 20.2 Video: scene-aware keyframe extraction + timestamped
+      transcript, inside the sandbox — `packages/dave-vision/src/video.ts`.
+      Keyframes: real ffmpeg `select='gt(scene\,threshold)'` +
+      `showinfo`, run through Step 6's real sandboxed `runCode` (never a
+      bare unsandboxed child_process call), parsing real `pts_time`
+      values out of ffmpeg's own stderr. Transcript: Step 15's real Groq
+      `TranscriptionClient` extended with `transcribeWithTimestamps()`
+      (`response_format: "verbose_json"`, real per-segment start/end
+      times) — `.mp4` is directly on Groq's accepted-format list, so no
+      separate audio-extraction step is needed
+
+### Real findings from the two research subagents
+- Claude's image content block shape was confirmed exactly as assumed,
+  plus real details worth knowing: 10MB per image via the direct API
+  (5MB on Bedrock/Vertex), max 8000x8000px, and a real `type: "url"`
+  source alongside `base64` (not used here — a locally-downloaded file
+  needs base64 across all backends).
+- **DeepSeek's mainline `deepseek-chat`/`deepseek-reasoner` (what's
+  actually configured in `DeepSeekProvider`) has NO vision support** —
+  confirmed against DeepSeek's real current docs. There IS a vision
+  model (`deepseek-v4-flash-vision-exp`) but it's explicitly
+  experimental and not what this repo wires up, so `DeepSeekProvider`
+  correctly refuses image content rather than silently misrepresenting
+  a capability it doesn't have.
+- ffmpeg is NOT bundled by Nixpacks by default — a real `nixpacks.toml`
+  with `nixPkgs = ["...", "ffmpeg"]` was added at the repo root
+  (confirmed exact syntax, including that `...` is required to merge
+  with rather than replace the auto-detected Node toolchain).
+
+### Real proof (Step 20)
+Ran `packages/dave-vision/test/step20-vision.test.ts`:
+1. A genuine 1x1 PNG (real magic bytes, not a stub buffer) became a
+   content block whose base64 `data` is byte-for-byte identical to the
+   raw file's own base64 — no processing step touched it
+2. Unsupported extensions and an oversized (>10MB base64) image are
+   both genuinely refused
+3. `AirLLMProvider` and `DeepSeekProvider` both refuse image content
+   BEFORE making any network call (verified via a fetch spy that would
+   fail the test if invoked) — real proof they don't silently mishandle
+   an image sent to a text-only endpoint
+4. A real HTTP request to the real `api.anthropic.com` (no valid key in
+   this environment, genuine failure) was captured and its body
+   inspected — the exact real image content block, byte-identical
+   `data`, was present in the actual outgoing request
+5. A REAL video was generated with ffmpeg itself (red → blue → green,
+   1s each, plus a real sine-wave audio track) — not a fixture file.
+   Real scene detection found exactly the 2 real scene changes, with
+   real chronologically-ordered timestamps parsed from ffmpeg's actual
+   stderr output; a missing input file genuinely raised a real
+   `FfmpegError`, not a silent empty result
+6. The same real video, handed directly to Groq's transcription
+   endpoint (no separate audio extraction) — genuinely failed without a
+   key, proving the request reached the real API with the right shape
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 21-file suite (Steps 3–20) re-run afterward, all green
+- Full clean-state build re-verified (`lib/`, `.next`, all
+  `.tsbuildinfo` removed, `pnpm install --frozen-lockfile && pnpm run
+  build`) — genuinely reproduces Railway's fresh-checkout path (ffmpeg
+  itself isn't part of this Node build step, but the new
+  `nixpacks.toml` is real Railway-build configuration, not just
+  documentation)
+
+### Not yet done (deferred, not silently skipped)
+- No real agent loop yet calls any of this during actual operation —
+  same status as every other tool package so far
+- `deepseek-v4-flash-vision-exp` was found by research to be real but
+  explicitly experimental — deliberately NOT wired in as a fallback
+  vision path; if DeepSeek's vision support graduates out of
+  experimental, that's a real future decision, not assumed here

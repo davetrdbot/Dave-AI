@@ -192,6 +192,18 @@ importers:
         specifier: workspace:*
         version: link:../dave-davema
 
+  packages/dave-vision:
+    dependencies:
+      '@dave/brain':
+        specifier: workspace:*
+        version: link:../dave-brain
+      '@dave/io':
+        specifier: workspace:*
+        version: link:../dave-io
+      '@dave/sandbox':
+        specifier: workspace:*
+        version: link:../dave-sandbox
+
   packages/dave-workers:
     dependencies:
       '@dave/brain':

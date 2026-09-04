@@ -20,6 +20,17 @@ export interface TranscriptionResult {
   text: string;
 }
 
+export interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface TimestampedTranscript {
+  text: string;
+  segments: TranscriptSegment[];
+}
+
 export class TranscriptionError extends Error {
   constructor(public readonly status: number, description: string) {
     super(`Groq transcription -> HTTP ${status}: ${description}`);
@@ -38,6 +49,25 @@ export class TranscriptionClient {
    * explicitly rather than trusted to just work.
    */
   async transcribe(audio: Buffer, filename = "voice.ogg"): Promise<TranscriptionResult> {
+    const json = await this.request(audio, filename, "json");
+    return { text: json.text as string };
+  }
+
+  /**
+   * Step 20.2: a real timestamped transcript -- `response_format:
+   * "verbose_json"` (confirmed real on Groq's OpenAI-compatible route,
+   * same endpoint), returning per-segment start/end times alongside the
+   * full text. `.mp4` is explicitly on Groq's accepted-format list
+   * (confirmed in Step 15's research), so a video file can be handed to
+   * this directly -- no separate audio-extraction step needed.
+   */
+  async transcribeWithTimestamps(audio: Buffer, filename: string): Promise<TimestampedTranscript> {
+    const json = await this.request(audio, filename, "verbose_json");
+    const segments = (json.segments as { start: number; end: number; text: string }[] | undefined) ?? [];
+    return { text: json.text as string, segments: segments.map((s) => ({ start: s.start, end: s.end, text: s.text.trim() })) };
+  }
+
+  private async request(audio: Buffer, filename: string, responseFormat: "json" | "verbose_json"): Promise<any> {
     const MAX_BYTES = 25 * 1024 * 1024;
     if (audio.byteLength > MAX_BYTES) {
       throw new TranscriptionError(413, `audio is ${audio.byteLength} bytes, exceeds the 25MB free-tier API limit`);
@@ -45,7 +75,7 @@ export class TranscriptionClient {
 
     const form = new FormData();
     form.append("model", "whisper-large-v3-turbo");
-    form.append("response_format", "json");
+    form.append("response_format", responseFormat);
     form.append("file", new Blob([new Uint8Array(audio)]), filename);
 
     const headers: Record<string, string> = {};
@@ -60,6 +90,6 @@ export class TranscriptionClient {
     if (!res.ok) {
       throw new TranscriptionError(res.status, json?.error?.message ?? JSON.stringify(json));
     }
-    return { text: json.text as string };
+    return json;
   }
 }

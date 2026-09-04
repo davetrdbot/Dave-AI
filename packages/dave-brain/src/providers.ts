@@ -1,6 +1,25 @@
+/**
+ * Step 20.1: images are handed to the model as a real content block --
+ * the raw base64 bytes go straight into the request, never routed
+ * through a separate OCR/description step first. Real Anthropic
+ * Messages API shape, confirmed against the current docs (media_type/
+ * data field names, base64 source type).
+ */
+export interface ImageContentBlock {
+  type: "image";
+  source: { type: "base64"; media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"; data: string };
+}
+
+export interface TextContentBlock {
+  type: "text";
+  text: string;
+}
+
+export type ContentBlock = ImageContentBlock | TextContentBlock;
+
 export interface CompletionMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | ContentBlock[];
 }
 
 export interface CompletionRequest {
@@ -16,6 +35,10 @@ export interface CompletionResult {
 
 export type ProviderName = "airllm" | "deepseek" | "claude";
 
+function containsImage(messages: CompletionMessage[]): boolean {
+  return messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "image"));
+}
+
 export class ProviderError extends Error {
   constructor(
     public readonly provider: ProviderName,
@@ -24,6 +47,22 @@ export class ProviderError extends Error {
   ) {
     super(`[${provider}] ${message}`);
     this.name = "ProviderError";
+  }
+}
+
+/**
+ * Step 20.1: only Claude's real configured model here has vision
+ * support -- AirLLM's self-hosted Qwen3-235B (via ai-brain-service) and
+ * DeepSeek's configured `deepseek-chat` model are both real, current,
+ * text-only endpoints (confirmed via research: DeepSeek's only vision
+ * chat model is `deepseek-v4-flash-vision-exp`, an experimental model
+ * NOT what's wired up here). Rather than silently sending an image
+ * content block to a text-only endpoint and getting a confusing
+ * provider-side error, this is checked and refused up front, honestly.
+ */
+export class ImageNotSupportedError extends ProviderError {
+  constructor(provider: ProviderName) {
+    super(provider, `this provider's configured model has no real vision support -- cannot send image content to it`);
   }
 }
 
@@ -57,6 +96,7 @@ export class AirLLMProvider implements Provider {
   ) {}
 
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+    if (containsImage(req.messages)) throw new ImageNotSupportedError("airllm");
     const start = Date.now();
     let res: Response;
     try {
@@ -90,6 +130,7 @@ export class DeepSeekProvider implements Provider {
   ) {}
 
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+    if (containsImage(req.messages)) throw new ImageNotSupportedError("deepseek");
     const start = Date.now();
     let res: Response;
     try {
@@ -125,7 +166,11 @@ export class ClaudeProvider implements Provider {
 
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
     const start = Date.now();
-    const system = req.messages.find((m) => m.role === "system")?.content;
+    const systemMessage = req.messages.find((m) => m.role === "system");
+    if (systemMessage && typeof systemMessage.content !== "string") {
+      throw new ProviderError("claude", "a system message must be plain text -- images belong on a user message, not the system prompt");
+    }
+    const system = systemMessage?.content as string | undefined;
     const messages = req.messages.filter((m) => m.role !== "system");
     let res: Response;
     try {

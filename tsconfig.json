@@ -15,6 +15,7 @@
     { "path": "packages/dave-self-improve" },
     { "path": "packages/dave-feedback" },
     { "path": "packages/dave-safety" },
-    { "path": "packages/dave-crypto" }
+    { "path": "packages/dave-crypto" },
+    { "path": "packages/dave-vision" }
   ]
 }
