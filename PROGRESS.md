@@ -1142,3 +1142,49 @@ Ran `packages/dave-workers/test/step12-workers.test.ts`:
 - No agent loop exists yet to actually decide when to spin up a worker
   or route a task to one — same "real, tested logic ahead of the
   runtime" status as dave-trading's tools
+
+## Status: Step 13 — Worker-to-Worker + Worker-to-Dave Communication (COMPLETE)
+
+Completed: 2026-09-04
+
+### Step 13 checklist
+- [x] 13.1 Workers message each other directly, not only report upward;
+      workers message Dave directly, genuinely two-way — `comms.ts::sendMessage()`,
+      a uniform channel for any participant pair (`DAVE_PARTICIPANT_ID`
+      is a reserved convention, not a special-cased type)
+- [x] 13.2 Persistent communication log — every message recorded with
+      real timestamp/sender/recipient/content, `getCommsLog()` re-reads
+      from disk every call (no cache to be silently stale)
+- [x] 13.3 Powers the "Agent Teams" live activity feed — `onMessage()`
+      subscription hook, fired synchronously on every `sendMessage()`
+      call; this is what Step 14's admin panel will render once it
+      exists, not built yet itself
+
+### Real proof (Step 13)
+Ran `packages/dave-workers/test/step13-comms.test.ts`:
+- Two workers (Martins, Priya) exchanged direct messages — proven NOT
+  routed through Dave (`getThread()` between them shows exactly their
+  2 messages) and captured live via the subscription hook in real time
+- A worker messaged Dave directly, and Dave genuinely replied back to
+  that specific worker (not a broadcast) — `getConversation()` for
+  Dave's participant id shows both, in the right sender/recipient
+  direction
+- Every one of 4 logged messages carries a real numeric timestamp,
+  non-empty sender, non-empty recipient, and non-empty content —
+  checked per-field, not just counted
+- Log genuinely persists: a fresh `getCommsLog()` call re-read from disk
+  matched the in-memory expectation exactly
+- Unsubscribing stopped further live-feed delivery, but the message
+  itself was still correctly persisted — proving the live feed and the
+  persistent log are properly decoupled (one can stop without breaking
+  the other)
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 14-file suite (Steps 3–13) re-run afterward, all green; `tsc -b`
+  build re-verified clean
+
+### Not yet done (deferred, not silently skipped)
+- The actual "Agent Teams" UI rendering this feed is Step 14's job —
+  this step only had to power it (`onMessage`), not build it
+- No agent loop exists yet to decide when Dave or a worker actually
+  sends a message — same status as the rest of the workers/trading
+  tooling: real, tested logic ahead of the runtime that will call it
