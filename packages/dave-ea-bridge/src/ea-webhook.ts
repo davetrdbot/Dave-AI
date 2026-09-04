@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -99,6 +99,10 @@ export function getOrCreateEaWebhook(userId: string): EaWebhook {
   if (!existing) {
     tokens[token] = userId;
     writeJson(tokensPath(), tokens);
+    // Step 19.5 fix: tighten this specific file's permissions -- flagged by a real
+    // audit as the one credential-shaped file in the repo with NO chmod at all
+    // (MT5/DAVEMA credential files already had 0600, this had nothing).
+    chmodSync(tokensPath(), 0o600);
   }
   return { userId, token, path: `${EA_HOOK_PREFIX}/${token}` };
 }

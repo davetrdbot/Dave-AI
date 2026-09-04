@@ -16,6 +16,8 @@ import {
 
 const DATA_DIR = join(process.cwd(), "data");
 rmSync(DATA_DIR, { recursive: true, force: true });
+// Step 19.5: storeDavemaKey/getDavemaKey now encrypt at rest and require this.
+process.env.DAVE_CREDENTIALS_KEY ??= "test-only-master-key-not-for-production";
 
 console.log("=== Step 7 real proof: DAVEMA integration ===\n");
 

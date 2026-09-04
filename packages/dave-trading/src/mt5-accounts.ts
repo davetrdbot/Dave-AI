@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { encryptSecret, decryptSecret } from "@dave/crypto";
 
 /**
  * Step 10.8: real trades on either Dave's own connected MT5 account, or
@@ -8,7 +9,19 @@ import { dirname, join } from "node:path";
  * path as everything else (0600 file, masked accessor, raw value only
  * ever read for building an outgoing request), same pattern as
  * dave-davema/credentials.ts.
+ *
+ * Step 19.5 fix: the password is now genuinely encrypted at rest
+ * (AES-256-GCM via @dave/crypto) -- an earlier version of this file
+ * wrote the raw password straight into the JSON file, relying only on
+ * 0600 file permissions, which a real audit flagged as still plaintext
+ * on disk. login/server stay as-is: they're identifiers, not secrets.
  */
+
+function credentialsKey(): string {
+  const key = process.env.DAVE_CREDENTIALS_KEY;
+  if (!key) throw new Error("DAVE_CREDENTIALS_KEY is not set -- cannot store or read MT5 credentials securely");
+  return key;
+}
 
 export type AccountChoice = "dave-default" | "own-account";
 
@@ -30,7 +43,8 @@ export function storeOwnMt5Credentials(userId: string, creds: Mt5Credentials): v
   const path = credentialPath(userId);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(creds), "utf8");
+  const onDisk = { login: creds.login, server: creds.server, encryptedPassword: encryptSecret(creds.password, credentialsKey()) };
+  writeFileSync(path, JSON.stringify(onDisk), "utf8");
   chmodSync(path, 0o600);
 }
 
@@ -38,7 +52,8 @@ export function storeOwnMt5Credentials(userId: string, creds: Mt5Credentials): v
 export function getOwnMt5Credentials(userId: string): Mt5Credentials | undefined {
   const path = credentialPath(userId);
   if (!existsSync(path)) return undefined;
-  return JSON.parse(readFileSync(path, "utf8"));
+  const onDisk = JSON.parse(readFileSync(path, "utf8"));
+  return { login: onDisk.login, server: onDisk.server, password: decryptSecret(onDisk.encryptedPassword, credentialsKey()) };
 }
 
 export function getMaskedOwnMt5Credentials(userId: string): { login: string; server: string } | undefined {

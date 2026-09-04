@@ -13,6 +13,8 @@
     { "path": "packages/dave-io" },
     { "path": "packages/dave-db" },
     { "path": "packages/dave-self-improve" },
-    { "path": "packages/dave-feedback" }
+    { "path": "packages/dave-feedback" },
+    { "path": "packages/dave-safety" },
+    { "path": "packages/dave-crypto" }
   ]
 }

@@ -72,7 +72,13 @@ importers:
         specifier: workspace:*
         version: link:../dave-sandbox
 
-  packages/dave-davema: {}
+  packages/dave-crypto: {}
+
+  packages/dave-davema:
+    dependencies:
+      '@dave/crypto':
+        specifier: workspace:*
+        version: link:../dave-crypto
 
   packages/dave-db:
     dependencies:
@@ -122,6 +128,25 @@ importers:
 
   packages/dave-memory: {}
 
+  packages/dave-safety:
+    dependencies:
+      '@dave/crypto':
+        specifier: workspace:*
+        version: link:../dave-crypto
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
+      '@dave/workers':
+        specifier: workspace:*
+        version: link:../dave-workers
+    devDependencies:
+      '@dave/davema':
+        specifier: workspace:*
+        version: link:../dave-davema
+      '@dave/trading':
+        specifier: workspace:*
+        version: link:../dave-trading
+
   packages/dave-sandbox:
     dependencies:
       '@alibaba-group/opensandbox':
@@ -160,6 +185,9 @@ importers:
 
   packages/dave-trading:
     dependencies:
+      '@dave/crypto':
+        specifier: workspace:*
+        version: link:../dave-crypto
       '@dave/davema':
         specifier: workspace:*
         version: link:../dave-davema

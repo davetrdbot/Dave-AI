@@ -42,6 +42,8 @@ import { DavemaClient } from "@dave/davema";
 
 const DATA_DIR = join(process.cwd(), "data");
 rmSync(DATA_DIR, { recursive: true, force: true });
+// Step 19.5: storeOwnMt5Credentials/getOwnMt5Credentials now encrypt at rest and require this.
+process.env.DAVE_CREDENTIALS_KEY ??= "test-only-master-key-not-for-production";
 
 console.log("=== Step 10 real proof: trading engine ===\n");
 const USER_ID = "tg-847213";

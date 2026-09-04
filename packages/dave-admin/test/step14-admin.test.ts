@@ -126,11 +126,16 @@ async function main() {
     console.log("    /api/status/sandbox ->", JSON.stringify(sandboxStatus));
     assert.ok(sandboxStatus !== null && typeof sandboxStatus === "object");
 
-    console.log("\n[7] Not-yet-built steps report honestly, not fabricated...");
+    console.log("\n[7] Self-improvement and database-automation tabs report real, live state...");
+    // These honestly reported {implemented: false} when Step 14 first built this panel,
+    // since Steps 16/17 didn't exist yet. Both are real now -- updated here to match,
+    // rather than leaving this test asserting a state that stopped being true.
     const selfImprove = await (await fetch(`${base}/api/self-improvement`)).json();
-    assert.equal(selfImprove.implemented, false);
+    assert.equal(selfImprove.implemented, true);
+    assert.equal(typeof selfImprove.versionCount, "number");
     const dbAuto = await (await fetch(`${base}/api/database-automation`)).json();
-    assert.equal(dbAuto.implemented, false);
+    assert.equal(dbAuto.implemented, true);
+    assert.ok(Array.isArray(dbAuto.tables));
     console.log("    self-improvement:", JSON.stringify(selfImprove));
     console.log("    database-automation:", JSON.stringify(dbAuto));
 

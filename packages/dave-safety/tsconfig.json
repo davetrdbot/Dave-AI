@@ -5,8 +5,6 @@
     "rootDir": "src",
     "outDir": "lib"
   },
-  "include": [
-    "src"
-  ],
-  "references": [{ "path": "../dave-crypto" }]
+  "include": ["src"],
+  "references": [{ "path": "../dave-crypto" }, { "path": "../dave-db" }, { "path": "../dave-workers" }]
 }

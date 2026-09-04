@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { encryptSecret, decryptSecret } from "@dave/crypto";
 import { isValidDavemaKeyFormat, maskDavemaKey } from "./endpoints.js";
 
 /**
@@ -8,16 +9,23 @@ import { isValidDavemaKeyFormat, maskDavemaKey } from "./endpoints.js";
  * never dumped into plain chat or logged in the open").
  *
  * Real implementation here: file-level restriction (0600, owner read/
- * write only) plus a hard rule that the raw key never appears in any
- * return value except getDavemaKey() itself (used only to build the
- * outgoing request header) -- every other accessor is masked. This is a
- * reasonable self-hosted baseline; production on Railway should layer a
- * real secret manager/KMS on top rather than a bare file, and that's
- * flagged in PROGRESS.md rather than silently assumed equivalent.
+ * write only), the key genuinely encrypted at rest (AES-256-GCM via
+ * @dave/crypto, Step 19.5 -- an earlier version of this file wrote the
+ * raw key straight into the JSON file, and a real audit flagged that
+ * as still plaintext on disk regardless of file permissions), plus a
+ * hard rule that the raw key never appears in any return value except
+ * getDavemaKey() itself (used only to build the outgoing request
+ * header) -- every other accessor is masked.
  */
 
 function credentialPath(userId: string): string {
   return join(process.cwd(), "data", "credentials", userId, "davema.json");
+}
+
+function credentialsKey(): string {
+  const key = process.env.DAVE_CREDENTIALS_KEY;
+  if (!key) throw new Error("DAVE_CREDENTIALS_KEY is not set -- cannot store or read the DAVEMA key securely");
+  return key;
 }
 
 export class InvalidDavemaKeyError extends Error {
@@ -33,7 +41,7 @@ export function storeDavemaKey(userId: string, key: string): void {
   const path = credentialPath(userId);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify({ key: trimmed, storedAt: Date.now() }), "utf8");
+  writeFileSync(path, JSON.stringify({ encryptedKey: encryptSecret(trimmed, credentialsKey()), storedAt: Date.now() }), "utf8");
   chmodSync(path, 0o600);
 }
 
@@ -41,7 +49,8 @@ export function storeDavemaKey(userId: string, key: string): void {
 export function getDavemaKey(userId: string): string | undefined {
   const path = credentialPath(userId);
   if (!existsSync(path)) return undefined;
-  return JSON.parse(readFileSync(path, "utf8")).key;
+  const onDisk = JSON.parse(readFileSync(path, "utf8"));
+  return decryptSecret(onDisk.encryptedKey, credentialsKey());
 }
 
 export function hasDavemaKey(userId: string): boolean {

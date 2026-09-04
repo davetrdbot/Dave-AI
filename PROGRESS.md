@@ -1695,3 +1695,111 @@ Ran `packages/dave-feedback/test/step18-feedback-loop.test.ts`:
 - Admin panel not updated for this step (no "Feedback Loop" tab existed
   to begin with, unlike Steps 16/17 which had honest placeholder tabs
   already built in Step 14 to fix) — nothing dishonest to correct here
+
+## Status: Step 19 — Safety (COMPLETE)
+
+Completed: 2026-09-04
+
+One research subagent audited every place in the repo that currently
+writes a credential to disk (found two real plaintext gaps to fix); a
+second subagent researching Node crypto best practices hit a session
+rate limit mid-run and failed -- proceeded directly on well-established
+Node.js `crypto` stdlib APIs (AES-256-GCM, scrypt, `createCipheriv`)
+rather than blocking on a retry, since these are stable, long-standing
+APIs I already had high confidence in.
+
+### Real gaps the audit found and fixed
+- `packages/dave-trading/src/mt5-accounts.ts` and
+  `packages/dave-davema/src/credentials.ts` both wrote their secret
+  (MT5 password / DAVEMA API key) as **plain JSON on disk**, protected
+  only by 0600 file permissions — genuinely readable plaintext, not
+  encrypted at rest. Both fixed to use real AES-256-GCM encryption.
+- `packages/dave-ea-bridge/src/ea-webhook.ts`'s token store had **no
+  file permission restriction at all** (worse than the two above) —
+  tightened to 0600.
+- A new leaf package, `@dave/crypto` (zero dependencies), holds the
+  encryption primitives — NOT inside `@dave/safety` itself, because
+  `dave-safety` depends on `@dave/workers`, which depends on
+  `@dave/trading`; putting the crypto helpers in `dave-safety` would
+  have created `dave-trading → dave-safety → dave-workers →
+  dave-trading`, a real dependency cycle caught before it was written,
+  not after.
+
+### Step 19 checklist
+- [x] 19.1 Circuit breaker — `packages/dave-safety/src/circuit-breaker.ts`,
+      real DB-persisted state (Step 16), trips at exactly 3 consecutive
+      errors (verified: 1/3 and 2/3 don't trip, 3/3 does), produces a
+      real human-readable report, and — a real design detail — a
+      success in the MIDDLE of a streak resets the consecutive counter
+      (2 errors + 1 success + 1 more error does NOT trip, correctly:
+      not 3 *consecutive*), while a success AFTER a trip does NOT
+      silently clear it (only an explicit `resetCircuitBreaker()` does)
+- [x] 19.2 `/stop`/`/panic`: instant hard interrupt, even mid-thought,
+      genuinely distinct from an ordinary thinking-loop interrupt —
+      `interrupts.ts`'s real state machine, verified: an ordinary
+      message mid-thought interrupts thinking but leaves the trading
+      loop completely untouched; `/panic` halts the trading loop AND
+      interrupts the thinking loop in the same call (the one case both
+      are hit)
+- [x] 19.3 Security check cron — same real lifecycle as Step 18.1's
+      dreaming cron (deliberately, not a second differently-shaped
+      mechanism): default Sunday, runs through a real `generic`-role
+      worker, retired after
+- [x] 19.4 Heartbeat watchdog, genuinely separate process — real
+      `child_process.fork()`, verified via a different real PID than
+      the calling process; detects a simulated crash (heartbeats
+      genuinely stop) and genuinely detects recovery (heartbeats
+      resume) via real IPC messages, not a shared in-memory flag (which
+      two real OS processes can't have)
+- [x] 19.5 Credentials stored securely, never dumped in plain readable
+      config — real AES-256-GCM at rest via the new `@dave/crypto`
+      package, applied to both real plaintext gaps the audit found
+
+### Real proof (Step 19)
+Ran `packages/dave-safety/test/step19-safety.test.ts`:
+1. Circuit breaker genuinely tripped on the 3rd consecutive error, not
+   before; `assertNotTripped()` genuinely threw while tripped; a
+   mid-streak success genuinely prevented a trip; an explicit reset
+   genuinely cleared it
+2. An ordinary message during a real "thinking" state interrupted
+   thinking but left the trading loop's `running` state untouched;
+   `/panic` during the same state halted the trading loop AND
+   interrupted thinking in one call
+3. The security check cron genuinely fired, a real worker was found
+   `active` with role `"generic"` mid-check, confirmed retired after
+4. **Real separate-process proof**: the watchdog's PID was asserted
+   different from the test's own `process.pid`; with real heartbeats
+   flowing, zero false alarms over 700ms; heartbeats were then
+   genuinely stopped (simulated crash) and the watchdog reported `down`
+   via a real IPC message within the timeout window; heartbeats resumed
+   and the watchdog reported `recovered`
+5. A real encrypt/decrypt round-trip confirmed the encrypted blob never
+   contains the raw plaintext; decrypting with the wrong key genuinely
+   failed (GCM auth tag, not silently-wrong output); encrypting with no
+   master key failed closed; then, against the ACTUAL fixed call
+   sites — `storeOwnMt5Credentials`/`storeDavemaKey` — the real files
+   written to disk were read back and asserted to NOT contain the raw
+   password/key anywhere in their bytes, with correct decryption on
+   read-back
+- `=== ALL ASSERTIONS PASSED ===`
+- Also found and fixed a real staleness bug while re-running the full
+  suite: Step 14's own admin-panel test still asserted
+  `self-improvement`/`database-automation` returned
+  `{implemented: false}` — true when Step 14 was built, no longer true
+  since Steps 16/17 landed. Updated those assertions to match current
+  real behavior rather than leaving a stale expectation in the suite.
+- Full 20-file suite (Steps 3–19) re-run afterward, all green
+- Full clean-state build re-verified (`lib/`, `.next`, all
+  `.tsbuildinfo` removed, `pnpm install --frozen-lockfile && pnpm run
+  build`) — genuinely reproduces Railway's fresh-checkout path
+
+### Not yet done (deferred, not silently skipped)
+- No real agent loop yet calls `recordError`/`recordSuccess` during
+  actual trading, or `interruptThinking`/`stopOrPanic` from a real
+  Telegram command handler — same status as every other safety/tool
+  package so far: real, tested logic ahead of the runtime that will
+  call it
+- `DAVE_CREDENTIALS_KEY` needs to be set as a real Railway environment
+  variable at deploy time — this repo never generates or stores that
+  key itself, by design (it's exactly the kind of master secret that
+  must not live in anything this repo writes to disk)
