@@ -1188,3 +1188,105 @@ Ran `packages/dave-workers/test/step13-comms.test.ts`:
 - No agent loop exists yet to decide when Dave or a worker actually
   sends a message — same status as the rest of the workers/trading
   tooling: real, tested logic ahead of the runtime that will call it
+
+## Status: Step 14 — Admin Panel (COMPLETE)
+
+Completed: 2026-09-04
+
+Built as a real Next.js 16 (App Router, Turbopack) application, per an
+explicit correction mid-build ("Use next.js and also no emoji") — an
+earlier vanilla Node/HTML version was fully deleted and replaced, not
+patched.
+
+### Step 14 checklist
+- [x] 14.1 Live stats, pair-group designer, Agent Teams activity feed,
+      AI model config, DAVEMA/sandbox status — all real Route Handlers
+      (`app/api/*/route.ts`) calling straight into `@dave/trading`,
+      `@dave/workers`, `@dave/brain`, `@dave/davema`, `@dave/sandbox` —
+      no separate admin data layer, no mock data
+- [x] Steps 16 (database automation) and 17 (self-improvement), which
+      don't exist yet, get honest `{implemented: false, note: "..."}`
+      responses from their panels/endpoints — not fabricated
+- [x] Zero emoji anywhere in the UI or its source (checked, not assumed)
+- [x] Whole repo — packages + this admin app — builds clean on a fresh
+      `pnpm install --frozen-lockfile && pnpm run build`, matching
+      Railway's actual build command
+
+### Real bugs found and fixed while wiring this up
+- **Turbopack couldn't resolve any `@dave/*` workspace import** ("The
+  module has no exports at all"). Root cause: every package's compiled
+  source uses NodeNext-style relative imports ending in `.js`
+  (`from "./order-types.js"`) — correct for `tsc`, since that's the
+  filename *after* compilation, but Turbopack was resolving straight
+  against the raw `.ts` source tree (via `transpilePackages`), where no
+  `.js` file exists. Fixed by pointing every workspace package's
+  `main`/`types`/`exports` at its actual compiled `lib/` output instead
+  of `src/`, and adding `lib/`-build as a prerequisite step (root
+  `build` script now runs `tsc -b` before `next build`). This is also
+  just the correct architecture regardless of Turbopack: Next.js
+  consumes built JS, not another package's raw TypeScript.
+- **DSH's local sandbox driver couldn't be bundled** — `@dave/sandbox`
+  transitively pulls in `koffi` (native FFI bindings) and a
+  `landlock-run` native launcher binary; Turbopack tried to bundle them
+  as ordinary JS and failed ("non-ecmascript placeable asset" / can't
+  resolve a `.node`-adjacent binary path). Fixed with
+  `serverExternalPackages` in `next.config.mjs`, telling Next to leave
+  those requires alone and resolve them at request time in real Node,
+  the way any native addon has to be.
+- **Stale `.tsbuildinfo` masking a real build gap**: found while
+  verifying the fresh-checkout build path — with `lib/` deleted but old
+  `.tsbuildinfo` files present, `tsc -b` considered the (missing) output
+  up to date and skipped rebuilding, so `next build` failed even though
+  the "fix" was already in place. Confirmed this cannot happen on
+  Railway (`.tsbuildinfo` is gitignored, so every deploy is a true fresh
+  build) by deleting all `.tsbuildinfo` files locally and re-running
+  `pnpm run build` end-to-end clean.
+- `.gitignore`'s `/data/` entry was root-anchored and would have missed
+  `packages/dave-admin/data/` (created because `next start`'s cwd is the
+  admin package, not the repo root) — widened to `data/` (unanchored).
+
+### Real proof (Step 14)
+Ran `packages/dave-admin/test/step14-admin.test.ts` against the actual
+built server (`next start`, real HTTP, no mocks):
+1. `POST /api/pair-groups` creates a group through the real HTTP API
+2. The write lands on disk at the exact path Step 10's own storage
+   functions use (`data/trading/<user>/pair-groups.json`)
+3. A **direct import** of `@dave/trading`'s `listGroups()` — bypassing
+   the API entirely — sees the identical data, proving there is no
+   separate admin data layer
+4. `POST /api/pair-groups/active` + `GET /api/pair-groups` round-trip
+   correctly
+5. `DELETE /api/pair-groups/[id]` removes it — confirmed both via the
+   API response and a second direct `listGroups()` call
+6. `/api/status/davema` made a real network call (real DAVEMA `ping()`
+   response); `/api/status/sandbox` made a real `checkSandboxHealth()`
+   call (correctly reported unusable in this sandboxed container — an
+   honest failure, not swallowed)
+7. `/api/self-improvement` and `/api/database-automation` both honestly
+   report `implemented: false`
+8. The `/` route returns real server-rendered HTML (6.2KB, not a stub)
+9. Recursively scanned every `.tsx`/`.ts`/`.css` file under `app/` (15
+   files) plus the rendered HTML for emoji via Unicode ranges — zero
+   found
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 15-file suite (Steps 3–14) re-run afterward, all green
+- Root `tsc -b` build and the full `pnpm run build` (now `tsc -b && next
+  build`) both re-verified clean from a state with all `lib/`,
+  `.tsbuildinfo`, and `.next` artifacts removed — i.e. genuinely
+  reproducing what Railway's fresh checkout will do
+- Playwright screenshots taken of the live running server (Live Stats
+  and Pair Groups tabs) confirming real rendered dark-glassmorphism UI,
+  correct data binding, and no emoji anywhere on screen
+
+### Not yet done (deferred, not silently skipped)
+- No real Telegram bot token or DAVEMA key configured in this
+  environment, so the panel's live values are honestly mostly zero/
+  "not set" rather than populated — the wiring is real, the data just
+  isn't there yet
+- Karak plugin (a user-suggested admin-panel skill) was investigated and
+  found to be an unrelated internal product plugin, not applicable here
+  — user chose to skip it and have the panel built directly instead
+- The admin panel is not yet wired into the main process's `start`
+  command (`server.mjs` is still Step 22's placeholder) — it has its own
+  working `next build`/`next start`, but nothing runs it in production
+  yet; that integration is Step 22 territory

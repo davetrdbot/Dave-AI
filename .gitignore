@@ -4,8 +4,10 @@ dist/
 *.tsbuildinfo
 *.log
 .env
-/data/
+data/
 .DS_Store
 ai-brain-service/.venv/
+.next/
+next-env.d.ts
 __pycache__/
 *.pyc
