@@ -15,6 +15,7 @@
     "@dave/davema": "workspace:*",
     "@dave/sandbox": "workspace:*",
     "@dave/db": "workspace:*",
+    "@dave/lovable-mcp": "workspace:*",
     "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"

@@ -2348,3 +2348,70 @@ Ran `packages/dave-brain/test/step25-provider-crud.test.ts`:
   posture as every other credential in this build so far -- Step 10's
   MT5 credentials are the one place encryption-at-rest was actually
   built; a broader pass hasn't happened)
+
+## Status: Update 5 — Lovable MCP, Image Creation Only (COMPLETE)
+
+### Real understanding of the actual MCP server (not guessed)
+Before writing any code, manually probed the user-supplied test server
+(`https://dexdjyqyuanuoycmeyzw.supabase.co/functions/v1/utility-mcp`)
+with the real, working token they shared, using the same
+`@modelcontextprotocol/sdk` + `StreamableHTTPClientTransport` pattern
+Step 11.3 already established. Real `tools/list` genuinely returned
+THREE tools: `lovable_ai_agent` (text), `generate_image`, and
+`generate_voice`. A real `generate_image` call with that real token
+genuinely reached the server's image gateway (`isError: true`, a
+server-side "model is not a chat model" response) -- proving the wire
+protocol, auth header, and request shape all work end to end. That
+working token is a live user credential (and rotates, per the master
+plan) so it was never committed to the repo; the automated test proves
+the same real network path with a deliberately invalid token instead,
+which the real server genuinely rejects at connect time ("Invalid or
+revoked token").
+
+### What was built
+- [x] New package `packages/dave-lovable-mcp/`
+- [x] `lovable-settings.ts` — real DB-backed "Lovable MCP URL"/"Lovable
+      MCP Token" settings (Step 16 pattern), both start unset, nothing
+      hardcoded anywhere in code; real update-anytime support for
+      token rotation
+- [x] `lovable-mcp-client.ts` — `LovableMcpImageClient`, a real MCP
+      client whose ENTIRE public surface is `connect()` and
+      `generateImage()` -- architectural scoping, not a runtime
+      allowlist check: there is no method on this class that could
+      reach `lovable_ai_agent` or `generate_voice` even by mistake
+- [x] `tools.ts` — `LOVABLE_TOOLS`, one real agent-callable
+      `generate_image` tool, reads the user's own configured
+      URL/token fresh on every call (a rotated token takes effect
+      immediately, no restart needed), refuses honestly
+      (`LovableMcpNotConfiguredError`) if Settings were never filled in
+- [x] Admin API: `/api/lovable-mcp-settings` (GET returns the URL and
+      whether a token is set, never echoes the token itself back in
+      plaintext; POST saves/rotates both fields)
+
+### Real proof (Update 5)
+Ran `packages/dave-lovable-mcp/test/step26-lovable-mcp.test.ts`:
+1. Fresh user has no config at all; settings save and genuinely
+   rotate in place
+2. Real network round trip against the REAL test server with an
+   invalid token -- genuinely rejected ("Invalid or revoked token"),
+   not silently accepted
+3. `generateImage()` before a successful `connect()` genuinely refuses
+4. Architectural scoping: `LovableMcpImageClient.prototype`'s own
+   property list is exactly `["connect", "generateImage"]` -- asserted
+   directly against the real class, not documentation
+5. The real agent tool: exactly 1 tool exposed; refuses to run for an
+   unconfigured user; once configured, a real end-to-end call through
+   the tool genuinely reaches the real server and fails honestly on
+   the same invalid-token path
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 27-file test suite green afterward, clean `tsc -b` build, and a
+  real `next build` of the admin panel picking up the new route
+
+### Not yet done (deferred, not silently skipped)
+- No settings-page UI form for the two fields yet (the API route is
+  real and tested; a visual form in `dave-admin/app/page.tsx` doesn't
+  exist yet, same gap as Update 4's provider CRUD)
+- The real, working token was verified manually by the agent during
+  this session but was never saved anywhere in the repo or its DB --
+  a user who wants this working must enter their own current token in
+  Settings, exactly as the master plan specified

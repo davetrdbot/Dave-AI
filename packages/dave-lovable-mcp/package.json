@@ -1,0 +1,15 @@
+{
+  "name": "@dave/lovable-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "dependencies": {
+    "@dave/db": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "exports": {
+    ".": "./lib/index.js"
+  }
+}

@@ -29,6 +29,9 @@ importers:
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db
+      '@dave/lovable-mcp':
+        specifier: workspace:*
+        version: link:../dave-lovable-mcp
       '@dave/sandbox':
         specifier: workspace:*
         version: link:../dave-sandbox
@@ -129,6 +132,15 @@ importers:
       '@dave/telegram':
         specifier: workspace:*
         version: link:../dave-telegram
+
+  packages/dave-lovable-mcp:
+    dependencies:
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.0
+        version: 1.30.0(zod@4.5.4)
 
   packages/dave-memory: {}
 
