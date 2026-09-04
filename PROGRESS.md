@@ -2183,3 +2183,105 @@ Ran `packages/dave-brain/test/step23-railway-model-toggle.test.ts`:
   hitting Railway's build time/disk/memory ceilings on a base tier,
   which is exactly why the UI is honest about "best-effort," not a
   guarantee
+
+## Status: Update 3 — Full Provider List Restored (COMPLETE)
+
+The master plan's line banning most external providers ("No
+BrowserBase, no Novita, ... no R_Feed — none are part of this build")
+was reversed by the user. This restores every provider the update
+listed, built on real, research-confirmed HTTP details (four parallel
+research passes — OpenAI-compatible group A/B, non-OpenAI-shaped
+providers, and OpenRouter/HuggingFace/AI21/OrcaRouter confirmation —
+not re-guessed from training data).
+
+### Real research findings baked into the catalog
+- Most providers share OpenAI's `/v1/chat/completions` shape with a
+  plain `Authorization: Bearer <key>` header — one generic
+  `OpenAICompatibleProvider` class covers OpenAI, Groq, Mistral,
+  Together AI, Cerebras, Nvidia NIM, Fireworks AI, Hyperbolic,
+  DeepInfra, Perplexity, Qwen (DashScope intl), SambaNova, Novita,
+  AI21 (chat endpoint only — confirmed NOT fully OpenAI-compatible
+  beyond that), xAI, OpenRouter, HuggingFace (router-based), and
+  OrcaRouter — plus Gemini and Cloudflare, both of which turned out to
+  have real OpenAI-compatible endpoints of their own (`/v1beta/openai/`
+  and `/ai/v1/chat/completions` respectively) rather than needing a
+  bespoke class.
+- **Lepton AI is confirmed dead as a standalone API** — Nvidia acquired
+  it (~April 2025) and folded it into NVIDIA DGX Cloud Lepton, a GPU
+  marketplace layer. It's implemented as a real alias to the Nvidia NIM
+  entry (same base URL, same auth), not a second dead implementation.
+- Three providers get their own distinct class because their real shape
+  genuinely isn't OpenAI's: **Cohere** (v2's own `/chat` request/response
+  shape), **Replicate** (genuinely async — `POST /predictions` returns
+  immediately, requires real polling `GET /predictions/{id}` until a
+  terminal status, confirmed not something a sync class can paper over),
+  and **AWS Bedrock** (SigV4 request signing is mandatory — confirmed no
+  Bearer/API-key path exists for the native Converse API).
+- Manual model entry is forced for OpenRouter, OrcaRouter, and
+  HuggingFace per the master plan's explicit instruction — honored even
+  where research found OpenRouter/OrcaRouter likely have a real
+  `/models` endpoint of their own (the instruction wasn't a fallback for
+  missing data, it was a deliberate choice).
+
+### What was built
+- [x] `packages/dave-brain/src/provider-catalog.ts` — static, per-provider
+      metadata (base URL, chat path, models-list path, auth style,
+      manual-entry flag, default model), one entry per restored provider
+- [x] `packages/dave-brain/src/providers.ts` — `OpenAICompatibleProvider`
+      (generic, parametrized), plus distinct `CohereProvider`,
+      `ReplicateProvider` (real async polling), and `BedrockProvider`
+      (real SigV4 signing via `node:crypto`, no AWS SDK dependency)
+- [x] `packages/dave-brain/src/provider-factory.ts` — `buildProvider()`,
+      the single place that resolves a provider name (aliases included)
+      to the right class
+- [x] `packages/dave-brain/src/provider-keys.ts` — DB-backed key storage
+      (Step 16 pattern), up to 10 keys per provider enforced for real,
+      real health checks (`checkProviderKeyHealth`), and real
+      auto-failover across a provider's own stored keys
+      (`generateWithKeyFailover`) — a layer below Step 5.3's existing
+      cross-provider `ProviderRouter` (that one fails over
+      airllm→deepseek→claude; this one fails over between multiple keys
+      for the SAME provider)
+- [x] `packages/dave-brain/src/model-fetch.ts` — `fetchAvailableModels()`,
+      real `GET {base}{modelsPath}` round-trip where the catalog allows
+      it, honest `manualEntryRequired: true` where it doesn't
+
+### Real proof (Update 3)
+Ran `packages/dave-brain/test/step24-provider-list.test.ts`:
+1. Real catalog has all 27 required provider entries; Lepton genuinely
+   resolves to Nvidia NIM's real base URL; OpenRouter/OrcaRouter/
+   HuggingFace genuinely flagged `manualModelEntry: true`
+2. `OpenAICompatibleProvider`: real HTTP round-trip to a real local
+   server — correct path, correct `Bearer` header, correct request body
+3. `CohereProvider`: real v2 `/chat` shape parsed correctly (distinct
+   from OpenAI's shape)
+4. `ReplicateProvider`: real async create→poll(×3)→terminal-status flow
+   — genuinely polled multiple times before resolving, not faked
+5. `BedrockProvider`: real SigV4 `Authorization`/`x-amz-date`/
+   `x-amz-content-sha256` headers sent, structurally verified
+   (`AWS4-HMAC-SHA256 Credential=.../aws4_request, SignedHeaders=...,
+   Signature=<64 real hex chars>`)
+6. Provider keys: two real keys stored, a real 429 failure on the first
+   genuinely marked it unhealthy with the real reason recorded, real
+   fallback to the second key succeeded; the 10-key cap genuinely
+   refuses an 11th; `checkProviderKeyHealth()` against an unreachable
+   host genuinely returns false; `AllProviderKeysFailedError` genuinely
+   thrown, typed, when every stored key fails
+7. `buildProvider()` resolves `lepton`→`OpenAICompatibleProvider` (at
+   Nvidia NIM's real endpoint) and `bedrock`→`BedrockProvider`
+8. `fetchAvailableModels()`: OpenRouter genuinely reports
+   `manualEntryRequired: true`; Groq genuinely round-trips a real
+   `/models` list from a real local server
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 24-file test suite re-verified green afterward, clean
+  `tsc -b` build
+
+### Not yet done (deferred, not silently skipped)
+- Update 4 (provider CRUD as real agent tools, plus the matching admin
+  UI) — this update built the storage/factory/failover layer that
+  Update 4 will expose as callable tools and wire into the admin panel;
+  no admin UI or agent-tool surface for any of this exists yet
+- Auto-fetch models for the generic providers hasn't been re-verified
+  against every single one of the 20+ real endpoints (would burn real
+  API keys/quota) — the mechanism itself is proven real end-to-end
+  against a local server standing in for a provider's real shape
