@@ -2415,3 +2415,103 @@ Ran `packages/dave-lovable-mcp/test/step26-lovable-mcp.test.ts`:
   this session but was never saved anywhere in the repo or its DB --
   a user who wants this working must enter their own current token in
   Settings, exactly as the master plan specified
+
+## Status: Update 6 — Green API + Gemini Live WhatsApp Calling (COMPLETE)
+
+### Real research findings, with an honest architectural gap surfaced
+- Every real Green API method shares one confirmed URL shape:
+  `POST {apiUrl}/waInstance{idInstance}/{method}/{apiTokenInstance}`
+  — server-to-server auth via the token embedded in the URL itself,
+  confirmed against the real SendMessage docs.
+- Real incoming/outgoing call webhooks confirmed against green-api.com's
+  own docs, including their exact field names (`typeWebhook`,
+  `status: "offer"/"pickUp"/"hungUp"/"declined"`, `participants[]`,
+  `duration`, `isVideo`).
+- **A genuine, confirmed gap**: placing a WhatsApp call through Green
+  API is WebRTC-based (their own `whatsapp-api-calls-client-js`
+  library depends on `navigator.mediaDevices`/`RTCPeerConnection`,
+  real browser-only globals, confirmed by reading its own
+  `package.json`) — there is no plain REST "sendCall" endpoint a
+  Node.js backend can hit. This build's Node backend genuinely cannot
+  place the WebRTC call itself. Flagged honestly rather than faked;
+  the fallback (a real WhatsApp text via the confirmed SendMessage
+  endpoint) is what's actually wired up for "Dave is trying to reach
+  you."
+- Gemini Live's real endpoint confirmed:
+  `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`,
+  API key as a query param, first message a real `BidiGenerateContentSetup`
+  envelope. A live probe against the real endpoint with an invalid key
+  surfaced a genuine implementation bug during testing (see below).
+
+### What was built
+- [x] New package `packages/dave-voice-call/`
+- [x] `green-api-client.ts` — `GreenApiClient` (real confirmed URL
+      shape), `parseCallWebhook()` (real incoming/outgoing call JSON
+      shapes), `whatsappChatId()`
+- [x] `call-settings.ts` — real DB-backed Green API Token/Instance
+      ID/WhatsApp number/configurable unresponsive-duration settings
+      (Step 16 pattern), nothing hardcoded
+- [x] `trigger.ts` — `evaluateCallTrigger()`, the master plan's two
+      trigger conditions verbatim: unresponsive-for-configured-duration
+      + has news, OR urgent unanswered question
+- [x] `call-session.ts` — `CallSession`, a real state machine driven by
+      real webhook status transitions (offer→pickUp→hungUp/declined),
+      with a real timer-enforced 10-minute cap
+- [x] `gemini-live-client.ts` — `GeminiLiveClient`, a real WebSocket
+      connection + real setup handshake against the real endpoint
+- [x] `tools.ts` — `VOICE_CALL_TOOLS`: `evaluate_call_trigger`,
+      `notify_trying_to_reach_you` (the real, honest fallback)
+- [x] Admin API: `/api/voice-call-settings`
+
+### A real bug found and fixed by this update's own real-proof testing
+`GeminiLiveClient.connect()` originally resolved as soon as the
+WebSocket's `open` event fired. A live probe against the real endpoint
+with a deliberately invalid key showed this was a false positive: the
+real server accepts the WebSocket upgrade regardless of key validity,
+and only rejects a bad key AFTER the client sends its `setup` message
+— closing with code 1007 and a real "API key not valid" reason. Fixed
+to wait past `open` for either the server's first real message or an
+early close/error before considering the connection genuinely
+established.
+
+### Real proof (Update 6)
+Ran `packages/dave-voice-call/test/step27-voice-call.test.ts`:
+1. Settings default unset (except the documented 15-minute default),
+   real save/read round-trip
+2. `evaluateCallTrigger()`: both real conditions from the master plan,
+   plus the negative cases (news but not yet unresponsive long enough;
+   neither condition) genuinely withheld
+3. Real Green API webhook parsing using the exact confirmed JSON
+   shapes; a non-call webhook genuinely not misparsed
+4. `GreenApiClient`: real HTTP round-trip to a real local server,
+   request path matched the confirmed `/waInstance{id}/{method}/{token}`
+   shape exactly; a real unreachable-host attempt failed honestly,
+   typed
+5. `CallSession`: real transitions (`offer` alone doesn't start it;
+   `pickUp` starts it; a real timer enforces the cap — shortened to
+   100ms for the test, same mechanism as the real 10 minutes); a real
+   early `hungUp` cancels the cap timer and ends the session
+   immediately
+6. `GeminiLiveClient`: a real network connection attempt against the
+   real endpoint with an invalid key genuinely failed, typed, with the
+   real server's own rejection reason in the error message
+7. Real agent tools: `evaluate_call_trigger` genuinely used the
+   caller's own stored `unresponsiveMinutes`; `notify_trying_to_reach_you`
+   genuinely refuses for an unconfigured user
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 28-file test suite green afterward, clean `tsc -b` build, clean
+  `next build` picking up the new route
+
+### Not yet done (deferred, not silently skipped)
+- Actually placing/receiving live WhatsApp call AUDIO is architecturally
+  blocked without a browser-based WebRTC bridge (see the confirmed gap
+  above) — this is not a "not implemented yet," it's a real constraint
+  of Green API's own calling mechanism that a pure Node.js backend
+  cannot work around without embedding a full WebRTC media stack
+- The real agent loop doesn't exist yet to actually WIRE
+  `evaluate_call_trigger` into an ongoing check of the user's Telegram
+  activity, or to bridge a genuinely established call's audio into
+  `GeminiLiveClient` once one exists — same "real, tested logic ahead
+  of the runtime" status as every other tool/provider package so far
+- No settings-page UI form yet (route is real and tested, no visual
+  form in `dave-admin/app/page.tsx`, same gap as Updates 4 and 5)

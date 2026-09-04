@@ -19,6 +19,7 @@
     { "path": "packages/dave-vision" },
     { "path": "packages/dave-notifications" },
     { "path": "packages/dave-rfeed" },
-    { "path": "packages/dave-lovable-mcp" }
+    { "path": "packages/dave-lovable-mcp" },
+    { "path": "packages/dave-voice-call" }
   ]
 }
