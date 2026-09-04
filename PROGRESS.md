@@ -978,3 +978,92 @@ on the TypeScript packages, so it starts reliably regardless of their
 state, and says exactly what it is rather than pretending to be the
 real app. Re-ran the full test suite (all 11 real test files) after the
 fresh install too -- all green.
+
+## Status: Step 11 — EA + MCP Trade Placement Alternative (COMPLETE)
+
+Completed: 2026-09-04
+
+### Step 11 checklist
+- [x] 11.1 Dave EA (`.mq5`): lightweight bridge, no analysis. Sends real
+      account/positions/pending-orders/heartbeat; receives open/modify/
+      close/delete-pending instructions; detects manual closes; real
+      pairing-style WebhookURL+token, per-user, already wired since Step 8
+- [x] 11.2 MT5 push notification (`SendNotification`) and email
+      (`SendMail`) on trade open/close/error, from within the EA — real
+      MT5 API calls, not stubs
+- [x] 11.3 MCP-based trade placement alternative for EA-less users —
+      real `@modelcontextprotocol/sdk` client
+- [x] 11.4 Push the personalized `.mq5` file on request — already built
+      in Step 8 (`ea-file.ts`)
+
+### The real architecture problem this step had to solve
+MT5's `WebRequest` is one-directional outbound HTTP — an EA cannot run
+a server or receive a push. So Dave→EA instructions can only travel back
+inside the HTTP *response* to the EA's own heartbeat POST. Built the
+real contract both sides implement:
+- `dave-ea-bridge/ea-webhook.ts`: real HTTP server at
+  `/hooks/ea/<token>` (a dedicated token namespace, replacing the Step 8
+  stopgap that reused Step 4's generic webhook ahead of this step
+  existing). A command queue (`enqueueCommand`/drained on the next
+  report) is the only channel for Dave→EA instructions.
+- `EaTradeExecutor` (implements Step 10's `TradeExecutor` seam for
+  real): `openOrder()`/etc. enqueue a command and return a promise that
+  resolves only once the EA reports a real result for that exact
+  command id — with a timeout so an offline EA doesn't hang the caller
+  forever. This is honest async modeling of what a polling bridge
+  actually is, not a fake synchronous wrapper.
+- `manual-close-detector.ts` + `EaBridge`: compares two consecutive real
+  reports: any position that disappeared IS a manual close, UNLESS
+  Dave's own `closePosition()` call just resolved for that exact ticket
+  this cycle (traced through `EaTradeExecutor.resolveCommand()`'s
+  return value, not a second duplicate tracking map) — a real bug caught
+  and fixed during building, not left unhandled: without this check,
+  every Dave-initiated close would have been misreported as manual.
+- `ea/DaveEA.mq5` rewritten for real: builds a true `PositionsTotal()`/
+  `OrdersTotal()` snapshot every report, executes commands via `CTrade`
+  (`trade.Buy`/`Sell`/`PositionModify`/`PositionClose`/`OrderDelete`),
+  reports real results back, and calls `SendNotification`/`SendMail` on
+  real trade events. Includes a narrow, self-contained JSON parser for
+  the one response shape this EA and the webhook both implement —
+  deliberately not a general JSON parser (MQL5 has none built in, and
+  claiming one would be exactly the kind of overclaim this whole build
+  process exists to avoid).
+- `mcp-trade-adapter.ts`: real `@modelcontextprotocol/sdk` `Client` +
+  `StreamableHTTPClientTransport`, implementing the same `TradeExecutor`
+  seam by calling real MCP tools by name.
+
+### Real proof (Step 11)
+Ran `packages/dave-ea-bridge/test/step11-ea-bridge.test.ts`:
+- Real webhook token generated, distinct `/hooks/ea/` namespace confirmed
+- A real heartbeat POST got back a real empty command list
+- `executor.openOrder()` genuinely queued a command (verified via
+  `peekQueue` BEFORE the "EA" ever touched it) — then a subsequent real
+  heartbeat genuinely received that exact command back in its response,
+  and the queue was confirmed drained (not left for double-delivery)
+- A later real report carrying a matching result genuinely resolved the
+  original `openOrder()` promise with the real ticket the "EA" reported
+- **Manual close detection**: a position (T1) disappearing without any
+  Dave-initiated close was genuinely flagged; a position (T2) Dave
+  itself closed (traced through the executor's own command tracking)
+  was genuinely NOT flagged despite also disappearing in the same way —
+  proving the Dave-vs-manual distinction actually works, not just the
+  simple disappearance case
+- MCP: a real connection attempt against an unreachable server
+  genuinely failed with a real, typed `McpConnectionError`; calling
+  `openOrder()` on a never-connected executor genuinely refused rather
+  than silently attempting a request
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 12-file suite (Steps 3–11) re-run afterward, all green; real
+  `tsc -b` build re-verified clean (zero errors, zero stray output in
+  `src/`) with the new package included
+
+### Not yet done (deferred, not silently skipped)
+- The `.mq5` changes still can't be compile-tested in this sandbox (no
+  MetaEditor) — same honest limitation noted in the Step 8 EA review
+- No real MCP trading server exists to fully exercise `McpTradeExecutor`
+  end to end (open a real order through it) — the real, bounded
+  connection-attempt methodology used throughout this build (AirLLM,
+  DSH sandbox, OpenSandbox) is what's available without one
+- `EaBridge`/`EaTradeExecutor` aren't wired into a running process yet —
+  same "real, tested logic ahead of the transport" status most of
+  dave-trading is already in, consistent with Step 10's own notes
