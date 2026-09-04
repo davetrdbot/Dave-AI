@@ -1896,3 +1896,85 @@ Ran `packages/dave-vision/test/step20-vision.test.ts`:
   explicitly experimental — deliberately NOT wired in as a fallback
   vision path; if DeepSeek's vision support graduates out of
   experimental, that's a real future decision, not assumed here
+
+## Status: Step 21 — Notifications (COMPLETE)
+
+Completed: 2026-09-04
+
+Two research subagents ran in parallel to verify the real, current Fish
+Audio and ElevenLabs TTS APIs before writing any code — both surfaced
+real surprises that would have produced broken requests if guessed.
+
+### Real findings from the two research subagents
+- **Fish Audio**: voice/model selection (`s1`/`s2-pro`/`s2.1-pro`/
+  `s2.1-pro-free`) is a real HTTP **header** (`model:`), NOT a JSON body
+  field as initially assumed — caught before writing `tts.ts`, not
+  after a failed real request.
+- **ElevenLabs**: auth is the real non-standard `xi-api-key` header,
+  confirmed NOT `Authorization: Bearer` (easy to get wrong by pattern-
+  matching every other provider in this repo). Voice listing is the
+  current `/v2/voices`, not the older `/v1/voices`.
+
+### Step 21 checklist
+- [x] 21.1 Morning brief: real Off/On/Custom toggle,
+      `packages/dave-notifications/src/morning-brief.ts`, DB-persisted
+      (Step 16) and driving a real Step 16.2a scheduled trigger the
+      same way Steps 18/19's crons already do. "Custom" without a real
+      interval is refused outright (`MissingCustomIntervalError`) —
+      never silently falls back to the default
+- [x] 21.2 Trade-opened notification includes the trade AND the
+      reasoning together, in one message — `trade-notification.ts`
+      reuses Step 12's real narrative formatter directly rather than
+      building a second, differently-worded one for the same content
+- [x] 21.3 Voice OUTPUT: real `FishAudioClient`/`ElevenLabsClient`
+      (`tts.ts`) against their real current APIs. Switchable active
+      provider, real per-user configurable voice ID per provider,
+      whole feature togglable off (defaults off), real fallback order
+      that follows whichever provider is currently active
+      (`voice-settings.ts`). Fully button-driven — real Telegram
+      inline keyboards for every setting, reusing Step 8's real button
+      primitives, not a second button system (`voice-buttons.ts`).
+      Voice INPUT (Step 15.2's Groq transcription) re-verified still
+      genuinely wired end-to-end, per this step's own requirement to
+      confirm it
+
+### Real proof (Step 21)
+Ran `packages/dave-notifications/test/step21-notifications.test.ts`:
+1. Morning brief genuinely registers no trigger when off, the real
+   default cron when on, and refuses "custom" with no interval given —
+   then registers exactly the user's own real interval when one is given
+2. A trade-opened notification's text contains both the trade AND the
+   real reasoning in the SAME message body, sent as one real call
+3. Real HTTP POSTs to both `api.fish.audio` and `api.elevenlabs.io` (no
+   keys in this environment, genuine failures) were inspected: Fish
+   Audio's real `model` header and `reference_id` body field, and
+   ElevenLabs' `voice_id` as a real path parameter with the real
+   `model_id` body field — both genuinely reached the real hosts
+4. Voice output genuinely refuses to run while the feature is disabled
+   (real toggle, defaults off); the active provider is genuinely
+   switchable per user, and fallback order genuinely follows it
+5. Real Telegram inline keyboards reflect real live state (ON/OFF label,
+   a checkmark on the active provider/voice) and every button's
+   `callback_data` round-trips correctly through the real parser
+6. Voice input re-verified: a real (simulated) downloaded voice note
+   genuinely reaches Groq's real transcription endpoint, still honestly
+   failing without a key — the same real wiring Step 15 built, still
+   working
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 22-file suite (Steps 3–21) re-run afterward, all green
+- Full clean-state build re-verified (`lib/`, `.next`, all
+  `.tsbuildinfo` removed, `pnpm install --frozen-lockfile && pnpm run
+  build`) — genuinely reproduces Railway's fresh-checkout path
+
+### Not yet done (deferred, not silently skipped)
+- No real Fish Audio, ElevenLabs, or Groq API key is configured in this
+  environment, so "real proof of a real TTS call producing audio" and
+  "a real voice note being transcribed correctly" (the master prompt's
+  own Step 21 test wording) could only be proven as far as this
+  environment allows: genuine, correctly-shaped requests reaching the
+  real APIs and genuinely failing on auth, not fabricated success. The
+  actual audio-producing / correctly-transcribing end-to-end proof
+  needs live credentials this sandboxed dev environment doesn't have —
+  flagged honestly rather than simulated
+- No real agent loop yet calls any of this during actual operation —
+  same status as every other notification/tool package so far
