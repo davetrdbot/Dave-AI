@@ -1,0 +1,17 @@
+{
+  "name": "@dave/mcp-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "devDependencies": {
+    "zod": "^4.0.0"
+  },
+  "exports": {
+    ".": "./lib/index.js"
+  }
+}

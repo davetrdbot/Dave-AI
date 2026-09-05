@@ -6,6 +6,7 @@ import { RFEED_TOOLS, type RFeedTradeExecutor, type HistoryRequestManager } from
 import { EA_STATE_TOOLS } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
+import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_CALL_TOOLS, CALL_SETTINGS_TOOLS } from "@dave/voice-call";
@@ -62,6 +63,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, davema: deps.davema, workspaceRoot: process.cwd() }));
   registry.register(adaptTools(KNOWLEDGE_TOOLS, { userId: deps.userId }));
+  registry.register(adaptTools(MCP_MANAGER_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(PROVIDER_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_SETTINGS_TOOLS, dbOnlyCtx));

@@ -93,6 +93,9 @@ importers:
       '@dave/lovable-mcp':
         specifier: workspace:*
         version: link:../dave-lovable-mcp
+      '@dave/mcp-manager':
+        specifier: workspace:*
+        version: link:../dave-mcp-manager
       '@dave/memory':
         specifier: workspace:*
         version: link:../dave-memory
@@ -218,6 +221,16 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.5.4)
+
+  packages/dave-mcp-manager:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.0
+        version: 1.30.0(zod@4.5.4)
+    devDependencies:
+      zod:
+        specifier: ^4.0.0
+        version: 4.5.4
 
   packages/dave-memory: {}
 

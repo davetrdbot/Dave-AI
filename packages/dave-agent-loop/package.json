@@ -25,7 +25,8 @@
     "@dave/sandbox": "workspace:*",
     "@dave/db": "workspace:*",
     "@dave/core": "workspace:*",
-    "@dave/knowledge": "workspace:*"
+    "@dave/knowledge": "workspace:*",
+    "@dave/mcp-manager": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

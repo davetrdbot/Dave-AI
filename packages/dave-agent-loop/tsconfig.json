@@ -26,6 +26,7 @@
     { "path": "../dave-sandbox" },
     { "path": "../dave-db" },
     { "path": "../dave-core" },
-    { "path": "../dave-knowledge" }
+    { "path": "../dave-knowledge" },
+    { "path": "../dave-mcp-manager" }
   ]
 }
