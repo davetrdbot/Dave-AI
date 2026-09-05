@@ -275,3 +275,54 @@ button.btn:hover {
     padding: 8px 6px;
   }
 }
+
+.balance-card {
+  background: linear-gradient(135deg, rgba(110, 168, 254, 0.12), rgba(155, 140, 255, 0.12)), var(--glass);
+  text-align: center;
+  padding: 32px 20px;
+}
+
+.balance-value {
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.balance-value.dim {
+  background: none;
+  -webkit-background-clip: unset;
+  color: var(--text-dim);
+}
+
+.balance-sub {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.heatmap-scroll {
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.heatmap-grid {
+  display: flex;
+  gap: 3px;
+  width: max-content;
+}
+
+.heatmap-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.heatmap-cell {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+}

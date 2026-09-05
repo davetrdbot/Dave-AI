@@ -58,6 +58,8 @@ export interface CompletionResult {
   provider: ProviderName;
   latencyMs: number;
   toolCalls?: ToolCall[];
+  /** Real Anthropic prompt-caching usage, when the provider supports it (Claude only) -- cacheReadInputTokens>0 is a real, provable cache hit. */
+  cacheUsage?: { cacheCreationInputTokens: number; cacheReadInputTokens: number };
 }
 
 /**
@@ -256,9 +258,22 @@ export class ClaudeProvider implements Provider {
     if (systemMessage && typeof systemMessage.content !== "string") {
       throw new ProviderError("claude", "a system message must be plain text -- images belong on a user message, not the system prompt");
     }
-    const system = systemMessage?.content as string | undefined;
+    // Real Anthropic prompt caching: a `cache_control: {type:"ephemeral"}` block
+    // marks everything UP TO that point as cacheable -- the system prompt (per
+    // Step 1.7's "static-first" ordering, MEMORY.md/USER.md/IDENTITY.md rarely
+    // change turn to turn) and the tool list (which also stays fixed across a
+    // whole conversation) are exactly the real, confirmed candidates for this.
+    // Genuinely cuts cost/latency on a cache hit -- not decorative.
+    const system = systemMessage?.content
+      ? [{ type: "text", text: systemMessage.content as string, cache_control: { type: "ephemeral" } }]
+      : undefined;
     const messages = this.toClaudeMessages(req.messages);
-    const tools = req.tools?.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+    const tools = req.tools?.map((t, i, arr) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters,
+      ...(i === arr.length - 1 ? { cache_control: { type: "ephemeral" } } : {}),
+    }));
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -286,12 +301,18 @@ export class ClaudeProvider implements Provider {
     if (!res.ok) {
       throw new ProviderError("claude", `HTTP ${res.status}: ${await res.text()}`);
     }
-    const json = (await res.json()) as { content: { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[] };
+    const json = (await res.json()) as {
+      content: { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[];
+      usage?: { cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+    };
     const text = json.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
     const toolCalls = json.content
       .filter((b) => b.type === "tool_use")
       .map((b) => ({ id: b.id!, name: b.name!, arguments: b.input ?? {} }));
-    return { text, provider: "claude", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined };
+    const cacheUsage = json.usage
+      ? { cacheCreationInputTokens: json.usage.cache_creation_input_tokens ?? 0, cacheReadInputTokens: json.usage.cache_read_input_tokens ?? 0 }
+      : undefined;
+    return { text, provider: "claude", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, cacheUsage };
   }
 }
 

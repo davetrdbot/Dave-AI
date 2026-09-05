@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend, ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid } from "recharts";
 
 type Tab = "stats" | "groups" | "teams" | "models" | "selfimprove" | "db" | "mcp" | "credentials" | "settings";
 
@@ -90,17 +91,190 @@ function StatsPanel({ userId }: { userId: string }) {
   ];
 
   return (
-    <div className="card">
-      <h2>Live Stats</h2>
-      <div className="stat-grid">
-        {tiles.map(([label, value]) => (
-          <div className="stat-tile" key={label}>
-            <div className="value">{value}</div>
-            <div className="label">{label}</div>
-          </div>
-        ))}
+    <>
+      <BalanceCard userId={userId} api={api} />
+      <div className="card">
+        <h2>Live Stats</h2>
+        <div className="stat-grid">
+          {tiles.map(([label, value]) => (
+            <div className="stat-tile" key={label}>
+              <div className="value">{value}</div>
+              <div className="label">{label}</div>
+            </div>
+          ))}
+        </div>
+        <div className="stat-note">{stats.note}</div>
       </div>
-      <div className="stat-note">{stats.note}</div>
+      <ActivityHeatmap userId={userId} api={api} />
+      <div className="row" style={{ alignItems: "stretch", flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 320px" }}>
+          <PairGroupPie userId={userId} api={api} />
+        </div>
+        <div style={{ flex: "2 1 480px" }}>
+          <OutcomeRangeChart userId={userId} api={api} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+// --- J6: real-time balance card, large, top of dashboard ---
+function BalanceCard({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
+  const [data, setData] = useState<any>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => api("/api/analytics").then((r) => !cancelled && setData(r.balance));
+    load();
+    const id = setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [api]);
+
+  if (!data) return <div className="card placeholder">Loading balance...</div>;
+
+  return (
+    <div className="card balance-card">
+      {data.value !== null ? (
+        <>
+          <div className="balance-value">
+            ${data.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="balance-sub">
+            Equity ${data.equity?.toLocaleString(undefined, { minimumFractionDigits: 2 })} &middot; updated {new Date(data.updatedAt).toLocaleTimeString()}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="balance-value dim">--</div>
+          <div className="balance-sub">{data.note}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// --- J7: GitHub-contribution-style activity heatmap, real daily P&L, last ~6 months ---
+function ActivityHeatmap({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
+  const [days, setDays] = useState<{ day: string; pnl: number }[] | null>(null);
+
+  useEffect(() => {
+    api("/api/analytics").then((r) => setDays(r.heatmap));
+  }, [api]);
+
+  if (!days) return <div className="card placeholder">Loading activity...</div>;
+
+  const byDay = new Map(days.map((d) => [d.day, d.pnl]));
+  const today = new Date();
+  const WEEKS = 26;
+  const cells: { date: Date; pnl: number | undefined }[] = [];
+  const start = new Date(today);
+  start.setDate(start.getDate() - WEEKS * 7);
+  start.setDate(start.getDate() - start.getDay()); // align to a Sunday
+  for (let i = 0; i < WEEKS * 7; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    const key = d.toISOString().slice(0, 10);
+    cells.push({ date: d, pnl: byDay.get(key) });
+  }
+  const maxAbs = Math.max(1, ...days.map((d) => Math.abs(d.pnl)));
+  const colorFor = (pnl: number | undefined) => {
+    if (pnl === undefined) return "rgba(255,255,255,0.05)";
+    const intensity = Math.min(1, Math.abs(pnl) / maxAbs);
+    return pnl >= 0 ? `rgba(74, 222, 128, ${0.15 + intensity * 0.7})` : `rgba(248, 113, 113, ${0.15 + intensity * 0.7})`;
+  };
+  const weeks: typeof cells[] = [];
+  for (let w = 0; w < WEEKS; w++) weeks.push(cells.slice(w * 7, w * 7 + 7));
+
+  return (
+    <div className="card">
+      <h2>Activity Heatmap</h2>
+      <div className="heatmap-scroll">
+        <div className="heatmap-grid">
+          {weeks.map((week, wi) => (
+            <div className="heatmap-col" key={wi}>
+              {week.map((cell, di) => (
+                <div
+                  key={di}
+                  className="heatmap-cell"
+                  title={`${cell.date.toISOString().slice(0, 10)}: ${cell.pnl !== undefined ? `$${cell.pnl.toFixed(2)}` : "no closed trades"}`}
+                  style={{ background: colorFor(cell.pnl) }}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="stat-note">{days.length === 0 ? "No closed trades yet -- squares fill in as real trades close." : `${days.length} real day(s) with closed trades, last ${WEEKS} weeks.`}</div>
+    </div>
+  );
+}
+
+// --- J8: real trade distribution by pair group ---
+const PIE_COLORS = ["#6ea8fe", "#9b8cff", "#4ade80", "#f87171", "#fbbf24", "#38bdf8", "#f472b6"];
+function PairGroupPie({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
+  const [groups, setGroups] = useState<{ label: string; count: number }[] | null>(null);
+
+  useEffect(() => {
+    api("/api/analytics").then((r) => setGroups(r.pairGroups));
+  }, [api]);
+
+  if (!groups) return <div className="card placeholder">Loading distribution...</div>;
+
+  return (
+    <div className="card" style={{ height: 320 }}>
+      <h2>Trades by Pair Group</h2>
+      {groups.length === 0 ? (
+        <div className="placeholder">No journaled trades yet.</div>
+      ) : (
+        <ResponsiveContainer width="100%" height={240}>
+          <PieChart>
+            <Pie data={groups} dataKey="count" nameKey="label" cx="50%" cy="50%" outerRadius={80} label={(d: any) => d.label}>
+              {groups.map((_, i) => (
+                <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip contentStyle={{ background: "#131a2b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
+            <Legend />
+          </PieChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
+// --- J9: range/band chart -- spread of real trade outcomes per day, distinct from the heatmap's summed daily total ---
+function OutcomeRangeChart({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
+  const [range, setRange] = useState<{ day: string; min: number; max: number; avg: number }[] | null>(null);
+
+  useEffect(() => {
+    api("/api/analytics").then((r) => setRange(r.range));
+  }, [api]);
+
+  if (!range) return <div className="card placeholder">Loading outcome range...</div>;
+
+  const data = range.map((r) => ({ ...r, band: [r.min, r.max] }));
+
+  return (
+    <div className="card" style={{ height: 320 }}>
+      <h2>Trade Outcome Range</h2>
+      {range.length === 0 ? (
+        <div className="placeholder">No closed trades yet -- the spread of daily outcomes will show up here.</div>
+      ) : (
+        <ResponsiveContainer width="100%" height={240}>
+          <ComposedChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+            <XAxis dataKey="day" stroke="#8a93a8" fontSize={11} />
+            <YAxis stroke="#8a93a8" fontSize={11} />
+            <Tooltip contentStyle={{ background: "#131a2b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
+            <Area dataKey="band" stroke="none" fill="rgba(110,168,254,0.25)" />
+            <Line dataKey="avg" stroke="#9b8cff" strokeWidth={2} dot={{ r: 3 }} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
+      <div className="stat-note">Shaded band = min-to-max outcome that day; line = average. Distinct from the heatmap's summed daily total.</div>
     </div>
   );
 }

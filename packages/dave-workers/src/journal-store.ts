@@ -15,6 +15,8 @@ export interface JournalEntry {
   input: TradeJournalInput;
   closedAt?: number;
   closeNote?: string;
+  /** Real P&L at close, in account currency -- the actual number, not inferred from prose. */
+  pnl?: number;
   createdAt: number;
 }
 
@@ -43,14 +45,20 @@ export function journalTrade(userId: string, input: TradeJournalInput): JournalE
   return entry;
 }
 
-export function journalClose(userId: string, entryId: string, closeNote: string): JournalEntry {
+export function journalClose(userId: string, entryId: string, closeNote: string, pnl?: number): JournalEntry {
   const entries = readEntries(userId);
   const entry = entries.find((e) => e.id === entryId);
   if (!entry) throw new Error(`no journal entry "${entryId}"`);
   entry.closedAt = Date.now();
   entry.closeNote = closeNote;
+  entry.pnl = pnl;
   saveEntries(userId, entries);
   return entry;
+}
+
+/** Real, exported listing -- the admin analytics endpoints need every entry, not just a day/search slice. */
+export function listJournalEntries(userId: string): JournalEntry[] {
+  return readEntries(userId);
 }
 
 export function journalDaily(userId: string, dayStart: number, dayEnd: number): JournalEntry[] {

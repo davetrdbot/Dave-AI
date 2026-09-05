@@ -33,9 +33,9 @@ export const JOURNAL_TOOLS: JournalToolDefinition[] = [
   },
   {
     name: "journal_close",
-    description: "Append a real close note to an existing journal entry.",
-    parameters: { type: "object", properties: { entryId: { type: "string" }, closeNote: { type: "string" } }, required: ["entryId", "closeNote"] },
-    execute: async (args, ctx) => journalClose(ctx.userId, args.entryId as string, args.closeNote as string),
+    description: "Append a real close note (and the real P&L) to an existing journal entry.",
+    parameters: { type: "object", properties: { entryId: { type: "string" }, closeNote: { type: "string" }, pnl: { type: "number" } }, required: ["entryId", "closeNote"] },
+    execute: async (args, ctx) => journalClose(ctx.userId, args.entryId as string, args.closeNote as string, args.pnl as number | undefined),
   },
   {
     name: "journal_daily",
