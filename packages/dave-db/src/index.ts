@@ -3,3 +3,6 @@ export * from "./scheduled-trigger.js";
 export * from "./webhook-trigger.js";
 export * from "./workflow.js";
 export * from "./tools.js";
+export * from "./automation-store.js";
+export * from "./automation-runtime.js";
+export * from "./automation-tools.js";

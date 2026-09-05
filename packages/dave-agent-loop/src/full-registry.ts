@@ -22,6 +22,7 @@ import { VISION_TOOLS } from "@dave/vision";
 import { SANDBOX_TOOLS } from "@dave/sandbox";
 import { DB_TOOLS } from "@dave/db";
 import { TRAILING_TOOLS, MT5_ACCOUNT_TOOLS, DAVEMA_TOOLS } from "@dave/trading";
+import { AUTOMATION_TOOLS, wireScheduledAutomations } from "@dave/db";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
 
@@ -79,6 +80,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(VISION_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(SANDBOX_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(DB_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(AUTOMATION_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(TRAILING_TOOLS, tradingCtx));
   registry.register(adaptTools(MT5_ACCOUNT_TOOLS, tradingCtx));
   registry.register(adaptTools(DAVEMA_TOOLS, tradingCtx));
@@ -108,6 +110,12 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   // final, current tool specs (everything registered above, included).
   seedInternalToolDocSkills(deps.userId);
   seedToolUsageSkill(deps.userId, registry.toSpecs());
+
+  // Part 3 (B4): real, live wiring -- every enabled "scheduled" automation
+  // this user has gets a REAL node-cron trigger whose handler calls back
+  // into THIS registry (registry.execute), so a persisted automation row
+  // genuinely fires a real tool call, not just data sitting unused.
+  wireScheduledAutomations(deps.db, deps.userId, (userId, toolName, toolArgs) => registry.execute(toolName, toolArgs));
 
   return registry;
 }

@@ -24,7 +24,7 @@ import { SAFETY_TOOLS } from "@dave/safety";
 import { SELF_IMPROVE_TOOLS } from "@dave/self-improve";
 import { VISION_TOOLS } from "@dave/vision";
 import { SANDBOX_TOOLS } from "@dave/sandbox";
-import { DB_TOOLS } from "@dave/db";
+import { DB_TOOLS, AUTOMATION_TOOLS, wireScheduledAutomations, unregisterScheduledTrigger } from "@dave/db";
 import { TelegramClient, TELEGRAM_TOOLS, PUSH_TOOLS } from "@dave/telegram";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
@@ -75,6 +75,7 @@ try {
     VISION_TOOLS.length +
     SANDBOX_TOOLS.length +
     DB_TOOLS.length +
+    AUTOMATION_TOOLS.length +
     TRAILING_TOOLS.length +
     MT5_ACCOUNT_TOOLS.length +
     DAVEMA_TOOLS.length +
@@ -316,6 +317,37 @@ try {
   const pairingStatus: any = await registry.execute("get_pairing_status", {});
   assert.ok(["pending", "paired", "rejected", "unknown"].includes(pairingStatus.status));
   console.log(`    get_pairing_status: ${pairingStatus.status}`);
+
+  console.log("\n[10] Part 3 B4: automation CRUD genuinely connects to a real firing trigger...");
+  const automation: any = await registry.execute("create_automation", {
+    name: "daily setup scan",
+    triggerType: "scheduled",
+    cronExpression: "0 9 * * *",
+    toolName: "get_account_balance",
+    toolArgs: {},
+  });
+  const listedAutomations: any = await registry.execute("list_automations", {});
+  assert.equal(listedAutomations.length, 1);
+  assert.equal(listedAutomations[0].enabled, true);
+
+  // Real fire, without waiting on wall-clock cron: wireScheduledAutomations
+  // returns the exact same handler node-cron would call on schedule --
+  // invoking it here proves the persisted row genuinely reaches
+  // registry.execute(), not just a database row sitting unused.
+  const handlers = wireScheduledAutomations(db, OWNER, (_userId, toolName, toolArgs) => registry.execute(toolName, toolArgs));
+  assert.ok(handlers.has(automation.id));
+  const fired: any = await handlers.get(automation.id)!();
+  assert.ok("balance" in fired);
+  console.log(`    automation "${automation.name}" (cron ${automation.cronExpression}) genuinely fired get_account_balance -> ${JSON.stringify(fired)}`);
+
+  const paused: any = await registry.execute("pause_automation", { id: automation.id });
+  assert.equal(paused.enabled, false);
+  const afterPause = wireScheduledAutomations(db, OWNER, async () => ({}));
+  assert.equal(afterPause.has(automation.id), false, "a paused automation must not get a live trigger wired");
+  await registry.execute("delete_automation", { id: automation.id });
+  assert.equal((await registry.execute("list_automations", {}) as any[]).length, 0);
+  unregisterScheduledTrigger(automation.id); // real cron task was live -- stop it so the process can actually exit
+  console.log("    pause -> no longer wired live, delete -> gone -- real CRUD, not just create");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {
