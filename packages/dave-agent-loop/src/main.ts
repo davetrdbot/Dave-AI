@@ -7,6 +7,7 @@ import { EaBridge } from "@dave/ea-bridge";
 import { RFeedBridge } from "@dave/rfeed";
 import { createHiddenWebhookServer } from "@dave/memory";
 import { startWatchdog, startHeartbeatLoop } from "@dave/safety";
+import { getTelegramCredentials } from "@dave/telegram";
 import { startTelegramBotServer } from "./telegram-bot-server.js";
 
 /**
@@ -83,7 +84,15 @@ function subServerHandler(server: Server): (req: IncomingMessage, res: ServerRes
 
 export async function main(): Promise<void> {
   const ownerUserId = process.env.OWNER_USER_ID ?? "default";
-  const dbPath = process.env.DATABASE_PATH ?? join(process.cwd(), "data", "dave.db");
+  // Real gap fixed: every admin-panel API route (telegram-otp,
+  // e2b-keys, database-automation, provider-keys, ...) consistently
+  // uses data/db/<userId>.db as its real DB path convention -- this
+  // used to default to a DIFFERENT path (data/dave.db), which meant a
+  // credential paired through the admin panel (e.g. the Telegram bot
+  // token) was silently invisible to this process even after a
+  // restart. Matches that same convention so both processes genuinely
+  // share state when pointed at the same volume.
+  const dbPath = process.env.DATABASE_PATH ?? join(process.cwd(), "data", "db", `${ownerUserId}.db`);
   const publicBaseUrl = resolvePublicBaseUrl(); // e.g. Railway's own public domain, https://<service>.up.railway.app
   const port = Number(process.env.PORT ?? "3000");
 
@@ -121,17 +130,42 @@ export async function main(): Promise<void> {
   const automationServer = createAutomationWebhookServer();
   const userHookServer = createHiddenWebhookServer();
 
-  const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
-  let telegramServer: Server | undefined;
-  if (!telegramBotToken) {
-    // Real graceful degradation, not a crash: Dave's core purpose is the
-    // Telegram bot, but a missing token shouldn't take down the whole
-    // process (health check + every webhook server below still needs
-    // to run) -- it just means the bot itself isn't live yet.
-    console.error("[telegram] TELEGRAM_BOT_TOKEN not set -- Telegram bot disabled, everything else still running");
-  } else if (!publicBaseUrl) {
-    console.error("[telegram] no PUBLIC_BASE_URL / RAILWAY_PUBLIC_DOMAIN available -- Telegram needs a public HTTPS URL to push updates to. Telegram bot disabled, everything else still running.");
-  } else {
+  const routes: [string, (req: IncomingMessage, res: ServerResponse) => void][] = [
+    ["/hooks/ea/", subServerHandler(eaServer)],
+    ["/hooks/rfeed/", subServerHandler(rfeedServer)],
+    ["/hooks/automation/", subServerHandler(automationServer)],
+    ["/hooks/user/", subServerHandler(userHookServer)],
+    ["/hooks/worker/", subServerHandler(userHookServer)],
+  ];
+
+  /**
+   * Real gap fixed: the admin panel's real Telegram OTP pairing flow
+   * (packages/dave-admin/app/api/telegram-otp) genuinely persists a bot
+   * token via setTelegramCredentials(db, ownerUserId, ...) -- but this
+   * process used to only ever check process.env.TELEGRAM_BOT_TOKEN at
+   * boot, never the database, so pairing through the admin panel had no
+   * way to actually reach the running bot process without a manual
+   * restart. Checks the env var first (an explicit deploy-time override
+   * still wins), falls back to the real stored credential, and -- since
+   * the token may not exist yet on a fresh deploy -- retries on a real
+   * interval until it succeeds, rather than requiring a restart.
+   */
+  let telegramWired = false;
+  async function tryStartTelegram(): Promise<boolean> {
+    if (telegramWired) return true;
+    const stored = getTelegramCredentials(db, ownerUserId);
+    const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN ?? stored?.botToken;
+    if (!telegramBotToken) {
+      // Real graceful degradation, not a crash: Dave's core purpose is
+      // the Telegram bot, but a missing token shouldn't take down the
+      // whole process (health check + every webhook server still runs)
+      // -- it just means the bot itself isn't live yet.
+      return false;
+    }
+    if (!publicBaseUrl) {
+      console.error("[telegram] no PUBLIC_BASE_URL / RAILWAY_PUBLIC_DOMAIN available -- Telegram needs a public HTTPS URL to push updates to. Telegram bot disabled, everything else still running.");
+      return false;
+    }
     try {
       const bot = await startTelegramBotServer({
         ownerUserId,
@@ -144,25 +178,30 @@ export async function main(): Promise<void> {
         publicBaseUrl,
         systemPrompt: loadSystemPrompt(),
       });
-      telegramServer = bot.server;
+      routes.push(["/hooks/telegram/", subServerHandler(bot.server)]);
+      telegramWired = true;
       console.log(`[telegram] webhook registered: ${bot.webhookUrl}`);
+      return true;
     } catch (err) {
       // A bad/expired bot token, or Telegram's API being unreachable,
       // must not crash the whole process either -- every other real
-      // subsystem below (EA/R_Feed webhooks, health check) still needs
-      // to come up.
-      console.error(`[telegram] failed to start (${err instanceof Error ? err.message : String(err)}) -- Telegram bot disabled, everything else still running`);
+      // subsystem (EA/R_Feed webhooks, health check) still needs to
+      // come up. Left to retry on the next poll tick rather than
+      // permanently giving up on one transient failure.
+      console.error(`[telegram] failed to start (${err instanceof Error ? err.message : String(err)}) -- will retry`);
+      return false;
     }
   }
 
-  const routes: [string, (req: IncomingMessage, res: ServerResponse) => void][] = [
-    ["/hooks/ea/", subServerHandler(eaServer)],
-    ["/hooks/rfeed/", subServerHandler(rfeedServer)],
-    ["/hooks/automation/", subServerHandler(automationServer)],
-    ["/hooks/user/", subServerHandler(userHookServer)],
-    ["/hooks/worker/", subServerHandler(userHookServer)],
-  ];
-  if (telegramServer) routes.push(["/hooks/telegram/", subServerHandler(telegramServer)]);
+  let telegramRetryTimer: ReturnType<typeof setInterval> | undefined;
+  if (!(await tryStartTelegram())) {
+    console.error("[telegram] not live yet (no token set) -- checking every 30s; pair it from the admin panel to bring it online with no restart needed");
+    telegramRetryTimer = setInterval(() => {
+      void tryStartTelegram().then((started) => {
+        if (started && telegramRetryTimer) clearInterval(telegramRetryTimer);
+      });
+    }, 30_000);
+  }
 
   const root = createServer((req, res) => {
     const url = req.url ?? "";
@@ -196,6 +235,7 @@ export async function main(): Promise<void> {
     shuttingDown = true;
     console.log(`[dave-ai] ${signal} received -- shutting down gracefully`);
     heartbeat.stop();
+    if (telegramRetryTimer) clearInterval(telegramRetryTimer);
     watchdog.stop();
     await new Promise<void>((resolve) => root.close(() => resolve()));
     console.log("[dave-ai] shutdown complete");
