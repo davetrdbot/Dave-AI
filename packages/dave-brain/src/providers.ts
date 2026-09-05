@@ -58,7 +58,7 @@ export interface CompletionResult {
   provider: ProviderName;
   latencyMs: number;
   toolCalls?: ToolCall[];
-  /** Real Anthropic prompt-caching usage, when the provider supports it (Claude only) -- cacheReadInputTokens>0 is a real, provable cache hit. */
+  /** Real prompt-caching usage, when the provider's own API reports it (Claude, DeepSeek, and any OpenAI-compatible provider that mirrors OpenAI's cached_tokens field -- confirmed: Fireworks) -- cacheReadInputTokens>0 is a real, provable cache hit. Undefined, not zero, on a provider that doesn't report it at all. */
   cacheUsage?: { cacheCreationInputTokens: number; cacheReadInputTokens: number };
 }
 
@@ -211,8 +211,17 @@ export class DeepSeekProvider implements Provider {
     if (!res.ok) {
       throw new ProviderError("deepseek", `HTTP ${res.status}: ${await res.text()}`);
     }
-    const json = (await res.json()) as { choices: { message: { content: string } }[] };
-    return { text: json.choices[0].message.content, provider: "deepseek", latencyMs: Date.now() - start };
+    const json = (await res.json()) as {
+      choices: { message: { content: string } }[];
+      usage?: { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number };
+    };
+    // Real DeepSeek "context caching" -- automatic, no cache_control needed on
+    // this API; a real cache hit shows up as a nonzero prompt_cache_hit_tokens
+    // in the response usage. DeepSeek doesn't separately report a "creation"
+    // count the way Anthropic does (caching there is automatic/implicit), so
+    // that field is honestly 0 rather than guessed.
+    const cacheUsage = json.usage ? { cacheCreationInputTokens: 0, cacheReadInputTokens: json.usage.prompt_cache_hit_tokens ?? 0 } : undefined;
+    return { text: json.choices[0].message.content, provider: "deepseek", latencyMs: Date.now() - start, cacheUsage };
   }
 }
 
@@ -383,10 +392,20 @@ export class OpenAICompatibleProvider implements Provider {
     }
     const json = (await res.json()) as {
       choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
+      usage?: { prompt_tokens_details?: { cached_tokens?: number } };
     };
     const message = json.choices[0].message;
     const toolCalls = message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
-    return { text: message.content ?? "", provider: this.name, latencyMs: Date.now() - start, toolCalls };
+    // Real, provider-agnostic prompt-caching read: OpenAI's own automatic
+    // caching (no cache_control needed -- kicks in for long enough shared
+    // prefixes) reports a real cached-token count at
+    // usage.prompt_tokens_details.cached_tokens; several of this class's
+    // real OpenAI-compatible providers (confirmed: Fireworks) mirror that
+    // same field. Left undefined -- not zero-filled -- for any provider
+    // that simply doesn't send it, so this never fabricates a cache signal.
+    const cachedTokens = json.usage?.prompt_tokens_details?.cached_tokens;
+    const cacheUsage = cachedTokens !== undefined ? { cacheCreationInputTokens: 0, cacheReadInputTokens: cachedTokens } : undefined;
+    return { text: message.content ?? "", provider: this.name, latencyMs: Date.now() - start, toolCalls, cacheUsage };
   }
 }
 
