@@ -6,5 +6,16 @@
     "outDir": "lib"
   },
   "include": ["src"],
-  "references": [{ "path": "../dave-brain" }]
+  "references": [
+    { "path": "../dave-brain" },
+    { "path": "../dave-trading" },
+    { "path": "../dave-rfeed" },
+    { "path": "../dave-lovable-mcp" },
+    { "path": "../dave-voice-call" },
+    { "path": "../dave-workers" },
+    { "path": "../dave-skills" },
+    { "path": "../dave-davema" },
+    { "path": "../dave-ea-bridge" },
+    { "path": "../dave-db" }
+  ]
 }

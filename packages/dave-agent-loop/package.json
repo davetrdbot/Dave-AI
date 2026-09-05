@@ -6,7 +6,16 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "dependencies": {
-    "@dave/brain": "workspace:*"
+    "@dave/brain": "workspace:*",
+    "@dave/trading": "workspace:*",
+    "@dave/rfeed": "workspace:*",
+    "@dave/lovable-mcp": "workspace:*",
+    "@dave/voice-call": "workspace:*",
+    "@dave/workers": "workspace:*",
+    "@dave/skills": "workspace:*",
+    "@dave/davema": "workspace:*",
+    "@dave/ea-bridge": "workspace:*",
+    "@dave/db": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

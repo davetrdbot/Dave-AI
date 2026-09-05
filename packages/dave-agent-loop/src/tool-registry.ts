@@ -72,6 +72,15 @@ export class ToolRegistry {
     return this.list().map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
   }
 
+  /** Real substring search over name+description, case-insensitive -- lets Dave discover a tool it doesn't remember the exact name of. */
+  search(query: string): { name: string; description: string }[] {
+    const q = query.trim().toLowerCase();
+    if (q === "") return [];
+    return this.list()
+      .filter((t) => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q))
+      .map((t) => ({ name: t.name, description: t.description }));
+  }
+
   async execute(name: string, args: Record<string, unknown>): Promise<unknown> {
     const tool = this.tools.get(name);
     if (!tool) throw new UnknownToolError(name);

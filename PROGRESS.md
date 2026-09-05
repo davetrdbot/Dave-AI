@@ -2788,3 +2788,66 @@ Ran `packages/dave-skills/test/step31-skills.test.ts`:
   -- a repo using a different default branch name or a nested skill
   file path would need a more thorough real lookup (e.g. the GitHub
   API's default-branch field) not built here
+
+## Status: Update 11 — Every Package's Tools, One Live Registry + Tool Search (COMPLETE)
+
+Direct follow-up to the user's repeated "you haven't given the agent
+tools yet" / "it can call any tools" feedback: Update 9 built the real
+tool-CALLING mechanism (native tool support, `AgentLoop`,
+`ToolRegistry`), but nothing had actually composed every package's own
+`*_TOOLS` array into one real, live registry yet. This closes that gap.
+
+### What was built
+- [x] `packages/dave-agent-loop/src/full-registry.ts` —
+      `buildFullToolRegistry(deps)`: binds real per-user runtime
+      handles (db, `DavemaClient`, the real EA `TradeExecutor`, the
+      real R_Feed executor + history manager) and registers EVERY
+      package's tools into one `ToolRegistry` — `TRADING_TOOLS`,
+      `RFEED_TOOLS`, `PROVIDER_TOOLS`, `LOVABLE_TOOLS`,
+      `VOICE_CALL_TOOLS`, `SETTINGS_TOOLS`, `DAVE_TOOL_REQUEST_TOOLS`,
+      `SKILL_TOOLS`, plus `ask_user`
+- [x] `ToolRegistry.search()` + a real `search_tools` meta-tool
+      (per the user's follow-up: "give the bot ability to search from
+      his tools in case") — real case-insensitive substring match over
+      every registered tool's name/description, registered last so it
+      can search everything already in the registry
+
+### Real proof (Update 11)
+Ran `packages/dave-agent-loop/test/step32-full-registry.test.ts`:
+1. The unified registry's tool count is EXACTLY the sum of every
+   package's own real array (+ ask_user + search_tools) — 42 tools
+   total; spot-checked 16 tool names spanning every single package
+2. Calling tools from genuinely different packages through the SAME
+   registry object both work (`list_skills`, `list_providers`)
+3. `search_tools("image")` genuinely finds `generate_image`; a query
+   matching nothing genuinely returns an empty list
+4. **The real end-to-end proof**: a full `AgentLoop.run()` where the
+   mock model call genuinely saw all 42 real tool specs, requested
+   `get_auto_approval` (a dave-workers/dave-trading tool, nowhere near
+   dave-agent-loop itself), the loop genuinely executed it through the
+   unified registry, and the real result (auto-approval defaults off)
+   reached the model, which answered correctly
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 33-file test suite green afterward, clean `tsc -b` build, clean
+  `next build`
+
+### Full list of tools now registered (42)
+**dave-trading** (`TRADING_TOOLS`): find_setup, trade_execute, trade_modify, partial_close, full_close, delete_pending_order, delete_all_pending_orders, validate_order
+**dave-rfeed** (`RFEED_TOOLS`): request_history, place_paper_trade, modify_paper_trade, partial_close_paper_trade, close_paper_trade, delete_paper_pending_order, delete_all_paper_pending_orders
+**dave-brain** (`PROVIDER_TOOLS`): list_providers, add_provider_key, edit_provider_key, remove_provider_key, list_provider_keys, check_provider_key_health, create_custom_provider, edit_custom_provider, delete_custom_provider
+**dave-lovable-mcp** (`LOVABLE_TOOLS`): generate_image
+**dave-voice-call** (`VOICE_CALL_TOOLS`): evaluate_call_trigger, notify_trying_to_reach_you
+**dave-workers** (`SETTINGS_TOOLS`): set_risk_mode, set_trading_mode, set_active_pair_group, propose_settings_change, get_auto_approval, set_auto_approval
+**dave-workers** (`DAVE_TOOL_REQUEST_TOOLS`, Dave's side of Update 7): list_pending_tool_requests, decide_tool_request
+**dave-skills** (`SKILL_TOOLS`): list_skills, create_skill, install_skill_from_github, install_skills_from_jsonl, delete_skill
+**dave-agent-loop** (built directly into the registry): ask_user, search_tools
+
+Not included yet: `WORKER_TOOL_REQUEST_TOOLS` (`request_tool`/
+`check_my_tool_requests`) — those are worker-scoped, not Dave's own;
+a worker's own registry composition is a separate, not-yet-built
+function.
+
+### Not yet done (deferred, not silently skipped)
+- Not wired to a live Telegram handler yet — same gap as Update 9
+- No `buildWorkerToolRegistry()` equivalent for a worker's own tool set
+  (would reuse the same `adaptTools`/`ToolRegistry` machinery)
