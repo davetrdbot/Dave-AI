@@ -4,32 +4,29 @@
 # `...` merges this with Nixpacks' auto-detected Node toolchain rather
 # than replacing it.
 #
-# Item 2 (admin "Load Model on Railway" toggle): Nixpacks normally picks
-# ONE primary provider by repo structure -- seeing package.json means it
-# builds a Node-only plan and never touches Python at all. Real build
-# failure found and fixed (final pre-deployment pass): the original fix
-# here also added "python" to `providers`, which pulls in Nixpacks'
-# OWN auto-detected Python version alongside the explicit `python311`
-# below -- two different Python versions in the same Nix profile
-# collide on shared files (confirmed: `nix-env -if` failed with
-# "collision between .../python3.11.10/... and .../python3.12.7/...").
-# `nixPkgs: python311` alone is enough to make python3 available for
-# the installPython phase below, with no second provider-driven Python
-# to collide with.
+# Real gap fixed (final pre-deployment pass): this file used to also
+# build a Python venv and pip-install ai-brain-service/requirements.txt
+# (airllm + torch + full CUDA stack, several GB) so the admin panel's
+# "Load Model on Railway" toggle could self-host AirLLM. Removed for a
+# real, deployment-specific reason, not because the feature is wrong:
+# this deploy runs on Railway's free/trial tier with no GPU, AirLLM
+# isn't configured for it, and that Python/CUDA install was a real
+# plausible cause of a silent, logless deploy failure (a multi-GB image
+# on a trial-tier resource/size limit). `railway-model-loader.ts`
+# degrades gracefully on its own (falls back through venv paths, fails
+# with a clear typed error) if that toggle is ever used without the
+# venv present -- nothing at boot depends on it existing. Re-add the
+# `installPython` phase below (and `python311` in nixPkgs) if/when this
+# deploy actually gets a real GPU host or upgrades to a tier that can
+# hold the image.
 #
-# pip installs into its OWN venv in a custom phase, not directly via the
-# Nix-provided python3 -- real PEP 668 gotcha, confirmed via research:
-# Nix's Python is externally-managed, so a bare `pip install` fails;
-# dave-brain's local-model launcher spawns `/opt/dave-ai-brain-venv/bin/python3`
-# for exactly this reason, never a bare `python3`.
+# [phases.installPython]
+# dependsOn = ["setup"]
+# cmds = [
+#   "python3 -m venv /opt/dave-ai-brain-venv",
+#   "/opt/dave-ai-brain-venv/bin/pip install -r ai-brain-service/requirements.txt",
+# ]
 providers = ["node"]
 
 [phases.setup]
-nixPkgs = ["...", "ffmpeg", "python311"]
-
-[phases.installPython]
-dependsOn = ["setup"]
-cmds = [
-  "python3 -m venv /opt/dave-ai-brain-venv",
-  "/opt/dave-ai-brain-venv/bin/pip install -r ai-brain-service/requirements.txt",
-]
+nixPkgs = ["...", "ffmpeg"]
