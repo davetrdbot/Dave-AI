@@ -6,3 +6,4 @@ export * from "./extra-tools.js";
 export * from "./tts.js";
 export * from "./voice-settings.js";
 export * from "./voice-buttons.js";
+export * from "./tts-credentials.js";

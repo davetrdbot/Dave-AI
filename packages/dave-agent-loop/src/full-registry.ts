@@ -24,7 +24,7 @@ import { VISION_TOOLS } from "@dave/vision";
 import { SANDBOX_TOOLS } from "@dave/sandbox";
 import { DB_TOOLS } from "@dave/db";
 import { TRAILING_TOOLS, MT5_ACCOUNT_TOOLS, DAVEMA_TOOLS } from "@dave/trading";
-import { AUTOMATION_TOOLS, wireScheduledAutomations, wireWebhookAutomations, wireEntityAutomations } from "@dave/db";
+import { AUTOMATION_TOOLS, wireScheduledAutomations, wireWebhookAutomations, wireEntityAutomations, WORKFLOW_TOOLS } from "@dave/db";
 import { FEEDBACK_TOOLS, logTrade } from "@dave/feedback";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
@@ -53,11 +53,19 @@ export interface FullRegistryDeps {
 export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   const registry = new ToolRegistry();
 
+  // Defined early (not just before wireScheduledAutomations below) so
+  // WORKFLOW_TOOLS' per-user engine can share the exact same real
+  // dispatch every trigger type uses -- a workflow's "call" step
+  // genuinely invokes a real tool through this registry, not a second
+  // parallel execution path.
+  const automationDispatch = (userId: string, toolName: string, toolArgs: Record<string, unknown>) => registry.execute(toolName, toolArgs);
+
   const tradingCtx = { userId: deps.userId, davema: deps.davema, executor: deps.executor };
   const rfeedCtx = { userId: deps.userId, db: deps.db, executor: deps.rfeedExecutor, historyManager: deps.rfeedHistoryManager };
   const dbOnlyCtx = { userId: deps.userId, db: deps.db };
   const ownerCtx = { ownerUserId: deps.userId };
   const skillCtx = { userId: deps.userId };
+  const workflowCtx = { userId: deps.userId, db: deps.db, dispatch: automationDispatch };
 
   registry.register(adaptTools(TRADING_TOOLS, tradingCtx));
   registry.register(adaptTools(RFEED_TOOLS, rfeedCtx));
@@ -91,6 +99,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(SANDBOX_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(DB_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(AUTOMATION_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(WORKFLOW_TOOLS, workflowCtx));
   registry.register(adaptTools(TRAILING_TOOLS, tradingCtx));
   registry.register(adaptTools(MT5_ACCOUNT_TOOLS, tradingCtx));
   registry.register(adaptTools(DAVEMA_TOOLS, tradingCtx));
@@ -125,7 +134,8 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   // this user has gets a REAL node-cron trigger whose handler calls back
   // into THIS registry (registry.execute), so a persisted automation row
   // genuinely fires a real tool call, not just data sitting unused.
-  const automationDispatch = (userId: string, toolName: string, toolArgs: Record<string, unknown>) => registry.execute(toolName, toolArgs);
+  // (automationDispatch itself is defined above, before WORKFLOW_TOOLS'
+  // registration, so both share the exact same real dispatch closure.)
   wireScheduledAutomations(deps.db, deps.userId, automationDispatch);
   // Real fix: "webhook"/"entity" automations previously persisted as DB rows
   // with zero live connection -- these now genuinely wire to the real

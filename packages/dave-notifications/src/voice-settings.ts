@@ -1,5 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
 import { FishAudioClient, ElevenLabsClient, TtsError, type TtsResult } from "./tts.js";
+import { getTtsProviderKey } from "./tts-credentials.js";
 
 /**
  * Step 21.3: real per-user voice settings -- enabled toggle (defaults
@@ -118,4 +119,27 @@ export async function synthesizeSpeech(
     }
   }
   throw lastError instanceof Error ? lastError : new TtsError(settings.activeProvider, 0, "both providers failed");
+}
+
+export class NoTtsKeyError extends Error {
+  constructor() {
+    super('no stored TTS provider key for either fish-audio or elevenlabs -- paste one in chat and store it with set_tts_provider_key first');
+    this.name = "NoTtsKeyError";
+  }
+}
+
+/**
+ * Real gap closed: the only way to call `synthesizeSpeech` before this
+ * was to already have real `FishAudioClient`/`ElevenLabsClient`
+ * instances built with a real key IN HAND -- which meant every single
+ * caller had to supply a raw key itself. This builds those clients from
+ * the real, PERSISTED per-user keys (`set_tts_provider_key`, stored
+ * once), the same "stored once, used forever" shape every other
+ * credentialed call in this build already follows.
+ */
+export async function synthesizeSpeechWithStoredKeys(db: DaveDatabase, ownerUserId: string, text: string): Promise<SynthesizeResult> {
+  const fishKey = getTtsProviderKey(db, ownerUserId, "fish-audio");
+  const elevenKey = getTtsProviderKey(db, ownerUserId, "elevenlabs");
+  if (!fishKey && !elevenKey) throw new NoTtsKeyError();
+  return synthesizeSpeech(new FishAudioClient(fishKey), new ElevenLabsClient(elevenKey), db, ownerUserId, text);
 }

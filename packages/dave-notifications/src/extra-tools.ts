@@ -1,8 +1,8 @@
 import type { DaveDatabase } from "@dave/db";
 import type { TelegramClient } from "@dave/telegram";
 import { getBriefSettings, setBriefMode, type BriefMode } from "./morning-brief.js";
-import { FishAudioClient, ElevenLabsClient } from "./tts.js";
-import { getVoiceSettings } from "./voice-settings.js";
+import { synthesizeSpeechWithStoredKeys, getVoiceSettings, type TtsProviderName } from "./voice-settings.js";
+import { setTtsProviderKey } from "./tts-credentials.js";
 import { sendConnectionAlert, sendTradeOpenedAlert, routeClosedPositionAlert, type TradeSystem } from "./trade-alerts.js";
 
 /**
@@ -37,18 +37,24 @@ export const NOTIFICATION_TOOLS: NotificationToolDefinition[] = [
     },
   },
   {
-    name: "voice_tts",
-    description: "Synthesize real speech from text via the user's active TTS provider, using their own voice id.",
-    parameters: { type: "object", properties: { text: { type: "string" }, apiKey: { type: "string" } }, required: ["text", "apiKey"] },
+    name: "set_tts_provider_key",
+    description: "Store a real Fish Audio or ElevenLabs API key for this user, once -- exactly like add_provider_key does for LLM providers. Needed once before voice replies can genuinely be sent; never has to be supplied again after this.",
+    parameters: { type: "object", properties: { provider: { type: "string", enum: ["fish-audio", "elevenlabs"] }, apiKey: { type: "string" } }, required: ["provider", "apiKey"] },
+    execute: async (args, ctx) => {
+      setTtsProviderKey(ctx.db, ctx.userId, args.provider as TtsProviderName, args.apiKey as string);
+      return { stored: true, provider: args.provider };
+    },
+  },
+  {
+    name: "send_voice_message",
+    description: "Real, complete voice reply: synthesizes real speech from text via the user's stored TTS key/active provider (no key-passing needed) AND actually sends it as a real Telegram voice note (sendVoice) -- not just synthesized audio sitting unreturned.",
+    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
     execute: async (args, ctx) => {
       const settings = getVoiceSettings(ctx.db, ctx.userId);
       if (!settings.enabled) throw new Error("voice replies are OFF for this user -- turn them on with set_voice_enabled first.");
-      if (settings.activeProvider === "fish-audio") {
-        if (!settings.fishVoiceId) throw new Error("no fish-audio voice id configured.");
-        return new FishAudioClient(args.apiKey as string).synthesize(args.text as string, settings.fishVoiceId);
-      }
-      if (!settings.elevenlabsVoiceId) throw new Error("no elevenlabs voice id configured.");
-      return new ElevenLabsClient(args.apiKey as string).synthesize(args.text as string, settings.elevenlabsVoiceId);
+      const result = await synthesizeSpeechWithStoredKeys(ctx.db, ctx.userId, args.text as string);
+      const sent = await ctx.client.sendVoice({ chat_id: ctx.chatId, voice: { buffer: result.audio, filename: "voice.mp3" } });
+      return { sent: true, messageId: sent.message_id, provider: result.provider, usedFallback: result.usedFallback, bytes: result.audio.length };
     },
   },
   {

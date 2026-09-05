@@ -26,7 +26,7 @@ import { SAFETY_TOOLS } from "@dave/safety";
 import { SELF_IMPROVE_TOOLS } from "@dave/self-improve";
 import { VISION_TOOLS } from "@dave/vision";
 import { SANDBOX_TOOLS } from "@dave/sandbox";
-import { DB_TOOLS, AUTOMATION_TOOLS, wireScheduledAutomations, unregisterScheduledTrigger } from "@dave/db";
+import { DB_TOOLS, AUTOMATION_TOOLS, WORKFLOW_TOOLS, wireScheduledAutomations, unregisterScheduledTrigger } from "@dave/db";
 import { FEEDBACK_TOOLS } from "@dave/feedback";
 import { TelegramClient, TELEGRAM_TOOLS, PUSH_TOOLS } from "@dave/telegram";
 import { OpenAICompatibleProvider } from "@dave/brain";
@@ -77,6 +77,7 @@ try {
     SANDBOX_TOOLS.length +
     DB_TOOLS.length +
     AUTOMATION_TOOLS.length +
+    WORKFLOW_TOOLS.length +
     TRAILING_TOOLS.length +
     MT5_ACCOUNT_TOOLS.length +
     DAVEMA_TOOLS.length +

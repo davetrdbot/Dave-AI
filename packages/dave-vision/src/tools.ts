@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import { generateWithKeyFailover } from "@dave/brain";
 import { buildImageContentBlock } from "./image.js";
-import { extractKeyframes, transcribeAudioBytesWithKeyFailover } from "./video.js";
+import { extractKeyframes, transcribeAudioBytesWithKeyFailover, analyzeVideo } from "./video.js";
 
 /**
  * Update 18 (bulk tool-coverage expansion): Step 20's real vision
@@ -47,6 +47,16 @@ export const VISION_TOOLS: VisionToolDefinition[] = [
     description: "Real scene-aware keyframe extraction from a local video, inside the sandbox (real ffmpeg).",
     parameters: { type: "object", properties: { videoRelativePath: { type: "string" }, workspaceRoot: { type: "string" } }, required: ["videoRelativePath", "workspaceRoot"] },
     execute: async (args) => extractKeyframes(args.videoRelativePath as string, args.workspaceRoot as string),
+  },
+  {
+    name: "analyze_video",
+    description: "Real, complete video understanding: real scene-detected keyframes, each genuinely analyzed by your vision-capable provider (not just extracted to disk), PLUS a real timestamped audio transcript -- both halves together, so you can actually describe what happens visually AND what was said.",
+    parameters: {
+      type: "object",
+      properties: { videoRelativePath: { type: "string" }, workspaceRoot: { type: "string" }, maxFrames: { type: "number", description: "cap on how many detected scene-change keyframes to actually run vision analysis on (default 8) -- keeps a long video from triggering dozens of vision calls" } },
+      required: ["videoRelativePath", "workspaceRoot"],
+    },
+    execute: async (args, ctx) => analyzeVideo(ctx.db, ctx.userId, args.videoRelativePath as string, args.workspaceRoot as string, (args.maxFrames as number) ?? 8),
   },
   {
     name: "transcribe_voice_note",
