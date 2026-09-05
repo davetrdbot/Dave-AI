@@ -101,6 +101,12 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
     execute: async (args, ctx) => ctx.client.pinChatMessage({ chat_id: ctx.chatId, message_id: args.messageId as number }),
   },
   {
+    name: "unpin_message",
+    description: "Unpin a real message in the chat (or the most recent pin if no messageId given).",
+    parameters: { type: "object", properties: { messageId: { type: "number" } } },
+    execute: async (args, ctx) => ctx.client.unpinChatMessage({ chat_id: ctx.chatId, message_id: args.messageId as number | undefined }),
+  },
+  {
     name: "tg_chat_action",
     description: "Show a real typing/uploading indicator.",
     parameters: { type: "object", properties: { action: { type: "string", enum: ["typing", "upload_document", "upload_photo"] } }, required: ["action"] },

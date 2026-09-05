@@ -267,6 +267,10 @@ export class TelegramClient {
     return this.call<true>("pinChatMessage", params);
   }
 
+  unpinChatMessage(params: { chat_id: number | string; message_id?: number }) {
+    return this.call<true>("unpinChatMessage", params);
+  }
+
   sendPoll(params: { chat_id: number | string; question: string; options: string[]; is_anonymous?: boolean }) {
     return this.call<{ message_id: number }>("sendPoll", params);
   }

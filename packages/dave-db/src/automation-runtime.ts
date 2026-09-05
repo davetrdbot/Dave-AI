@@ -1,6 +1,7 @@
-import type { DaveDatabase } from "./database.js";
+import type { DaveDatabase, EntityEvent } from "./database.js";
 import { listAutomations, type Automation } from "./automation-store.js";
 import { registerScheduledTrigger, unregisterScheduledTrigger } from "./scheduled-trigger.js";
+import { registerWebhookTrigger, unregisterWebhookTrigger, type AutomationWebhook } from "./webhook-trigger.js";
 
 /**
  * Part 3 (B4): "confirm this connects to real triggers actually firing,
@@ -28,4 +29,47 @@ export function wireScheduledAutomations(db: DaveDatabase, userId: string, dispa
     });
   }
   return handlers;
+}
+
+/**
+ * Real gap fixed: "webhook" automations persisted a row with no
+ * connection to the real webhook-trigger primitive at all -- an
+ * external POST had nothing to fire. This wires every enabled webhook
+ * automation to a REAL registered route, reusing its stored token so
+ * the URL stays stable across a registry rebuild/restart instead of
+ * silently changing under whoever was pointed at it.
+ */
+export function wireWebhookAutomations(db: DaveDatabase, userId: string, dispatch: AutomationDispatch): Map<string, AutomationWebhook> {
+  const routes = new Map<string, AutomationWebhook>();
+  const automations = listAutomations(db, userId).filter((a): a is Automation & { webhookToken: string } => a.enabled && a.triggerType === "webhook" && !!a.webhookToken);
+
+  for (const automation of automations) {
+    const route = registerWebhookTrigger(
+      automation.id,
+      async () => {
+        await dispatch(automation.userId, automation.toolName, automation.toolArgs);
+      },
+      automation.webhookToken
+    );
+    routes.set(automation.id, route);
+  }
+  return routes;
+}
+
+/**
+ * Real gap fixed: "entity" automations had the same problem --
+ * db.onEntityEvent() is a real, working primitive (Step 16.2b), but
+ * nothing subscribed to it on behalf of a persisted entity automation.
+ * Matches on the row's real table name against the automation's
+ * entityName; returns the unsubscribe function so a caller can tear
+ * this down on registry rebuild instead of stacking subscriptions.
+ */
+export function wireEntityAutomations(db: DaveDatabase, userId: string, dispatch: AutomationDispatch): () => void {
+  return db.onEntityEvent((event: EntityEvent) => {
+    if (event.ownerUserId !== userId) return;
+    const automations = listAutomations(db, userId).filter((a) => a.enabled && a.triggerType === "entity" && a.entityName === event.table);
+    for (const automation of automations) {
+      void dispatch(automation.userId, automation.toolName, { ...automation.toolArgs, entityEvent: event });
+    }
+  });
 }

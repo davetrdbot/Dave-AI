@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { DaveDatabase } from "./database.js";
 
 /**
@@ -23,6 +24,9 @@ export interface Automation {
   toolArgs: Record<string, unknown>;
   enabled: boolean;
   createdAt: number;
+  /** Real, stable token for "webhook" automations -- the URL an external service should POST to (real proof: it survives a registry rebuild/restart). */
+  webhookToken?: string;
+  webhookPath?: string;
 }
 
 function ensureTable(db: DaveDatabase): void {
@@ -34,8 +38,11 @@ function ensureTable(db: DaveDatabase): void {
     { name: "tool_name", type: "TEXT" },
     { name: "tool_args_json", type: "TEXT" },
     { name: "enabled", type: "INTEGER" },
+    { name: "webhook_token", type: "TEXT" },
   ]);
 }
+
+const WEBHOOK_HOOK_PREFIX = "/hooks/automation";
 
 function toAutomation(row: Record<string, unknown>): Automation {
   return {
@@ -49,6 +56,8 @@ function toAutomation(row: Record<string, unknown>): Automation {
     toolArgs: JSON.parse((row.tool_args_json as string) ?? "{}"),
     enabled: Boolean(row.enabled),
     createdAt: row.created_at as number,
+    webhookToken: (row.webhook_token as string | null) ?? undefined,
+    webhookPath: row.webhook_token ? `${WEBHOOK_HOOK_PREFIX}/${row.webhook_token}` : undefined,
   };
 }
 
@@ -72,6 +81,7 @@ export function createAutomation(
     tool_name: fields.toolName,
     tool_args_json: JSON.stringify(fields.toolArgs ?? {}),
     enabled: 1,
+    webhook_token: fields.triggerType === "webhook" ? randomBytes(24).toString("hex") : null,
   });
   return toAutomation({ ...db.getById(TABLE, userId, id)!, userId });
 }

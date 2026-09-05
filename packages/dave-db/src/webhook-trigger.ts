@@ -25,8 +25,9 @@ const registry = new Map<string, RegisteredHook>();
 
 const PREFIX = "/hooks/automation";
 
-export function registerWebhookTrigger(id: string, handler: (payload: unknown) => void | Promise<void>): AutomationWebhook {
-  const token = randomBytes(24).toString("hex");
+/** `existingToken` lets a caller (e.g. automation-runtime, re-wiring on every registry rebuild) keep the SAME real URL stable across restarts instead of generating a new one every time -- otherwise an external service pointed at the old URL would silently stop firing. */
+export function registerWebhookTrigger(id: string, handler: (payload: unknown) => void | Promise<void>, existingToken?: string): AutomationWebhook {
+  const token = existingToken ?? randomBytes(24).toString("hex");
   registry.set(token, { id, handler });
   return { id, token, path: `${PREFIX}/${token}` };
 }

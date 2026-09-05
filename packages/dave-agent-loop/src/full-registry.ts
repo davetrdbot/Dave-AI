@@ -24,7 +24,7 @@ import { VISION_TOOLS } from "@dave/vision";
 import { SANDBOX_TOOLS } from "@dave/sandbox";
 import { DB_TOOLS } from "@dave/db";
 import { TRAILING_TOOLS, MT5_ACCOUNT_TOOLS, DAVEMA_TOOLS } from "@dave/trading";
-import { AUTOMATION_TOOLS, wireScheduledAutomations } from "@dave/db";
+import { AUTOMATION_TOOLS, wireScheduledAutomations, wireWebhookAutomations, wireEntityAutomations } from "@dave/db";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
 
@@ -118,7 +118,19 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   // this user has gets a REAL node-cron trigger whose handler calls back
   // into THIS registry (registry.execute), so a persisted automation row
   // genuinely fires a real tool call, not just data sitting unused.
-  wireScheduledAutomations(deps.db, deps.userId, (userId, toolName, toolArgs) => registry.execute(toolName, toolArgs));
+  const automationDispatch = (userId: string, toolName: string, toolArgs: Record<string, unknown>) => registry.execute(toolName, toolArgs);
+  wireScheduledAutomations(deps.db, deps.userId, automationDispatch);
+  // Real fix: "webhook"/"entity" automations previously persisted as DB rows
+  // with zero live connection -- these now genuinely wire to the real
+  // webhook-trigger primitive (stable URL across rebuilds) and the real
+  // db.onEntityEvent() primitive respectively, same as scheduled automations
+  // above. The webhook route still needs createAutomationWebhookServer() (or
+  // an equivalent already-running listener) actually accepting connections --
+  // that's a deployment-level HTTP server start, same as every other webhook
+  // server in this codebase (EA/Telegram/user webhooks), not something a
+  // registry build spins up on its own.
+  wireWebhookAutomations(deps.db, deps.userId, automationDispatch);
+  wireEntityAutomations(deps.db, deps.userId, automationDispatch);
 
   return registry;
 }
