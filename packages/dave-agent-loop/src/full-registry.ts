@@ -25,6 +25,7 @@ import { SANDBOX_TOOLS } from "@dave/sandbox";
 import { DB_TOOLS } from "@dave/db";
 import { TRAILING_TOOLS, MT5_ACCOUNT_TOOLS, DAVEMA_TOOLS } from "@dave/trading";
 import { AUTOMATION_TOOLS, wireScheduledAutomations, wireWebhookAutomations, wireEntityAutomations } from "@dave/db";
+import { FEEDBACK_TOOLS, logTrade } from "@dave/feedback";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
 
@@ -77,7 +78,13 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(SUBAGENT_TOOLS, ownerCtx));
   registry.register(adaptTools(MEMORY_TOOLS, { actorId: deps.userId }));
   registry.register(adaptTools(MEMORY_EXTRA_TOOLS, { actorId: deps.userId }));
-  registry.register(adaptTools(JOURNAL_TOOLS, { userId: deps.userId }));
+  // Real fix (Step 18 re-verification): a single journal_trade call now
+  // feeds BOTH the file-backed narrative store (Step 12) AND Step 18's
+  // DB-backed trade log -- the latter is what actually drives
+  // trade-count reflection (18.2) and the weekly export (18.6); without
+  // this callback logTrade() was never once called outside its own test.
+  registry.register(adaptTools(JOURNAL_TOOLS, { userId: deps.userId, onTradeLogged: (input) => logTrade(deps.db, deps.userId, input) }));
+  registry.register(adaptTools(FEEDBACK_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(SAFETY_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(SELF_IMPROVE_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(VISION_TOOLS, dbOnlyCtx));

@@ -36,7 +36,7 @@ export class AgentLoop {
     private readonly registry: ToolRegistry
   ) {}
 
-  async run(messages: CompletionMessage[], opts: { maxSteps?: number; timeoutMs?: number } = {}): Promise<AgentRunResult> {
+  async run(messages: CompletionMessage[], opts: { maxSteps?: number; timeoutMs?: number; onStep?: (step: AgentStep) => void } = {}): Promise<AgentRunResult> {
     const maxSteps = opts.maxSteps ?? 8;
     const timeoutMs = opts.timeoutMs ?? 20000;
     const history = [...messages];
@@ -54,7 +54,9 @@ export class AgentLoop {
       for (const call of result.toolCalls) {
         if (call.name === ASK_USER_TOOL_NAME) {
           const question = (await this.registry.execute(call.name, call.arguments)) as PendingQuestion;
-          steps.push({ toolName: call.name, arguments: call.arguments, result: question, isError: false });
+          const step: AgentStep = { toolName: call.name, arguments: call.arguments, result: question, isError: false };
+          steps.push(step);
+          opts.onStep?.(step);
           // Genuinely pause -- no tool_result exists yet for this call, so the
           // conversation cannot continue until resume() supplies the real answer.
           return { status: "awaiting_user", question, toolCallId: call.id, history, steps };
@@ -68,7 +70,9 @@ export class AgentLoop {
           isError = true;
           output = { error: err instanceof Error ? err.message : String(err) };
         }
-        steps.push({ toolName: call.name, arguments: call.arguments, result: output, isError });
+        const step: AgentStep = { toolName: call.name, arguments: call.arguments, result: output, isError };
+        steps.push(step);
+        opts.onStep?.(step);
         history.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(output) });
       }
     }

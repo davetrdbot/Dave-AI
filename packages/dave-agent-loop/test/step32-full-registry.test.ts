@@ -27,6 +27,7 @@ import { SELF_IMPROVE_TOOLS } from "@dave/self-improve";
 import { VISION_TOOLS } from "@dave/vision";
 import { SANDBOX_TOOLS } from "@dave/sandbox";
 import { DB_TOOLS, AUTOMATION_TOOLS, wireScheduledAutomations, unregisterScheduledTrigger } from "@dave/db";
+import { FEEDBACK_TOOLS } from "@dave/feedback";
 import { TelegramClient, TELEGRAM_TOOLS, PUSH_TOOLS } from "@dave/telegram";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
@@ -84,6 +85,7 @@ try {
     KNOWLEDGE_TOOLS.length +
     MCP_MANAGER_TOOLS.length +
     FIRECRAWL_TOOLS.length +
+    FEEDBACK_TOOLS.length + // Step 18 re-verification: record_skip/record_hypothesis/record_observation/etc, now genuinely wired into the registry
     2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
@@ -102,6 +104,7 @@ try {
     "get_lovable_mcp_settings", "set_lovable_mcp_settings", // dave-lovable-mcp settings
     "get_voice_settings", "set_voice_enabled", // dave-notifications TTS settings
     "list_pair_groups", "create_or_update_pair_group", "delete_pair_group", "get_active_pair_group", // dave-trading pair groups
+    "record_skip", "record_hypothesis", "record_observation", // dave-feedback (Step 18 re-verification)
     "ask_user",
   ];
   for (const name of mustHave) assert.ok(registry.has(name), `registry must genuinely have "${name}"`);

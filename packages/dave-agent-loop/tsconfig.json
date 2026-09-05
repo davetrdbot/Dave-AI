@@ -27,6 +27,7 @@
     { "path": "../dave-core" },
     { "path": "../dave-knowledge" },
     { "path": "../dave-mcp-manager" },
-    { "path": "../dave-firecrawl" }
+    { "path": "../dave-firecrawl" },
+    { "path": "../dave-feedback" }
   ]
 }

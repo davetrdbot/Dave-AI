@@ -87,7 +87,7 @@ try {
 
   // --- [4] Feedback poll: real send + real inbound webhook + referenced in reflection ---
   console.log("\n[4] Feedback poll: real webhook receives an answer, real DB record, later referenced...\n");
-  const fakeTelegram = { sendPoll: async () => ({ message_id: 555 }) } as any;
+  const fakeTelegram = { sendPoll: async () => ({ message_id: 555, poll: { id: "real-poll-id-555" } }) } as any;
   const { webhook } = await sendFeedbackPoll(fakeTelegram, db, OWNER, 12345, "Was this week's aggressiveness about right?", ["Too aggressive", "About right", "Too cautious"]);
   const server = createAutomationWebhookServer();
   await new Promise<void>((resolve) => server.listen(0, resolve));

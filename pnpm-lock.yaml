@@ -7,6 +7,22 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@dave/agent-loop':
+        specifier: workspace:*
+        version: link:packages/dave-agent-loop
+      '@dave/davema':
+        specifier: workspace:*
+        version: link:packages/dave-davema
+      '@dave/db':
+        specifier: workspace:*
+        version: link:packages/dave-db
+      '@dave/ea-bridge':
+        specifier: workspace:*
+        version: link:packages/dave-ea-bridge
+      '@dave/rfeed':
+        specifier: workspace:*
+        version: link:packages/dave-rfeed
     devDependencies:
       '@types/node':
         specifier: ^26.4.1
@@ -41,6 +57,9 @@ importers:
       '@dave/lovable-mcp':
         specifier: workspace:*
         version: link:../dave-lovable-mcp
+      '@dave/mcp-manager':
+        specifier: workspace:*
+        version: link:../dave-mcp-manager
       '@dave/sandbox':
         specifier: workspace:*
         version: link:../dave-sandbox
@@ -96,6 +115,9 @@ importers:
       '@dave/ea-bridge':
         specifier: workspace:*
         version: link:../dave-ea-bridge
+      '@dave/feedback':
+        specifier: workspace:*
+        version: link:../dave-feedback
       '@dave/firecrawl':
         specifier: workspace:*
         version: link:../dave-firecrawl

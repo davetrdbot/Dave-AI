@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import { generateWithKeyFailover } from "@dave/brain";
 import { buildImageContentBlock } from "./image.js";
-import { extractKeyframes, transcribeVideoWithTimestamps } from "./video.js";
-import { TranscriptionClient } from "@dave/io";
+import { extractKeyframes, transcribeAudioBytesWithKeyFailover } from "./video.js";
 
 /**
  * Update 18 (bulk tool-coverage expansion): Step 20's real vision
@@ -50,11 +50,12 @@ export const VISION_TOOLS: VisionToolDefinition[] = [
   },
   {
     name: "transcribe_voice_note",
-    description: "Real timestamped transcription of an audio/video file via Groq -- no separate audio-extraction step needed for video.",
-    parameters: { type: "object", properties: { videoRelativePath: { type: "string" }, workspaceRoot: { type: "string" }, apiKey: { type: "string" } }, required: ["videoRelativePath", "workspaceRoot", "apiKey"] },
-    execute: async (args) => {
-      const client = new TranscriptionClient(args.apiKey as string);
-      return transcribeVideoWithTimestamps(client, args.videoRelativePath as string, args.workspaceRoot as string);
+    description: "Real timestamped transcription of a local audio/video file via Groq, using your own stored Groq provider key (no key-passing needed) -- no separate audio-extraction step needed for video.",
+    parameters: { type: "object", properties: { videoRelativePath: { type: "string" }, workspaceRoot: { type: "string" } }, required: ["videoRelativePath", "workspaceRoot"] },
+    execute: async (args, ctx) => {
+      const bytes = readFileSync(join(args.workspaceRoot as string, args.videoRelativePath as string));
+      const filename = (args.videoRelativePath as string).split("/").pop() ?? "voice.ogg";
+      return transcribeAudioBytesWithKeyFailover(ctx.db, ctx.userId, bytes, filename);
     },
   },
 ];

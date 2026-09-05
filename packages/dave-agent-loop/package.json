@@ -26,7 +26,8 @@
     "@dave/core": "workspace:*",
     "@dave/knowledge": "workspace:*",
     "@dave/mcp-manager": "workspace:*",
-    "@dave/firecrawl": "workspace:*"
+    "@dave/firecrawl": "workspace:*",
+    "@dave/feedback": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

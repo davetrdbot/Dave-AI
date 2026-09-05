@@ -36,6 +36,21 @@ export function unregisterWebhookTrigger(token: string): void {
   registry.delete(token);
 }
 
+/**
+ * Direct in-process invocation of a registered webhook's handler, bypassing
+ * HTTP entirely -- for callers that already have the payload in hand from a
+ * different real inbound channel (e.g. a Telegram `poll_answer` update
+ * arriving on the Telegram webhook, not this module's own HTTP route) and
+ * just need to relay it to the same handler an external POST would have
+ * reached. Returns false if no hook is registered under that token.
+ */
+export async function invokeWebhookTrigger(token: string, payload: unknown): Promise<boolean> {
+  const hook = registry.get(token);
+  if (!hook) return false;
+  await hook.handler(payload);
+  return true;
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = "";

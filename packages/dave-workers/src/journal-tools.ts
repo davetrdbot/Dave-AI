@@ -1,8 +1,20 @@
-import { journalTrade, journalClose, journalDaily, journalSearch } from "./journal-store.js";
+import { journalTrade, journalClose, journalDaily, journalSearch, type JournalEntry } from "./journal-store.js";
 import type { TradeJournalInput } from "./journal-worker.js";
 
 export interface JournalToolContext {
   userId: string;
+  /**
+   * Real gap closed: this file-backed journal store and Step 18's
+   * DB-backed trade log (`@dave/feedback`'s `logTrade`) were two
+   * disconnected systems -- a trade journaled here never advanced the
+   * trade-count reflection counter or showed up in a weekly export.
+   * Rather than give dave-workers a dependency on dave-feedback
+   * (circular -- dave-feedback already depends on dave-workers), the
+   * caller building this context (dave-agent-loop's registry) injects
+   * the real `logTrade` call here, so a single `journal_trade` tool
+   * invocation genuinely feeds BOTH stores.
+   */
+  onTradeLogged?: (input: TradeJournalInput, entry: JournalEntry) => void;
 }
 
 export interface JournalToolDefinition {
@@ -29,7 +41,12 @@ export const JOURNAL_TOOLS: JournalToolDefinition[] = [
       },
       required: ["symbol", "direction", "entryPrice", "reasoning"],
     },
-    execute: async (args, ctx) => journalTrade(ctx.userId, args as unknown as TradeJournalInput),
+    execute: async (args, ctx) => {
+      const input = args as unknown as TradeJournalInput;
+      const entry = journalTrade(ctx.userId, input);
+      ctx.onTradeLogged?.(input, entry);
+      return entry;
+    },
   },
   {
     name: "journal_close",

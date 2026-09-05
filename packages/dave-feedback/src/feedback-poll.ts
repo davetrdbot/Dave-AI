@@ -56,8 +56,18 @@ export function getPollResultsSince(db: DaveDatabase, ownerUserId: string, since
 
 /**
  * Sends a real poll AND registers a real webhook to receive its answer
- * -- returns both the sent message and the webhook path the relay must
- * be told to forward `poll_answer` updates to for this specific poll.
+ * -- returns the sent message id, the poll's own id (what a real
+ * `poll_answer` update correlates against, NOT message_id), and the
+ * webhook the relay forwards to for this specific poll.
+ *
+ * Two real gaps closed here after tracing the actual Bot API contract:
+ * 1. `is_anonymous: false` is required -- Telegram never sends
+ *    `poll_answer` updates for an anonymous poll (the default), so an
+ *    anonymous poll's answer would silently never arrive.
+ * 2. The webhook token IS the poll's own real id (`sent.poll.id`), not a
+ *    fresh random token -- so the Telegram update relay (which only has
+ *    `poll_id` off the real `poll_answer` update, never a message_id) can
+ *    find this exact registration with no separate lookup table needed.
  */
 export async function sendFeedbackPoll(
   client: TelegramClient,
@@ -66,12 +76,13 @@ export async function sendFeedbackPoll(
   chatId: number | string,
   question: string,
   options: string[]
-): Promise<{ messageId: number; webhook: AutomationWebhook }> {
+): Promise<{ messageId: number; pollId: string; webhook: AutomationWebhook }> {
   ensureTable(db);
-  const sent = await client.sendPoll({ chat_id: chatId, question, options });
+  const sent = await client.sendPoll({ chat_id: chatId, question, options, is_anonymous: false });
+  const pollId = sent.poll.id;
   const webhook = registerWebhookTrigger(`poll-${sent.message_id}`, (payload) => {
     const { selectedOptionIndex } = payload as { selectedOptionIndex: number };
     recordPollResult(db, ownerUserId, question, options, selectedOptionIndex);
-  });
-  return { messageId: sent.message_id, webhook };
+  }, pollId);
+  return { messageId: sent.message_id, pollId, webhook };
 }

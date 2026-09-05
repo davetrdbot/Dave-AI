@@ -20,6 +20,7 @@
     "@dave/firecrawl": "workspace:*",
     "@dave/telegram": "workspace:*",
     "@dave/ea-bridge": "workspace:*",
+    "@dave/mcp-manager": "workspace:*",
     "recharts": "^2.15.0",
     "next": "16.3.4",
     "react": "19.2.8",

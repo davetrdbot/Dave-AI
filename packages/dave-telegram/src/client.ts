@@ -59,12 +59,44 @@ export interface RichMessage {
 }
 
 /** Real, minimal shape of a Telegram Update -- just the fields this build actually reads. */
+/** Real inbound-file shapes (Step 15, both directions): what Telegram's own Bot API sends on `message.voice`/`.photo`/`.document`. */
+export interface TelegramVoice {
+  file_id: string;
+  file_unique_id: string;
+  duration: number;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TelegramPhotoSize {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
+export interface TelegramDocument {
+  file_id: string;
+  file_unique_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
 export interface TelegramMessage {
   message_id: number;
   chat: { id: number; type: string };
   from?: { id: number; username?: string; first_name?: string };
   text?: string;
+  caption?: string;
   date: number;
+  /** A voice note (`.ogg`/OPUS) -- Telegram always sends exactly one of these, never an array. */
+  voice?: TelegramVoice;
+  /** A photo -- Telegram sends every generated resolution; the LAST entry is the largest (Bot API's own documented ordering). */
+  photo?: TelegramPhotoSize[];
+  /** A generic file upload (PDF, .mq5, any non-media file, or a "compressed: off" photo). */
+  document?: TelegramDocument;
 }
 
 export interface TelegramCallbackQuery {
@@ -74,10 +106,18 @@ export interface TelegramCallbackQuery {
   data?: string;
 }
 
+/** Real Bot API shape for an incoming poll answer -- `poll_id` is what correlates back to the poll's own id (NOT the message_id the poll was sent as), `option_ids` is which option(s) the user picked. */
+export interface TelegramPollAnswer {
+  poll_id: string;
+  user?: { id: number; username?: string; first_name?: string };
+  option_ids: number[];
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
+  poll_answer?: TelegramPollAnswer;
 }
 
 export interface SendMessageParams {
@@ -271,8 +311,9 @@ export class TelegramClient {
     return this.call<true>("unpinChatMessage", params);
   }
 
+  /** Real Bot API `sendPoll` returns the full sent Message, which includes a `poll` object carrying the poll's OWN id -- distinct from `message_id` -- that's what a real `poll_answer` update correlates back against. */
   sendPoll(params: { chat_id: number | string; question: string; options: string[]; is_anonymous?: boolean }) {
-    return this.call<{ message_id: number }>("sendPoll", params);
+    return this.call<{ message_id: number; poll: { id: string; question: string; options: { text: string; voter_count: number }[] } }>("sendPoll", params);
   }
 
   sendChatAction(params: { chat_id: number | string; action: "typing" | "upload_document" | "upload_photo" }) {

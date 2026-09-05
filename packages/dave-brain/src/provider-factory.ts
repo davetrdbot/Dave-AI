@@ -22,7 +22,16 @@ export function buildProvider(name: ProviderName, config: ProviderKeyConfig): Pr
 
   switch (resolved) {
     case "airllm":
-      return new AirLLMProvider(config.baseUrlOverride ?? entry.baseUrl.toString());
+      // Real gap fixed (Railway pre-deployment check): the catalog's
+      // default baseUrl (127.0.0.1:8090) assumes AirLLM runs colocated
+      // with Dave's own process -- true only for local dev. Railway has
+      // no GPU, so AirLLM/Qwen3-235B always runs on a separate real GPU
+      // host in production; AIRLLM_BASE_URL is the real env var that
+      // points at it (see .env.example), checked before the per-user
+      // stored override so a fresh Railway boot with no admin-UI
+      // interaction yet still resolves to the real remote host, not
+      // localhost.
+      return new AirLLMProvider(config.baseUrlOverride ?? process.env.AIRLLM_BASE_URL ?? entry.baseUrl.toString());
     case "deepseek":
       return new DeepSeekProvider(config.apiKey, config.baseUrlOverride ?? (entry.baseUrl as string));
     case "claude":

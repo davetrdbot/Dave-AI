@@ -66,7 +66,9 @@ function resolveWebhookToken(pathToken: string): { userId: string; secretToken: 
  */
 export async function enableTelegramWebhook(client: TelegramClient, userId: string, publicBaseUrl: string): Promise<TelegramWebhookRegistration> {
   const route = getOrCreateTelegramWebhookRoute(userId);
-  await client.setWebhook({ url: `${publicBaseUrl}${route.path}`, secret_token: route.secretToken, allowed_updates: ["message", "callback_query"] });
+  // "poll_answer" is required here or Telegram never delivers it at all --
+  // Step 18.5's feedback poll depends on this update type genuinely arriving.
+  await client.setWebhook({ url: `${publicBaseUrl}${route.path}`, secret_token: route.secretToken, allowed_updates: ["message", "callback_query", "poll_answer"] });
   return route;
 }
 

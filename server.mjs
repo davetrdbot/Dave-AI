@@ -1,32 +1,39 @@
-// Placeholder Railway entrypoint.
+// Real Railway entrypoint -- Dave's unified boot sequence.
 //
-// Dave's real boot sequence (Telegram bot, DSH agent loop, webhook
-// servers, scheduled jobs) doesn't exist as a single unified process yet
-// -- that's Step 22 of the master build prompt ("boot the full
-// application, confirm zero runtime crashes"). Every subsystem built so
-// far (memory, brain, sandbox, DAVEMA, Telegram, trading) is real,
-// tested library code, not yet wired into one running app.
+// This is a thin wrapper around the real composition root,
+// packages/dave-agent-loop/src/main.ts (compiled to lib/main.js): it
+// builds a real DaveDatabase, the real EA/R_Feed bridges, the real
+// automation + hidden-memory webhook servers, and (when a bot token and
+// a public URL are available) the real Telegram bot server backed by
+// the full tool registry -- all multiplexed onto the single PORT
+// Railway gives this process.
 //
-// This file exists so a Railway deploy has something real and honest to
-// run after a successful build, instead of either crash-looping (no
-// start command) or silently doing nothing. It's a plain Node script
-// with zero dependencies on the TypeScript packages, so it starts
-// reliably regardless of their build state.
+// Kept deliberately tiny and dependency-light at this outer layer: if
+// anything inside main() throws in a way it doesn't already catch
+// itself (main() already degrades gracefully around a missing/invalid
+// Telegram token), this still wraps the call so the process falls back
+// to a minimal health-check server instead of crash-looping.
 import { createServer } from "node:http";
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
-const server = createServer((req, res) => {
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(
-    JSON.stringify({
-      status: "ok",
-      service: "dave-ai",
-      note: "Build succeeded. Dave's unified boot sequence (Telegram bot, agent loop) is Step 22 of the build -- not wired up yet. See PROGRESS.md.",
-    })
-  );
-});
+function log(...args) {
+  console.log("[dave-ai boot]", ...args);
+}
 
-server.listen(PORT, () => {
-  console.log(`[dave-ai placeholder] listening on port ${PORT}`);
-});
+function startFallbackServer(reason) {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ status: "degraded", service: "dave-ai", reason }));
+  });
+  server.listen(PORT, () => log(`degraded mode listening on port ${PORT} -- reason: ${reason}`));
+  return server;
+}
+
+try {
+  const { main } = await import("@dave/agent-loop");
+  await main();
+} catch (err) {
+  console.error("[dave-ai boot] FATAL during startup, falling back to a degraded health-check server:", err);
+  startFallbackServer(`unexpected boot error: ${err instanceof Error ? err.message : String(err)}`);
+}
