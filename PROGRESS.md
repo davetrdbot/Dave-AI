@@ -3217,3 +3217,109 @@ New `packages/dave-agent-loop/test/step36-clarifying-questions.test.ts`:
   judgment call this test cannot exercise (it drives a scripted mock
   response, not a real LLM's decision); the infrastructure is proven,
   the model's judgment isn't something a unit test can verify
+
+## Status: Update 18 — Bulk Tool-Coverage Expansion (COMPLETE)
+
+Direct response to the user pasting the master plan's full tool
+manifest and pointing out how much of it had real underlying code but
+no agent-tool surface. This wraps every genuinely-real, previously-
+unwrapped capability across 10 packages as real tools, wired into the
+same unified registry (Update 11/14/17). Registry grew from 64 to
+**117 tools**.
+
+### New tool files (all real wrappers over already-existing, already-tested functions)
+- `dave-db/src/tools.ts` — `DB_TOOLS`: db_create_table/list_tables/
+  create_records/read_records/update_records/delete_records/aggregate
+  (Step 16.1's dynamic DDL, now agent-callable)
+- `dave-safety/src/tools.ts` — `SAFETY_TOOLS`: circuit_breaker/
+  check_safety_limits/reset_circuit_breaker/hard_stop/pause_action/
+  resume_action/get_interrupt_state/detect_manual_close/
+  detect_manual_modify (the SAME real comparison functions the live
+  EA webhook wiring uses, Update 15/16, now callable on demand)
+- `dave-self-improve/src/tools.ts` — `SELF_IMPROVE_TOOLS`: propose_patch/
+  preview_patch/test_patch/apply_patch/request_approval/decide_approval/
+  get_approval/get_auto_approve/set_auto_approve/propose_new_tool/
+  request_tool_creation_approval/get_version_history/rollback_to_version
+  — all real, hard-gated exactly as Step 17/18 built them (a tool
+  cannot apply a patch that isn't genuinely tested+approved)
+- `dave-vision/src/tools.ts` — `VISION_TOOLS`: read_image/analyze_image
+  (real Claude vision call via `generateWithKeyFailover`)/process_video
+  (real ffmpeg)/transcribe_voice_note (real Groq)
+- `dave-sandbox/src/tools.ts` — `SANDBOX_TOOLS`: davesbx/davesbx_health/
+  davesbx_write_file/davesbx_read_file — the MAIN sandbox (DSH-native),
+  distinct from Update 12's E2B (the additional, disposable option)
+- `dave-trading/src/extra-tools.ts` + `trailing-config.ts` —
+  `TRAILING_TOOLS` (new persisted per-user breakeven/trailing config
+  store, since Step 10.9's functions took config as a plain argument),
+  `MT5_ACCOUNT_TOOLS` (mt5_account), `DAVEMA_TOOLS` (a real, direct
+  davema query tool covering any of the 46 endpoints, plus
+  correlation_check)
+- `dave-telegram/src/tools.ts` — `TELEGRAM_TOOLS`: tg_thinking/
+  tg_thinking_update/tg_finalize (real `ThinkingIndicator` instances,
+  tracked per chat), send_telegram, tg_rich_message, tg_edit_message,
+  tg_send_file, tg_send_poll, pin_message, tg_chat_action,
+  set_bot_profile, edit_bot_menu, telegram_health, deliver_ea, pair_user
+- `dave-notifications/src/extra-tools.ts` — `NOTIFICATION_TOOLS`:
+  notification_settings (morning brief), voice_tts (real synthesis),
+  send_ea_connected_notification, send_trade_opened_notification,
+  send_trade_closed_notification (also covers the TP/SL-hit dedicated
+  alerts via the existing real `routeClosedPositionAlert` dispatch —
+  the master list's separate "send_tp_hit_notification" name is the
+  SAME real underlying call with `reason: "tp"`, not a second tool)
+- `dave-memory/src/extra-tools.ts` — `MEMORY_EXTRA_TOOLS`: session_search,
+  tencent_memory (conversation/atoms/scenarios), check_write_approval/
+  toggle_write_approval/approve_pending_write
+- `dave-workers/src/journal-store.ts` + `journal-tools.ts` —
+  `JOURNAL_TOOLS`: journal_trade/journal_close/journal_daily/
+  journal_search, backed by a NEW real persisted journal store (Step
+  12's `writeTradeJournalEntry` only ever formatted text; nothing
+  stored entries until now)
+
+### Real proof (Update 18)
+Extended `packages/dave-agent-loop/test/step32-full-registry.test.ts`:
+- Registry now totals 117 tools (was 64); with a real Telegram client
+  supplied, `TELEGRAM_TOOLS`/`NOTIFICATION_TOOLS` register too (bringing
+  it higher still), confirmed by exact count arithmetic
+- Real representative calls through the SAME registry across every
+  new package: a real table created + row inserted + read back
+  (dave-db); a real circuit-breaker report, a real `hard_stop` that
+  genuinely halts the trading loop then genuinely resumes, and a real
+  `detect_manual_close` call (dave-safety); a real `get_auto_approve`
+  read (dave-self-improve); a real journal entry written and found by
+  real search (dave-workers); a real trailing-config set/get round trip
+  (dave-trading); a real `davesbx_health` call that HONESTLY reports
+  this host has no usable sandbox backend (the same real DSH fail-
+  closed finding from Step 6.1 — not a fabricated "success")
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 37-file test suite green afterward, clean `tsc -b` build across
+  all 25 packages, clean `next build`
+
+### What's genuinely NOT built (new infrastructure, not just wrapping — flagged, not silently skipped)
+These named tools from the pasted manifest have NO existing backing
+implementation anywhere in this codebase; wrapping them would mean
+building new systems from scratch, which this pass deliberately did
+NOT do without being asked to build the underlying feature first:
+- **External tools**: `web_search`, `firecrawl`, `file_upload`,
+  `tmpfiles_upload` — no web-search/scraping/generic-file-hosting
+  integration exists anywhere in this build
+- **Knowledge base**: `knowledge_save/view/delete/draft/list` — no
+  knowledge-base system exists (distinct from the per-user Skills store,
+  Update 10)
+- **Generic MCP manager**: `mcp_connect/mcp_call/mcp_list` — only a
+  Lovable-specific MCP client exists (Update 5); a generic
+  connect-to-any-MCP-server manager is a separate, larger feature
+- **Automation CRUD**: `create/delete/get/list/pause/resume_automation`
+  — Step 16/17's real scheduled/webhook triggers exist as functions
+  (`registerScheduledTrigger` etc.) but as infra primitives, not a
+  user-facing "automation" concept with its own CRUD surface
+- `goal_config` (the rules-file/goal.yaml concept from IDENTITY.md),
+  `selftest`, `onboarding`-as-a-tool (Step 3's `BootstrapFlow` exists
+  but isn't tool-wrapped) — none have a real backing implementation
+  shaped like the requested tool
+- Gemini Live's real relay/session tools (`gemini_live_start_session`/
+  `gemini_live_relay`) and Green API's real inbound/outbound call
+  placement (`place_voice_call`/`handle_inbound_call`) -- Update 6
+  already documented WHY full call placement is architecturally
+  blocked (WebRTC, browser-only); what's real there
+  (`evaluate_call_trigger`, `notify_trying_to_reach_you`,
+  `GeminiLiveClient.connect()`) is already wrapped

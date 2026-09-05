@@ -4,6 +4,7 @@ export * from "./interrupts.js";
 export * from "./security-check-cron.js";
 export * from "./heartbeat.js";
 export * from "./watchdog-controller.js";
+export * from "./tools.js";
 // watchdog-entry.ts is deliberately NOT exported -- it has top-level
 // side effects (reads env vars, starts polling immediately) and is
 // only ever meant to run as a genuinely separate forked process, never

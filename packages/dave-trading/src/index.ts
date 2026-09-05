@@ -10,3 +10,5 @@ export * from "./mt5-accounts.js";
 export * from "./find-setup.js";
 export * from "./tools.js";
 export * from "./pair-group-tools.js";
+export * from "./trailing-config.js";
+export * from "./extra-tools.js";

@@ -15,9 +15,16 @@ import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS } from "@dave/w
 import { SKILL_TOOLS } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS } from "@dave/memory";
-import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
-import { PAIR_GROUP_TOOLS } from "@dave/trading";
-import { TelegramClient } from "@dave/telegram";
+import { VOICE_SETTINGS_TOOLS, NOTIFICATION_TOOLS } from "@dave/notifications";
+import { PAIR_GROUP_TOOLS, TRAILING_TOOLS, MT5_ACCOUNT_TOOLS, DAVEMA_TOOLS } from "@dave/trading";
+import { JOURNAL_TOOLS } from "@dave/workers";
+import { MEMORY_EXTRA_TOOLS } from "@dave/memory";
+import { SAFETY_TOOLS } from "@dave/safety";
+import { SELF_IMPROVE_TOOLS } from "@dave/self-improve";
+import { VISION_TOOLS } from "@dave/vision";
+import { SANDBOX_TOOLS } from "@dave/sandbox";
+import { DB_TOOLS } from "@dave/db";
+import { TelegramClient, TELEGRAM_TOOLS, PUSH_TOOLS } from "@dave/telegram";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
 
@@ -60,7 +67,17 @@ try {
     E2B_TOOLS.length +
     SUBAGENT_TOOLS.length +
     MEMORY_TOOLS.length +
-    2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS is not registered)
+    MEMORY_EXTRA_TOOLS.length +
+    JOURNAL_TOOLS.length +
+    SAFETY_TOOLS.length +
+    SELF_IMPROVE_TOOLS.length +
+    VISION_TOOLS.length +
+    SANDBOX_TOOLS.length +
+    DB_TOOLS.length +
+    TRAILING_TOOLS.length +
+    MT5_ACCOUNT_TOOLS.length +
+    DAVEMA_TOOLS.length +
+    2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
 
@@ -188,6 +205,9 @@ try {
   assert.equal(pushResult.message_id, 42);
   assert.equal(capturedPush.chat_id, 847213);
   assert.equal(capturedPush.text, "Heads up: XAUUSD just hit TP.");
+  assert.ok(registryWithPush.has("tg_thinking"), "TELEGRAM_TOOLS must also register once a real telegram client is supplied");
+  assert.ok(registryWithPush.has("send_trade_opened_notification"), "NOTIFICATION_TOOLS must also register");
+  assert.equal(registryWithPush.list().length, registry.list().length + PUSH_TOOLS.length + TELEGRAM_TOOLS.length + NOTIFICATION_TOOLS.length);
   await new Promise<void>((resolve) => tgServer.close(() => resolve()));
   console.log(`    real push reached the real Telegram-shaped server: chat_id=${capturedPush.chat_id}, text="${capturedPush.text}"`);
 
@@ -237,6 +257,45 @@ try {
   const groupsFinal: any = await registry.execute("list_pair_groups", {});
   assert.equal(groupsFinal.groups.length, 0);
   console.log(`    pair groups real round trip: create -> ${groupsAfter.groups.length} group(s) -> delete -> ${groupsFinal.groups.length} group(s)`);
+
+  // --- [8] Update 18 bulk-expansion tools: real, representative calls through the SAME registry ---
+  console.log("\n[8] Update 18 bulk tool-coverage expansion: real representative calls across every newly-added package...\n");
+
+  await registry.execute("db_create_table", { table: "notes", columns: [{ name: "text", type: "TEXT" }] });
+  const inserted: any = await registry.execute("db_create_records", { table: "notes", data: { text: "hello" } });
+  const rows: any = await registry.execute("db_read_records", { table: "notes", where: {} });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].text, "hello");
+  console.log(`    dave-db tools: real table created, real row inserted (${inserted.id}), real read-back: "${rows[0].text}"`);
+
+  const breakerReport: any = await registry.execute("circuit_breaker", {});
+  assert.equal(breakerReport.tripped, false);
+  const interrupt: any = await registry.execute("hard_stop", {});
+  assert.equal(interrupt.tradingLoop, "halted");
+  await registry.execute("resume_action", {});
+  console.log(`    dave-safety tools: real circuit-breaker report (tripped=${breakerReport.tripped}), real hard_stop -> halted -> resumed`);
+
+  const closes = await registry.execute("detect_manual_close", { previousPositions: [{ ticket: "T1", symbol: "EURUSD", type: "buy", lots: 0.1, openPrice: 1.1 }], newPositions: [] });
+  assert.deepEqual((closes as any[]).map((p) => p.ticket), ["T1"]);
+  console.log(`    dave-safety detect_manual_close: real detection through the registry: ${JSON.stringify(closes)}`);
+
+  const autoApprove: any = await registry.execute("get_auto_approve", {});
+  assert.equal(autoApprove.enabled, false);
+  console.log(`    dave-self-improve tools: real get_auto_approve -> ${JSON.stringify(autoApprove)}`);
+
+  const journalEntry: any = await registry.execute("journal_trade", { symbol: "XAUUSD", direction: "buy", entryPrice: 2650.5, reasoning: ["H4 trend bullish"] });
+  assert.ok(journalEntry.narrative.includes("XAUUSD"));
+  const journalResults: any = await registry.execute("journal_search", { query: "XAUUSD" });
+  assert.equal(journalResults.length, 1);
+  console.log(`    dave-workers journal tools: real entry written and found by real search: ${journalResults[0].id}`);
+
+  const trailingConfig: any = await registry.execute("set_trailing_stop_config", { slAtTp1: 1.1, slAtTp2: 1.105, slAtTp3: 1.11 });
+  assert.equal(trailingConfig.slAtTp1, 1.1);
+  console.log(`    dave-trading trailing-config tools: real set/get round trip: ${JSON.stringify(trailingConfig)}`);
+
+  const sandboxHealth = await registry.execute("davesbx_health", { workspaceRoot: workDir });
+  assert.ok(sandboxHealth);
+  console.log(`    dave-sandbox tools: real davesbx_health call: ${JSON.stringify(sandboxHealth)}`);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

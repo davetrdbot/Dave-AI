@@ -20,6 +20,10 @@
     { "path": "../dave-memory" },
     { "path": "../dave-telegram" },
     { "path": "../dave-notifications" },
+    { "path": "../dave-safety" },
+    { "path": "../dave-self-improve" },
+    { "path": "../dave-vision" },
+    { "path": "../dave-sandbox" },
     { "path": "../dave-db" }
   ]
 }

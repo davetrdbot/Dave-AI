@@ -96,6 +96,15 @@ importers:
       '@dave/rfeed':
         specifier: workspace:*
         version: link:../dave-rfeed
+      '@dave/safety':
+        specifier: workspace:*
+        version: link:../dave-safety
+      '@dave/sandbox':
+        specifier: workspace:*
+        version: link:../dave-sandbox
+      '@dave/self-improve':
+        specifier: workspace:*
+        version: link:../dave-self-improve
       '@dave/skills':
         specifier: workspace:*
         version: link:../dave-skills
@@ -105,6 +114,9 @@ importers:
       '@dave/trading':
         specifier: workspace:*
         version: link:../dave-trading
+      '@dave/vision':
+        specifier: workspace:*
+        version: link:../dave-vision
       '@dave/voice-call':
         specifier: workspace:*
         version: link:../dave-voice-call
@@ -242,6 +254,9 @@ importers:
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db
+      '@dave/ea-bridge':
+        specifier: workspace:*
+        version: link:../dave-ea-bridge
       '@dave/workers':
         specifier: workspace:*
         version: link:../dave-workers
@@ -312,6 +327,9 @@ importers:
       '@dave/brain':
         specifier: workspace:*
         version: link:../dave-brain
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
       '@dave/io':
         specifier: workspace:*
         version: link:../dave-io

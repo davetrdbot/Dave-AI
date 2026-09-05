@@ -6,5 +6,5 @@
     "outDir": "lib"
   },
   "include": ["src"],
-  "references": [{ "path": "../dave-brain" }, { "path": "../dave-sandbox" }, { "path": "../dave-io" }]
+  "references": [{ "path": "../dave-brain" }, { "path": "../dave-sandbox" }, { "path": "../dave-io" }, { "path": "../dave-db" }]
 }

@@ -19,6 +19,10 @@
     "@dave/memory": "workspace:*",
     "@dave/telegram": "workspace:*",
     "@dave/notifications": "workspace:*",
+    "@dave/safety": "workspace:*",
+    "@dave/self-improve": "workspace:*",
+    "@dave/vision": "workspace:*",
+    "@dave/sandbox": "workspace:*",
     "@dave/db": "workspace:*"
   },
   "exports": {

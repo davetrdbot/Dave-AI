@@ -6,5 +6,5 @@
     "outDir": "lib"
   },
   "include": ["src"],
-  "references": [{ "path": "../dave-crypto" }, { "path": "../dave-db" }, { "path": "../dave-workers" }]
+  "references": [{ "path": "../dave-crypto" }, { "path": "../dave-db" }, { "path": "../dave-workers" }, { "path": "../dave-ea-bridge" }]
 }

@@ -8,7 +8,8 @@
   "dependencies": {
     "@dave/crypto": "workspace:*",
     "@dave/db": "workspace:*",
-    "@dave/workers": "workspace:*"
+    "@dave/workers": "workspace:*",
+    "@dave/ea-bridge": "workspace:*"
   },
   "devDependencies": {
     "@dave/trading": "workspace:*",

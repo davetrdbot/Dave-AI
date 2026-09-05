@@ -8,12 +8,18 @@ import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_CALL_TOOLS, CALL_SETTINGS_TOOLS } from "@dave/voice-call";
 import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
 import { PAIR_GROUP_TOOLS } from "@dave/trading";
-import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS } from "@dave/workers";
+import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
-import { SUBAGENT_TOOLS } from "@dave/workers";
-import { MEMORY_TOOLS } from "@dave/memory";
-import { PUSH_TOOLS, type TelegramClient } from "@dave/telegram";
+import { MEMORY_TOOLS, MEMORY_EXTRA_TOOLS } from "@dave/memory";
+import { PUSH_TOOLS, TELEGRAM_TOOLS, type TelegramClient } from "@dave/telegram";
+import { NOTIFICATION_TOOLS } from "@dave/notifications";
+import { SAFETY_TOOLS } from "@dave/safety";
+import { SELF_IMPROVE_TOOLS } from "@dave/self-improve";
+import { VISION_TOOLS } from "@dave/vision";
+import { SANDBOX_TOOLS } from "@dave/sandbox";
+import { DB_TOOLS } from "@dave/db";
+import { TRAILING_TOOLS, MT5_ACCOUNT_TOOLS, DAVEMA_TOOLS } from "@dave/trading";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
 
@@ -62,8 +68,20 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(E2B_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(SUBAGENT_TOOLS, ownerCtx));
   registry.register(adaptTools(MEMORY_TOOLS, { actorId: deps.userId }));
+  registry.register(adaptTools(MEMORY_EXTRA_TOOLS, { actorId: deps.userId }));
+  registry.register(adaptTools(JOURNAL_TOOLS, { userId: deps.userId }));
+  registry.register(adaptTools(SAFETY_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(SELF_IMPROVE_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(VISION_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(SANDBOX_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(DB_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(TRAILING_TOOLS, tradingCtx));
+  registry.register(adaptTools(MT5_ACCOUNT_TOOLS, tradingCtx));
+  registry.register(adaptTools(DAVEMA_TOOLS, tradingCtx));
   if (deps.telegram) {
     registry.register(adaptTools(PUSH_TOOLS, deps.telegram));
+    registry.register(adaptTools(TELEGRAM_TOOLS, deps.telegram));
+    registry.register(adaptTools(NOTIFICATION_TOOLS, { userId: deps.userId, db: deps.db, client: deps.telegram.client, chatId: deps.telegram.chatId }));
   }
   registry.register([createAskUserTool(deps.userId)] as AgentTool[]);
 
