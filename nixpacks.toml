@@ -6,14 +6,23 @@
 #
 # Item 2 (admin "Load Model on Railway" toggle): Nixpacks normally picks
 # ONE primary provider by repo structure -- seeing package.json means it
-# builds a Node-only plan and never touches Python at all. `providers`
-# forces both toolchains in explicitly (confirmed real current syntax).
+# builds a Node-only plan and never touches Python at all. Real build
+# failure found and fixed (final pre-deployment pass): the original fix
+# here also added "python" to `providers`, which pulls in Nixpacks'
+# OWN auto-detected Python version alongside the explicit `python311`
+# below -- two different Python versions in the same Nix profile
+# collide on shared files (confirmed: `nix-env -if` failed with
+# "collision between .../python3.11.10/... and .../python3.12.7/...").
+# `nixPkgs: python311` alone is enough to make python3 available for
+# the installPython phase below, with no second provider-driven Python
+# to collide with.
+#
 # pip installs into its OWN venv in a custom phase, not directly via the
 # Nix-provided python3 -- real PEP 668 gotcha, confirmed via research:
 # Nix's Python is externally-managed, so a bare `pip install` fails;
 # dave-brain's local-model launcher spawns `/opt/dave-ai-brain-venv/bin/python3`
 # for exactly this reason, never a bare `python3`.
-providers = ["python", "node"]
+providers = ["node"]
 
 [phases.setup]
 nixPkgs = ["...", "ffmpeg", "python311"]
