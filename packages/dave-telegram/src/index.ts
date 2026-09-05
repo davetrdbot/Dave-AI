@@ -8,3 +8,5 @@ export * from "./ea-file.js";
 export * from "./thinking-indicator.js";
 export * from "./push-tools.js";
 export * from "./tools.js";
+export * from "./telegram-credentials.js";
+export * from "./telegram-otp.js";

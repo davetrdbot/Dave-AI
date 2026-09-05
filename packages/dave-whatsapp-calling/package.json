@@ -11,6 +11,7 @@
     "@dave/db": "workspace:*"
   },
   "exports": {
-    ".": "./lib/index.js"
+    ".": "./lib/index.js",
+    "./greenapi-credentials": "./lib/greenapi-credentials.js"
   }
 }

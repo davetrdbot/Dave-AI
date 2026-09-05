@@ -41,12 +41,18 @@ importers:
       '@dave/sandbox':
         specifier: workspace:*
         version: link:../dave-sandbox
+      '@dave/telegram':
+        specifier: workspace:*
+        version: link:../dave-telegram
       '@dave/trading':
         specifier: workspace:*
         version: link:../dave-trading
       '@dave/voice-call':
         specifier: workspace:*
         version: link:../dave-voice-call
+      '@dave/whatsapp-calling':
+        specifier: workspace:*
+        version: link:../dave-whatsapp-calling
       '@dave/workers':
         specifier: workspace:*
         version: link:../dave-workers
@@ -345,6 +351,9 @@ importers:
 
   packages/dave-telegram:
     dependencies:
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
       '@dave/memory':
         specifier: workspace:*
         version: link:../dave-memory

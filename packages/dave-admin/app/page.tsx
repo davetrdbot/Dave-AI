@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-type Tab = "stats" | "groups" | "teams" | "models" | "selfimprove" | "db" | "mcp" | "settings";
+type Tab = "stats" | "groups" | "teams" | "models" | "selfimprove" | "db" | "mcp" | "credentials" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "stats", label: "Live Stats" },
@@ -12,6 +12,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "selfimprove", label: "Self-Improvement" },
   { id: "db", label: "Database" },
   { id: "mcp", label: "MCP" },
+  { id: "credentials", label: "Credentials" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -61,6 +62,7 @@ export default function AdminPage() {
         {tab === "selfimprove" && <SelfImprovementPanel userId={userId} />}
         {tab === "db" && <DatabasePanel userId={userId} />}
         {tab === "mcp" && <McpPanel userId={userId} />}
+        {tab === "credentials" && <CredentialsPanel userId={userId} />}
         {tab === "settings" && <SettingsPanel />}
       </main>
     </>
@@ -414,6 +416,217 @@ function McpPanel({ userId }: { userId: string }) {
   );
 }
 
+// --- Credentials: paste real Telegram/Green API/provider keys here ---
+function CredentialsPanel({ userId }: { userId: string }) {
+  const api = useApi(userId);
+
+  return (
+    <>
+      <TelegramOtpCard userId={userId} api={api} />
+      <GreenApiCard userId={userId} api={api} />
+      <ProviderKeysCard userId={userId} api={api} title="AI Provider Keys" apiPath="/api/provider-keys" providerListPath="/api/providers" />
+      <SimpleKeysCard userId={userId} api={api} title="E2B Keys" apiPath="/api/e2b-keys" />
+      <SimpleKeysCard userId={userId} api={api} title="Firecrawl Keys" apiPath="/api/firecrawl-keys" />
+    </>
+  );
+}
+
+function TelegramOtpCard({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
+  const [status, setStatus] = useState<any>(null);
+  const [form, setForm] = useState({ botToken: "", chatId: "" });
+  const [otp, setOtp] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const reload = useCallback(() => {
+    api("/api/telegram-otp").then(setStatus);
+  }, [api]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const start = async () => {
+    setMessage(null);
+    const res = await api("/api/telegram-otp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start", botToken: form.botToken, chatId: form.chatId }) });
+    if (res.error) {
+      setMessage(res.error);
+      return;
+    }
+    setOtp(res.otp);
+    setMessage(`Paste this code into a message to @${res.botUsername} on Telegram, then click "Check status".`);
+  };
+
+  const check = async () => {
+    setChecking(true);
+    const res = await api("/api/telegram-otp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "check" }) });
+    setChecking(false);
+    if (res.confirmed) {
+      setMessage("Paired! Your bot token and chat ID are now stored.");
+      setOtp(null);
+      reload();
+    } else {
+      setMessage(res.reason ?? "Not confirmed yet.");
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Telegram Pairing</h2>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <span className={`badge ${status?.paired ? "ok" : "warn"}`}>{status?.paired ? `Paired (chat ${status.chatId})` : "Not paired"}</span>
+      </div>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <input type="text" placeholder="Bot token (from @BotFather)" value={form.botToken} onChange={(e) => setForm({ ...form, botToken: e.target.value })} style={{ width: 280 }} />
+        <input type="text" placeholder="Chat ID" value={form.chatId} onChange={(e) => setForm({ ...form, chatId: e.target.value })} style={{ width: 140 }} />
+        <button className="btn" onClick={start}>
+          Start pairing
+        </button>
+      </div>
+      {otp && (
+        <div className="row" style={{ marginBottom: 10, alignItems: "center" }}>
+          <span className="pill" style={{ fontSize: 20, letterSpacing: 2 }}>
+            {otp}
+          </span>
+          <button className="btn secondary" onClick={check} disabled={checking}>
+            {checking ? "Checking..." : "Check status"}
+          </button>
+        </div>
+      )}
+      {message && <div className="stat-note">{message}</div>}
+    </div>
+  );
+}
+
+function GreenApiCard({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
+  const [status, setStatus] = useState<any>(null);
+  const [form, setForm] = useState({ idInstance: "", apiTokenInstance: "" });
+  const [saved, setSaved] = useState(false);
+
+  const reload = useCallback(() => {
+    api("/api/greenapi-credentials").then(setStatus);
+  }, [api]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const save = async () => {
+    await api("/api/greenapi-credentials", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(form) });
+    setSaved(true);
+    setForm({ idInstance: "", apiTokenInstance: "" });
+    reload();
+  };
+
+  return (
+    <div className="card">
+      <h2>Green API (WhatsApp Calling)</h2>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <span className={`badge ${status?.configured ? "ok" : "warn"}`}>{status?.configured ? `Configured (${status.idInstance})` : "Not configured"}</span>
+      </div>
+      <div className="row">
+        <input type="text" placeholder="idInstance" value={form.idInstance} onChange={(e) => setForm({ ...form, idInstance: e.target.value })} style={{ width: 160 }} />
+        <input type="password" placeholder="apiTokenInstance" value={form.apiTokenInstance} onChange={(e) => setForm({ ...form, apiTokenInstance: e.target.value })} style={{ width: 280 }} />
+        <button className="btn" onClick={save}>
+          Save
+        </button>
+      </div>
+      {saved && <div className="stat-note">Saved.</div>}
+    </div>
+  );
+}
+
+function ProviderKeysCard({ api, title, apiPath, providerListPath }: { userId: string; api: ReturnType<typeof useApi>; title: string; apiPath: string; providerListPath: string }) {
+  const [keys, setKeys] = useState<any[]>([]);
+  const [providers, setProviders] = useState<any[]>([]);
+  const [form, setForm] = useState({ provider: "gemini", label: "", apiKey: "" });
+
+  const reload = useCallback(() => {
+    api(apiPath).then((r) => setKeys(r.keys ?? []));
+  }, [api, apiPath]);
+
+  useEffect(() => {
+    reload();
+    api(providerListPath).then((r) => setProviders(r.builtIn ?? []));
+  }, [reload, api, providerListPath]);
+
+  const add = async () => {
+    await api(apiPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: form.provider, label: form.label, config: { apiKey: form.apiKey } }) });
+    setForm({ ...form, label: "", apiKey: "" });
+    reload();
+  };
+
+  return (
+    <div className="card">
+      <h2>{title}</h2>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <select value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} style={{ width: 180 }}>
+          {providers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.displayName}
+            </option>
+          ))}
+        </select>
+        <input type="text" placeholder="Label" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} style={{ width: 140 }} />
+        <input type="password" placeholder="API key" value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} style={{ width: 280 }} />
+        <button className="btn" onClick={add}>
+          Add key
+        </button>
+      </div>
+      {keys.length === 0 && <div className="placeholder">No keys stored yet.</div>}
+      {keys.map((k: any) => (
+        <div className="group-card" key={k.id}>
+          <strong>{k.label}</strong> <span style={{ color: "var(--text-dim)" }}>({k.provider ?? ""})</span>
+          <span className={`badge ${k.healthy ? "ok" : "warn"}`} style={{ marginLeft: 8 }}>
+            {k.healthy ? "healthy" : "unchecked/unhealthy"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SimpleKeysCard({ api, title, apiPath }: { userId: string; api: ReturnType<typeof useApi>; title: string; apiPath: string }) {
+  const [keys, setKeys] = useState<any[]>([]);
+  const [form, setForm] = useState({ label: "", apiKey: "" });
+
+  const reload = useCallback(() => {
+    api(apiPath).then((r) => setKeys(r.keys ?? []));
+  }, [api, apiPath]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const add = async () => {
+    await api(apiPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: form.label, apiKey: form.apiKey }) });
+    setForm({ label: "", apiKey: "" });
+    reload();
+  };
+
+  return (
+    <div className="card">
+      <h2>{title}</h2>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <input type="text" placeholder="Label" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} style={{ width: 140 }} />
+        <input type="password" placeholder="API key" value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} style={{ width: 280 }} />
+        <button className="btn" onClick={add}>
+          Add key
+        </button>
+      </div>
+      {keys.length === 0 && <div className="placeholder">No keys stored yet.</div>}
+      {keys.map((k: any) => (
+        <div className="group-card" key={k.id}>
+          <strong>{k.label}</strong>
+          <span className={`badge ${k.healthy ? "ok" : "warn"}`} style={{ marginLeft: 8 }}>
+            {k.healthy ? "healthy" : "unchecked/unhealthy"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // --- Settings: real DAVEMA + sandbox status checks (14.1) ---
 function SettingsPanel() {
   const [davema, setDavema] = useState<any>(null);
@@ -445,10 +658,7 @@ function SettingsPanel() {
           </span>
         </div>
       </div>
-      <div className="stat-note">
-        Telegram bot token and chat ID configuration live in environment variables, never shown here — this panel only reports connection health, per SECURITY.md&apos;s
-        credential-handling rules.
-      </div>
+      <div className="stat-note">Telegram, Green API, and AI provider credentials are set on the Credentials tab. This panel only reports connection health.</div>
     </div>
   );
 }
