@@ -4,11 +4,12 @@ import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import type { RFeedTradeExecutor, HistoryRequestManager } from "@dave/rfeed";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, type TelegramUpdate } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, isDaveCommand, type TelegramUpdate } from "@dave/telegram";
 import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
+import { dispatchCommand, dispatchCallback, type CommandRouterDeps } from "./command-router.js";
 
 /**
  * The real, persistent replacement for a one-off polling script: a
@@ -94,6 +95,17 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
 
   const server = createTelegramWebhookServer({
     onUpdate: async (_userId: string, update: TelegramUpdate) => {
+      // Real fix (A3): every inline button press arrives as a
+      // callback_query, not a message -- this used to be silently
+      // dropped by the `if (!message?.text) return;` guard below,
+      // leaving every settings toggle / approve-decline / EA picker
+      // button completely dead. Routed to its real handler first.
+      if (update.callback_query) {
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
+        await dispatchCallback(routerDeps, update.callback_query);
+        return;
+      }
+
       const message = update.message;
       if (!message?.text) return;
       const chatId = message.chat.id;
@@ -101,6 +113,18 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // person messaging the same bot shouldn't see each other's history),
       // even though tools/credentials are shared across the one owner account.
       const historyKey = `${deps.ownerUserId}:${chatId}`;
+
+      // Real fix (A2): the 9 slash commands used to fall straight
+      // through to the LLM like any other message -- no live router
+      // ever intercepted them. dispatchCommand() handles all 9 for
+      // real (including /reset -> clearConversationHistory()) and
+      // returns true when it did, so a recognized command never
+      // reaches the agent loop below.
+      if (isDaveCommand(message.text)) {
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
+        const handled = await dispatchCommand(routerDeps, chatId, historyKey, message.text);
+        if (handled) return;
+      }
 
       const registry = getOrBuildRegistry(deps, client, chatId);
       const provider = modelConfigProvider(deps.db, deps.ownerUserId);
