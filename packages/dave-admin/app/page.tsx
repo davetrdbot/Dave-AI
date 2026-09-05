@@ -416,14 +416,13 @@ function McpPanel({ userId }: { userId: string }) {
   );
 }
 
-// --- Credentials: paste real Telegram/Green API/provider keys here ---
+// --- Credentials: paste real Telegram/provider keys here ---
 function CredentialsPanel({ userId }: { userId: string }) {
   const api = useApi(userId);
 
   return (
     <>
       <TelegramOtpCard userId={userId} api={api} />
-      <GreenApiCard userId={userId} api={api} />
       <ProviderKeysCard userId={userId} api={api} title="AI Provider Keys" apiPath="/api/provider-keys" providerListPath="/api/providers" />
       <SimpleKeysCard userId={userId} api={api} title="E2B Keys" apiPath="/api/e2b-keys" />
       <SimpleKeysCard userId={userId} api={api} title="Firecrawl Keys" apiPath="/api/firecrawl-keys" />
@@ -494,44 +493,6 @@ function TelegramOtpCard({ api }: { userId: string; api: ReturnType<typeof useAp
         </div>
       )}
       {message && <div className="stat-note">{message}</div>}
-    </div>
-  );
-}
-
-function GreenApiCard({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
-  const [status, setStatus] = useState<any>(null);
-  const [form, setForm] = useState({ idInstance: "", apiTokenInstance: "" });
-  const [saved, setSaved] = useState(false);
-
-  const reload = useCallback(() => {
-    api("/api/greenapi-credentials").then(setStatus);
-  }, [api]);
-
-  useEffect(() => {
-    reload();
-  }, [reload]);
-
-  const save = async () => {
-    await api("/api/greenapi-credentials", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(form) });
-    setSaved(true);
-    setForm({ idInstance: "", apiTokenInstance: "" });
-    reload();
-  };
-
-  return (
-    <div className="card">
-      <h2>Green API (WhatsApp Calling)</h2>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <span className={`badge ${status?.configured ? "ok" : "warn"}`}>{status?.configured ? `Configured (${status.idInstance})` : "Not configured"}</span>
-      </div>
-      <div className="row">
-        <input type="text" placeholder="idInstance" value={form.idInstance} onChange={(e) => setForm({ ...form, idInstance: e.target.value })} style={{ width: 160 }} />
-        <input type="password" placeholder="apiTokenInstance" value={form.apiTokenInstance} onChange={(e) => setForm({ ...form, apiTokenInstance: e.target.value })} style={{ width: 280 }} />
-        <button className="btn" onClick={save}>
-          Save
-        </button>
-      </div>
-      {saved && <div className="stat-note">Saved.</div>}
     </div>
   );
 }

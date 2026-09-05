@@ -8,7 +8,6 @@ import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
 import { FIRECRAWL_TOOLS } from "@dave/firecrawl";
-import { WHATSAPP_CALL_TOOLS } from "@dave/whatsapp-calling";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_CALL_TOOLS, CALL_SETTINGS_TOOLS } from "@dave/voice-call";
@@ -67,7 +66,6 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(KNOWLEDGE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(MCP_MANAGER_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(FIRECRAWL_TOOLS, dbOnlyCtx));
-  registry.register(adaptTools(WHATSAPP_CALL_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(PROVIDER_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_SETTINGS_TOOLS, dbOnlyCtx));

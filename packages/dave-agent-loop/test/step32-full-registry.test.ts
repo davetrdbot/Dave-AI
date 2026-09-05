@@ -10,7 +10,6 @@ import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
 import { FIRECRAWL_TOOLS } from "@dave/firecrawl";
-import { WHATSAPP_CALL_TOOLS } from "@dave/whatsapp-calling";
 import { TRADING_TOOLS } from "@dave/trading";
 import { RFeedBridge, RFEED_TOOLS } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
@@ -88,7 +87,6 @@ try {
     KNOWLEDGE_TOOLS.length +
     MCP_MANAGER_TOOLS.length +
     FIRECRAWL_TOOLS.length +
-    WHATSAPP_CALL_TOOLS.length +
     2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
