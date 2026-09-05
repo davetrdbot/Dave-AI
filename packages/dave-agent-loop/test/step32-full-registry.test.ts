@@ -7,6 +7,7 @@ import { DaveDatabase } from "@dave/db";
 import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor, EA_STATE_TOOLS } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
+import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { TRADING_TOOLS } from "@dave/trading";
 import { RFeedBridge, RFEED_TOOLS } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
@@ -81,6 +82,7 @@ try {
     DAVEMA_TOOLS.length +
     EA_STATE_TOOLS.length +
     CORE_TOOLS.length +
+    KNOWLEDGE_TOOLS.length +
     2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
@@ -348,6 +350,15 @@ try {
   assert.equal((await registry.execute("list_automations", {}) as any[]).length, 0);
   unregisterScheduledTrigger(automation.id); // real cron task was live -- stop it so the process can actually exit
   console.log("    pause -> no longer wired live, delete -> gone -- real CRUD, not just create");
+
+  console.log("\n[11] Part 3 B2: knowledge base -- draft requires approval before it's real...");
+  const draft: any = await registry.execute("knowledge_draft", { title: "Broker rollover times", useWhen: "Before sizing a trade near end-of-day", content: "This broker rolls over at 21:00 UTC." });
+  assert.equal((await registry.execute("knowledge_list", {}) as any[]).length, 0, "a draft must NOT show up in knowledge_list yet");
+  const saved: any = await registry.execute("knowledge_save", { draftId: draft.id });
+  const knowledgeEntries: any = await registry.execute("knowledge_list", {});
+  assert.equal(knowledgeEntries.length, 1);
+  assert.equal(saved.title, "Broker rollover times");
+  console.log(`    drafted "${draft.title}" -> absent from knowledge_list -> saved -> now present (${knowledgeEntries.length} entr${knowledgeEntries.length === 1 ? "y" : "ies"})`);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

@@ -87,6 +87,9 @@ importers:
       '@dave/ea-bridge':
         specifier: workspace:*
         version: link:../dave-ea-bridge
+      '@dave/knowledge':
+        specifier: workspace:*
+        version: link:../dave-knowledge
       '@dave/lovable-mcp':
         specifier: workspace:*
         version: link:../dave-lovable-mcp
@@ -204,6 +207,8 @@ importers:
       '@dave/telegram':
         specifier: workspace:*
         version: link:../dave-telegram
+
+  packages/dave-knowledge: {}
 
   packages/dave-lovable-mcp:
     dependencies:

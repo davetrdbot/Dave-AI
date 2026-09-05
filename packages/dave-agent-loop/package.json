@@ -24,7 +24,8 @@
     "@dave/vision": "workspace:*",
     "@dave/sandbox": "workspace:*",
     "@dave/db": "workspace:*",
-    "@dave/core": "workspace:*"
+    "@dave/core": "workspace:*",
+    "@dave/knowledge": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

@@ -23,6 +23,7 @@
     { "path": "packages/dave-voice-call" },
     { "path": "packages/dave-agent-loop" },
     { "path": "packages/dave-skills" },
-    { "path": "packages/dave-e2b" }
+    { "path": "packages/dave-e2b" },
+    { "path": "packages/dave-knowledge" }
   ]
 }

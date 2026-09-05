@@ -25,6 +25,7 @@
     { "path": "../dave-vision" },
     { "path": "../dave-sandbox" },
     { "path": "../dave-db" },
-    { "path": "../dave-core" }
+    { "path": "../dave-core" },
+    { "path": "../dave-knowledge" }
   ]
 }
