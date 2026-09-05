@@ -4,6 +4,7 @@ import type { TradeExecutor } from "@dave/trading";
 import { TRADING_TOOLS } from "@dave/trading";
 import { RFEED_TOOLS, type RFeedTradeExecutor, type HistoryRequestManager } from "@dave/rfeed";
 import { EA_STATE_TOOLS } from "@dave/ea-bridge";
+import { CORE_TOOLS } from "@dave/core";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_CALL_TOOLS, CALL_SETTINGS_TOOLS } from "@dave/voice-call";
@@ -57,6 +58,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(TRADING_TOOLS, tradingCtx));
   registry.register(adaptTools(RFEED_TOOLS, rfeedCtx));
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
+  registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, davema: deps.davema, workspaceRoot: process.cwd() }));
   registry.register(adaptTools(PROVIDER_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_SETTINGS_TOOLS, dbOnlyCtx));

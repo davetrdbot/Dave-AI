@@ -24,6 +24,7 @@
     { "path": "../dave-self-improve" },
     { "path": "../dave-vision" },
     { "path": "../dave-sandbox" },
-    { "path": "../dave-db" }
+    { "path": "../dave-db" },
+    { "path": "../dave-core" }
   ]
 }

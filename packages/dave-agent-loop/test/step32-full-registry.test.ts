@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { DaveDatabase } from "@dave/db";
 import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor, EA_STATE_TOOLS } from "@dave/ea-bridge";
+import { CORE_TOOLS } from "@dave/core";
 import { TRADING_TOOLS } from "@dave/trading";
 import { RFeedBridge, RFEED_TOOLS } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
@@ -78,6 +79,7 @@ try {
     MT5_ACCOUNT_TOOLS.length +
     DAVEMA_TOOLS.length +
     EA_STATE_TOOLS.length +
+    CORE_TOOLS.length +
     2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
@@ -297,6 +299,23 @@ try {
   const sandboxHealth = await registry.execute("davesbx_health", { workspaceRoot: workDir });
   assert.ok(sandboxHealth);
   console.log(`    dave-sandbox tools: real davesbx_health call: ${JSON.stringify(sandboxHealth)}`);
+
+  console.log("\n[9] Part 3 B5: goal-config/selftest/onboarding as real callable tools...");
+  const selftest: any = await registry.execute("run_selftest", {});
+  assert.ok(Array.isArray(selftest.checks) && selftest.checks.length >= 4);
+  console.log(`    run_selftest: ${selftest.checks.map((c: any) => `${c.name}=${c.ok}`).join(", ")}`);
+
+  const goalConfig: any = await registry.execute("get_goal_config", {});
+  assert.equal(typeof goalConfig.goal, "string");
+  console.log(`    get_goal_config: real goal.yaml read (${goalConfig.goal.length} chars)`);
+
+  const onboarding: any = await registry.execute("get_onboarding_status", {});
+  assert.equal(onboarding.userId, OWNER);
+  console.log(`    get_onboarding_status: real bootstrap state -> ${onboarding.state}`);
+
+  const pairingStatus: any = await registry.execute("get_pairing_status", {});
+  assert.ok(["pending", "paired", "rejected", "unknown"].includes(pairingStatus.status));
+  console.log(`    get_pairing_status: ${pairingStatus.status}`);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

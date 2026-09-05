@@ -23,7 +23,8 @@
     "@dave/self-improve": "workspace:*",
     "@dave/vision": "workspace:*",
     "@dave/sandbox": "workspace:*",
-    "@dave/db": "workspace:*"
+    "@dave/db": "workspace:*",
+    "@dave/core": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

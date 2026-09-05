@@ -72,6 +72,9 @@ importers:
       '@dave/brain':
         specifier: workspace:*
         version: link:../dave-brain
+      '@dave/core':
+        specifier: workspace:*
+        version: link:../dave-core
       '@dave/davema':
         specifier: workspace:*
         version: link:../dave-davema
