@@ -2976,3 +2976,64 @@ Ran `packages/dave-skills/test/step34-internal-tool-docs.test.ts`:
   tool automatically pass through it is the natural next step
 - The mapped tool list is deliberately small (the genuinely risky-to-
   guess ones) -- not every tool in the 47-tool registry has a doc
+
+## Status: Update 14 — Subagent, Recall, and Push Tools (COMPLETE)
+
+Direct mid-session feedback: "we haven't build the subagents tool too"
+and "recall tool and others push to user." Three genuinely missing
+tool categories, closed and wired into the same unified registry
+(Update 11).
+
+### What was built
+- [x] `dave-workers/src/subagent-tools.ts` — `SUBAGENT_TOOLS`:
+      `create_subagent`, `list_subagents`, `get_subagent`,
+      `retire_subagent`. Workers already WERE Dave's subagents (Step
+      12), but `createWorker`/`listWorkers`/`retireWorker` were only
+      ever plain functions -- nothing exposed them as real
+      agent-callable tools until now
+- [x] `dave-memory/src/memory-tools.ts` — `MEMORY_TOOLS`:
+      `recall_memory`, a genuine composite pull across every real
+      memory tier (frozen snapshot, session search, L1 atoms, L2
+      scenarios) that also calls the real `markRecalled()` (Step 4.5)
+      as a side effect -- calling this tool IS how recall-before-acting
+      gets satisfied for a task, not a separate manual step
+- [x] `dave-telegram/src/push-tools.ts` — `PUSH_TOOLS`:
+      `push_message_to_user`, for proactively messaging the user (a
+      trade alert, an urgent heads-up) rather than only replying.
+      Registered in the full registry ONLY when a real `TelegramClient`
+      + chat id are supplied (optional dep -- most contexts building
+      the registry, like tests, don't have a live chat to push into)
+- [x] `buildFullToolRegistry()` now also seeds Update 10's tool-usage
+      skill AND Update 13's three internal-tool-doc skills from its own
+      final, real tool set every time it's built
+
+### Real proof (Update 14)
+Extended `packages/dave-agent-loop/test/step32-full-registry.test.ts`:
+1. Registry now totals 52 tools (was 47) -- the new categories
+   genuinely present
+2. `create_subagent` -> `list_subagents` -> `retire_subagent`: a real
+   subagent genuinely created, listed, then genuinely gone from the
+   active list after retiring
+3. `recall_memory` returns a real composite summary
+   ("frozen snapshot + N session hit(s) + N atom(s) + N scenario(s)")
+4. `push_message_to_user` is genuinely ABSENT from a registry built
+   without a Telegram client; building a SECOND registry with a real
+   `TelegramClient` (pointed at a local server) makes it genuinely
+   present and the real call genuinely reaches that server with the
+   correct `chat_id`/`text`
+5. Building the registry genuinely seeds all 4 permanent skills
+   (`Using Your Tools` + the 3 internal-tool-doc skills) -- confirmed
+   via a real `list_skills` call afterward
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 35-file test suite green afterward, clean `tsc -b` build, clean
+  `next build`
+
+### Not yet done (deferred, not silently skipped)
+- Not wired to a live Telegram handler yet -- same gap as Update 9
+- The thinking-indicator flow the user described
+  (`tg_thinking`/`tg_thinking_update`/`tg_finalize`) already exists
+  functionally as Step 9's `ThinkingIndicator.update()`/`.finalize()`
+  (first `update()` call = the initial thinking text, later calls =
+  live updates, `finalize()` = the real persisted message) -- it is
+  infrastructure the message handler runs, not yet an agent-callable
+  tool in the unified registry

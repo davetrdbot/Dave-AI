@@ -84,12 +84,18 @@ importers:
       '@dave/lovable-mcp':
         specifier: workspace:*
         version: link:../dave-lovable-mcp
+      '@dave/memory':
+        specifier: workspace:*
+        version: link:../dave-memory
       '@dave/rfeed':
         specifier: workspace:*
         version: link:../dave-rfeed
       '@dave/skills':
         specifier: workspace:*
         version: link:../dave-skills
+      '@dave/telegram':
+        specifier: workspace:*
+        version: link:../dave-telegram
       '@dave/trading':
         specifier: workspace:*
         version: link:../dave-trading

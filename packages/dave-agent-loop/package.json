@@ -16,6 +16,8 @@
     "@dave/davema": "workspace:*",
     "@dave/ea-bridge": "workspace:*",
     "@dave/e2b": "workspace:*",
+    "@dave/memory": "workspace:*",
+    "@dave/telegram": "workspace:*",
     "@dave/db": "workspace:*"
   },
   "exports": {

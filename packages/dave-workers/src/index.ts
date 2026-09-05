@@ -6,3 +6,4 @@ export * from "./settings-tool.js";
 export * from "./comms.js";
 export * from "./tool-requests.js";
 export * from "./tool-request-tools.js";
+export * from "./subagent-tools.js";

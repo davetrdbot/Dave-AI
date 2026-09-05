@@ -11,9 +11,11 @@ import { RFeedBridge, RFEED_TOOLS } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_CALL_TOOLS } from "@dave/voice-call";
-import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS } from "@dave/workers";
+import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
+import { MEMORY_TOOLS } from "@dave/memory";
+import { TelegramClient } from "@dave/telegram";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
 
@@ -41,7 +43,18 @@ try {
   // --- [1] Every single package's tools genuinely landed in the ONE registry ---
   console.log("[1] Every package's real tool array is genuinely present in the ONE unified registry...\n");
   const expectedTotal =
-    TRADING_TOOLS.length + RFEED_TOOLS.length + PROVIDER_TOOLS.length + LOVABLE_TOOLS.length + VOICE_CALL_TOOLS.length + SETTINGS_TOOLS.length + DAVE_TOOL_REQUEST_TOOLS.length + SKILL_TOOLS.length + E2B_TOOLS.length + 2; // +1 ask_user, +1 search_tools
+    TRADING_TOOLS.length +
+    RFEED_TOOLS.length +
+    PROVIDER_TOOLS.length +
+    LOVABLE_TOOLS.length +
+    VOICE_CALL_TOOLS.length +
+    SETTINGS_TOOLS.length +
+    DAVE_TOOL_REQUEST_TOOLS.length +
+    SKILL_TOOLS.length +
+    E2B_TOOLS.length +
+    SUBAGENT_TOOLS.length +
+    MEMORY_TOOLS.length +
+    2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS is not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
 
@@ -55,6 +68,8 @@ try {
     "list_pending_tool_requests", "decide_tool_request", // dave-workers tool-requests (Dave side)
     "list_skills", "install_skill_from_github", // dave-skills
     "create_e2b_sandbox", // dave-e2b
+    "create_subagent", "retire_subagent", // dave-workers subagent tools
+    "recall_memory", // dave-memory
     "ask_user",
   ];
   for (const name of mustHave) assert.ok(registry.has(name), `registry must genuinely have "${name}"`);
@@ -112,6 +127,69 @@ try {
   assert.equal(callCount, 2);
   console.log(`    real full-stack call: model saw all ${expectedTotal} real tools -> requested "get_auto_approval" (dave-workers/dave-trading) -> genuinely executed through the unified registry -> real result reached the model -> final answer: "${(result as any).text}"`);
   await new Promise<void>((resolve) => server.close(() => resolve()));
+
+  // --- [4] Subagent + memory tools, real calls through the unified registry ---
+  console.log("\n[4] Subagent tools: real create/list/retire through the unified registry...\n");
+  const created: any = await registry.execute("create_subagent", { assignment: "temporary", task: "Scan majors for a setup" });
+  assert.ok(created.id);
+  const listed: any = await registry.execute("list_subagents", {});
+  assert.ok(listed.some((w: any) => w.id === created.id));
+  await registry.execute("retire_subagent", { workerId: created.id });
+  const listedAfter: any = await registry.execute("list_subagents", {});
+  assert.ok(!listedAfter.some((w: any) => w.id === created.id));
+  console.log(`    real subagent "${created.name}" created -> listed -> retired -> genuinely gone from the active list`);
+
+  console.log("\n[4b] recall_memory: a real composite pull, and it genuinely satisfies the recall-before-acting gate...\n");
+  const recall: any = await registry.execute("recall_memory", { taskId: "check-balance-task" });
+  assert.ok(recall.summary.includes("snapshot"));
+  console.log(`    real recall_memory result: ${recall.summary}`);
+
+  // --- [5] push_message_to_user: absent without a real Telegram client, present and callable with one ---
+  console.log("\n[5] push_message_to_user: NOT registered without a real Telegram client...\n");
+  assert.ok(!registry.has("push_message_to_user"), "must genuinely be absent when no telegram dep was supplied");
+  console.log("    genuinely absent from the registry built without a telegram dep");
+
+  console.log("\n[5b] With a real Telegram client supplied, push_message_to_user is registered and genuinely reaches it...\n");
+  let capturedPush: any;
+  const tgServer = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      capturedPush = JSON.parse(body);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, result: { message_id: 42 } }));
+    });
+  });
+  await new Promise<void>((resolve) => tgServer.listen(0, resolve));
+  const tgPort = (tgServer.address() as any).port;
+  const telegramClient = new TelegramClient("fake-token", `http://127.0.0.1:${tgPort}`);
+
+  const registryWithPush = buildFullToolRegistry({
+    userId: OWNER,
+    db,
+    davema,
+    executor,
+    rfeedExecutor: rfeedBridge.getExecutor(OWNER),
+    rfeedHistoryManager: rfeedBridge.getHistoryManager(OWNER),
+    telegram: { client: telegramClient, chatId: 847213 },
+  });
+  assert.ok(registryWithPush.has("push_message_to_user"));
+  const pushResult: any = await registryWithPush.execute("push_message_to_user", { text: "Heads up: XAUUSD just hit TP." });
+  assert.equal(pushResult.message_id, 42);
+  assert.equal(capturedPush.chat_id, 847213);
+  assert.equal(capturedPush.text, "Heads up: XAUUSD just hit TP.");
+  await new Promise<void>((resolve) => tgServer.close(() => resolve()));
+  console.log(`    real push reached the real Telegram-shaped server: chat_id=${capturedPush.chat_id}, text="${capturedPush.text}"`);
+
+  // --- [6] Building the registry genuinely seeds Dave's own permanent skills ---
+  console.log("\n[6] Building the registry genuinely seeds the permanent 'how do I use myself' skills...\n");
+  const skills: any = await registry.execute("list_skills", {});
+  const skillNames = skills.map((s: any) => s.name);
+  assert.ok(skillNames.includes("Using Your Tools"));
+  assert.ok(skillNames.includes("How to use: e2b-sandbox"));
+  assert.ok(skillNames.includes("How to use: ea-webhook"));
+  assert.ok(skillNames.includes("How to use: rfeed-tools"));
+  console.log(`    real permanent skills present after registry build: ${skillNames.join(", ")}`);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

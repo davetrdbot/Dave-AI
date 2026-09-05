@@ -17,6 +17,8 @@
     { "path": "../dave-davema" },
     { "path": "../dave-ea-bridge" },
     { "path": "../dave-e2b" },
+    { "path": "../dave-memory" },
+    { "path": "../dave-telegram" },
     { "path": "../dave-db" }
   ]
 }

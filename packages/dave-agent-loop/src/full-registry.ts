@@ -7,8 +7,11 @@ import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_CALL_TOOLS } from "@dave/voice-call";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS } from "@dave/workers";
-import { SKILL_TOOLS } from "@dave/skills";
+import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
+import { SUBAGENT_TOOLS } from "@dave/workers";
+import { MEMORY_TOOLS } from "@dave/memory";
+import { PUSH_TOOLS, type TelegramClient } from "@dave/telegram";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
 
@@ -29,6 +32,8 @@ export interface FullRegistryDeps {
   executor: TradeExecutor;
   rfeedExecutor: RFeedTradeExecutor;
   rfeedHistoryManager: HistoryRequestManager;
+  /** Optional -- push_message_to_user is only registered when a real Telegram client + chat are supplied. */
+  telegram?: { client: TelegramClient; chatId: number };
 }
 
 export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
@@ -49,12 +54,17 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(DAVE_TOOL_REQUEST_TOOLS, ownerCtx));
   registry.register(adaptTools(SKILL_TOOLS, skillCtx));
   registry.register(adaptTools(E2B_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(SUBAGENT_TOOLS, ownerCtx));
+  registry.register(adaptTools(MEMORY_TOOLS, { actorId: deps.userId }));
+  if (deps.telegram) {
+    registry.register(adaptTools(PUSH_TOOLS, deps.telegram));
+  }
   registry.register([createAskUserTool(deps.userId)] as AgentTool[]);
 
   // Update 11 follow-up: "give the bot ability to search from his tools
-  // in case" -- registered LAST so it can search everything already
-  // registered above (it can't find itself, which is fine: you don't
-  // need to search for the search tool).
+  // in case" -- registered LAST (of the real tools) so it can search
+  // everything already registered above (it can't find itself, which
+  // is fine: you don't need to search for the search tool).
   registry.register([
     {
       name: "search_tools",
@@ -63,6 +73,13 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
       execute: async (args: Record<string, unknown>) => ({ matches: registry.search(args.query as string) }),
     },
   ]);
+
+  // Update 13/10: seed (or re-seed in place) the permanent "how do I use
+  // myself" skills -- the internal tool docs (E2B/EA-webhook/R_Feed) and
+  // the auto-generated tool-usage skill, from THIS registry's own real,
+  // final, current tool specs (everything registered above, included).
+  seedInternalToolDocSkills(deps.userId);
+  seedToolUsageSkill(deps.userId, registry.toSpecs());
 
   return registry;
 }
