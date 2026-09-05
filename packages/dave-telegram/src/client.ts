@@ -302,6 +302,26 @@ export class TelegramClient {
     return this.call<TelegramUpdate[]>("getUpdates", params);
   }
 
+  /**
+   * Real Bot API webhook methods -- the production alternative to
+   * getUpdates() long-polling. Telegram POSTs each Update to `url`
+   * itself the moment it happens, instead of the bot having to ask.
+   * `secret_token` (if set) comes back as the `X-Telegram-Bot-Api-
+   * Secret-Token` header on every real webhook POST -- confirmed real
+   * mechanism for verifying a request genuinely came from Telegram.
+   */
+  setWebhook(params: { url: string; secret_token?: string; allowed_updates?: string[]; drop_pending_updates?: boolean }) {
+    return this.call<true>("setWebhook", params);
+  }
+
+  deleteWebhook(params: { drop_pending_updates?: boolean } = {}) {
+    return this.call<true>("deleteWebhook", params);
+  }
+
+  getWebhookInfo() {
+    return this.call<{ url: string; has_custom_certificate: boolean; pending_update_count: number; last_error_date?: number; last_error_message?: string }>("getWebhookInfo");
+  }
+
   /** Real Bot API methods for the bot's own display info (distinct from the profile PHOTO, which has no API -- see profile.ts). */
   setMyName(params: { name: string }) {
     return this.call<true>("setMyName", params);
