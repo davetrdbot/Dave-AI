@@ -13,6 +13,7 @@ import { LOVABLE_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_CALL_TOOLS } from "@dave/voice-call";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS } from "@dave/skills";
+import { E2B_TOOLS } from "@dave/e2b";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
 
@@ -40,7 +41,7 @@ try {
   // --- [1] Every single package's tools genuinely landed in the ONE registry ---
   console.log("[1] Every package's real tool array is genuinely present in the ONE unified registry...\n");
   const expectedTotal =
-    TRADING_TOOLS.length + RFEED_TOOLS.length + PROVIDER_TOOLS.length + LOVABLE_TOOLS.length + VOICE_CALL_TOOLS.length + SETTINGS_TOOLS.length + DAVE_TOOL_REQUEST_TOOLS.length + SKILL_TOOLS.length + 2; // +1 ask_user, +1 search_tools
+    TRADING_TOOLS.length + RFEED_TOOLS.length + PROVIDER_TOOLS.length + LOVABLE_TOOLS.length + VOICE_CALL_TOOLS.length + SETTINGS_TOOLS.length + DAVE_TOOL_REQUEST_TOOLS.length + SKILL_TOOLS.length + E2B_TOOLS.length + 2; // +1 ask_user, +1 search_tools
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
 
@@ -53,6 +54,7 @@ try {
     "set_risk_mode", "propose_settings_change", // dave-workers settings
     "list_pending_tool_requests", "decide_tool_request", // dave-workers tool-requests (Dave side)
     "list_skills", "install_skill_from_github", // dave-skills
+    "create_e2b_sandbox", // dave-e2b
     "ask_user",
   ];
   for (const name of mustHave) assert.ok(registry.has(name), `registry must genuinely have "${name}"`);

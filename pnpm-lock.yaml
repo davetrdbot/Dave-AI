@@ -75,6 +75,9 @@ importers:
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db
+      '@dave/e2b':
+        specifier: workspace:*
+        version: link:../dave-e2b
       '@dave/ea-bridge':
         specifier: workspace:*
         version: link:../dave-ea-bridge
@@ -138,6 +141,12 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+
+  packages/dave-e2b:
+    dependencies:
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
 
   packages/dave-ea-bridge:
     dependencies:

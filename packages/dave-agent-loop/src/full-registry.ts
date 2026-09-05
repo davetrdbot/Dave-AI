@@ -8,6 +8,7 @@ import { LOVABLE_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_CALL_TOOLS } from "@dave/voice-call";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS } from "@dave/skills";
+import { E2B_TOOLS } from "@dave/e2b";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
 
@@ -47,6 +48,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(SETTINGS_TOOLS, tradingCtx)); // ctx unused by these tools -- args carry userId directly
   registry.register(adaptTools(DAVE_TOOL_REQUEST_TOOLS, ownerCtx));
   registry.register(adaptTools(SKILL_TOOLS, skillCtx));
+  registry.register(adaptTools(E2B_TOOLS, dbOnlyCtx));
   registry.register([createAskUserTool(deps.userId)] as AgentTool[]);
 
   // Update 11 follow-up: "give the bot ability to search from his tools

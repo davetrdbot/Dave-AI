@@ -15,6 +15,7 @@
     "@dave/skills": "workspace:*",
     "@dave/davema": "workspace:*",
     "@dave/ea-bridge": "workspace:*",
+    "@dave/e2b": "workspace:*",
     "@dave/db": "workspace:*"
   },
   "exports": {

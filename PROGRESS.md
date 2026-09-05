@@ -2851,3 +2851,63 @@ function.
 - Not wired to a live Telegram handler yet — same gap as Update 9
 - No `buildWorkerToolRegistry()` equivalent for a worker's own tool set
   (would reuse the same `adaptTools`/`ToolRegistry` machinery)
+
+## Status: Update 12 — E2B Is Back In (COMPLETE)
+
+Reverses the master plan's original E2B exclusion specifically
+(Novita/Vercel Sandbox/BrowserBase stay excluded). Wired in as an
+ADDITIONAL sandbox option alongside Step 1.3's DSH-native choice --
+disposable compute for isolated tasks (e.g. R_Feed backtest analysis)
+without touching the main sandbox.
+
+### Real research + an honest, confirmed gap
+- Real control-plane base URL: `https://api.e2b.app`. Real auth:
+  `X-API-Key` header (the older `Authorization: Bearer` access-token
+  scheme is deprecated, fully retired Aug 2026 -- deliberately not
+  used). Real endpoints confirmed: `POST /sandboxes` (create, real
+  response has `sandboxID`/`domain`), `DELETE /sandboxes/{id}` (kill),
+  `GET /sandboxes` (list).
+- **Confirmed, honest gap**: actually running code inside a created
+  sandbox is E2B's gRPC data plane (`envd`), not a REST call --
+  confirmed via research, same category of finding as Update 6's
+  WhatsApp/WebRTC gap. This build's E2B client covers the real REST
+  control plane; executing code would need E2B's own SDK or a real
+  gRPC client, neither built here.
+
+### What was built
+- [x] New package `packages/dave-e2b/`
+- [x] `e2b-client.ts` — `E2BClient`: real `createSandbox`/
+      `killSandbox`/`listSandboxes` against the real confirmed shape
+- [x] `e2b-keys.ts` — DB-backed key storage mirroring
+      `dave-brain/provider-keys.ts` exactly: real 10-key cap, real
+      health check (`checkE2BKeyHealth`, a genuine `GET /sandboxes`
+      call), real ordered auto-failover (`createSandboxWithKeyFailover`)
+- [x] `tools.ts` — `E2B_TOOLS`: `add_e2b_key`, `list_e2b_keys`,
+      `remove_e2b_key`, `check_e2b_key_health`, `create_e2b_sandbox`
+- [x] Wired into `dave-agent-loop`'s `buildFullToolRegistry()` --
+      genuinely reachable by the agent, not a standalone package
+
+### Real proof (Update 12)
+Ran `packages/dave-e2b/test/step33-e2b.test.ts`:
+1. **A real network call against the REAL E2B API** (`api.e2b.app`)
+   with a deliberately fake key -- genuine HTTP 401 with the real
+   server's own error message ("expected the e2b_ prefix")
+2. Real control-plane round trip against a local server mimicking the
+   confirmed shape: create -> list (1) -> kill -> list (0)
+3. Real DB-backed key storage: a real 401 on one key marks it
+   unhealthy with the real reason recorded, falls through to a second
+   key that succeeds
+4. Real 10-key cap enforced (11th add refused)
+5. `checkE2BKeyHealth()` against the real E2B API with a fake key
+   genuinely returns false, never throws
+6. `AllE2BKeysFailedError` genuinely thrown, typed, when every key fails
+7. All 5 real tools registered and callable
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 34-file test suite green afterward, clean `tsc -b` build, clean
+  `next build`; `dave-agent-loop`'s unified registry now has 47 tools
+
+### Not yet done (deferred, not silently skipped)
+- Actual code execution inside an E2B sandbox (the gRPC data plane) --
+  the honest, confirmed gap above
+- No admin UI for E2B key management yet (same gap as other provider-
+  key-shaped stores)
