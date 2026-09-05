@@ -27,7 +27,8 @@
     "@dave/core": "workspace:*",
     "@dave/knowledge": "workspace:*",
     "@dave/mcp-manager": "workspace:*",
-    "@dave/firecrawl": "workspace:*"
+    "@dave/firecrawl": "workspace:*",
+    "@dave/whatsapp-calling": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

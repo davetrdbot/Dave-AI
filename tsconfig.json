@@ -26,6 +26,7 @@
     { "path": "packages/dave-e2b" },
     { "path": "packages/dave-knowledge" },
     { "path": "packages/dave-mcp-manager" },
-    { "path": "packages/dave-firecrawl" }
+    { "path": "packages/dave-firecrawl" },
+    { "path": "packages/dave-whatsapp-calling" }
   ]
 }
