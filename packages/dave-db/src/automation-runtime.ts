@@ -63,13 +63,30 @@ export function wireWebhookAutomations(db: DaveDatabase, userId: string, dispatc
  * Matches on the row's real table name against the automation's
  * entityName; returns the unsubscribe function so a caller can tear
  * this down on registry rebuild instead of stacking subscriptions.
+ *
+ * Real bug found and fixed: buildFullToolRegistry() (dave-agent-loop)
+ * is built once PER CHAT, not once per owner (telegram-bot-server.ts
+ * caches registries by `ownerUserId:chatId`), so this used to be
+ * called again every time the SAME owner messaged from a second chat
+ * -- and db.onEntityEvent() is a plain EventEmitter.on(), which stacks
+ * a new listener on every call rather than replacing the old one. A
+ * single real db.insert() ended up firing the automation N times (N =
+ * number of registry builds for that owner), not once. Fixed the same
+ * way wireScheduledAutomations already handles this: unsubscribe the
+ * previous listener for this owner (if any) before subscribing again,
+ * so re-wiring is genuinely idempotent.
  */
+const entitySubscriptions = new Map<string, () => void>();
+
 export function wireEntityAutomations(db: DaveDatabase, userId: string, dispatch: AutomationDispatch): () => void {
-  return db.onEntityEvent((event: EntityEvent) => {
+  entitySubscriptions.get(userId)?.();
+  const unsubscribe = db.onEntityEvent((event: EntityEvent) => {
     if (event.ownerUserId !== userId) return;
     const automations = listAutomations(db, userId).filter((a) => a.enabled && a.triggerType === "entity" && a.entityName === event.table);
     for (const automation of automations) {
       void dispatch(automation.userId, automation.toolName, { ...automation.toolArgs, entityEvent: event });
     }
   });
+  entitySubscriptions.set(userId, unsubscribe);
+  return unsubscribe;
 }
