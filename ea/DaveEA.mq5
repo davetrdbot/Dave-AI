@@ -135,6 +135,7 @@ string BuildReportJson()
      }
 
    string results = LastResultsJson();
+   string closedPositions = BuildClosedPositionsJson();
 
    return "{\"type\":\"heartbeat\"," +
           "\"account\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\"," +
@@ -147,7 +148,74 @@ string BuildReportJson()
           "\"freeMargin\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2) + "," +
           "\"positions\":[" + positions + "]," +
           "\"pendingOrders\":[" + pendingOrders + "]," +
-          "\"results\":[" + results + "]}";
+          "\"results\":[" + results + "]," +
+          "\"closedPositions\":[" + closedPositions + "]}";
+  }
+
+//+------------------------------------------------------------------+
+//| Update 10 (trade notifications): a position that vanished since   |
+//| the last report gets a REAL deal-history lookup here -- MT5's own |
+//| DEAL_REASON tells TP/SL/manual/EA-initiated apart, real data, not  |
+//| guessed Dave-side from a position diff alone. DEAL_REASON_EXPERT   |
+//| is real and specific: it means an Expert Advisor (this EA, acting  |
+//| on Dave's own queued "close" command) closed it -- DEAL_REASON_    |
+//| CLIENT means the terminal/mobile/web UI did, i.e. the user closed  |
+//| it manually. Confirmed real MQL5 enum values, not guessed.         |
+//+------------------------------------------------------------------+
+ulong g_lastTickets[];
+
+string BuildClosedPositionsJson()
+  {
+   ulong currentTickets[];
+   int total = PositionsTotal();
+   ArrayResize(currentTickets, total);
+   for(int i = 0; i < total; i++)
+      currentTickets[i] = PositionGetTicket(i);
+
+   string out = "";
+   for(int i = 0; i < ArraySize(g_lastTickets); i++)
+     {
+      ulong ticket = g_lastTickets[i];
+      bool stillOpen = false;
+      for(int j = 0; j < ArraySize(currentTickets); j++)
+         if(currentTickets[j] == ticket) { stillOpen = true; break; }
+      if(stillOpen) continue;
+
+      string symbol = "";
+      double pnl = 0;
+      string reason = "manual"; // honest default if history lookup somehow finds nothing
+      if(HistorySelectByPosition((long)ticket))
+        {
+         int deals = HistoryDealsTotal();
+         for(int d = 0; d < deals; d++)
+           {
+            ulong dealTicket = HistoryDealGetTicket(d);
+            if(dealTicket == 0) continue;
+            if((int)HistoryDealGetInteger(dealTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+            symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+            pnl = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+            long dealReason = HistoryDealGetInteger(dealTicket, DEAL_REASON);
+            if(dealReason == DEAL_REASON_TP) reason = "tp";
+            else if(dealReason == DEAL_REASON_SL) reason = "sl";
+            else if(dealReason == DEAL_REASON_EXPERT) reason = "dave";
+            else if(dealReason == DEAL_REASON_CLIENT || dealReason == DEAL_REASON_MOBILE || dealReason == DEAL_REASON_WEB) reason = "manual";
+            else reason = "manual";
+           }
+        }
+      if(out != "") out += ",";
+      out += "{\"ticket\":\"" + IntegerToString((int)ticket) + "\"," +
+             "\"symbol\":\"" + symbol + "\"," +
+             "\"pnl\":" + DoubleToString(pnl, 2) + "," +
+             "\"reason\":\"" + reason + "\"}";
+     }
+
+   ArrayResize(g_lastTickets, ArraySize(currentTickets));
+   for(int i = 0; i < ArraySize(currentTickets); i++)
+      g_lastTickets[i] = currentTickets[i];
+
+   return out;
   }
 
 string OrderTypeToString(ENUM_ORDER_TYPE ot)

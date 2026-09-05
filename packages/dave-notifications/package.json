@@ -9,7 +9,9 @@
     "@dave/db": "workspace:*",
     "@dave/telegram": "workspace:*",
     "@dave/workers": "workspace:*",
-    "@dave/io": "workspace:*"
+    "@dave/io": "workspace:*",
+    "@dave/ea-bridge": "workspace:*",
+    "@dave/rfeed": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

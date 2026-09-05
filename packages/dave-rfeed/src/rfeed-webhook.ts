@@ -68,6 +68,14 @@ export interface HistoryResult {
   candles?: HistoryCandle[];
 }
 
+/** Update 10 (trade notifications): same real EA-side DEAL_REASON lookup as the real Dave EA -- see RFeedEA.mq5's own comment. */
+export interface RFeedClosedPosition {
+  ticket: string;
+  symbol: string;
+  pnl: number;
+  reason: "tp" | "sl" | "dave" | "manual";
+}
+
 export interface RFeedReport {
   type: "heartbeat" | "snapshot";
   account: string;
@@ -79,6 +87,7 @@ export interface RFeedReport {
   pendingOrders: RFeedPendingOrder[];
   results?: RFeedCommandResult[];
   historyResults?: HistoryResult[];
+  closedPositions?: RFeedClosedPosition[];
 }
 
 export interface RFeedAccountSnapshot {
@@ -111,6 +120,22 @@ function lastKnownStatePath(userId: string): string {
 
 function accountSnapshotPath(userId: string): string {
   return join(process.cwd(), "data", "rfeed", userId, "account-snapshot.json");
+}
+
+function lastSeenPath(userId: string): string {
+  return join(process.cwd(), "data", "rfeed", userId, "last-seen.json");
+}
+
+/** Update 10: same real connection-detection idea as the real Dave EA's webhook. */
+export const RFEED_CONNECTION_GAP_MS = 2 * 60 * 1000;
+
+export function isNewRFeedConnection(userId: string, now = Date.now()): boolean {
+  const lastSeen = readJson<number | null>(lastSeenPath(userId), null);
+  return lastSeen === null || now - lastSeen > RFEED_CONNECTION_GAP_MS;
+}
+
+function markRFeedSeen(userId: string, now = Date.now()): void {
+  writeJson(lastSeenPath(userId), now);
 }
 
 function readJson<T>(path: string, fallback: T): T {
@@ -183,6 +208,7 @@ function saveAccountSnapshot(userId: string, report: RFeedReport): void {
 
 export interface RFeedReportHandlers {
   onReport?: (userId: string, report: RFeedReport, previous: { positions: RFeedPosition[]; pendingOrders: RFeedPendingOrder[] }) => void;
+  onConnect?: (userId: string) => void;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -219,6 +245,11 @@ export function createRFeedWebhookServer(handlers: RFeedReportHandlers = {}): Se
       res.end(JSON.stringify({ error: "invalid JSON body" }));
       return;
     }
+
+    if (isNewRFeedConnection(userId)) {
+      handlers.onConnect?.(userId);
+    }
+    markRFeedSeen(userId);
 
     const previous = getLastKnownRFeedState(userId);
     saveLastKnownState(userId, report.positions ?? [], report.pendingOrders ?? []);

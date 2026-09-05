@@ -27,12 +27,19 @@ export class RFeedTradeExecutor implements TradeExecutor {
     private readonly timeoutMs = 30_000
   ) {}
 
-  resolveCommand(result: RFeedCommandResult): void {
+  /** Same real close/modify attribution EaTradeExecutor provides, for R_Feed's own trade-notification wiring (Update 10). */
+  resolveCommand(result: RFeedCommandResult): { daveClosedTicket?: string; daveModifiedTicket?: string } {
     const waiter = this.pending.get(result.commandId);
-    if (!waiter) return; // no one waiting -- already timed out, or unsolicited
+    if (!waiter) return {}; // no one waiting -- already timed out, or unsolicited
     this.pending.delete(result.commandId);
-    if (result.status === "ok") waiter.resolve(result);
-    else waiter.reject(new Error(result.message ?? `R_Feed EA reported an error for command ${result.commandId}`));
+    if (result.status === "ok") {
+      waiter.resolve(result);
+      if (waiter.command.action === "close") return { daveClosedTicket: waiter.command.ticket };
+      if (waiter.command.action === "modify") return { daveModifiedTicket: waiter.command.ticket };
+      return {};
+    }
+    waiter.reject(new Error(result.message ?? `R_Feed EA reported an error for command ${result.commandId}`));
+    return {};
   }
 
   private awaitResult(command: RFeedCommand): Promise<RFeedCommandResult> {

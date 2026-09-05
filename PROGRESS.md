@@ -3037,3 +3037,101 @@ Extended `packages/dave-agent-loop/test/step32-full-registry.test.ts`:
   live updates, `finalize()` = the real persisted message) -- it is
   infrastructure the message handler runs, not yet an agent-callable
   tool in the unified registry
+
+## Status: Update 15 — Trade Notifications: Connection, Open, Close, TP/SL Hit (COMPLETE)
+
+"When either the Dave EA or the R_Feed EA connects/comes online, send
+a Telegram notification confirming the connection... Trade OPENED:
+which system, symbol/pair, lot size, and the REASON, all in one
+message... Trade CLOSED: which system, symbol/pair, exact P&L, and the
+reason... Trade hit TP/SL: a dedicated notification... All three apply
+to BOTH the real account and the demo account, always clearly labeled."
+
+### Real EA-side change: MT5's own DEAL_REASON, not guessed Dave-side
+Both `ea/DaveEA.mq5` and `ea/RFeedEA.mq5` gained a real
+`BuildClosedPositionsJson()`: when a previously-tracked position
+vanishes, it does a real `HistorySelectByPosition` + `HistoryDealGetInteger`
+lookup for the real deal that closed it, mapping MT5's own confirmed
+`DEAL_REASON` enum to `"tp"`/`"sl"`/`"dave"` (`DEAL_REASON_EXPERT` --
+this EA, acting on Dave's queued close command) /`"manual"`
+(`DEAL_REASON_CLIENT`/`MOBILE`/`WEB` -- the user, in the terminal/app).
+Real P&L (`DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION`) comes from the
+same real deal record. This is genuinely reliable data from MT5 itself,
+not inferred from a position diff.
+
+### What was built
+- [x] `ea/DaveEA.mq5` / `ea/RFeedEA.mq5` — real `closedPositions[]` in
+      every report
+- [x] `dave-ea-bridge`/`dave-rfeed`'s webhook layers — real connection
+      detection (`isNewConnection`/`isNewRFeedConnection`: no report
+      ever seen, or a gap past a real threshold, counts as a genuine
+      reconnect; a normal heartbeat within the gap does NOT re-fire),
+      `onConnect` and `onClosedPosition` events wired through
+      `EaBridge`/`RFeedBridge`
+- [x] `dave-notifications/src/trade-alerts.ts` — real formatters +
+      senders for all 4 notification types, always system-labeled
+      (`formatConnectionAlert`, `formatTradeOpenedAlert`,
+      `formatTradeClosedAlert`, `formatTpHitAlert`, `formatSlHitAlert`),
+      `formatMoney()` (always signed, 2 decimals), and
+      `routeClosedPositionAlert()` which routes a real EA-reported
+      closed position to the right specific alert by its real `reason`
+
+### Real proof (Update 15)
+Ran `packages/dave-notifications/test/step35-trade-alerts.test.ts`:
+1. `formatMoney` real sign/decimal formatting
+2. Every alert type genuinely labels its system
+3. Trade-opened: system+symbol+lots+reason genuinely all in one message
+4. Trade-closed: system+symbol+exact P&L+reason genuinely all in one
+5. TP-hit/SL-hit are genuinely distinct, dedicated alerts
+6. `routeClosedPositionAlert()` genuinely routes tp/sl/dave/manual to
+   the correct alert text
+7. **Real end-to-end**: a real EA webhook POST genuinely fires
+   `onConnect` on the first report; a real `closedPositions` entry in a
+   later report genuinely fires `onClosedPosition`; a second report
+   within the gap window correctly does NOT re-fire `onConnect`
+8. Existing manual-close detection (Step 11.1) still fires correctly
+9. Same real end-to-end wiring proven for R_Feed
+- `=== ALL ASSERTIONS PASSED ===`
+
+## Status: Update 16 — Manual Modify Detection (COMPLETE)
+
+"Dave must detect... when the user manually MODIFIES an open trade's
+SL or TP directly in the terminal, without going through Dave." Same
+real two-report comparison idea as the existing manual-CLOSE detector
+(Step 11.1), now covering modification too.
+
+### What was built
+- [x] `dave-ea-bridge/src/manual-modify-detector.ts` —
+      `detectManualModifications()`: compares SL/TP for the SAME
+      ticket across two consecutive real reports
+- [x] `EaTradeExecutor.resolveCommand()` extended to also return
+      `daveModifiedTicket` for a successfully-resolved "modify" command
+      (mirrors the existing `daveClosedTicket` mechanism exactly) --
+      `EaBridge` uses it to exclude Dave's OWN modifications from being
+      misreported as manual
+
+### Real proof (part of the same Update 15 test file, section [9]/[9b])
+- A real manual SL edit (1.09 -> 1.095, same ticket, across two real
+  reports) is genuinely detected and reported:
+  `"tg-modify-test:TM:sl:1.09->1.095"`
+- The matching alert: `formatManualChangeAlert()` — "👋 Noticed you
+  moved your SL to 1.095 on **EURUSD** manually"
+- A Dave-INITIATED modify (via a real `modifyOrder()` call, queued,
+  executed, resolved) is genuinely NOT misreported as manual
+- Full 36-file test suite green afterward, clean `tsc -b` build, clean
+  `next build`
+
+### Not yet done (deferred, not silently skipped), both updates
+- Not wired to a live Telegram handler yet -- same gap as every other
+  "real, tested logic ahead of the runtime" update in this build
+- Manual close/modify detection was NOT extended to R_Feed (R_Feed is
+  a SHARED demo account nobody typically trades by hand; the master
+  plan's manual-detection item reads as being about the user's own
+  real account) -- R_Feed DID get the connection/closed-position
+  notification wiring, since that was explicitly required for both
+  systems
+- The MQL5 changes (`HistorySelectByPosition`/`DEAL_REASON` lookup)
+  cannot be compiled/tested in this environment (no MetaEditor) --
+  written against real, confirmed MQL5 API facts, same posture as
+  every other `.mq5` change this session, not live-verified in a
+  terminal

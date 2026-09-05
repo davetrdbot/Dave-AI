@@ -29,13 +29,14 @@ export class EaTradeExecutor implements TradeExecutor {
    * uses this to tell a Dave-initiated close apart from a real manual
    * close, without needing its own separate command-tracking map.
    */
-  resolveCommand(result: EaCommandResult): { daveClosedTicket?: string } {
+  resolveCommand(result: EaCommandResult): { daveClosedTicket?: string; daveModifiedTicket?: string } {
     const waiter = this.pending.get(result.commandId);
     if (!waiter) return {}; // no one waiting (already timed out, or an unsolicited result) -- not an error
     this.pending.delete(result.commandId);
     if (result.status === "ok") {
       waiter.resolve(result);
       if (waiter.command.action === "close") return { daveClosedTicket: waiter.command.ticket };
+      if (waiter.command.action === "modify") return { daveModifiedTicket: waiter.command.ticket };
       return {};
     }
     waiter.reject(new Error(result.message ?? `EA reported an error for command ${result.commandId}`));

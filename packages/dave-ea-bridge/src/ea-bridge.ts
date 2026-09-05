@@ -1,6 +1,7 @@
-import { createEaWebhookServer, type EaReport, type EaCommandResult, type EaPosition } from "./ea-webhook.js";
+import { createEaWebhookServer, type EaReport, type EaCommandResult, type EaPosition, type EaClosedPosition } from "./ea-webhook.js";
 import { EaTradeExecutor } from "./ea-trade-executor.js";
 import { detectManualCloses } from "./manual-close-detector.js";
+import { detectManualModifications, type ManualModification } from "./manual-modify-detector.js";
 
 /**
  * The real composition wiring the webhook, the executor's pending-result
@@ -13,11 +14,15 @@ import { detectManualCloses } from "./manual-close-detector.js";
  * EaTradeExecutor.resolveCommand() already tracks which ticket a
  * successfully-resolved "close" command was for (it has to, to fulfil
  * the right promise), so this layer reuses that instead of duplicating
- * command tracking in a second map.
+ * command tracking in a second map. Same idea now covers "modify" too,
+ * for manual SL/TP-edit detection (Update 11).
  */
 export interface EaBridgeEvents {
+  onConnect?: (userId: string) => void;
   onManualClose?: (userId: string, position: EaPosition) => void;
+  onManualModify?: (userId: string, modification: ManualModification) => void;
   onCommandResult?: (userId: string, result: EaCommandResult) => void;
+  onClosedPosition?: (userId: string, closed: EaClosedPosition) => void;
 }
 
 export class EaBridge {
@@ -32,16 +37,19 @@ export class EaBridge {
 
   createServer() {
     return createEaWebhookServer({
+      onConnect: (userId) => this.events.onConnect?.(userId),
       onReport: (userId, report, previous) => this.handleReport(userId, report, previous.positions),
     });
   }
 
   private handleReport(userId: string, report: EaReport, previousPositions: EaPosition[]): void {
     const daveClosedThisCycle = new Set<string>();
+    const daveModifiedThisCycle = new Set<string>();
 
     for (const result of report.results ?? []) {
-      const { daveClosedTicket } = this.getExecutor(userId).resolveCommand(result);
+      const { daveClosedTicket, daveModifiedTicket } = this.getExecutor(userId).resolveCommand(result);
       if (daveClosedTicket) daveClosedThisCycle.add(daveClosedTicket);
+      if (daveModifiedTicket) daveModifiedThisCycle.add(daveModifiedTicket);
       this.events.onCommandResult?.(userId, result);
     }
 
@@ -49,6 +57,16 @@ export class EaBridge {
     for (const position of disappeared) {
       if (daveClosedThisCycle.has(position.ticket)) continue; // Dave's own close, not manual
       this.events.onManualClose?.(userId, position);
+    }
+
+    const modifications = detectManualModifications(previousPositions, report.positions ?? []);
+    for (const modification of modifications) {
+      if (daveModifiedThisCycle.has(modification.ticket)) continue; // Dave's own modify, not manual
+      this.events.onManualModify?.(userId, modification);
+    }
+
+    for (const closed of report.closedPositions ?? []) {
+      this.events.onClosedPosition?.(userId, closed);
     }
   }
 }

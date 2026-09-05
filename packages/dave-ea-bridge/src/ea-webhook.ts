@@ -47,6 +47,22 @@ export interface EaCommandResult {
   ticket?: string; // for open commands, the real ticket MT5 assigned
 }
 
+/**
+ * Update 10 (trade notifications): a real, EA-side deal-reason lookup
+ * (MT5's own `DEAL_REASON`, confirmed real enum values) -- "tp"/"sl"
+ * mean MT5 itself closed it; "dave" means DEAL_REASON_EXPERT (this EA,
+ * acting on Dave's own queued close command); "manual" means the user
+ * closed it themselves in the terminal/mobile/web UI (DEAL_REASON_
+ * CLIENT/MOBILE/WEB). Real data from the EA's own deal history, not
+ * inferred Dave-side.
+ */
+export interface EaClosedPosition {
+  ticket: string;
+  symbol: string;
+  pnl: number;
+  reason: "tp" | "sl" | "dave" | "manual";
+}
+
 export interface EaReport {
   type: "heartbeat" | "snapshot";
   account: string;
@@ -57,6 +73,7 @@ export interface EaReport {
   positions: EaPosition[];
   pendingOrders: EaPendingOrder[];
   results?: EaCommandResult[];
+  closedPositions?: EaClosedPosition[];
 }
 
 /** Real gap fixed: balance/equity/margin/freeMargin were reported by the EA but never actually PERSISTED anywhere -- nothing could read them back later (e.g. for /account). */
@@ -89,6 +106,29 @@ function lastKnownStatePath(userId: string): string {
 
 function accountSnapshotPath(userId: string): string {
   return join(process.cwd(), "data", "ea-bridge", userId, "account-snapshot.json");
+}
+
+function lastSeenPath(userId: string): string {
+  return join(process.cwd(), "data", "ea-bridge", userId, "last-seen.json");
+}
+
+/**
+ * Update 10 (trade notifications): "when the Dave EA connects/comes
+ * online, send a Telegram notification confirming the connection."
+ * Real, testable connection detection -- no report ever seen for this
+ * user, OR the gap since the last one exceeds this threshold (well
+ * above the EA's own PushSeconds heartbeat interval), counts as a
+ * genuine (re)connection, not just a normal heartbeat.
+ */
+export const CONNECTION_GAP_MS = 2 * 60 * 1000;
+
+export function isNewConnection(userId: string, now = Date.now()): boolean {
+  const lastSeen = readJson<number | null>(lastSeenPath(userId), null);
+  return lastSeen === null || now - lastSeen > CONNECTION_GAP_MS;
+}
+
+function markSeen(userId: string, now = Date.now()): void {
+  writeJson(lastSeenPath(userId), now);
 }
 
 function readJson<T>(path: string, fallback: T): T {
@@ -183,6 +223,8 @@ export interface EaReportHandlers {
    * the NEW state (a real bug this signature exists to prevent).
    */
   onReport?: (userId: string, report: EaReport, previous: { positions: EaPosition[]; pendingOrders: EaPendingOrder[] }) => void;
+  /** Fires once per genuine (re)connection -- see `isNewConnection`. */
+  onConnect?: (userId: string) => void;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -219,6 +261,11 @@ export function createEaWebhookServer(handlers: EaReportHandlers = {}): Server {
       res.end(JSON.stringify({ error: "invalid JSON body" }));
       return;
     }
+
+    if (isNewConnection(userId)) {
+      handlers.onConnect?.(userId);
+    }
+    markSeen(userId);
 
     const previous = getLastKnownState(userId);
     saveLastKnownState(userId, report.positions ?? [], report.pendingOrders ?? []);

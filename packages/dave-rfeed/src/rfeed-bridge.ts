@@ -1,4 +1,4 @@
-import { createRFeedWebhookServer, type RFeedReport } from "./rfeed-webhook.js";
+import { createRFeedWebhookServer, type RFeedReport, type RFeedClosedPosition } from "./rfeed-webhook.js";
 import { RFeedTradeExecutor } from "./rfeed-trade-executor.js";
 import { HistoryRequestManager } from "./history.js";
 import { recordSymbolCustomFlags } from "./custom-symbol-safety.js";
@@ -11,9 +11,16 @@ import { recordSymbolCustomFlags } from "./custom-symbol-safety.js";
  * than extending/reusing EaBridge, per the explicit "own webhook/token
  * pair, own tools" separation.
  */
+export interface RFeedBridgeEvents {
+  onConnect?: (userId: string) => void;
+  onClosedPosition?: (userId: string, closed: RFeedClosedPosition) => void;
+}
+
 export class RFeedBridge {
   private readonly executors = new Map<string, RFeedTradeExecutor>();
   private readonly historyManagers = new Map<string, HistoryRequestManager>();
+
+  constructor(private readonly events: RFeedBridgeEvents = {}) {}
 
   getExecutor(userId: string): RFeedTradeExecutor {
     if (!this.executors.has(userId)) this.executors.set(userId, new RFeedTradeExecutor(userId));
@@ -27,6 +34,7 @@ export class RFeedBridge {
 
   createServer() {
     return createRFeedWebhookServer({
+      onConnect: (userId) => this.events.onConnect?.(userId),
       onReport: (userId, report) => this.handleReport(userId, report),
     });
   }
@@ -41,6 +49,9 @@ export class RFeedBridge {
     }
     for (const historyResult of report.historyResults ?? []) {
       this.getHistoryManager(userId).resolveHistoryResult(historyResult);
+    }
+    for (const closed of report.closedPositions ?? []) {
+      this.events.onClosedPosition?.(userId, closed);
     }
   }
 }

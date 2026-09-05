@@ -200,9 +200,15 @@ importers:
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db
+      '@dave/ea-bridge':
+        specifier: workspace:*
+        version: link:../dave-ea-bridge
       '@dave/io':
         specifier: workspace:*
         version: link:../dave-io
+      '@dave/rfeed':
+        specifier: workspace:*
+        version: link:../dave-rfeed
       '@dave/telegram':
         specifier: workspace:*
         version: link:../dave-telegram

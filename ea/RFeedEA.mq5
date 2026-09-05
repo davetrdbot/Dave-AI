@@ -130,6 +130,7 @@ string BuildReportJson()
 
    string results = LastResultsJson();
    string historyResults = LastHistoryResultsJson();
+   string closedPositions = BuildClosedPositionsJson();
 
    return "{\"type\":\"heartbeat\"," +
           "\"account\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\"," +
@@ -140,7 +141,70 @@ string BuildReportJson()
           "\"positions\":[" + positions + "]," +
           "\"pendingOrders\":[" + pendingOrders + "]," +
           "\"results\":[" + results + "]," +
-          "\"historyResults\":[" + historyResults + "]}";
+          "\"historyResults\":[" + historyResults + "]," +
+          "\"closedPositions\":[" + closedPositions + "]}";
+  }
+
+//+------------------------------------------------------------------+
+//| Update 10 (trade notifications), same real deal-reason lookup as  |
+//| DaveEA.mq5 -- see that file's own comment for why DEAL_REASON_    |
+//| EXPERT/CLIENT reliably tell "R_Feed closed it via Dave's command"  |
+//| apart from "the user closed it manually in the terminal."         |
+//+------------------------------------------------------------------+
+ulong g_lastTickets[];
+
+string BuildClosedPositionsJson()
+  {
+   ulong currentTickets[];
+   int total = PositionsTotal();
+   ArrayResize(currentTickets, total);
+   for(int i = 0; i < total; i++)
+      currentTickets[i] = PositionGetTicket(i);
+
+   string out = "";
+   for(int i = 0; i < ArraySize(g_lastTickets); i++)
+     {
+      ulong ticket = g_lastTickets[i];
+      bool stillOpen = false;
+      for(int j = 0; j < ArraySize(currentTickets); j++)
+         if(currentTickets[j] == ticket) { stillOpen = true; break; }
+      if(stillOpen) continue;
+
+      string symbol = "";
+      double pnl = 0;
+      string reason = "manual";
+      if(HistorySelectByPosition((long)ticket))
+        {
+         int deals = HistoryDealsTotal();
+         for(int d = 0; d < deals; d++)
+           {
+            ulong dealTicket = HistoryDealGetTicket(d);
+            if(dealTicket == 0) continue;
+            if((int)HistoryDealGetInteger(dealTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+            symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+            pnl = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+            long dealReason = HistoryDealGetInteger(dealTicket, DEAL_REASON);
+            if(dealReason == DEAL_REASON_TP) reason = "tp";
+            else if(dealReason == DEAL_REASON_SL) reason = "sl";
+            else if(dealReason == DEAL_REASON_EXPERT) reason = "dave";
+            else if(dealReason == DEAL_REASON_CLIENT || dealReason == DEAL_REASON_MOBILE || dealReason == DEAL_REASON_WEB) reason = "manual";
+            else reason = "manual";
+           }
+        }
+      if(out != "") out += ",";
+      out += "{\"ticket\":\"" + IntegerToString((int)ticket) + "\"," +
+             "\"symbol\":\"" + symbol + "\"," +
+             "\"pnl\":" + DoubleToString(pnl, 2) + "," +
+             "\"reason\":\"" + reason + "\"}";
+     }
+
+   ArrayResize(g_lastTickets, ArraySize(currentTickets));
+   for(int i = 0; i < ArraySize(currentTickets); i++)
+      g_lastTickets[i] = currentTickets[i];
+
+   return out;
   }
 
 string OrderTypeToString(ENUM_ORDER_TYPE ot)
