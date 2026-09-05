@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { DaveDatabase } from "@dave/db";
 import { DavemaClient } from "@dave/davema";
-import { EaTradeExecutor } from "@dave/ea-bridge";
+import { EaTradeExecutor, EA_STATE_TOOLS } from "@dave/ea-bridge";
 import { TRADING_TOOLS } from "@dave/trading";
 import { RFeedBridge, RFEED_TOOLS } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
@@ -77,6 +77,7 @@ try {
     TRAILING_TOOLS.length +
     MT5_ACCOUNT_TOOLS.length +
     DAVEMA_TOOLS.length +
+    EA_STATE_TOOLS.length +
     2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);

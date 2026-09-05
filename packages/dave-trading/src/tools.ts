@@ -2,7 +2,7 @@ import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "./trade-executor.js";
 import { findSetup } from "./find-setup.js";
 import { tradeExecute, tradeModify, partialClose, fullClose, deletePendingOrder, deleteAllPendingOrders } from "./trade-execute.js";
-import { validateOrder, type OrderRequest } from "./order-types.js";
+import { validateOrder, resolveEntryPrice, isPendingOrderType, type OrderRequest } from "./order-types.js";
 import { enableBreakevenTrailing, disableBreakevenTrailing } from "./breakeven-trailing.js";
 
 /**
@@ -53,7 +53,11 @@ export const TRADING_TOOLS: ToolDefinition[] = [
   },
   {
     name: "trade_execute",
-    description: "Place a real order. Validates the order before sending -- never sends a malformed request.",
+    description:
+      "Place a real order. For buy_limit/sell_limit/buy_stop/sell_stop, price is optional: if omitted, a real current " +
+      "market quote is pulled from DAVEMA and a sensible entry is calculated a few pips off it. If DAVEMA is " +
+      "unreachable, this returns needsUserInput=true with a question to ask the user instead of failing silently or " +
+      "rejecting the order -- never guess a strategy-significant entry price out of thin air.",
     parameters: {
       type: "object",
       required: ["symbol", "type", "lots"],
@@ -61,12 +65,32 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         symbol: { type: "string" },
         type: { type: "string", enum: ["buy", "sell", "buy_limit", "sell_limit", "buy_stop", "sell_stop"] },
         lots: { type: "number" },
-        price: { type: "number", description: "required for pending order types" },
+        price: { type: "number", description: "explicit entry price for pending order types -- auto-calculated from a live quote if omitted" },
         sl: { type: "number" },
         tp: { type: "number" },
       },
     },
-    execute: async (args, ctx) => tradeExecute(ctx.executor, args as unknown as OrderRequest),
+    execute: async (args, ctx) => {
+      const order = args as unknown as OrderRequest;
+      if (isPendingOrderType(order.type) && order.price === undefined) {
+        let referencePrice: number | undefined;
+        try {
+          const quote = await ctx.davema.data<{ bid?: number; ask?: number; close?: number }>("price", order.symbol);
+          referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
+        } catch {
+          // DAVEMA unreachable -- fall through, resolveEntryPrice below will ask instead of failing silently.
+        }
+        const resolution = resolveEntryPrice(order, referencePrice !== undefined ? { referencePrice, offsetPips: 10 } : {});
+        if (!resolution.resolved) {
+          return {
+            needsUserInput: true,
+            question: `What entry price should I use for the ${order.type} on ${order.symbol}? (${resolution.reason})`,
+          };
+        }
+        order.price = resolution.price;
+      }
+      return tradeExecute(ctx.executor, order);
+    },
   },
   {
     name: "trade_modify",
@@ -77,6 +101,34 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       properties: { ticket: { type: "string" }, sl: { type: ["number", "null"] }, tp: { type: ["number", "null"] } },
     },
     execute: async (args, ctx) => tradeModify(ctx.executor, args.ticket as string, { sl: args.sl as number | null, tp: args.tp as number | null }),
+  },
+  {
+    name: "modify_sl_tp",
+    description: "Set a new SL and/or TP on an open position -- explicit alias of trade_modify for when the intent is specifically to SET new levels, not remove them.",
+    parameters: {
+      type: "object",
+      required: ["ticket"],
+      properties: { ticket: { type: "string" }, sl: { type: "number" }, tp: { type: "number" } },
+    },
+    execute: async (args, ctx) => tradeModify(ctx.executor, args.ticket as string, { sl: args.sl as number | undefined, tp: args.tp as number | undefined }),
+  },
+  {
+    name: "remove_sl_tp",
+    description: "Remove SL only, TP only, or both from an open position -- pass which side(s) to remove.",
+    parameters: {
+      type: "object",
+      required: ["ticket"],
+      properties: {
+        ticket: { type: "string" },
+        removeSl: { type: "boolean", default: false },
+        removeTp: { type: "boolean", default: false },
+      },
+    },
+    execute: async (args, ctx) =>
+      tradeModify(ctx.executor, args.ticket as string, {
+        sl: args.removeSl ? null : undefined,
+        tp: args.removeTp ? null : undefined,
+      }),
   },
   {
     name: "partial_close",

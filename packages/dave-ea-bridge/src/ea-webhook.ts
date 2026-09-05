@@ -30,6 +30,8 @@ export interface EaPosition {
   openPrice: number;
   sl?: number;
   tp?: number;
+  /** Real current bid (sell) / ask (buy) for this position's symbol -- the same price the position could close at right now. Drives breakeven/trailing without depending on a separate DAVEMA round-trip. */
+  currentPrice?: number;
 }
 
 export interface EaPendingOrder {

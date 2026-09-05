@@ -151,11 +151,19 @@ assert.equal(position.sl, 1.095, "once opted in, SL must have progressed through
 assert.equal(position.tp1Hit && position.tp2Hit && position.tp3Hit, true);
 
 console.log("\n[4c] SL never moves backward even if a stage's target would be worse than the current SL...");
-let posGuard: Position = enableBreakevenTrailing(newPosition({ id: "pos-2", direction: "buy", entry: 1.085, sl: 1.087, tp1: 1.09 }));
+let posGuard: Position = enableBreakevenTrailing(newPosition({ id: "pos-2", direction: "buy", entry: 1.085, sl: 1.087, tp1: 1.09, tp2: 1.1, tp3: 1.11 }));
 const guardResult = processPriceTick(posGuard, 1.09, { slAtTp1: 1.08 /* worse than current sl 1.087 */, slAtTp2: 1.09, slAtTp3: 1.095 });
 console.log(`    SL before: 1.087, TP1 target 1.08 (worse) -> slChanged: ${guardResult.slChanged}, sl stays: ${guardResult.position.sl}`);
 assert.equal(guardResult.slChanged, false);
 assert.equal(guardResult.position.sl, 1.087);
+
+console.log("\n[4d] A normal single-TP trade is REJECTED from breakeven/trailing outright -- real proof, not just opt-out by default...");
+assert.throws(
+  () => enableBreakevenTrailing(newPosition({ id: "pos-single-tp", direction: "buy", entry: 1.085, sl: 1.08, tp1: 1.09 })),
+  /TP1, TP2, AND TP3/,
+  "a position missing tp2/tp3 must be rejected, not silently enabled with partial stages"
+);
+console.log("    confirmed: enableBreakevenTrailing() throws for a single-TP position instead of partially enabling it");
 
 // --- 10.3: partial close, remove SL/TP, delete pending orders ---
 console.log("\n[5] Partial close, SL/TP removal, and pending-order deletion via a real fake executor...");

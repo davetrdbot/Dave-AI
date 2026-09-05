@@ -39,8 +39,20 @@ export function newPosition(fields: Omit<Position, "tp1Hit" | "tp2Hit" | "tp3Hit
   return { ...fields, tp1Hit: false, tp2Hit: false, tp3Hit: false, breakevenTrailingEnabled: false };
 }
 
-/** Dave's own explicit, per-position opt-in -- "if it wishes," not automatic. */
+/**
+ * Dave's own explicit, per-position opt-in -- "if it wishes," not
+ * automatic. Real condition enforced here (previously missing): this
+ * only ever applies to a position genuinely set up with all three TP
+ * levels. A normal single-TP trade must get zero automatic SL movement
+ * from this mechanism -- so a position missing tp1, tp2, or tp3 is
+ * rejected outright rather than silently enabled with partial stages.
+ */
 export function enableBreakevenTrailing(position: Position): Position {
+  if (position.tp1 === undefined || position.tp2 === undefined || position.tp3 === undefined) {
+    throw new Error(
+      "breakeven/trailing requires a position explicitly set up with TP1, TP2, AND TP3 -- this position is missing at least one, so it stays a normal single-TP trade with no automatic SL movement."
+    );
+  }
   return { ...position, breakevenTrailingEnabled: true };
 }
 

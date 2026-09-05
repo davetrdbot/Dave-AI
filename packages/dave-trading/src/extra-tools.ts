@@ -1,6 +1,7 @@
 import type { DavemaClient } from "@dave/davema";
-import { processPriceTick, enableBreakevenTrailing, disableBreakevenTrailing, type Position } from "./breakeven-trailing.js";
+import { processPriceTick, type Position } from "./breakeven-trailing.js";
 import { getTrailingStopConfig, setTrailingStopConfig } from "./trailing-config.js";
+import { registerTrailingPosition, unregisterTrailingPosition, listTrailingPositions } from "./trailing-runtime.js";
 import { storeOwnMt5Credentials, getMaskedOwnMt5Credentials, deleteOwnMt5Credentials, setAccountChoice, getAccountChoice, type Mt5Credentials, type AccountChoice } from "./mt5-accounts.js";
 
 /**
@@ -37,10 +38,49 @@ export const TRAILING_TOOLS: ExtraToolDefinition[] = [
     },
   },
   {
-    name: "toggle_breakeven_trailing",
-    description: "Opt a specific open position in/out of breakeven-trailing -- never automatic, only per-position when you decide the setup calls for it.",
-    parameters: { type: "object", properties: { position: { type: "object" }, enabled: { type: "boolean" } }, required: ["position", "enabled"] },
-    execute: async (args) => (args.enabled ? enableBreakevenTrailing(args.position as Position) : disableBreakevenTrailing(args.position as Position)),
+    name: "enable_position_trailing",
+    description:
+      "Opt a specific open position (by its real ticket) into REAL, running breakeven/trailing -- persisted, and actually driven " +
+      "on every EA report from here on. Never automatic: only call this when you deliberately decide a setup calls for it, and only " +
+      "for a position genuinely placed with TP1, TP2, AND TP3 (a single-TP trade is rejected, not partially enabled).",
+    parameters: {
+      type: "object",
+      required: ["ticket", "direction", "entry", "sl", "tp1", "tp2", "tp3"],
+      properties: {
+        ticket: { type: "string" },
+        direction: { type: "string", enum: ["buy", "sell"] },
+        entry: { type: "number" },
+        sl: { type: "number" },
+        tp1: { type: "number" },
+        tp2: { type: "number" },
+        tp3: { type: "number" },
+      },
+    },
+    execute: async (args, ctx) =>
+      registerTrailingPosition(ctx.userId, args.ticket as string, {
+        direction: args.direction as "buy" | "sell",
+        entry: args.entry as number,
+        sl: args.sl as number,
+        tp1: args.tp1 as number,
+        tp2: args.tp2 as number,
+        tp3: args.tp3 as number,
+        tp1Hit: false,
+        tp2Hit: false,
+        tp3Hit: false,
+        breakevenTrailingEnabled: false,
+      }),
+  },
+  {
+    name: "disable_position_trailing",
+    description: "Opt a real ticket OUT of the running breakeven/trailing registry.",
+    parameters: { type: "object", required: ["ticket"], properties: { ticket: { type: "string" } } },
+    execute: async (args, ctx) => ({ removed: unregisterTrailingPosition(ctx.userId, args.ticket as string) }),
+  },
+  {
+    name: "list_trailing_positions",
+    description: "List every real ticket currently registered for running breakeven/trailing, with its current stage flags.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => listTrailingPositions(ctx.userId),
   },
   {
     name: "process_price_tick",

@@ -2,6 +2,7 @@ import { createEaWebhookServer, type EaReport, type EaCommandResult, type EaPosi
 import { EaTradeExecutor } from "./ea-trade-executor.js";
 import { detectManualCloses } from "./manual-close-detector.js";
 import { detectManualModifications, type ManualModification } from "./manual-modify-detector.js";
+import { runTrailingTick } from "@dave/trading";
 
 /**
  * The real composition wiring the webhook, the executor's pending-result
@@ -67,6 +68,16 @@ export class EaBridge {
 
     for (const closed of report.closedPositions ?? []) {
       this.events.onClosedPosition?.(userId, closed);
+    }
+
+    // Real breakeven/trailing drive loop: every reported open position that
+    // carries a real current price gets a real tick against the trailing
+    // registry (trading-runtime.ts) -- a no-op for tickets nobody registered,
+    // a genuine `executor.modifyOrder()` for one whose stage just fired.
+    const executor = this.getExecutor(userId);
+    for (const position of report.positions ?? []) {
+      if (position.currentPrice === undefined) continue;
+      void runTrailingTick(userId, position.ticket, position.currentPrice, executor);
     }
   }
 }
