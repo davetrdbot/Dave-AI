@@ -4,3 +4,4 @@ export * from "./trigger.js";
 export * from "./call-session.js";
 export * from "./gemini-live-client.js";
 export * from "./tools.js";
+export * from "./settings-tools.js";

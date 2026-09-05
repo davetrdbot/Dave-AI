@@ -17,6 +17,7 @@
     "@dave/db": "workspace:*",
     "@dave/lovable-mcp": "workspace:*",
     "@dave/voice-call": "workspace:*",
+    "@dave/e2b": "workspace:*",
     "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"

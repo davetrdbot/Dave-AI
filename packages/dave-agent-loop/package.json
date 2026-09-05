@@ -18,6 +18,7 @@
     "@dave/e2b": "workspace:*",
     "@dave/memory": "workspace:*",
     "@dave/telegram": "workspace:*",
+    "@dave/notifications": "workspace:*",
     "@dave/db": "workspace:*"
   },
   "exports": {

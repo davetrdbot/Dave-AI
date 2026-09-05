@@ -3135,3 +3135,85 @@ real two-report comparison idea as the existing manual-CLOSE detector
   written against real, confirmed MQL5 API facts, same posture as
   every other `.mq5` change this session, not live-verified in a
   terminal
+
+## Status: Update 17 — Settings Audit (full read/write parity) + Clarifying-Question Trait (COMPLETE)
+
+### Settings audit findings and gap-filling
+"Re-confirm every user-facing setting... is reachable BOTH via the
+admin panel UI AND conversationally by asking Dave to change it, with
+Dave able to read and write all of it as real tool calls, not partial
+coverage." A genuine audit turned up 5 real gaps, all closed:
+
+| Setting | Admin UI (before) | Agent tool (before) | Fixed |
+|---|---|---|---|
+| TTS voice settings | route existed | **none** | `VOICE_SETTINGS_TOOLS` (dave-notifications) |
+| Pair groups (create/edit/delete/list) | route existed | only active/fallback slot | `PAIR_GROUP_TOOLS` (dave-trading) |
+| Lovable MCP URL/token | route existed | **none** | `LOVABLE_SETTINGS_TOOLS` |
+| Green API/voice-call settings | route existed | **none** | `CALL_SETTINGS_TOOLS` |
+| E2B keys | **none** | tools existed | new `/api/e2b-keys` admin route |
+
+A real bug was caught and fixed while building `set_voice_call_settings`:
+`setVoiceCallSettings()` merges via `{...current, ...patch}`, so naively
+passing every field (with `undefined` for ones the caller omitted)
+would have WIPED existing values rather than leaving them untouched.
+Fixed by only including fields the caller actually provided.
+
+Providers/trading-risk/self-improvement/DB-automation/MCP-connections/
+agent-teams were already confirmed full-coverage from earlier updates
+(Updates 3/4/8 + pre-existing Steps 14/16/17).
+
+### Clarifying-question behavioral trait
+"Confirm Dave actually asks the user clarifying questions when
+something is genuinely ambiguous... a general behavioral trait in
+IDENTITY.md, not just a one-time onboarding mechanic." Added to
+`prompts/IDENTITY.md` under "When something is genuinely ambiguous" --
+explicitly framed as a standing trait ("every time, for the rest of
+your life, not just while you're still getting to know someone"),
+pointing at the real `ask_user` tool (Update 9), with the same
+"genuinely ambiguous, not any uncertainty" calibration this build uses
+elsewhere (e.g. Update 13's doc-recall gate only covers genuinely
+risky-to-guess tools, not everything).
+
+### What was built
+- [x] `dave-notifications/src/voice-settings-tools.ts` — `VOICE_SETTINGS_TOOLS`
+- [x] `dave-trading/src/pair-group-tools.ts` — `PAIR_GROUP_TOOLS`
+- [x] `dave-lovable-mcp/src/settings-tools.ts` — `LOVABLE_SETTINGS_TOOLS`
+- [x] `dave-voice-call/src/settings-tools.ts` — `CALL_SETTINGS_TOOLS`
+- [x] `dave-admin/app/api/e2b-keys/route.ts` — the missing admin route
+- [x] All wired into `buildFullToolRegistry()` (now 64 tools, was 52)
+- [x] `prompts/IDENTITY.md` — the clarifying-question trait
+
+### Real proof (Update 17)
+Extended `packages/dave-agent-loop/test/step32-full-registry.test.ts`:
+- Registry now totals 64 tools; 30 spot-checked tool names spanning
+  every package, including all 4 new settings-tool sets
+- **Real conversational read/write round trips** for all 4
+  previously-gap settings: Lovable MCP (url/token), Green API/voice-call
+  (confirmed the partial-update bug fix: setting only
+  `whatsappNumber`/token genuinely did NOT wipe `unresponsiveMinutes`'
+  real default of 15), TTS voice (`enabled` false->true), pair groups
+  (create -> list shows 1 -> delete -> list shows 0)
+
+New `packages/dave-agent-loop/test/step36-clarifying-questions.test.ts`:
+1. `IDENTITY.md` genuinely contains the trait, genuinely framed as
+   standing behavior (not one-time onboarding), genuinely references
+   the real `ask_user` tool
+2. **Real end-to-end**: given a genuinely ambiguous request ("open a
+   trade on gold," no direction/size given), a real model call (mocked)
+   chooses `ask_user` through the SAME full registry Dave actually
+   uses -- the loop genuinely pauses, only ONE real model call is made
+   (confirming nothing was silently guessed or executed), the real
+   question ("Buy or sell XAUUSD, and what lot size?") is returned
+- `=== ALL ASSERTIONS PASSED ===` (both files)
+- Full 37-file test suite green afterward, clean `tsc -b` build, clean
+  `next build` (`/api/e2b-keys` now present)
+
+### Not yet done (deferred, not silently skipped)
+- No admin UI PAGE/form for E2B keys yet (the route is real and
+  tested; same gap as every other settings area's visual form)
+- The clarifying-question trait is a real prompt instruction backed by
+  a real, tested mechanism (`ask_user`) -- whether a live model actually
+  chooses to invoke it in a given ambiguous situation is a live-model
+  judgment call this test cannot exercise (it drives a scripted mock
+  response, not a real LLM's decision); the infrastructure is proven,
+  the model's judgment isn't something a unit test can verify

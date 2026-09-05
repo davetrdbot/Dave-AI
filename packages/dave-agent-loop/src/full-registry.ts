@@ -4,8 +4,10 @@ import type { TradeExecutor } from "@dave/trading";
 import { TRADING_TOOLS } from "@dave/trading";
 import { RFEED_TOOLS, type RFeedTradeExecutor, type HistoryRequestManager } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
-import { LOVABLE_TOOLS } from "@dave/lovable-mcp";
-import { VOICE_CALL_TOOLS } from "@dave/voice-call";
+import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
+import { VOICE_CALL_TOOLS, CALL_SETTINGS_TOOLS } from "@dave/voice-call";
+import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
+import { PAIR_GROUP_TOOLS } from "@dave/trading";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
@@ -49,7 +51,11 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(RFEED_TOOLS, rfeedCtx));
   registry.register(adaptTools(PROVIDER_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(LOVABLE_SETTINGS_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(VOICE_CALL_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(CALL_SETTINGS_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(VOICE_SETTINGS_TOOLS, dbOnlyCtx));
+  registry.register(adaptTools(PAIR_GROUP_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(SETTINGS_TOOLS, tradingCtx)); // ctx unused by these tools -- args carry userId directly
   registry.register(adaptTools(DAVE_TOOL_REQUEST_TOOLS, ownerCtx));
   registry.register(adaptTools(SKILL_TOOLS, skillCtx));

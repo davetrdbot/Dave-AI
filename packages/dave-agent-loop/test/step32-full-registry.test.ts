@@ -9,12 +9,14 @@ import { EaTradeExecutor } from "@dave/ea-bridge";
 import { TRADING_TOOLS } from "@dave/trading";
 import { RFeedBridge, RFEED_TOOLS } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
-import { LOVABLE_TOOLS } from "@dave/lovable-mcp";
-import { VOICE_CALL_TOOLS } from "@dave/voice-call";
+import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
+import { VOICE_CALL_TOOLS, CALL_SETTINGS_TOOLS } from "@dave/voice-call";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS } from "@dave/memory";
+import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
+import { PAIR_GROUP_TOOLS } from "@dave/trading";
 import { TelegramClient } from "@dave/telegram";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
@@ -47,7 +49,11 @@ try {
     RFEED_TOOLS.length +
     PROVIDER_TOOLS.length +
     LOVABLE_TOOLS.length +
+    LOVABLE_SETTINGS_TOOLS.length +
     VOICE_CALL_TOOLS.length +
+    CALL_SETTINGS_TOOLS.length +
+    VOICE_SETTINGS_TOOLS.length +
+    PAIR_GROUP_TOOLS.length +
     SETTINGS_TOOLS.length +
     DAVE_TOOL_REQUEST_TOOLS.length +
     SKILL_TOOLS.length +
@@ -70,6 +76,10 @@ try {
     "create_e2b_sandbox", // dave-e2b
     "create_subagent", "retire_subagent", // dave-workers subagent tools
     "recall_memory", // dave-memory
+    "get_lovable_mcp_settings", "set_lovable_mcp_settings", // dave-lovable-mcp settings
+    "get_voice_call_settings", "set_voice_call_settings", // dave-voice-call settings
+    "get_voice_settings", "set_voice_enabled", // dave-notifications TTS settings
+    "list_pair_groups", "create_or_update_pair_group", "delete_pair_group", "get_active_pair_group", // dave-trading pair groups
     "ask_user",
   ];
   for (const name of mustHave) assert.ok(registry.has(name), `registry must genuinely have "${name}"`);
@@ -190,6 +200,43 @@ try {
   assert.ok(skillNames.includes("How to use: ea-webhook"));
   assert.ok(skillNames.includes("How to use: rfeed-tools"));
   console.log(`    real permanent skills present after registry build: ${skillNames.join(", ")}`);
+
+  // --- [7] Update 17 settings-audit tools: real conversational read/write, matching admin-UI coverage ---
+  console.log("\n[7] Settings-audit tools: real conversational read/write for every previously admin-UI-only setting...\n");
+
+  const lovableBefore: any = await registry.execute("get_lovable_mcp_settings", {});
+  assert.equal(lovableBefore.url, null);
+  const lovableAfter: any = await registry.execute("set_lovable_mcp_settings", { url: "https://example.supabase.co/functions/v1/utility-mcp", token: "tok-1" });
+  assert.equal(lovableAfter.url, "https://example.supabase.co/functions/v1/utility-mcp");
+  assert.equal(lovableAfter.tokenSet, true);
+  console.log(`    Lovable MCP settings real round trip: ${JSON.stringify(lovableBefore)} -> ${JSON.stringify(lovableAfter)}`);
+
+  const callBefore: any = await registry.execute("get_voice_call_settings", {});
+  assert.equal(callBefore.tokenSet, false);
+  const callAfter: any = await registry.execute("set_voice_call_settings", { greenApiToken: "green-tok", whatsappNumber: "+1 555 000 1111" });
+  assert.equal(callAfter.tokenSet, true);
+  assert.equal(callAfter.whatsappNumber, "+1 555 000 1111");
+  // Setting ONLY whatsappNumber/token must NOT wipe unresponsiveMinutes' real default.
+  assert.equal(callAfter.unresponsiveMinutes, 15);
+  console.log(`    Green API/voice-call settings real round trip (partial update didn't wipe unresponsiveMinutes' default): ${JSON.stringify(callAfter)}`);
+
+  const voiceBefore: any = await registry.execute("get_voice_settings", {});
+  assert.equal(voiceBefore.enabled, false);
+  await registry.execute("set_voice_enabled", { enabled: true });
+  const voiceAfter: any = await registry.execute("get_voice_settings", {});
+  assert.equal(voiceAfter.enabled, true);
+  console.log(`    TTS voice settings real round trip: enabled ${voiceBefore.enabled} -> ${voiceAfter.enabled}`);
+
+  const groupsBefore: any = await registry.execute("list_pair_groups", {});
+  assert.equal(groupsBefore.groups.length, 0);
+  const createdGroup: any = await registry.execute("create_or_update_pair_group", { id: "majors", name: "Majors", symbols: ["EURUSD", "GBPUSD"] });
+  assert.equal(createdGroup.id, "majors");
+  const groupsAfter: any = await registry.execute("list_pair_groups", {});
+  assert.equal(groupsAfter.groups.length, 1);
+  await registry.execute("delete_pair_group", { groupId: "majors" });
+  const groupsFinal: any = await registry.execute("list_pair_groups", {});
+  assert.equal(groupsFinal.groups.length, 0);
+  console.log(`    pair groups real round trip: create -> ${groupsAfter.groups.length} group(s) -> delete -> ${groupsFinal.groups.length} group(s)`);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

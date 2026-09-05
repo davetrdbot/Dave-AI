@@ -29,6 +29,9 @@ importers:
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db
+      '@dave/e2b':
+        specifier: workspace:*
+        version: link:../dave-e2b
       '@dave/lovable-mcp':
         specifier: workspace:*
         version: link:../dave-lovable-mcp
@@ -87,6 +90,9 @@ importers:
       '@dave/memory':
         specifier: workspace:*
         version: link:../dave-memory
+      '@dave/notifications':
+        specifier: workspace:*
+        version: link:../dave-notifications
       '@dave/rfeed':
         specifier: workspace:*
         version: link:../dave-rfeed

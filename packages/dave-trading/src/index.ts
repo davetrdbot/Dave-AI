@@ -9,3 +9,4 @@ export * from "./skills.js";
 export * from "./mt5-accounts.js";
 export * from "./find-setup.js";
 export * from "./tools.js";
+export * from "./pair-group-tools.js";

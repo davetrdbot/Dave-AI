@@ -19,6 +19,7 @@
     { "path": "../dave-e2b" },
     { "path": "../dave-memory" },
     { "path": "../dave-telegram" },
+    { "path": "../dave-notifications" },
     { "path": "../dave-db" }
   ]
 }
