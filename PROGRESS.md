@@ -983,6 +983,25 @@ state, and says exactly what it is rather than pretending to be the
 real app. Re-ran the full test suite (all 11 real test files) after the
 fresh install too -- all green.
 
+**Update (final pre-deployment pass)**: Step 22 is now actually done.
+`server.mjs` is a thin wrapper around the real composition root,
+`packages/dave-agent-loop/src/main.ts` -- `DaveDatabase`, `EaBridge`/
+`RFeedBridge`, the automation and hidden-memory webhook servers, and
+(when a bot token + public URL are available) the real Telegram bot
+server backed by the full tool registry, all multiplexed onto the one
+`PORT` Railway gives the process (each sub-server's own
+`http.createServer()` is built without `.listen()`-ing it, its real
+request handler extracted via `.listeners("request")[0]`, and
+dispatched to by URL prefix from a single combined server). Verified
+with a real cold boot from a fresh directory (health check OK, EA
+webhook route reachable through the combined dispatcher with its own
+distinct 404 body, real SIGTERM producing a clean graceful shutdown)
+and a real invalid-bot-token run (real 401 from `api.telegram.org`,
+caught, process stays up in degraded mode). The default system prompt
+also now genuinely loads and concatenates the real `prompts/SOUL.md`,
+`IDENTITY.md`, `SECURITY.md`, `BOOTSTRAP.md` files instead of a one-line
+placeholder string.
+
 ## Status: Step 11 — EA + MCP Trade Placement Alternative (COMPLETE)
 
 Completed: 2026-09-04
@@ -1290,10 +1309,14 @@ built server (`next start`, real HTTP, no mocks):
 - Karak plugin (a user-suggested admin-panel skill) was investigated and
   found to be an unrelated internal product plugin, not applicable here
   — user chose to skip it and have the panel built directly instead
-- The admin panel is not yet wired into the main process's `start`
-  command (`server.mjs` is still Step 22's placeholder) — it has its own
-  working `next build`/`next start`, but nothing runs it in production
-  yet; that integration is Step 22 territory
+- The admin panel is not wired into the main bot process's `start`
+  command — it has its own working `next build`/`next start`. Resolved
+  in the final pre-deployment pass: this is an intentional split, not a
+  gap. Step 22 (see above) wired the bot's own real single-process boot
+  (Telegram/EA/R_Feed/automation/hidden-memory webhooks on one PORT);
+  the admin panel deploys as its own separate Railway service pointed at
+  the same database (see `.env.example`), the normal multi-service
+  Railway pattern for a bot process + its own web dashboard.
 
 ## Status: Step 15 — File I/O (COMPLETE)
 
