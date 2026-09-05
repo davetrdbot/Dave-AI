@@ -32,6 +32,9 @@ importers:
       '@dave/e2b':
         specifier: workspace:*
         version: link:../dave-e2b
+      '@dave/firecrawl':
+        specifier: workspace:*
+        version: link:../dave-firecrawl
       '@dave/lovable-mcp':
         specifier: workspace:*
         version: link:../dave-lovable-mcp
@@ -87,6 +90,9 @@ importers:
       '@dave/ea-bridge':
         specifier: workspace:*
         version: link:../dave-ea-bridge
+      '@dave/firecrawl':
+        specifier: workspace:*
+        version: link:../dave-firecrawl
       '@dave/knowledge':
         specifier: workspace:*
         version: link:../dave-knowledge
@@ -201,6 +207,12 @@ importers:
       '@dave/workers':
         specifier: workspace:*
         version: link:../dave-workers
+
+  packages/dave-firecrawl:
+    dependencies:
+      '@dave/db':
+        specifier: workspace:*
+        version: link:../dave-db
 
   packages/dave-io:
     dependencies:

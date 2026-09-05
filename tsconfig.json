@@ -25,6 +25,7 @@
     { "path": "packages/dave-skills" },
     { "path": "packages/dave-e2b" },
     { "path": "packages/dave-knowledge" },
-    { "path": "packages/dave-mcp-manager" }
+    { "path": "packages/dave-mcp-manager" },
+    { "path": "packages/dave-firecrawl" }
   ]
 }
