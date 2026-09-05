@@ -47,9 +47,6 @@ importers:
       '@dave/trading':
         specifier: workspace:*
         version: link:../dave-trading
-      '@dave/voice-call':
-        specifier: workspace:*
-        version: link:../dave-voice-call
       '@dave/workers':
         specifier: workspace:*
         version: link:../dave-workers
@@ -135,9 +132,6 @@ importers:
       '@dave/vision':
         specifier: workspace:*
         version: link:../dave-vision
-      '@dave/voice-call':
-        specifier: workspace:*
-        version: link:../dave-voice-call
       '@dave/workers':
         specifier: workspace:*
         version: link:../dave-workers
@@ -375,19 +369,6 @@ importers:
       '@dave/sandbox':
         specifier: workspace:*
         version: link:../dave-sandbox
-
-  packages/dave-voice-call:
-    dependencies:
-      '@dave/db':
-        specifier: workspace:*
-        version: link:../dave-db
-      ws:
-        specifier: ^8.18.0
-        version: 8.21.3
-    devDependencies:
-      '@types/ws':
-        specifier: ^8.5.0
-        version: 8.18.1
 
   packages/dave-workers:
     dependencies:
@@ -1018,9 +999,6 @@ packages:
   '@types/react@19.2.18':
     resolution: {integrity: sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w==}
 
-  '@types/ws@8.18.1':
-    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
-
   accepts@2.0.0:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
     engines: {node: '>= 0.6'}
@@ -1539,18 +1517,6 @@ packages:
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
-  ws@8.21.3:
-    resolution: {integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
-
   zod-to-json-schema@3.25.2:
     resolution: {integrity: sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==}
     peerDependencies:
@@ -1984,10 +1950,6 @@ snapshots:
   '@types/react@19.2.18':
     dependencies:
       csstype: 3.2.3
-
-  '@types/ws@8.18.1':
-    dependencies:
-      '@types/node': 26.4.1
 
   accepts@2.0.0:
     dependencies:
@@ -2554,8 +2516,6 @@ snapshots:
       isexe: 2.0.0
 
   wrappy@1.0.2: {}
-
-  ws@8.21.3: {}
 
   zod-to-json-schema@3.25.2(zod@4.5.4):
     dependencies:

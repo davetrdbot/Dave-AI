@@ -10,7 +10,6 @@
     "@dave/trading": "workspace:*",
     "@dave/rfeed": "workspace:*",
     "@dave/lovable-mcp": "workspace:*",
-    "@dave/voice-call": "workspace:*",
     "@dave/workers": "workspace:*",
     "@dave/skills": "workspace:*",
     "@dave/davema": "workspace:*",

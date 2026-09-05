@@ -1,4 +1,4 @@
-import type { DavemaClient } from "@dave/davema";
+import { checkCorrelationBeforeSizing, type DavemaClient } from "@dave/davema";
 import { processPriceTick, type Position } from "./breakeven-trailing.js";
 import { getTrailingStopConfig, setTrailingStopConfig } from "./trailing-config.js";
 import { registerTrailingPosition, unregisterTrailingPosition, listTrailingPositions } from "./trailing-runtime.js";
@@ -127,8 +127,8 @@ export const DAVEMA_TOOLS: ExtraToolDefinition[] = [
   },
   {
     name: "correlation_check",
-    description: "Real DAVEMA /correlation check for a symbol before sizing -- warns if it's secretly correlated with an existing position's pair.",
-    parameters: { type: "object", properties: { symbol: { type: "string" } }, required: ["symbol"] },
-    execute: async (args, ctx) => ctx.davema.data("correlation" as any, args.symbol as string),
+    description: "Real DAVEMA /correlation + /strength check for a symbol before sizing -- returns warnHighCorrelation=true and a real reason if it's secretly correlated (>70%) with EURUSD, so you don't stack risk unknowingly.",
+    parameters: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["symbol"] },
+    execute: async (args, ctx) => checkCorrelationBeforeSizing(ctx.davema, args.symbol as string, (args.timeframe as string) ?? "M15"),
   },
 ];

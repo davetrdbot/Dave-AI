@@ -16,7 +16,6 @@
     "@dave/sandbox": "workspace:*",
     "@dave/db": "workspace:*",
     "@dave/lovable-mcp": "workspace:*",
-    "@dave/voice-call": "workspace:*",
     "@dave/e2b": "workspace:*",
     "@dave/firecrawl": "workspace:*",
     "@dave/telegram": "workspace:*",

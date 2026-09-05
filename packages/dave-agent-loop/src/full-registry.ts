@@ -10,7 +10,6 @@ import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
 import { FIRECRAWL_TOOLS } from "@dave/firecrawl";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
-import { VOICE_CALL_TOOLS, CALL_SETTINGS_TOOLS } from "@dave/voice-call";
 import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
 import { PAIR_GROUP_TOOLS } from "@dave/trading";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS } from "@dave/workers";
@@ -69,8 +68,6 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(PROVIDER_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(LOVABLE_SETTINGS_TOOLS, dbOnlyCtx));
-  registry.register(adaptTools(VOICE_CALL_TOOLS, dbOnlyCtx));
-  registry.register(adaptTools(CALL_SETTINGS_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(VOICE_SETTINGS_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(PAIR_GROUP_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(SETTINGS_TOOLS, tradingCtx)); // ctx unused by these tools -- args carry userId directly

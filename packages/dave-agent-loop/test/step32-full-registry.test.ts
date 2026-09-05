@@ -14,7 +14,6 @@ import { TRADING_TOOLS } from "@dave/trading";
 import { RFeedBridge, RFEED_TOOLS } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
-import { VOICE_CALL_TOOLS, CALL_SETTINGS_TOOLS } from "@dave/voice-call";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
@@ -61,8 +60,6 @@ try {
     PROVIDER_TOOLS.length +
     LOVABLE_TOOLS.length +
     LOVABLE_SETTINGS_TOOLS.length +
-    VOICE_CALL_TOOLS.length +
-    CALL_SETTINGS_TOOLS.length +
     VOICE_SETTINGS_TOOLS.length +
     PAIR_GROUP_TOOLS.length +
     SETTINGS_TOOLS.length +
@@ -96,7 +93,6 @@ try {
     "request_history", "place_paper_trade", // dave-rfeed
     "list_providers", "create_custom_provider", // dave-brain
     "generate_image", // dave-lovable-mcp
-    "evaluate_call_trigger", "notify_trying_to_reach_you", // dave-voice-call
     "set_risk_mode", "propose_settings_change", // dave-workers settings
     "list_pending_tool_requests", "decide_tool_request", // dave-workers tool-requests (Dave side)
     "list_skills", "install_skill_from_github", // dave-skills
@@ -104,7 +100,6 @@ try {
     "create_subagent", "retire_subagent", // dave-workers subagent tools
     "recall_memory", // dave-memory
     "get_lovable_mcp_settings", "set_lovable_mcp_settings", // dave-lovable-mcp settings
-    "get_voice_call_settings", "set_voice_call_settings", // dave-voice-call settings
     "get_voice_settings", "set_voice_enabled", // dave-notifications TTS settings
     "list_pair_groups", "create_or_update_pair_group", "delete_pair_group", "get_active_pair_group", // dave-trading pair groups
     "ask_user",
@@ -240,15 +235,6 @@ try {
   assert.equal(lovableAfter.url, "https://example.supabase.co/functions/v1/utility-mcp");
   assert.equal(lovableAfter.tokenSet, true);
   console.log(`    Lovable MCP settings real round trip: ${JSON.stringify(lovableBefore)} -> ${JSON.stringify(lovableAfter)}`);
-
-  const callBefore: any = await registry.execute("get_voice_call_settings", {});
-  assert.equal(callBefore.tokenSet, false);
-  const callAfter: any = await registry.execute("set_voice_call_settings", { greenApiToken: "green-tok", whatsappNumber: "+1 555 000 1111" });
-  assert.equal(callAfter.tokenSet, true);
-  assert.equal(callAfter.whatsappNumber, "+1 555 000 1111");
-  // Setting ONLY whatsappNumber/token must NOT wipe unresponsiveMinutes' real default.
-  assert.equal(callAfter.unresponsiveMinutes, 15);
-  console.log(`    Green API/voice-call settings real round trip (partial update didn't wipe unresponsiveMinutes' default): ${JSON.stringify(callAfter)}`);
 
   const voiceBefore: any = await registry.execute("get_voice_settings", {});
   assert.equal(voiceBefore.enabled, false);

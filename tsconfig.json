@@ -20,7 +20,6 @@
     { "path": "packages/dave-notifications" },
     { "path": "packages/dave-rfeed" },
     { "path": "packages/dave-lovable-mcp" },
-    { "path": "packages/dave-voice-call" },
     { "path": "packages/dave-agent-loop" },
     { "path": "packages/dave-skills" },
     { "path": "packages/dave-e2b" },

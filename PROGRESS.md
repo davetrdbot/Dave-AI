@@ -27,9 +27,13 @@ surprisingly well-matched to the prompt's own phrasing and should not be
 trusted on search results alone.
 
 ### Notes / open decisions
-- WhatsApp voice calling (Green API + Gemini Live) — NOT reconfirmed as part of final
-  architecture. Flagging as pending decision per master prompt §"OPEN QUESTION". Do not
-  build until user explicitly confirms.
+- WhatsApp voice calling (Green API + Gemini Live) — built in Update 6 (dave-voice-call
+  package), then a SEPARATE later attempt built in dave-whatsapp-calling. Both were
+  REMOVED per explicit user instruction ("just remove that feature" / "flag and remove
+  any remaining trace found anywhere") after Green API's real call-start REST endpoint
+  returned 403 "Method is not allowed" for the user's account (calling not enabled on
+  their plan) -- confirmed not a code bug. Historical entries below (Update 6, the later
+  settings-audit references) are left as an accurate build record; the code itself is gone.
 - Trading rules are NOT to be authored by Claude. goal.yaml stays an empty placeholder
   until the user uploads their own rules .md file.
 - DAVEMA skill/reference document has not yet been provided — Step 7 blocked until it is.
