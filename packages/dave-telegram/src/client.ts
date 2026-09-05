@@ -58,6 +58,28 @@ export interface RichMessage {
   html: string;
 }
 
+/** Real, minimal shape of a Telegram Update -- just the fields this build actually reads. */
+export interface TelegramMessage {
+  message_id: number;
+  chat: { id: number; type: string };
+  from?: { id: number; username?: string; first_name?: string };
+  text?: string;
+  date: number;
+}
+
+export interface TelegramCallbackQuery {
+  id: string;
+  from: { id: number };
+  message?: TelegramMessage;
+  data?: string;
+}
+
+export interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
+}
+
 export interface SendMessageParams {
   chat_id: number | string;
   text: string;
@@ -268,6 +290,16 @@ export class TelegramClient {
 
   getMe() {
     return this.call<{ id: number; username: string; first_name: string }>("getMe");
+  }
+
+  /**
+   * Real long-polling receive path -- confirmed real Bot API method.
+   * `offset` should be the last update_id + 1 you've already processed
+   * (Telegram keeps returning old updates otherwise); `timeout` (seconds)
+   * makes this a genuine long-poll rather than a busy loop.
+   */
+  getUpdates(params: { offset?: number; timeout?: number; allowed_updates?: string[] } = {}) {
+    return this.call<TelegramUpdate[]>("getUpdates", params);
   }
 
   /** Real Bot API methods for the bot's own display info (distinct from the profile PHOTO, which has no API -- see profile.ts). */
