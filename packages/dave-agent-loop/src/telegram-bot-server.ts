@@ -10,6 +10,8 @@ import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, type CommandRouterDeps } from "./command-router.js";
+import { recordActiveChat } from "./primary-chat.js";
+import { wireMorningBrief } from "./morning-brief-handler.js";
 
 /**
  * The real, persistent replacement for a one-off polling script: a
@@ -93,6 +95,13 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   const client = new TelegramClient(deps.botToken);
   const registration = await enableTelegramWebhook(client, deps.ownerUserId, deps.publicBaseUrl);
 
+  // Real fix (F5): syncMorningBriefCron() fires a real cron on schedule,
+  // but nothing ever called it with a real content-composing handler in
+  // production -- it fired into nothing. Wired here, once, at startup,
+  // bound to this process's real client so a scheduled brief actually
+  // sends real balance/open-trades/watchlist content.
+  wireMorningBrief({ db: deps.db, client, ownerUserId: deps.ownerUserId });
+
   const server = createTelegramWebhookServer({
     onUpdate: async (_userId: string, update: TelegramUpdate) => {
       // Real fix (A3): every inline button press arrives as a
@@ -101,6 +110,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // leaving every settings toggle / approve-decline / EA picker
       // button completely dead. Routed to its real handler first.
       if (update.callback_query) {
+        const cbChatId = update.callback_query.message?.chat.id;
+        if (cbChatId !== undefined) recordActiveChat(deps.db, deps.ownerUserId, cbChatId);
         const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
         await dispatchCallback(routerDeps, update.callback_query);
         return;
@@ -109,6 +120,10 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       const message = update.message;
       if (!message?.text) return;
       const chatId = message.chat.id;
+      // Real fix (F5): the morning brief (and any other schedule-driven
+      // push) has no incoming update to read a chatId off of -- this is
+      // what gives it somewhere real to send to.
+      recordActiveChat(deps.db, deps.ownerUserId, chatId);
       // Conversation history is scoped per-chat (a group chat or a second
       // person messaging the same bot shouldn't see each other's history),
       // even though tools/credentials are shared across the one owner account.
