@@ -2911,3 +2911,68 @@ Ran `packages/dave-e2b/test/step33-e2b.test.ts`:
   the honest, confirmed gap above
 - No admin UI for E2B key management yet (same gap as other provider-
   key-shaped stores)
+
+## Status: Update 13 — Permanent Skill Docs Teaching Dave Its Own Tools (COMPLETE)
+
+"Build a dedicated, permanent skill document (or set of them) that
+teaches Dave HOW to actually use each of its major tools correctly...
+Confirm Dave actually recalls and reads these before attempting to use
+an unfamiliar tool, per the recall-before-acting rule already
+specified." Same category as the existing DAVEMA skill doc
+(`docs/davema/davema-skill.md`) -- real markdown reference material,
+not the per-user dynamic skill store (Update 10's own mechanism, which
+these ALSO get seeded into as permanent entries).
+
+### What was built
+- [x] `docs/skills/e2b-sandbox-skill.md` — how E2B differs from the
+      main sandbox, when to use it, and the honest gRPC-vs-REST
+      execution limit (Update 12)
+- [x] `docs/skills/ea-webhook-skill.md` — the real pairing/
+      personalization flow, what the EA's heartbeat actually carries,
+      why `trade_execute`/etc. genuinely take two heartbeats to
+      resolve (not a bug), and how manual state changes get detected
+      from that same real data
+- [x] `docs/skills/rfeed-tools-skill.md` — R_Feed's tools as distinct
+      from the real EA's, the real backtest->paper-trade->propose
+      usage loop, and the real safety guarantees (architectural
+      separation, custom-symbol refusal, MT5 comment-field limit)
+- [x] `packages/dave-skills/src/internal-tool-docs.ts` —
+      `topicForTool()` maps specific "genuinely risky to guess" tool
+      names to their doc; `callWithDocRecallRequired()` reuses Step
+      4.5's REAL `executeTask`/`markRecalled` recall-before-acting
+      guard from `@dave/memory` to genuinely refuse calling a mapped
+      tool until its doc has actually been recalled;
+      `seedInternalToolDocSkills()` seeds all three as real, permanent,
+      undeletable per-user skills (same enforcement as Update 10's
+      tool-usage skill)
+
+### Real proof (Update 13)
+Ran `packages/dave-skills/test/step34-internal-tool-docs.test.ts`:
+1. All three docs genuinely exist on disk with real, specific content
+   (the E2B doc mentions the real gRPC limit, the EA doc mentions the
+   real heartbeat round trip, the R_Feed doc references the real
+   `CustomSymbolTradeRefusedError` type)
+2. Real tool->topic mapping; an unmapped tool (`list_skills`) is
+   correctly never gated
+3. **Calling `create_e2b_sandbox` without recalling its doc first
+   genuinely throws `RecallRequiredError`** -- the tool's own function
+   never ran
+4. After genuinely recalling the real doc content (byte-identical to
+   the file), the SAME call genuinely succeeds
+5. Recall is per-tool: recalling the E2B doc does NOT satisfy
+   `trade_execute`'s own separate doc gate; an ungated tool runs
+   immediately with no recall needed
+6. All three docs seeded as real, permanent skills; deletion genuinely
+   refused (`PermanentSkillError`); re-seeding updates the same 3 ids
+   in place, never duplicating
+- `=== ALL ASSERTIONS PASSED ===`
+- Full 35-file test suite green afterward, clean `tsc -b` build, clean
+  `next build`
+
+### Not yet done (deferred, not silently skipped)
+- The doc-recall gate (`callWithDocRecallRequired`) isn't wired into
+  `dave-agent-loop`'s `ToolRegistry.execute()` yet -- it's a real,
+  tested standalone function; making every registry call for a mapped
+  tool automatically pass through it is the natural next step
+- The mapped tool list is deliberately small (the genuinely risky-to-
+  guess ones) -- not every tool in the 47-tool registry has a doc

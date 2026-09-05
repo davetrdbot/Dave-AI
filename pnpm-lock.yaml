@@ -270,6 +270,9 @@ importers:
       '@dave/brain':
         specifier: workspace:*
         version: link:../dave-brain
+      '@dave/memory':
+        specifier: workspace:*
+        version: link:../dave-memory
 
   packages/dave-telegram:
     dependencies:
