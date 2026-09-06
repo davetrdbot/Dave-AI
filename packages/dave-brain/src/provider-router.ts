@@ -21,7 +21,7 @@ function configPath(userId: string): string {
   return join(process.cwd(), "data", "brain", `${userId}-model-config.json`);
 }
 
-/** Step 5.2: button-driven model-picker UI reads/writes this. Only these three providers exist. */
+/** Step 5.2: button-driven model-picker UI reads/writes this. Any catalog provider name is valid (see provider-catalog.ts). */
 export function getModelConfig(userId: string): ModelConfig {
   const path = configPath(userId);
   if (!existsSync(path)) return DEFAULT_CONFIG;

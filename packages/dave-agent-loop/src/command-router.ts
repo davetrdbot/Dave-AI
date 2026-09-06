@@ -23,7 +23,7 @@ import {
   declineSettingsChange,
   type RiskMode,
 } from "@dave/trading";
-import { getModelConfig, setModelConfig, type ProviderName } from "@dave/brain";
+import { getModelConfig, setModelConfig, listProviderCatalog, listProviderKeys, type ProviderName } from "@dave/brain";
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
@@ -45,14 +45,6 @@ export interface CommandRouterDeps {
   userId: string; // the one Dave account these commands operate on
   publicBaseUrl: string;
 }
-
-const PROVIDERS: ProviderName[] = ["airllm", "deepseek", "claude"];
-/** Read-only, honest listing -- these providers' models are hardcoded in dave-brain's provider classes, not user-editable per-provider yet. */
-const PROVIDER_MODELS: Record<string, string> = {
-  airllm: "Qwen3-235B (self-hosted via AirLLM, AIRLLM_BASE_URL)",
-  deepseek: "deepseek-chat",
-  claude: "claude-sonnet-5",
-};
 
 function formatMoney(n: number | undefined): string {
   return typeof n === "number" ? `$${n.toFixed(2)}` : "n/a";
@@ -83,23 +75,50 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number): Promis
   await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML" });
 }
 
-function providersKeyboard(current: ProviderName) {
-  return keyboard(
-    PROVIDERS.map((p) => [coloredButton(current === p ? `✅ ${p}` : p, current === p ? "green" : "neutral", `provider:${p}`)])
-  );
+/** Real fix (user report: "providers is missing? it's only airllm and deepseek and Claude") --
+ * this used to hardcode 3 providers even after the catalog grew to all 28+AirLLM. Now it lists
+ * every catalog entry, per-provider marking whether the user has a configured key (AirLLM excepted --
+ * it's self-hosted via AIRLLM_BASE_URL, no key needed) so picking one that isn't ready yet is an
+ * informed choice, not a silent dead end. */
+function providersKeyboard(current: ProviderName, configuredProviders: Set<ProviderName>): ReturnType<typeof keyboard> {
+  const catalog = listProviderCatalog().filter((e) => e.id !== "custom");
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  for (let i = 0; i < catalog.length; i += 2) {
+    const pair = catalog.slice(i, i + 2);
+    rows.push(
+      pair.map((entry) => {
+        const ready = entry.id === "airllm" || configuredProviders.has(entry.id);
+        const isCurrent = current === entry.id;
+        const label = `${isCurrent ? "✅ " : ""}${entry.id}${ready ? "" : " (no key)"}`;
+        return coloredButton(label, isCurrent ? "green" : ready ? "neutral" : "red", `provider:${entry.id}`);
+      })
+    );
+  }
+  return keyboard(rows);
 }
 
 async function handleProviders(deps: CommandRouterDeps, chatId: number): Promise<void> {
   const config = getModelConfig(deps.userId);
-  const text = `<b>AI Provider</b>\nPrimary: ${config.primary}\nFallback: ${config.fallback.join(", ") || "none"}\n\nTap to set primary:`;
-  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup: providersKeyboard(config.primary) });
+  const configuredProviders = new Set(listProviderKeys(deps.db, deps.userId).map((k) => k.provider));
+  const catalogCount = listProviderCatalog().filter((e) => e.id !== "custom").length;
+  const text =
+    `<b>AI Provider</b>\nPrimary: ${config.primary}\nFallback: ${config.fallback.join(", ") || "none"}\n\n` +
+    `${catalogCount} providers available. Tap to set primary (add API keys for a provider in the admin panel first):`;
+  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup: providersKeyboard(config.primary, configuredProviders) });
 }
 
 async function handleModels(deps: CommandRouterDeps, chatId: number): Promise<void> {
-  const lines = PROVIDERS.map((p) => `${p}: ${PROVIDER_MODELS[p]}`);
+  const configuredProviders = new Set(listProviderKeys(deps.db, deps.userId).map((k) => k.provider));
+  const lines = listProviderCatalog()
+    .filter((e) => e.id !== "custom")
+    .map((e) => {
+      const ready = e.id === "airllm" || configuredProviders.has(e.id);
+      const modelNote = e.manualModelEntry ? "manual model entry (set in admin panel)" : `default: ${e.defaultModel}`;
+      return `${e.id}: ${modelNote}${ready ? "" : " -- no key configured"}`;
+    });
   await deps.client.sendMessage({
     chat_id: chatId,
-    text: `<b>Models per provider</b>\n${lines.join("\n")}\n\n(Each provider's model is fixed in its configuration -- not yet a per-model picker; this is an honest read-only view.)`,
+    text: `<b>Models per provider</b>\n${lines.join("\n")}\n\nManage keys and per-key models in the admin panel's Provider Keys tab.`,
     parse_mode: "HTML",
   });
 }
