@@ -50,7 +50,21 @@ function generateOtp(): string {
   return String(randomInt(100000, 1000000));
 }
 
-/** Step 1: real getMe() validation, then generates and stores a real pending OTP. */
+/**
+ * Real gap fixed: this used to only validate the token and store the
+ * OTP -- it never actually told the user, inside Telegram, to paste it
+ * back. The OTP was shown ONLY on the admin website; a real user with
+ * no prior knowledge of this flow had no way to know what to do next
+ * (confirmed report: "generated a code ... didn't even tell me to
+ * paste my code"). Now sends a real message to the real chat.
+ *
+ * Also calls deleteWebhook() first: checkTelegramOtpPairing's
+ * getUpdates() polling genuinely CANNOT work while a webhook is
+ * registered for this bot (Telegram returns a real 409 conflict) --
+ * this guarantees pairing works even if this exact bot token was ever
+ * used with a webhook before (a prior deploy, a different tool, an
+ * earlier test), not just on a bot that's never touched the API.
+ */
 export async function startTelegramOtpPairing(db: DaveDatabase, userId: string, botToken: string, chatId: number): Promise<{ otp: string; botUsername: string }> {
   ensureTable(db);
   const client = new TelegramClient(botToken);
@@ -68,6 +82,13 @@ export async function startTelegramOtpPairing(db: DaveDatabase, userId: string, 
   } else {
     db.insert(TABLE, userId, { bot_token: botToken, chat_id: String(chatId), otp });
   }
+
+  await client.deleteWebhook().catch(() => {}); // best-effort -- proceed even if there was nothing to delete
+  await client.sendMessage({
+    chat_id: chatId,
+    text: `Your pairing code is: ${otp}\n\nSend this exact code back to me here (as a normal message) to finish connecting.`,
+  });
+
   return { otp, botUsername: me.username };
 }
 
@@ -79,7 +100,17 @@ export async function checkTelegramOtpPairing(db: DaveDatabase, userId: string):
   const pending = rows[0];
 
   const client = new TelegramClient(pending.bot_token);
-  const updates = await client.getUpdates({ timeout: 0 });
+  let updates: Awaited<ReturnType<TelegramClient["getUpdates"]>>;
+  try {
+    updates = await client.getUpdates({ timeout: 0 });
+  } catch (err) {
+    // Real, confirmed failure mode: getUpdates() 409-conflicts if a
+    // webhook is registered for this bot. startTelegramOtpPairing now
+    // deletes it up front, but report this honestly instead of a raw
+    // throw/500 if it somehow still happens (e.g. a race with another
+    // process re-registering the webhook).
+    return { confirmed: false, reason: `Could not poll Telegram for your reply: ${err instanceof Error ? err.message : String(err)}` };
+  }
   const chatId = Number(pending.chat_id);
   const matched = updates.some((u) => u.message?.chat.id === chatId && u.message.text?.trim() === pending.otp);
   if (!matched) return { confirmed: false, reason: "OTP not seen yet -- paste it into the bot chat and check again" };
