@@ -6,7 +6,7 @@ import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import type { RFeedTradeExecutor, HistoryRequestManager } from "@dave/rfeed";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName, type ContentBlock, type CompletionMessage } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, withThinkingIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
 import { classifyToolAction } from "./action-classifier.js";
@@ -14,6 +14,7 @@ import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
+import { BootstrapFlow, type Transport } from "@dave/core";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
@@ -265,6 +266,26 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
         if (await tryHandlePendingModelEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingVoiceEntry(routerDeps, chatId, message.text)) return;
+      }
+
+      // Real gap fixed: a genuine slash command that ISN'T one of the 9 (mistyped, or an old
+      // removed one) used to silently fall through to the LLM as ordinary conversation instead
+      // of telling the user it wasn't recognized. Checked after the pending-entry captures above
+      // so an in-progress manual model/voice entry is never misread as an unknown command.
+      if (message.text && looksLikeSlashCommand(message.text) && !isDaveCommand(message.text)) {
+        await client.sendMessage({ chat_id: chatId, text: "Unknown command -- send /help for the full list." });
+        return;
+      }
+
+      // Real gap fixed: BootstrapFlow (dave-core, exactly matches prompts/BOOTSTRAP.md) was
+      // fully built and tested but never triggered against a real Telegram message -- pairing
+      // confirmation now starts it (telegram-otp.ts), and this is the other half: every
+      // free-text message is fed through it first. handleMessage() itself is a real no-op
+      // (returns false immediately) once onboarding is "not-started" or "complete", so this is
+      // safe to call unconditionally on every message, not just during a real onboarding window.
+      if (message.text) {
+        const bootstrapTransport: Transport = { send: async (_userId, text) => { await client.sendMessage({ chat_id: chatId, text }); } };
+        if (await new BootstrapFlow(bootstrapTransport).handleMessage(deps.ownerUserId, message.text)) return;
       }
 
       const registry = getOrBuildRegistry(deps, client, chatId);

@@ -34,6 +34,28 @@ export function iconize(action: ActionType, text: string): string {
   return `${ACTION_ICONS[action]}${text}`;
 }
 
+// Telegram's real, confirmed limit: 4096 UTF-16 code units per text/rich message. A safety
+// margin (not the exact 4096) avoids off-by-one edge cases around multi-byte characters.
+const TELEGRAM_MESSAGE_LIMIT = 4000;
+
+/** Splits on paragraph/line boundaries where possible so an HTML tag is far less likely to be
+ * cut in half than a naive char-count split would risk. Always returns at least one chunk
+ * (an empty string still produces one empty chunk, matching a single sendMessage call). */
+export function chunkForTelegram(text: string, limit = TELEGRAM_MESSAGE_LIMIT): string[] {
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    let splitAt = remaining.lastIndexOf("\n\n", limit);
+    if (splitAt <= 0) splitAt = remaining.lastIndexOf("\n", limit);
+    if (splitAt <= 0) splitAt = limit;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).replace(/^\n+/, "");
+  }
+  if (remaining.length > 0) chunks.push(remaining);
+  return chunks;
+}
+
 let draftIdCounter = 1;
 /** draft_id must be a non-zero integer the bot chooses -- unique per indicator instance so concurrent tasks don't animate over each other's drafts. */
 function nextDraftId(): number {
@@ -92,10 +114,23 @@ export class ThinkingIndicator {
    * 9.4: finalizes cleanly into a real, persisted message -- via the
    * real sendRichMessage method (not editMessageText: the draft was
    * never a real message to edit).
+   *
+   * Real bug fixed: Telegram's real, hard 4096-character-per-message limit
+   * was never respected here -- a genuinely long final answer (a full trade
+   * journal recap, a detailed reasoning explanation) would have made this
+   * call fail outright with a real Telegram 400 ("message is too long"),
+   * not just "arrive as one giant message." Chunked, sent as multiple real
+   * sequential messages instead -- as close to "streams progressively" as
+   * this architecture (which gets a complete, non-streamed answer back
+   * from the provider) can honestly get without providers streaming
+   * partial completions themselves.
    */
   async finalize(finalText: string): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
-    await this.client.sendRichMessage({ chat_id: this.chatId, rich_message: { html: finalText } });
+    const chunks = chunkForTelegram(finalText);
+    for (const chunk of chunks) {
+      await this.client.sendRichMessage({ chat_id: this.chatId, rich_message: { html: chunk } });
+    }
   }
 
   stop(): void {

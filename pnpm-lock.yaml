@@ -367,6 +367,9 @@ importers:
 
   packages/dave-telegram:
     dependencies:
+      '@dave/core':
+        specifier: workspace:*
+        version: link:../dave-core
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db

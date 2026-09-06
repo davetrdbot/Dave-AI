@@ -445,6 +445,15 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
   const data = callback.data ?? "";
   let ackText: string | undefined;
 
+  // Real fix (user: "confirmation message after EVERY setting change, not just risky ones") --
+  // a re-rendered screen plus a transient callback-answer toast (easy to miss, and not what
+  // Telegram shows for a plain button tap without `show_alert`) isn't the same as a real,
+  // persisted "✅ X set to Y" message showing exactly what changed. This sends that for every
+  // real settings mutation below, on top of (not instead of) re-rendering the screen.
+  const confirm = async (text: string) => {
+    if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `✅ ${text}`, parse_mode: "HTML" });
+  };
+
   const renderInPlace = async (text: string, reply_markup: ReturnType<typeof keyboard>) => {
     if (!chatId || !callback.message) return;
     await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text, parse_mode: "HTML", reply_markup }).catch(() =>
@@ -459,7 +468,10 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         const settings = getRiskSettings(deps.userId);
         const current = field === "sl" ? settings.slMode : field === "tp" ? settings.tpMode : settings.lotMode;
         setRiskMode(deps.userId, field, nextMode(current));
+        const updated = getRiskSettings(deps.userId);
+        const newLabel = field === "sl" ? modeLabel(updated.slMode, updated.slValue) : field === "tp" ? modeLabel(updated.tpMode, updated.tpValue) : modeLabel(updated.lotMode, updated.lotValue);
         ackText = `${field.toUpperCase()} updated`;
+        await confirm(`${field.toUpperCase()} set to ${newLabel}`);
         await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
       }
     } else if (data === "settings:top") {
@@ -474,6 +486,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
     } else if (data === "tradingmode:auto") {
       setTradingMode(deps.userId, "auto");
       ackText = "Trading mode set to Auto";
+      await confirm("Trading mode: Auto");
       await renderInPlace("<b>Trading Mode</b>", tradingModeKeyboard(deps.userId));
     } else if (data === "tradingmode:pickskill") {
       ackText = undefined;
@@ -482,7 +495,9 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const skillId = data.slice("tradingmode:setskill:".length);
       try {
         setTradingMode(deps.userId, "trading-skills", skillId);
+        const skillName = listSkills(deps.userId).find((s) => s.id === skillId)?.name ?? skillId;
         ackText = "Trading mode set to Trading Skills";
+        await confirm(`Trading mode: Trading Skills (locked to "${skillName}")`);
       } catch (err) {
         ackText = err instanceof TradingSkillsModeRequiresSkillError ? err.message : `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -492,13 +507,19 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const view = pairGroupKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data.startsWith("pairgroup:active:")) {
-      setActiveGroup(deps.userId, data.slice("pairgroup:active:".length));
+      const groupId = data.slice("pairgroup:active:".length);
+      setActiveGroup(deps.userId, groupId);
+      const groupName = listGroups(deps.userId).find((g) => g.id === groupId)?.name ?? groupId;
       ackText = "Active pair group updated";
+      await confirm(`Active group: ${groupName}`);
       const view = pairGroupKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data.startsWith("pairgroup:fallback:")) {
-      setFallbackGroup(deps.userId, data.slice("pairgroup:fallback:".length));
+      const groupId = data.slice("pairgroup:fallback:".length);
+      setFallbackGroup(deps.userId, groupId);
+      const groupName = listGroups(deps.userId).find((g) => g.id === groupId)?.name ?? groupId;
       ackText = "Fallback pair group updated";
+      await confirm(`Fallback group: ${groupName}`);
       const view = pairGroupKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data === "settings:voice") {
@@ -536,7 +557,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       if (parsed?.action === "pick") {
         setVoiceId(deps.db, deps.userId, parsed.provider, parsed.voiceId);
         ackText = `Voice set to ${parsed.voiceId}`;
-        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `ElevenLabs voice set to <code>${parsed.voiceId}</code>.`, parse_mode: "HTML" });
+        await confirm(`ElevenLabs voice: <code>${parsed.voiceId}</code>`);
       }
     } else if (data.startsWith("voice:")) {
       const parsed = parseVoiceCallback(data);
@@ -544,9 +565,11 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         const settings = getVoiceSettings(deps.db, deps.userId);
         setVoiceEnabled(deps.db, deps.userId, !settings.enabled);
         ackText = `Voice ${!settings.enabled ? "enabled" : "disabled"}`;
+        await confirm(`Voice: ${!settings.enabled ? "On" : "Off"}`);
       } else if (parsed?.action === "provider") {
         setActiveProvider(deps.db, deps.userId, parsed.provider);
         ackText = `TTS provider set to ${parsed.provider}`;
+        await confirm(`TTS provider: ${parsed.provider}`);
       }
       const view = voiceSettingsView(deps);
       await renderInPlace(view.text, view.reply_markup);
@@ -557,11 +580,13 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const enabled = getWriteApprovalSetting(deps.userId);
       setWriteApprovalSetting(deps.userId, !enabled);
       ackText = `Write-approval ${!enabled ? "enabled" : "disabled"}`;
+      await confirm(`Ask before saving to memory: ${!enabled ? "On" : "Off"}`);
       await renderInPlace("<b>Memory</b>", memoryKeyboard(deps.userId));
     } else if (data === "toggleautoapproval") {
       const enabled = getAutoApprovalEnabled(deps.userId);
       setAutoApprovalEnabled(deps.userId, !enabled);
       ackText = `Auto-approval ${!enabled ? "enabled" : "disabled"}`;
+      await confirm(`Auto-approve Dave's proposals: ${!enabled ? "On" : "Off"}`);
       await renderInPlace("<b>Memory</b>", memoryKeyboard(deps.userId));
     } else if (data.startsWith("provider:")) {
       const name = data.slice("provider:".length) as ProviderName;
@@ -585,6 +610,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         const config = getModelConfig(deps.userId);
         setModelConfig(deps.userId, { primary: key.provider, fallback: config.fallback.filter((p) => p !== key.provider) });
         ackText = "Key activated";
+        await confirm(`Provider switched to ${key.provider} (key: ${key.label})`);
         if (chatId && callback.message) {
           const view = providerDetailView(deps, key.provider);
           await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>
@@ -597,6 +623,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const config = getModelConfig(deps.userId);
       setModelConfig(deps.userId, { primary: name, fallback: config.fallback.filter((p) => p !== name) });
       ackText = `Primary provider set to ${name}`;
+      await confirm(`Provider switched to ${name}`);
       if (chatId && callback.message) {
         const view = providerDetailView(deps, name);
         await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>

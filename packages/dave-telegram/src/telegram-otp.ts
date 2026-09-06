@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
 import type { DaveDatabase } from "@dave/db";
+import { BootstrapFlow, type Transport } from "@dave/core";
 import { TelegramClient } from "./client.js";
 import { setTelegramCredentials, getTelegramCredentials, type TelegramCredentials } from "./telegram-credentials.js";
 
@@ -117,6 +118,21 @@ export async function checkTelegramOtpPairing(db: DaveDatabase, userId: string):
 
   setTelegramCredentials(db, userId, { botToken: pending.bot_token, chatId });
   db.deleteRow(TABLE, userId, pending.id);
+
+  // Real gap fixed (BOOTSTRAP.md was always correct and complete, and dave-core's
+  // BootstrapFlow already implemented it exactly, real-task-detection included --
+  // it was simply never triggered at the one real moment that matters: pairing
+  // genuinely confirmed. This IS that moment; Dave speaks first, unprompted, using
+  // the real client/chatId this exact pairing just resolved.
+  const transport: Transport = {
+    send: async (_userId, text) => {
+      await client.sendMessage({ chat_id: chatId, text });
+    },
+  };
+  await new BootstrapFlow(transport).start(userId).catch((err) => {
+    console.error(`[telegram-otp] cold-start bootstrap failed to send: ${err instanceof Error ? err.message : String(err)}`);
+  });
+
   return { confirmed: true };
 }
 
