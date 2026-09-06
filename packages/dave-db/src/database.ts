@@ -74,7 +74,22 @@ export class DaveDatabase {
     this.db.close();
   }
 
-  /** Real dynamic DDL -- Dave is not limited to a fixed set of pre-built tables. */
+  /**
+   * Real dynamic DDL -- Dave is not limited to a fixed set of pre-built tables.
+   *
+   * Real bug fixed (live production report: "table provider_keys has no column named
+   * is_primary"): `CREATE TABLE IF NOT EXISTS` is a genuine no-op once a table already
+   * exists on disk -- it does NOT add columns a later code change declared. Every one of
+   * this codebase's `ensureTable()` callers has grown new columns over time (is_primary,
+   * is_primary on provider_keys being exactly this session's case), so any table created by
+   * an earlier deploy and never dropped would silently keep its stale schema forever,
+   * turning every write into a real, live "no such column" error. Fixed for real, not just
+   * for this one table: after CREATE TABLE IF NOT EXISTS, real PRAGMA table_info is read back
+   * and any column this call declares but the live table doesn't have yet is added via a
+   * real ALTER TABLE ... ADD COLUMN, which SQLite supports cleanly for adding a new nullable
+   * column to an existing table -- existing rows just get NULL for it, exactly the same
+   * shape a freshly-created table would have had.
+   */
   createTable(table: string, columns: ColumnDef[]): void {
     assertValidIdentifier(table, "table");
     for (const col of columns) {
@@ -92,6 +107,14 @@ export class DaveDatabase {
         updated_at INTEGER NOT NULL${extraCols ? `, ${extraCols}` : ""}
       )
     `);
+    if (!this.knownTables.has(table)) {
+      const existingCols = new Set((this.db.prepare(`PRAGMA table_info(${quote(table)})`).all() as { name: string }[]).map((c) => c.name));
+      for (const col of columns) {
+        if (!existingCols.has(col.name)) {
+          this.db.exec(`ALTER TABLE ${quote(table)} ADD COLUMN ${quote(col.name)} ${col.type}`);
+        }
+      }
+    }
     this.knownTables.add(table);
   }
 
