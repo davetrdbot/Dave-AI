@@ -47,17 +47,38 @@ export interface TelegramBotServerDeps {
   systemPrompt: string;
 }
 
-/** Tries the user's configured primary provider, then their configured fallbacks, via their own stored keys. */
-function modelConfigProvider(db: DaveDatabase, userId: string): Provider {
+/**
+ * Tries the user's configured primary provider, then their configured fallbacks, via their own
+ * stored keys. Item 4/6 real gap fixed: a dying key or an exhausted provider used to fail over
+ * silently -- the user never knew a switch happened, and a genuine "ran out of credit" looked
+ * identical to any other transient hiccup. `notify` is real: it sends a real Telegram message the
+ * moment a key switch or a provider exhaustion genuinely happens, mid-request, without dropping
+ * the in-flight response the user is waiting for.
+ */
+function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
   return {
     name: "model-config" as ProviderName,
     async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
       const config = getModelConfig(userId);
       const order = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
       let lastError: unknown;
-      for (const provider of order) {
+      for (let p = 0; p < order.length; p++) {
+        const provider = order[p];
         try {
-          return await generateWithKeyFailover(db, userId, provider, req, timeoutMs);
+          return await generateWithKeyFailover(db, userId, provider, req, timeoutMs, {
+            onKeySwitch: async ({ fromIndex, toIndex, nextLabel, quotaExhausted }) => {
+              void nextLabel;
+              await notify(`🔄 Switched from key #${fromIndex} to key #${toIndex} on ${provider} — key #${fromIndex} ${quotaExhausted ? "ran out of credit" : "failed"}.`);
+            },
+            onProviderExhausted: async ({ reason, quotaExhausted }) => {
+              const nextProvider = order[p + 1];
+              if (quotaExhausted) {
+                await notify(`⚠️ ${provider} ran out of credit${nextProvider ? ` — switching to the next available key/provider (${nextProvider})` : " — no fallback provider is configured"}.`);
+              } else if (!nextProvider) {
+                await notify(`⚠️ ${provider} failed and no fallback provider is configured (${reason}).`);
+              }
+            },
+          });
         } catch (err) {
           lastError = err;
         }
@@ -85,7 +106,7 @@ async function runAgentTurn(
   messageText: string | undefined
 ): Promise<void> {
   const registry = getOrBuildRegistry(deps, client, chatId);
-  const provider = modelConfigProvider(deps.db, deps.ownerUserId);
+  const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text) => { await client.sendMessage({ chat_id: chatId, text }); });
   const loop = new AgentLoop(provider, registry);
 
   let history = loadConversationHistory(deps.db, historyKey);

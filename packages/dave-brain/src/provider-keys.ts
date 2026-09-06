@@ -170,6 +170,26 @@ export async function checkProviderKeyHealth(db: DaveDatabase, userId: string, k
   }
 }
 
+/**
+ * Item 4/6 real gap fixed: a key/provider running out of credit or hitting a hard quota error
+ * used to fail silently -- the user just eventually got "something went wrong" (or nothing, if a
+ * later key/provider quietly picked up the slack). Matches the real error text providers actually
+ * return for genuine quota/billing exhaustion (HTTP 429/402, "insufficient_quota", "exceeded your
+ * current quota", "billing"), deliberately NOT matching a generic transient failure (timeout,
+ * connection reset, a one-off 500) -- those aren't "ran out of credit" and shouldn't be reported
+ * as such.
+ */
+export function isQuotaExhaustedError(reason: string): boolean {
+  return /insufficient_quota|quota exceeded|exceeded your current quota|out of credit|billing|payment required|\b402\b|\b429\b|rate.?limit exceeded|too many requests/i.test(reason);
+}
+
+export interface KeyFailoverNotifier {
+  /** Fired the moment a key fails and the router is about to retry the SAME in-flight request with the next key. */
+  onKeySwitch?: (info: { provider: ProviderName; fromIndex: number; toIndex: number; failedLabel: string; nextLabel: string; reason: string; quotaExhausted: boolean }) => void | Promise<void>;
+  /** Fired when EVERY stored key for this provider has failed (the caller may fall through to the next configured provider). */
+  onProviderExhausted?: (info: { provider: ProviderName; reason: string; quotaExhausted: boolean }) => void | Promise<void>;
+}
+
 export class AllProviderKeysFailedError extends Error {
   constructor(
     public readonly provider: ProviderName,
@@ -190,7 +210,8 @@ export async function generateWithKeyFailover(
   userId: string,
   provider: ProviderName,
   req: CompletionRequest,
-  timeoutMs = 15000
+  timeoutMs = 15000,
+  notifier?: KeyFailoverNotifier
 ): Promise<CompletionResult> {
   const keys = listProviderKeys(db, userId, provider);
   if (keys.length === 0) {
@@ -205,9 +226,12 @@ export async function generateWithKeyFailover(
   const ordered = [...orderedHealthy, ...unhealthy];
 
   const attempts: { keyId: string; label: string; reason: string }[] = [];
-  for (const key of ordered) {
+  for (let i = 0; i < ordered.length; i++) {
+    const key = ordered[i];
     const instance = buildProvider(provider, key.config);
     try {
+      // Real mid-request safety: this is the SAME `req` retried on the next key below, not a
+      // fresh/dropped request -- the caller's in-flight response genuinely still completes.
       const result = await instance.generate(req, timeoutMs);
       db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null });
       return result;
@@ -215,7 +239,13 @@ export async function generateWithKeyFailover(
       const reason = err instanceof ProviderError ? err.message : String(err);
       db.update(TABLE, userId, key.id, { healthy: 0, last_checked_at: Date.now(), last_error: reason });
       attempts.push({ keyId: key.id, label: key.label, reason });
+      const next = ordered[i + 1];
+      if (next) {
+        await notifier?.onKeySwitch?.({ provider, fromIndex: i + 1, toIndex: i + 2, failedLabel: key.label, nextLabel: next.label, reason, quotaExhausted: isQuotaExhaustedError(reason) });
+      }
     }
   }
+  const lastReason = attempts[attempts.length - 1]?.reason ?? "unknown error";
+  await notifier?.onProviderExhausted?.({ provider, reason: lastReason, quotaExhausted: isQuotaExhaustedError(lastReason) });
   throw new AllProviderKeysFailedError(provider, attempts);
 }
