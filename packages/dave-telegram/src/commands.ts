@@ -6,17 +6,26 @@
  * people find the native "/" button). Everything else is conversational
  * (routed to the agent loop, not a command handler).
  */
+/**
+ * Item 5 real gap fixed: this list previously registered in an arbitrary/alphabetical-ish order
+ * -- setMyCommands genuinely renders in array order (registerDefaultCommandMenu passes this
+ * straight through, no re-sorting), so whatever order this array is in is exactly what the user
+ * sees in Telegram's own command menu. Reordered usefulness-first: the real entry point (/menu),
+ * then what's happening right now (/status, /account), then how Dave is configured (/settings,
+ * /providers, /models, /connection), then the occasional/destructive/reference ones last
+ * (/ea, /reset, /help).
+ */
 export const DAVE_COMMANDS = [
-  { command: "account", description: "💰 View your connected MT5 account and balance" },
-  { command: "connection", description: "🔌 Check EA/MT5 connection status" },
-  { command: "providers", description: "🤖 Switch AI provider (28+ providers, AirLLM default)" },
-  { command: "models", description: "🧠 Pick which model each provider uses" },
-  { command: "settings", description: "⚙️ Trading limits, notifications, and preferences" },
-  { command: "reset", description: "🔄 Reset this conversation" },
-  { command: "help", description: "❓ What Dave can do" },
   { command: "menu", description: "📋 Show this menu of commands" },
   { command: "status", description: "📊 Circuit breaker, workers, and system status" },
+  { command: "account", description: "💰 View your connected MT5 account and balance" },
+  { command: "settings", description: "⚙️ Trading limits, notifications, and preferences" },
+  { command: "providers", description: "🤖 Switch AI provider (28+ providers, AirLLM default)" },
+  { command: "models", description: "🧠 Pick which model each provider uses" },
+  { command: "connection", description: "🔌 Check EA/MT5 connection status" },
   { command: "ea", description: "📄 Get your personalized MT5 Expert Advisor file" },
+  { command: "reset", description: "🔄 Reset this conversation" },
+  { command: "help", description: "❓ What Dave can do" },
 ] as const;
 
 export type DaveCommand = (typeof DAVE_COMMANDS)[number]["command"];

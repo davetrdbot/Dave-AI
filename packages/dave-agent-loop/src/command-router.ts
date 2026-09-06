@@ -700,13 +700,15 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
   }
 }
 
+/** Item 5: same usefulness-first order as DAVE_COMMANDS (commands.ts) -- what's happening now,
+ * then how Dave is configured, then the occasional/destructive/reference ones last. */
 const MENU_BUTTONS: { command: DaveCommand; label: string }[] = [
+  { command: "status", label: "📊 Status" },
   { command: "account", label: "💰 Account" },
-  { command: "connection", label: "🔌 Connection" },
+  { command: "settings", label: "⚙️ Settings" },
   { command: "providers", label: "🤖 Providers" },
   { command: "models", label: "🧠 Models" },
-  { command: "settings", label: "⚙️ Settings" },
-  { command: "status", label: "📊 Status" },
+  { command: "connection", label: "🔌 Connection" },
   { command: "ea", label: "📄 EA File" },
   { command: "reset", label: "🔄 Reset" },
   { command: "help", label: "❓ Help" },
@@ -743,6 +745,17 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
   const chatId = callback.message?.chat.id;
   const data = callback.data ?? "";
   let ackText: string | undefined;
+
+  // Real bug fixed (item 6: "tapping any settings/UI button has a noticeable delay before
+  // responding"). Telegram genuinely shows a loading spinner on the tapped button until
+  // answerCallbackQuery is called -- this used to be called LAST, after every real DB write,
+  // live network fetch (ElevenLabs voices, a provider's live model list), and message
+  // send/edit below had already finished, so the spinner visibly hung for however long that real
+  // work took. Acknowledging immediately, before any of that work starts, is the real fix --
+  // Telegram only accepts ONE answerCallbackQuery per callback_query id, so `ackText` below is now
+  // informational/logging only; every branch that needs to tell the user something real does it
+  // through a genuine message send/edit, not a second toast.
+  await deps.client.answerCallbackQuery({ callback_query_id: callback.id }).catch(() => undefined);
 
   // Real fix (user: "confirmation message after EVERY setting change, not just risky ones") --
   // a re-rendered screen plus a transient callback-answer toast (easy to miss, and not what
@@ -844,6 +857,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const key = getTtsProviderKey(deps.db, deps.userId, "elevenlabs");
       if (!key) {
         ackText = "No ElevenLabs key configured -- add one in the admin panel first";
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
       } else {
         try {
           const voices = await new ElevenLabsClient(key).listVoices();
@@ -860,6 +874,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
           }
         } catch (err) {
           ackText = `Real fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+          if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
         }
       }
     } else if (data.startsWith("voice:pick:")) {
@@ -976,6 +991,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const key = getProviderKeyById(deps.db, deps.userId, keyId);
       if (!key?.provider) {
         ackText = "Key not found";
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
       } else {
         setPrimaryProviderKey(deps.db, deps.userId, keyId);
         const config = getModelConfig(deps.userId);
@@ -1010,12 +1026,14 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const key = primaryKeyFor(deps, name);
       if (!key) {
         ackText = "No key configured for this provider";
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
       } else {
         const result = await fetchAvailableModels(name, key.config);
         if (result.manualEntryRequired) {
           // Defensive: /models never shows a fetch button for a manual-entry (or endpoint-less)
           // provider, but a stale keyboard from before a catalog change could still be tapped.
           ackText = `${name} has no live model list -- reply with the model ID as a message instead`;
+          if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
         } else if (result.error) {
           ackText = `Fetch failed: ${result.error}`;
           if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Real fetch failed: ${result.error}` });
@@ -1042,11 +1060,13 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const cached = fetchedModelsCache.get(deps.userId);
       if (!cached || !Number.isInteger(index) || !cached.models[index]) {
         ackText = "That list expired -- fetch again";
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
       } else {
         const modelId = cached.models[index];
         const key = primaryKeyFor(deps, cached.provider);
         if (!key) {
           ackText = "No key configured for this provider";
+          if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
         } else {
           editProviderKey(deps.db, deps.userId, key.id, { config: { model: modelId } });
           ackText = `Model set to ${modelId}`;
@@ -1084,10 +1104,14 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = undefined;
     }
   } catch (err) {
-    ackText = `Error: ${err instanceof Error ? err.message : String(err)}`;
+    const message = err instanceof Error ? err.message : String(err);
+    ackText = `Error: ${message}`;
+    // Real fix: the callback was already acknowledged above (Telegram only accepts one
+    // answerCallbackQuery per callback_query id) -- an unhandled error must still genuinely
+    // reach the user somehow, so it goes out as a real chat message instead of a toast nobody
+    // can see after the fact.
+    if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `⚠️ ${message}` }).catch(() => undefined);
   }
-
-  await deps.client.answerCallbackQuery({ callback_query_id: callback.id, text: ackText }).catch(() => undefined);
 }
 
 export function listPendingApprovalsKeyboard(pendingId: string) {

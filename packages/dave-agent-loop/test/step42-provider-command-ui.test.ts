@@ -47,7 +47,9 @@ globalThis.fetch = (async (url: string, init?: RequestInit) => {
   if (urlStr.includes("api.telegram.org")) {
     const method = urlStr.split("/").pop() ?? "";
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
-    sentTelegramCalls.push({ method, body });
+    // The real immediate callback ack (item 6) has no text/reply_markup -- excluded here so
+    // existing index-based assertions below still see the real substantive message first.
+    if (!(method === "answerCallbackQuery" && !body?.text)) sentTelegramCalls.push({ method, body });
     return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
   }
   if (urlStr === openaiModelsUrl) {
