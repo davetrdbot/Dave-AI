@@ -6,7 +6,7 @@ import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import type { RFeedTradeExecutor, HistoryRequestManager } from "@dave/rfeed";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName, type ContentBlock } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, isDaveCommand, withThinkingIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, withThinkingIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
 import { classifyToolAction } from "./action-classifier.js";
@@ -167,6 +167,18 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   // showed up in Telegram's native "/" menu on a fresh pairing. Best-
   // effort: a failure here must not block the bot from coming online.
   await registerDefaultCommandMenu(client).catch((err) => console.error(`[telegram] failed to register command menu: ${err instanceof Error ? err.message : String(err)}`));
+
+  // Real gap fixed (STEP 7 re-verification): getMyDescription/getMyShortDescription
+  // came back genuinely empty in production -- updateBotDisplayInfo() existed only
+  // as a callable tool, nothing ever invoked it with real content. Best-effort,
+  // same as the command menu above: never blocks the bot from coming online.
+  await updateBotDisplayInfo(client, {
+    description:
+      "Dave is your autonomous MT5 trading assistant. Connect your account, and Dave watches your trades, " +
+      "proposes and (with your approval) executes setups, and keeps you posted here in Telegram. " +
+      "Send /menu to see everything Dave can do.",
+    shortDescription: "Your autonomous MT5 trading assistant.",
+  }).catch((err) => console.error(`[telegram] failed to set bot display info: ${err instanceof Error ? err.message : String(err)}`));
 
   // Real fix (F5): syncMorningBriefCron() fires a real cron on schedule,
   // but nothing ever called it with a real content-composing handler in
