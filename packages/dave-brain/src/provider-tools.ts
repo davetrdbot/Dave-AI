@@ -1,7 +1,8 @@
 import type { DaveDatabase } from "@dave/db";
-import { addProviderKey, editProviderKey, listProviderKeys, removeProviderKey, checkProviderKeyHealth } from "./provider-keys.js";
+import { addProviderKey, addProviderKeysBulk, editProviderKey, listProviderKeys, removeProviderKey, checkProviderKeyHealth, setPrimaryProviderKey } from "./provider-keys.js";
 import { createCustomProvider, editCustomProvider, listCustomProviders, deleteCustomProvider } from "./custom-providers.js";
 import { listProviderCatalog } from "./provider-catalog.js";
+import { fetchAvailableModels } from "./model-fetch.js";
 import type { ProviderName } from "./providers.js";
 
 /**
@@ -96,6 +97,37 @@ export const PROVIDER_TOOLS: ToolDefinition[] = [
     description: "List stored keys for a provider (or all providers), including real health status.",
     parameters: { type: "object", properties: { provider: { type: "string" } } },
     execute: async (args, ctx) => listProviderKeys(ctx.db, ctx.userId, args.provider as ProviderName | undefined),
+  },
+  {
+    name: "add_provider_keys_bulk",
+    description: "Paste multiple API keys for one provider at once (one per line, up to 10 total per provider). Each line is validated and stored individually -- one bad key never blocks the rest.",
+    parameters: {
+      type: "object",
+      properties: {
+        provider: { type: "string" },
+        labelPrefix: { type: "string", description: "Each stored key is labeled \"<labelPrefix> <n>\"." },
+        rawKeys: { type: "string", description: "Newline-separated API keys." },
+      },
+      required: ["provider", "labelPrefix", "rawKeys"],
+    },
+    execute: async (args, ctx) => addProviderKeysBulk(ctx.db, ctx.userId, args.provider as ProviderName, args.labelPrefix as string, args.rawKeys as string),
+  },
+  {
+    name: "set_primary_provider_key",
+    description: "Mark one stored key as the main/default key for its provider -- auto-failover always tries the primary key first (while healthy) before any other stored key for that same provider.",
+    parameters: { type: "object", properties: { keyId: { type: "string" } }, required: ["keyId"] },
+    execute: async (args, ctx) => setPrimaryProviderKey(ctx.db, ctx.userId, args.keyId as string),
+  },
+  {
+    name: "fetch_provider_models",
+    description: "Fetch the real list of available models for a stored key, when that provider supports auto-fetch (manual model-ID entry is required instead for OpenRouter, OrcaRouter, and HuggingFace).",
+    parameters: { type: "object", properties: { keyId: { type: "string" }, provider: { type: "string" } }, required: ["keyId", "provider"] },
+    execute: async (args, ctx) => {
+      const keys = listProviderKeys(ctx.db, ctx.userId, args.provider as ProviderName);
+      const key = keys.find((k) => k.id === args.keyId);
+      if (!key) throw new Error(`no stored key "${args.keyId}" for provider "${args.provider}"`);
+      return fetchAvailableModels(key.provider, key.config);
+    },
   },
   {
     name: "check_provider_key_health",

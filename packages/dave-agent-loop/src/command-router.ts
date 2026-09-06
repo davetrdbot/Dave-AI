@@ -181,6 +181,7 @@ export async function dispatchCommand(deps: CommandRouterDeps, chatId: number, h
       await handleReset(deps, chatId, historyKey);
       break;
     case "help":
+    case "menu":
       await handleHelp(deps, chatId);
       break;
     case "status":

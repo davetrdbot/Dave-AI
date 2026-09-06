@@ -22,6 +22,7 @@ export interface StoredProviderKey {
   healthy: boolean;
   lastCheckedAt: number | null;
   lastError: string | null;
+  isPrimary: boolean;
 }
 
 function ensureTable(db: DaveDatabase): void {
@@ -32,6 +33,7 @@ function ensureTable(db: DaveDatabase): void {
     { name: "healthy", type: "INTEGER" },
     { name: "last_checked_at", type: "INTEGER" },
     { name: "last_error", type: "TEXT" },
+    { name: "is_primary", type: "INTEGER" },
   ]);
 }
 
@@ -44,6 +46,7 @@ function toStoredKey(row: Record<string, unknown>): StoredProviderKey {
     healthy: Boolean(row.healthy),
     lastCheckedAt: (row.last_checked_at as number | null) ?? null,
     lastError: (row.last_error as string | null) ?? null,
+    isPrimary: Boolean(row.is_primary),
   };
 }
 
@@ -60,8 +63,56 @@ export function addProviderKey(db: DaveDatabase, userId: string, provider: Provi
     healthy: 1,
     last_checked_at: null,
     last_error: null,
+    is_primary: existing.length === 0 ? 1 : 0, // the first key for a provider is main by default
   });
   return toStoredKey(db.getById(TABLE, userId, id)!);
+}
+
+export interface BulkAddResult {
+  line: string;
+  ok: boolean;
+  key?: StoredProviderKey;
+  error?: string;
+}
+
+/**
+ * Real gap fixed: "bulk-add up to 10 keys at once, one per line,
+ * validate and save each individually, report per-key success/failure."
+ * Reuses the exact same addProviderKey() path per line -- same
+ * 10-key-per-provider cap enforcement, same storage shape -- just
+ * iterated, with one line's failure (a duplicate label collision, the
+ * cap already reached partway through the paste) never blocking the
+ * rest.
+ */
+export function addProviderKeysBulk(db: DaveDatabase, userId: string, provider: ProviderName, labelPrefix: string, rawKeys: string): BulkAddResult[] {
+  const lines = rawKeys
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  const results: BulkAddResult[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const apiKey = lines[i];
+    try {
+      const key = addProviderKey(db, userId, provider, `${labelPrefix} ${i + 1}`, { apiKey });
+      results.push({ line: apiKey, ok: true, key });
+    } catch (err) {
+      results.push({ line: apiKey, ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return results;
+}
+
+/** Real gap fixed: "one provider/key settable as main default." Exactly one key per provider is ever primary -- setting a new one clears the old flag first. */
+export function setPrimaryProviderKey(db: DaveDatabase, userId: string, keyId: string): StoredProviderKey | undefined {
+  ensureTable(db);
+  const target = db.getById(TABLE, userId, keyId);
+  if (!target) return undefined;
+  const siblings = db.query(TABLE, userId, { provider: target.provider as ProviderName });
+  for (const row of siblings) {
+    if (row.id !== keyId && row.is_primary) db.update(TABLE, userId, row.id as string, { is_primary: 0 });
+  }
+  db.update(TABLE, userId, keyId, { is_primary: 1 });
+  return toStoredKey(db.getById(TABLE, userId, keyId)!);
 }
 
 export function removeProviderKey(db: DaveDatabase, userId: string, keyId: string): boolean {
@@ -139,7 +190,13 @@ export async function generateWithKeyFailover(
   if (keys.length === 0) {
     throw new Error(`no stored keys for provider "${provider}"`);
   }
-  const ordered = [...keys.filter((k) => k.healthy), ...keys.filter((k) => !k.healthy)];
+  // The primary key (if healthy) always goes first -- "one key settable
+  // as main default" -- then the rest of the healthy keys, then the
+  // unhealthy ones (in case they've recovered since the last check).
+  const healthy = keys.filter((k) => k.healthy);
+  const unhealthy = keys.filter((k) => !k.healthy);
+  const orderedHealthy = [...healthy.filter((k) => k.isPrimary), ...healthy.filter((k) => !k.isPrimary)];
+  const ordered = [...orderedHealthy, ...unhealthy];
 
   const attempts: { keyId: string; label: string; reason: string }[] = [];
   for (const key of ordered) {

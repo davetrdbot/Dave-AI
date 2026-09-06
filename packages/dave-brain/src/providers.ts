@@ -95,6 +95,7 @@ export type ProviderName =
   | "huggingface"
   | "orcarouter"
   | "bedrock"
+  | "monsterapi"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {

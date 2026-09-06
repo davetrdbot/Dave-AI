@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DaveDatabase } from "@dave/db";
 import { dbPathFor } from "../../../server/db-path";
-import { addProviderKey, editProviderKey, removeProviderKey, listProviderKeys, checkProviderKeyHealth, type ProviderName } from "@dave/brain";
+import { addProviderKey, addProviderKeysBulk, editProviderKey, removeProviderKey, listProviderKeys, checkProviderKeyHealth, setPrimaryProviderKey, fetchAvailableModels, type ProviderName } from "@dave/brain";
 
 /** Update 4: admin UI's key-CRUD surface, mirroring provider-tools.ts's agent tools. */
 function dbFor(userId: string): DaveDatabase {
@@ -35,6 +35,22 @@ export async function POST(req: NextRequest) {
       if (!target) return NextResponse.json({ error: "not found" }, { status: 404 });
       const healthy = await checkProviderKeyHealth(db, userId, target);
       return NextResponse.json({ healthy });
+    }
+    if (body.bulkAdd) {
+      const results = addProviderKeysBulk(db, userId, body.provider, body.labelPrefix ?? body.provider, body.rawKeys ?? "");
+      return NextResponse.json({ results });
+    }
+    if (body.setPrimary) {
+      const updated = setPrimaryProviderKey(db, userId, body.keyIdToMakePrimary);
+      if (!updated) return NextResponse.json({ error: "not found" }, { status: 404 });
+      return NextResponse.json(updated);
+    }
+    if (body.fetchModels) {
+      const keys = listProviderKeys(db, userId, body.provider);
+      const target = keys.find((k) => k.id === body.fetchModelsKeyId);
+      if (!target) return NextResponse.json({ error: "not found" }, { status: 404 });
+      const result = await fetchAvailableModels(target.provider, target.config);
+      return NextResponse.json(result);
     }
     const created = addProviderKey(db, userId, body.provider, body.label, body.config);
     return NextResponse.json(created);

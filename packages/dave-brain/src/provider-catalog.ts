@@ -86,7 +86,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   openai: OPENAI_COMPAT("openai", "OpenAI", "https://api.openai.com/v1", "gpt-5.6-sol", "Native OpenAI, the reference shape every generic entry copies."),
   groq: OPENAI_COMPAT("groq", "Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "OpenAI-compatible, confirmed."),
   mistral: OPENAI_COMPAT("mistral", "Mistral AI", "https://api.mistral.ai/v1", "mistral-large-latest", "OpenAI-compatible, real GET /v1/models confirmed."),
-  together: OPENAI_COMPAT("together", "Together AI", "https://api.together.xyz/v1", "deepseek-ai/DeepSeek-V3.1", "Open marketplace, no fixed flagship -- model is configurable.", null),
+  together: OPENAI_COMPAT("together", "Together AI", "https://api.together.ai/v1", "deepseek-ai/DeepSeek-V3.1", "Open marketplace, no fixed flagship -- model is configurable. (Updated to the .ai domain per current official docs -- the older .xyz domain also still resolves.)", null),
   cerebras: OPENAI_COMPAT("cerebras", "Cerebras", "https://api.cerebras.ai/v1", "llama-3.3-70b", "Open-weight catalog, confirmed real GET /v1/models."),
   "nvidia-nim": OPENAI_COMPAT("nvidia-nim", "Nvidia NIM", "https://integrate.api.nvidia.com/v1", "meta/llama-3.1-405b-instruct", "build.nvidia.com, real GET /v1/models confirmed."),
   lepton: {
@@ -108,8 +108,19 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   perplexity: OPENAI_COMPAT("perplexity", "Perplexity", "https://api.perplexity.ai", "sonar-pro", "No /models endpoint exists -- flagged. chat/completions has a stated sunset path toward an Agent API (checked Sept 2026: still live).", null),
   qwen: OPENAI_COMPAT("qwen", "Alibaba Qwen (DashScope)", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-max", "International endpoint by default -- mainland China uses a different host, key is region-bound."),
   sambanova: OPENAI_COMPAT("sambanova", "SambaNova Cloud", "https://api.sambanova.ai/v1", "Meta-Llama-3.3-70B-Instruct", "OpenAI-compatible, models-list path not independently re-verified -- low confidence, flagged."),
-  novita: OPENAI_COMPAT("novita", "Novita AI", "https://api.novita.ai/v3/openai", "deepseek-ai/DeepSeek-V3", "Base path verified as /v3/openai; catalog rotates, no fixed flagship."),
-  ai21: OPENAI_COMPAT("ai21", "AI21 Labs", "https://api.ai21.com/studio/v1", "jamba-large", "Confirmed: chat/completions uses an OpenAI-style message array but AI21 is NOT fully OpenAI-compatible beyond that -- flagged partial.", null),
+  novita: OPENAI_COMPAT("novita", "Novita AI", "https://api.novita.ai/v3/openai", "deepseek-ai/DeepSeek-V3.1-Terminus", "Base path verified as /v3/openai; catalog rotates, no fixed flagship -- default updated off the stale V3 id, which the marketplace has moved past."),
+  ai21: OPENAI_COMPAT("ai21", "AI21 Labs", "https://api.ai21.com/studio/v1", "jamba-large-1.7", "Confirmed: chat/completions uses an OpenAI-style message array but AI21 is NOT fully OpenAI-compatible beyond that -- flagged partial. Default updated to the real current versioned model id (bare \"jamba-large\" no longer resolves).", null),
+  monsterapi: {
+    ...OPENAI_COMPAT(
+      "monsterapi",
+      "MonsterAPI",
+      "https://llm.monsterapi.ai/v1",
+      "meta-llama/Meta-Llama-3.1-8B-Instruct",
+      "Real, currently-operating hosted inference API (its Swagger/docs are explicitly marked BETA). OpenAI-compatible chat-completions shape, confirmed via multiple third-party integrations (Portkey, LlamaIndex, Haystack). No live queryable /v1/models endpoint found (model list is a static docs page) -- manual model entry, same as OpenRouter/OrcaRouter/HuggingFace. Distinct from MonsterAPI's OLDER \"Monster Deploy\" product (per-deployment unique subdomains) -- this entry is the general-purpose hosted API, not that one.",
+      null
+    ),
+    manualModelEntry: true,
+  },
   cloudflare: {
     id: "cloudflare",
     displayName: "Cloudflare Workers AI",

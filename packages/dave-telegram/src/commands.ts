@@ -1,6 +1,10 @@
 /**
- * Step 8.1: exactly these 9 slash commands. Everything else is
- * conversational (routed to the agent loop, not a command handler).
+ * Step 8.1: 9 real command handlers, plus /menu (real gap fixed: users
+ * kept typing /menu expecting a real command -- confirmed via real
+ * Telegram update logs showing repeated unanswered /menu attempts --
+ * so it's now a genuine 10th registered command, not just a hope that
+ * people find the native "/" button). Everything else is conversational
+ * (routed to the agent loop, not a command handler).
  */
 export const DAVE_COMMANDS = [
   { command: "account", description: "View your connected MT5 account and balance" },
@@ -10,6 +14,7 @@ export const DAVE_COMMANDS = [
   { command: "settings", description: "Trading limits, notifications, and preferences" },
   { command: "reset", description: "Reset this conversation" },
   { command: "help", description: "What Dave can do" },
+  { command: "menu", description: "Show this menu of commands" },
   { command: "status", description: "Circuit breaker, workers, and system status" },
   { command: "ea", description: "Get your personalized MT5 Expert Advisor file" },
 ] as const;

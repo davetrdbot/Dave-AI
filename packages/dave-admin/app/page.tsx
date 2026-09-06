@@ -675,6 +675,10 @@ function ProviderKeysCard({ api, title, apiPath, providerListPath }: { userId: s
   const [keys, setKeys] = useState<any[]>([]);
   const [providers, setProviders] = useState<any[]>([]);
   const [form, setForm] = useState({ provider: "gemini", label: "", apiKey: "" });
+  const [bulk, setBulk] = useState({ provider: "gemini", labelPrefix: "", rawKeys: "" });
+  const [bulkResults, setBulkResults] = useState<any[] | null>(null);
+  const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
+  const [modelsByKey, setModelsByKey] = useState<Record<string, any>>({});
 
   const reload = useCallback(() => {
     api(apiPath).then((r) => setKeys(r.keys ?? []));
@@ -689,6 +693,41 @@ function ProviderKeysCard({ api, title, apiPath, providerListPath }: { userId: s
     await api(apiPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: form.provider, label: form.label, config: { apiKey: form.apiKey } }) });
     setForm({ ...form, label: "", apiKey: "" });
     reload();
+  };
+
+  const bulkAdd = async () => {
+    const res = await api(apiPath, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bulkAdd: true, provider: bulk.provider, labelPrefix: bulk.labelPrefix || bulk.provider, rawKeys: bulk.rawKeys }),
+    });
+    setBulkResults(res.results ?? []);
+    setBulk({ ...bulk, rawKeys: "" });
+    reload();
+  };
+
+  const checkHealth = async (k: any) => {
+    setBusyKeyId(k.id);
+    await api(apiPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ checkHealth: true, provider: k.provider, checkKeyId: k.id }) });
+    setBusyKeyId(null);
+    reload();
+  };
+
+  const setPrimary = async (k: any) => {
+    await api(apiPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ setPrimary: true, keyIdToMakePrimary: k.id }) });
+    reload();
+  };
+
+  const remove = async (k: any) => {
+    await api(`${apiPath}?keyId=${encodeURIComponent(k.id)}`, { method: "DELETE" });
+    reload();
+  };
+
+  const fetchModels = async (k: any) => {
+    setBusyKeyId(k.id);
+    const res = await api(apiPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fetchModels: true, provider: k.provider, fetchModelsKeyId: k.id }) });
+    setBusyKeyId(null);
+    setModelsByKey({ ...modelsByKey, [k.id]: res });
   };
 
   return (
@@ -708,13 +747,77 @@ function ProviderKeysCard({ api, title, apiPath, providerListPath }: { userId: s
           Add key
         </button>
       </div>
+
+      <details style={{ marginBottom: 10 }}>
+        <summary style={{ cursor: "pointer", color: "var(--text-dim)" }}>Bulk-add (paste up to 10 keys, one per line)</summary>
+        <div className="row" style={{ marginTop: 8, alignItems: "flex-start" }}>
+          <select value={bulk.provider} onChange={(e) => setBulk({ ...bulk, provider: e.target.value })} style={{ width: 180 }}>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.displayName}
+              </option>
+            ))}
+          </select>
+          <input type="text" placeholder="Label prefix" value={bulk.labelPrefix} onChange={(e) => setBulk({ ...bulk, labelPrefix: e.target.value })} style={{ width: 140 }} />
+          <textarea
+            placeholder={"One API key per line\n(up to 10)"}
+            value={bulk.rawKeys}
+            onChange={(e) => setBulk({ ...bulk, rawKeys: e.target.value })}
+            style={{ width: 280, height: 80 }}
+          />
+          <button className="btn" onClick={bulkAdd}>
+            Bulk-add
+          </button>
+        </div>
+        {bulkResults && (
+          <div style={{ marginTop: 8 }}>
+            {bulkResults.map((r, i) => (
+              <div key={i} className={`badge ${r.ok ? "ok" : "warn"}`} style={{ marginRight: 6, marginBottom: 4, display: "inline-block" }}>
+                {r.ok ? `OK: ${r.key?.label}` : `FAILED: ${r.error}`}
+              </div>
+            ))}
+          </div>
+        )}
+      </details>
+
       {keys.length === 0 && <div className="placeholder">No keys stored yet.</div>}
       {keys.map((k: any) => (
         <div className="group-card" key={k.id}>
           <strong>{k.label}</strong> <span style={{ color: "var(--text-dim)" }}>({k.provider ?? ""})</span>
+          {k.isPrimary && (
+            <span className="badge ok" style={{ marginLeft: 8 }}>
+              main
+            </span>
+          )}
           <span className={`badge ${k.healthy ? "ok" : "warn"}`} style={{ marginLeft: 8 }}>
             {k.healthy ? "healthy" : "unchecked/unhealthy"}
           </span>
+          {k.lastError && <span style={{ marginLeft: 8, color: "var(--warn)", fontSize: 12 }}>{k.lastError}</span>}
+          <div className="row" style={{ marginTop: 6 }}>
+            <button className="btn" disabled={busyKeyId === k.id} onClick={() => checkHealth(k)}>
+              Check health
+            </button>
+            {!k.isPrimary && (
+              <button className="btn" onClick={() => setPrimary(k)}>
+                Set as main
+              </button>
+            )}
+            <button className="btn" disabled={busyKeyId === k.id} onClick={() => fetchModels(k)}>
+              Fetch models
+            </button>
+            <button className="btn" onClick={() => remove(k)}>
+              Remove
+            </button>
+          </div>
+          {modelsByKey[k.id] && (
+            <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-dim)" }}>
+              {modelsByKey[k.id].manualEntryRequired
+                ? "This provider requires manual model-ID entry (no auto-fetch)."
+                : modelsByKey[k.id].error
+                  ? `Fetch failed: ${modelsByKey[k.id].error}`
+                  : `Models: ${modelsByKey[k.id].models?.join(", ") || "(none returned)"}`}
+            </div>
+          )}
         </div>
       ))}
     </div>
