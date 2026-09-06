@@ -9,3 +9,4 @@ export * from "./voice-buttons.js";
 export * from "./tts-credentials.js";
 export * from "./pending-voice-entry.js";
 export * from "./pending-tts-key-entry.js";
+export * from "./notification-settings.js";

@@ -4,6 +4,7 @@ import { getBriefSettings, setBriefMode, type BriefMode } from "./morning-brief.
 import { synthesizeSpeechWithStoredKeys, getVoiceSettings, type TtsProviderName } from "./voice-settings.js";
 import { setTtsProviderKey } from "./tts-credentials.js";
 import { sendConnectionAlert, sendTradeOpenedAlert, routeClosedPositionAlert, type TradeSystem } from "./trade-alerts.js";
+import { getNotificationSettings } from "./notification-settings.js";
 
 /**
  * Update 18 (bulk tool-coverage expansion): morning brief config, real
@@ -59,15 +60,25 @@ export const NOTIFICATION_TOOLS: NotificationToolDefinition[] = [
   },
   {
     name: "send_ea_connected_notification",
-    description: "Send the real connection-confirmed notification for Dave's or R_Feed's EA.",
+    description: "Send the real connection-confirmed notification for Dave's or R_Feed's EA. Real no-op (returns skipped:true) if the user has push notifications OFF.",
     parameters: { type: "object", properties: { system: { type: "string", enum: ["dave", "rfeed"] } }, required: ["system"] },
-    execute: async (args, ctx) => sendConnectionAlert(ctx.client, ctx.chatId, args.system as TradeSystem),
+    // Real gap fixed (spec: "Push notifications on/off" -- a toggle that didn't actually stop
+    // anything would be a ghost feature): checked against the real, stored setting, not just
+    // documented as respected.
+    execute: async (args, ctx) => {
+      if (!getNotificationSettings(ctx.db, ctx.userId).pushEnabled) return { skipped: true, reason: "push notifications are off" };
+      return sendConnectionAlert(ctx.client, ctx.chatId, args.system as TradeSystem);
+    },
   },
   {
     name: "send_trade_opened_notification",
-    description: "Send the real trade-opened notification -- system + symbol + lots + reason, all together.",
+    description: "Send the real trade-opened notification -- system + symbol + lots + reason, all together. Real no-op (returns skipped:true) if the user has push OR trade-opened notifications OFF.",
     parameters: { type: "object", properties: { system: { type: "string", enum: ["dave", "rfeed"] }, symbol: { type: "string" }, lots: { type: "number" }, reason: { type: "string" } }, required: ["system", "symbol", "lots", "reason"] },
-    execute: async (args, ctx) => sendTradeOpenedAlert(ctx.client, ctx.chatId, { system: args.system as TradeSystem, symbol: args.symbol as string, lots: args.lots as number, reason: args.reason as string }),
+    execute: async (args, ctx) => {
+      const settings = getNotificationSettings(ctx.db, ctx.userId);
+      if (!settings.pushEnabled || !settings.tradeOpenedEnabled) return { skipped: true, reason: "push or trade-opened notifications are off" };
+      return sendTradeOpenedAlert(ctx.client, ctx.chatId, { system: args.system as TradeSystem, symbol: args.symbol as string, lots: args.lots as number, reason: args.reason as string });
+    },
   },
   {
     name: "send_trade_closed_notification",
@@ -77,7 +88,9 @@ export const NOTIFICATION_TOOLS: NotificationToolDefinition[] = [
       properties: { system: { type: "string", enum: ["dave", "rfeed"] }, symbol: { type: "string" }, pnl: { type: "number" }, reason: { type: "string", enum: ["tp", "sl", "dave", "manual"] }, daveCloseReason: { type: "string" } },
       required: ["system", "symbol", "pnl", "reason"],
     },
-    execute: async (args, ctx) =>
-      routeClosedPositionAlert(ctx.client, ctx.chatId, { system: args.system as TradeSystem, symbol: args.symbol as string, pnl: args.pnl as number, reason: args.reason as "tp" | "sl" | "dave" | "manual", daveCloseReason: args.daveCloseReason as string | undefined }),
+    execute: async (args, ctx) => {
+      if (!getNotificationSettings(ctx.db, ctx.userId).pushEnabled) return { skipped: true, reason: "push notifications are off" };
+      return routeClosedPositionAlert(ctx.client, ctx.chatId, { system: args.system as TradeSystem, symbol: args.symbol as string, pnl: args.pnl as number, reason: args.reason as "tp" | "sl" | "dave" | "manual", daveCloseReason: args.daveCloseReason as string | undefined });
+    },
   },
 ];

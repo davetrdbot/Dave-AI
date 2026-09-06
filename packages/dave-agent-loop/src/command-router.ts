@@ -56,6 +56,10 @@ import {
   getPendingTtsKeyEntry,
   hasTtsProviderKey,
   setTtsProviderKey,
+  getNotificationSettings,
+  setPushEnabled,
+  setEmailEnabled,
+  setTradeOpenedEnabled,
 } from "@dave/notifications";
 import { getWriteApprovalSetting, setWriteApprovalSetting } from "@dave/memory";
 import { addE2BKey, listE2BKeys, removeE2BKey, setPendingE2BKeyEntry, getPendingE2BKeyEntry } from "@dave/e2b";
@@ -336,7 +340,21 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
     [coloredButton("Risk / Trading", "blue", "settings:risk"), coloredButton("Trading Mode", "blue", "settings:tradingmode")],
     [coloredButton("Pair Group", "blue", "settings:pairgroup"), coloredButton("Voice", "blue", "settings:voice")],
     [coloredButton("Memory", "blue", "settings:memory"), coloredButton("E2B Keys", "blue", "settings:e2b")],
-    [coloredButton("Trailing / Breakeven", "blue", "settings:trailing")],
+    [coloredButton("Trailing / Breakeven", "blue", "settings:trailing"), coloredButton("Notifications", "blue", "settings:notifications")],
+  ]);
+}
+
+/** NOTIFICATIONS section: real push toggle (genuinely gates the alert-sending tools in
+ * extra-tools.ts), real trade-opened toggle, and an honestly-labeled email toggle -- the
+ * setting is real and stored, but no email-sending capability exists anywhere in this
+ * codebase yet, so it's flagged rather than pretended to work. */
+function notificationsKeyboard(deps: CommandRouterDeps): ReturnType<typeof keyboard> {
+  const settings = getNotificationSettings(deps.db, deps.userId);
+  return keyboard([
+    [coloredButton(`Push notifications: ${settings.pushEnabled ? "On" : "Off"}`, settings.pushEnabled ? "green" : "red", "notif:togglepush")],
+    [coloredButton(`Trade-opened alert: ${settings.tradeOpenedEnabled ? "On" : "Off"}`, settings.tradeOpenedEnabled ? "green" : "red", "notif:toggletradeopened")],
+    [coloredButton(`Email notifications: ${settings.emailEnabled ? "On (no email sender configured yet)" : "Off"}`, settings.emailEnabled ? "green" : "red", "notif:toggleemail")],
+    [{ text: "⬅️ Back", callback_data: "settings:top" }],
   ]);
 }
 
@@ -798,6 +816,27 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       setPendingTrailingEntry(deps.userId, field);
       ackText = undefined;
       if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Reply with the ${field} SL price level as your next message.` });
+    } else if (data === "settings:notifications") {
+      ackText = undefined;
+      await renderInPlace("<b>Notifications</b>", notificationsKeyboard(deps));
+    } else if (data === "notif:togglepush") {
+      const settings = getNotificationSettings(deps.db, deps.userId);
+      setPushEnabled(deps.db, deps.userId, !settings.pushEnabled);
+      ackText = `Push ${!settings.pushEnabled ? "enabled" : "disabled"}`;
+      await confirm(`Push notifications: ${!settings.pushEnabled ? "On" : "Off"}`);
+      await renderInPlace("<b>Notifications</b>", notificationsKeyboard(deps));
+    } else if (data === "notif:toggletradeopened") {
+      const settings = getNotificationSettings(deps.db, deps.userId);
+      setTradeOpenedEnabled(deps.db, deps.userId, !settings.tradeOpenedEnabled);
+      ackText = `Trade-opened alert ${!settings.tradeOpenedEnabled ? "enabled" : "disabled"}`;
+      await confirm(`Trade-opened alert: ${!settings.tradeOpenedEnabled ? "On" : "Off"}`);
+      await renderInPlace("<b>Notifications</b>", notificationsKeyboard(deps));
+    } else if (data === "notif:toggleemail") {
+      const settings = getNotificationSettings(deps.db, deps.userId);
+      setEmailEnabled(deps.db, deps.userId, !settings.emailEnabled);
+      ackText = !settings.emailEnabled ? "Saved -- but no email sender is configured yet, so nothing will actually be emailed" : "Email disabled";
+      await confirm(`Email notifications: ${!settings.emailEnabled ? "On" : "Off"} (real email sending isn't built yet -- this only stores your preference)`);
+      await renderInPlace("<b>Notifications</b>", notificationsKeyboard(deps));
     } else if (data === "settings:e2b") {
       ackText = undefined;
       const view = e2bKeyboard(deps);
