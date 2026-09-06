@@ -21,6 +21,10 @@ import {
   listPendingLimitChanges,
   approveSettingsChange,
   declineSettingsChange,
+  proposeProtectedLimitChange,
+  setPendingLimitEntry,
+  getPendingLimitEntry,
+  type ProtectedLimitField,
   getActiveGroupInfo,
   listGroups,
   setActiveGroup,
@@ -350,6 +354,14 @@ async function handleSettings(deps: CommandRouterDeps, chatId: number): Promise<
 
 function riskSettingsKeyboard(userId: string) {
   const settings = getRiskSettings(userId);
+  const pendingChanges = listPendingLimitChanges(userId);
+  const pendingFor = (field: ProtectedLimitField) => pendingChanges.find((c) => c.field === field);
+  const maxOpenTradesLabel = pendingFor("maxOpenTrades")
+    ? `Max open trades: ${settings.maxOpenTrades ?? "not set"} (pending approval)`
+    : `Max open trades: ${settings.maxOpenTrades ?? "not set"} (tap to change)`;
+  const maxDailyLossLabel = pendingFor("maxDailyLossPct")
+    ? `Max daily loss: ${settings.maxDailyLossPct ?? "not set"}% (pending approval)`
+    : `Max daily loss: ${settings.maxDailyLossPct ?? "not set"}% (tap to change)`;
   return settingsScreen(
     [
       [
@@ -357,9 +369,41 @@ function riskSettingsKeyboard(userId: string) {
         { label: `TP: ${modeLabel(settings.tpMode, settings.tpValue)}`, callbackData: "cyclemode:tp", active: false },
       ],
       [{ label: `Lot: ${modeLabel(settings.lotMode, settings.lotValue)}`, callbackData: "cyclemode:lot", active: false }],
+      // Real fix: max open trades / max daily loss are PROTECTED (SECURITY.md) -- tapping
+      // never applies a value directly, it only primes capture of the user's own number,
+      // which then goes through the real, unavoidable proposeProtectedLimitChange ->
+      // separate approve/decline round trip, same as a Dave-initiated proposal.
+      [{ label: maxOpenTradesLabel, callbackData: "proposelimit:maxOpenTrades", active: false }],
+      [{ label: maxDailyLossLabel, callbackData: "proposelimit:maxDailyLossPct", active: false }],
     ],
     "settings:top"
   );
+}
+
+/** The user's next message after tapping a protected-limit row IS the proposed new number --
+ * this only ever calls proposeProtectedLimitChange(), which (per SECURITY.md, enforced in
+ * risk-settings.ts, not just documented) can NEVER apply directly -- it always queues a
+ * separate, real approve/decline round trip via the same colored-button flow every other
+ * settings-change approval uses. */
+export async function tryHandlePendingLimitEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const field = getPendingLimitEntry(deps.userId);
+  if (!field) return false;
+  setPendingLimitEntry(deps.userId, null);
+  const value = Number(text.trim());
+  if (!Number.isFinite(value) || value <= 0) {
+    await deps.client.sendMessage({ chat_id: chatId, text: `That doesn't look like a real number -- reply with just the value, e.g. "5" or "3.5". Tap the row in /settings to try again.` });
+    return true;
+  }
+  const reasonText = field === "maxOpenTrades" ? `User requested max open trades = ${value} via Telegram.` : `User requested max daily loss = ${value}% via Telegram.`;
+  const change = proposeProtectedLimitChange(deps.userId, field, value, reasonText);
+  const label = field === "maxOpenTrades" ? `Max open trades -> ${value}` : `Max daily loss -> ${value}%`;
+  await deps.client.sendMessage({
+    chat_id: chatId,
+    text: `<b>Approval needed</b>\n${label}\n\nThis is a protected limit -- it never applies without your explicit yes.`,
+    parse_mode: "HTML",
+    reply_markup: listPendingApprovalsKeyboard(change.id),
+  });
+  return true;
 }
 
 /** TRADING MODE section: Auto (own judgment + skill library) vs Trading Skills (locked to one taught skill). */
@@ -596,6 +640,12 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
     } else if (data === "settings:risk") {
       ackText = undefined;
       await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
+    } else if (data.startsWith("proposelimit:")) {
+      const field = data.slice("proposelimit:".length) as ProtectedLimitField;
+      setPendingLimitEntry(deps.userId, field);
+      ackText = undefined;
+      const prompt = field === "maxOpenTrades" ? "Reply with the new max open trades (a number) as your next message." : "Reply with the new max daily loss % (a number) as your next message.";
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: prompt });
     } else if (data === "settings:tradingmode") {
       ackText = undefined;
       await renderInPlace("<b>Trading Mode</b>", tradingModeKeyboard(deps.userId));
@@ -835,7 +885,11 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       if (action === "approve") {
         const settings = approveSettingsChange(deps.userId, pendingId);
         ackText = "Approved";
-        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Approved. SL=${modeLabel(settings.slMode, settings.slValue)} TP=${modeLabel(settings.tpMode, settings.tpValue)} Lot=${modeLabel(settings.lotMode, settings.lotValue)}` });
+        if (chatId)
+          await deps.client.sendMessage({
+            chat_id: chatId,
+            text: `✅ Approved. SL=${modeLabel(settings.slMode, settings.slValue)} TP=${modeLabel(settings.tpMode, settings.tpValue)} Lot=${modeLabel(settings.lotMode, settings.lotValue)} MaxOpenTrades=${settings.maxOpenTrades ?? "not set"} MaxDailyLoss=${settings.maxDailyLossPct ?? "not set"}%`,
+          });
       } else {
         declineSettingsChange(deps.userId, pendingId);
         ackText = "Declined";
