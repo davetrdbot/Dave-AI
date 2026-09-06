@@ -263,15 +263,45 @@ function primaryKeyFor(deps: CommandRouterDeps, provider: ProviderName): StoredP
   return keys.find((k) => k.isPrimary) ?? keys[0];
 }
 
-/** Real fix (user: "the model should be fetched not hardcoded and default") -- this used to show
- * the catalog's hardcoded `defaultModel` as "Current" the moment a key existed, even if the user
- * had never actually picked a model -- indistinguishable from a real, deliberate choice. Now only
- * a model the user (or a previous live fetch) actually SET is ever shown as current; otherwise it
- * honestly says "not set" and pushes the user toward the real live-fetch picker below, rather than
- * quietly relying on the hardcoded default. */
+/** One line summarizing a single provider's currently-active model, for the /models overview
+ * (used for both the primary AND every fallback provider -- previously fallback providers had
+ * zero visibility here at all). */
+function modelSummaryLine(deps: CommandRouterDeps, provider: ProviderName): string {
+  const entry = listProviderCatalog().find((e) => e.id === provider)!;
+  if (provider === "airllm") return `<b>${provider}</b>: fixed <code>${entry.defaultModel}</code> (self-hosted, not user-selectable)`;
+  const key = primaryKeyFor(deps, provider);
+  if (!key) return `<b>${provider}</b>: not set -- no working key`;
+  const chosenModel = key.config.model;
+  return chosenModel ? `<b>${provider}</b>: <code>${chosenModel}</code>` : `<b>${provider}</b>: not set yet (defaults to <code>${entry.defaultModel}</code>)`;
+}
+
+/** Real fix (item 5 of the live production bug report: "/model currently doesn't do what it's
+ * supposed to... the real purpose is to SET which model is active FOR A SPECIFIC PROVIDER, not
+ * show one global model"). This used to hardcode config.primary and never even mention the
+ * configured fallback provider(s) -- picking a model for a fallback was impossible from
+ * Telegram. Now shows every configured provider (primary first, then each fallback) with its own
+ * real current-model line, each with its own "Model for <provider>" button leading to that
+ * SPECIFIC provider's real fetch/manual-entry picker (modelFor: callback below) -- confirmed
+ * per-provider, not a single global setting. */
 async function handleModels(deps: CommandRouterDeps, chatId: number): Promise<void> {
   const config = getModelConfig(deps.userId);
-  const provider = config.primary;
+  const providers = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
+  const lines = [`<b>Models</b>`, `Primary: ${modelSummaryLine(deps, config.primary)}`];
+  if (config.fallback.length > 0) {
+    lines.push("", "Fallback:");
+    for (const p of config.fallback.filter((f) => f !== config.primary)) lines.push(modelSummaryLine(deps, p));
+  } else {
+    lines.push("", "No fallback provider configured.");
+  }
+  const rows: ReturnType<typeof coloredButton>[][] = providers
+    .filter((p) => p !== "airllm")
+    .map((p) => [coloredButton(`Model for ${p}${p === config.primary ? " (primary)" : ""}`, "blue", `modelfor:${p}`)]);
+  await deps.client.sendMessage({ chat_id: chatId, text: lines.join("\n"), parse_mode: "HTML", reply_markup: rows.length > 0 ? keyboard(rows) : undefined });
+}
+
+/** The real per-provider picker (fetch-live-models or manual-entry) -- reused for the primary
+ * provider AND any configured fallback provider, via the modelfor: callback. */
+async function sendModelPickerForProvider(deps: CommandRouterDeps, chatId: number, provider: ProviderName): Promise<void> {
   const entry = listProviderCatalog().find((e) => e.id === provider)!;
 
   // AirLLM is fixed, self-hosted infrastructure (Qwen3-235B via AIRLLM_BASE_URL) -- there is no
@@ -971,6 +1001,10 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
           deps.client.sendMessage({ chat_id: chatId, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup })
         );
       }
+    } else if (data.startsWith("modelfor:")) {
+      const name = data.slice("modelfor:".length) as ProviderName;
+      ackText = `Model for ${name}`;
+      if (chatId) await sendModelPickerForProvider(deps, chatId, name);
     } else if (data.startsWith("fetchmodels:")) {
       const name = data.slice("fetchmodels:".length) as ProviderName;
       const key = primaryKeyFor(deps, name);

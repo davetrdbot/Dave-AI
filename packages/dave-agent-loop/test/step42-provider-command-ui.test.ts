@@ -89,12 +89,19 @@ try {
   assert.equal(getModelConfig(OWNER).primary, "openai", "activating a key must set its provider as primary");
   assert.ok(listProviderKeys(db, OWNER, "openai")[0].isPrimary, "the activated key must be marked primary");
 
-  console.log("\n[4] /models on the now-primary provider (openai, not manual-entry) offers a REAL live-fetch button...");
+  console.log("\n[4] /models shows the primary provider's real current model, plus a real 'Model for openai' button (item 5: per-provider, not global)...");
   sentTelegramCalls.length = 0;
   await dispatchCommand(deps, CHAT_ID, `${OWNER}:${CHAT_ID}`, "/models");
   const modelsBody = sentTelegramCalls[0].body as { text: string; reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } };
   console.log(`    "${modelsBody.text.split("\n")[0]}"`);
-  const fetchBtn = modelsBody.reply_markup.inline_keyboard.flat().find((b) => b.callback_data === "fetchmodels:openai")!;
+  const modelForBtn = modelsBody.reply_markup.inline_keyboard.flat().find((b) => b.callback_data === "modelfor:openai")!;
+  assert.ok(modelForBtn, "must offer a real per-provider 'Model for openai' button");
+
+  console.log("\n[4b] Tapping 'Model for openai' opens that SPECIFIC provider's real live-fetch button...");
+  sentTelegramCalls.length = 0;
+  await dispatchCallback(deps, { id: "cb2b", data: "modelfor:openai", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
+  const modelForBody = sentTelegramCalls[0].body as { text: string; reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } };
+  const fetchBtn = modelForBody.reply_markup.inline_keyboard.flat().find((b) => b.callback_data === "fetchmodels:openai")!;
   assert.ok(fetchBtn, "must offer a real fetch-live-models button for a non-manual-entry provider");
 
   console.log("\n[5] Tapping fetch genuinely hits the provider's real /v1/models-style endpoint and returns a picker...");
@@ -115,7 +122,7 @@ try {
   addProviderKey(db, OWNER, "openrouter", "or key", { apiKey: "sk-or-fake" });
   await dispatchCallback(deps, { id: "cb5", data: "setprimaryprovider:openrouter", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
   sentTelegramCalls.length = 0;
-  await dispatchCommand(deps, CHAT_ID, `${OWNER}:${CHAT_ID}`, "/models");
+  await dispatchCallback(deps, { id: "cb5b", data: "modelfor:openrouter", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
   const manualBody = sentTelegramCalls[0].body as { text: string; reply_markup?: unknown };
   console.log(`    "${manualBody.text.split("\n")[2]}"`);
   assert.match(manualBody.text, /reply with the exact model ID/);
