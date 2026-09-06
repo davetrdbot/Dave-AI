@@ -674,7 +674,8 @@ function TelegramOtpCard({ api }: { userId: string; api: ReturnType<typeof useAp
 function ProviderKeysCard({ api, title, apiPath, providerListPath }: { userId: string; api: ReturnType<typeof useApi>; title: string; apiPath: string; providerListPath: string }) {
   const [keys, setKeys] = useState<any[]>([]);
   const [providers, setProviders] = useState<any[]>([]);
-  const [form, setForm] = useState({ provider: "gemini", label: "", apiKey: "" });
+  const [form, setForm] = useState({ provider: "gemini", label: "", apiKey: "", extraConfigJson: "" });
+  const [extraConfigError, setExtraConfigError] = useState("");
   const [bulk, setBulk] = useState({ provider: "gemini", labelPrefix: "", rawKeys: "" });
   const [bulkResults, setBulkResults] = useState<any[] | null>(null);
   const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
@@ -690,8 +691,22 @@ function ProviderKeysCard({ api, title, apiPath, providerListPath }: { userId: s
   }, [reload, api, providerListPath]);
 
   const add = async () => {
-    await api(apiPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: form.provider, label: form.label, config: { apiKey: form.apiKey } }) });
-    setForm({ ...form, label: "", apiKey: "" });
+    // Real fix: some providers need more than apiKey -- Cloudflare (accountId), Bedrock
+    // (region + secretAccessKey), Azure (accountId = resource name, model = deployment name).
+    // There was previously NO way to enter any of these through this form at all, making those
+    // providers unusable outside a raw API call. This optional JSON field merges into config.
+    let extraConfig: Record<string, unknown> = {};
+    if (form.extraConfigJson.trim()) {
+      try {
+        extraConfig = JSON.parse(form.extraConfigJson);
+      } catch {
+        setExtraConfigError("Advanced config must be valid JSON, e.g. {\"accountId\": \"...\"}");
+        return;
+      }
+    }
+    setExtraConfigError("");
+    await api(apiPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: form.provider, label: form.label, config: { apiKey: form.apiKey, ...extraConfig } }) });
+    setForm({ ...form, label: "", apiKey: "", extraConfigJson: "" });
     reload();
   };
 
@@ -747,6 +762,16 @@ function ProviderKeysCard({ api, title, apiPath, providerListPath }: { userId: s
           Add key
         </button>
       </div>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <input
+          type="text"
+          placeholder={'Advanced config JSON (Cloudflare/Azure: {"accountId":"..."}; Bedrock: {"region":"...","secretAccessKey":"..."}; Azure also needs {"model":"<deployment name>"})'}
+          value={form.extraConfigJson}
+          onChange={(e) => setForm({ ...form, extraConfigJson: e.target.value })}
+          style={{ width: 620 }}
+        />
+      </div>
+      {extraConfigError && <div style={{ color: "var(--danger, #c0392b)", marginBottom: 10 }}>{extraConfigError}</div>}
 
       <details style={{ marginBottom: 10 }}>
         <summary style={{ cursor: "pointer", color: "var(--text-dim)" }}>Bulk-add (paste up to 10 keys, one per line)</summary>

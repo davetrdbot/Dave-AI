@@ -129,6 +129,26 @@ export function isNewConnection(userId: string, now = Date.now()): boolean {
   return lastSeen === null || now - lastSeen > CONNECTION_GAP_MS;
 }
 
+export interface EaConnectionStatus {
+  connected: boolean;
+  lastSeenAt: number | null;
+  secondsSinceLastSeen: number | null;
+}
+
+/**
+ * Real gap fixed: isNewConnection() only ever answers "did a (re)connect edge
+ * just happen" (used once, to fire a notification) -- nothing exposed a
+ * queryable "is the EA connected RIGHT NOW" status for /connection or /account
+ * to show honestly. Same lastSeen/CONNECTION_GAP_MS data, read as a level, not
+ * an edge.
+ */
+export function getEaConnectionStatus(userId: string, now = Date.now()): EaConnectionStatus {
+  const lastSeen = readJson<number | null>(lastSeenPath(userId), null);
+  if (lastSeen === null) return { connected: false, lastSeenAt: null, secondsSinceLastSeen: null };
+  const secondsSinceLastSeen = Math.floor((now - lastSeen) / 1000);
+  return { connected: now - lastSeen <= CONNECTION_GAP_MS, lastSeenAt: lastSeen, secondsSinceLastSeen };
+}
+
 function markSeen(userId: string, now = Date.now()): void {
   writeJson(lastSeenPath(userId), now);
 }

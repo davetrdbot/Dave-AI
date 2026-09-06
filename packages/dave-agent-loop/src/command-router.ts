@@ -12,7 +12,7 @@ import {
   type DaveCommand,
   type TelegramCallbackQuery,
 } from "@dave/telegram";
-import { getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
+import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus } from "@dave/ea-bridge";
 import {
   getRiskSettings,
   setRiskMode,
@@ -21,8 +21,30 @@ import {
   listPendingLimitChanges,
   approveSettingsChange,
   declineSettingsChange,
+  getActiveGroupInfo,
+  listGroups,
+  setActiveGroup,
+  setFallbackGroup,
+  getTradingMode,
+  setTradingMode,
+  TradingSkillsModeRequiresSkillError,
   type RiskMode,
 } from "@dave/trading";
+import { listSkills } from "@dave/skills";
+import {
+  getVoiceSettings,
+  setVoiceEnabled,
+  setActiveProvider,
+  setVoiceId,
+  buildVoiceSettingsKeyboard,
+  buildVoicePickerKeyboard,
+  parseVoiceCallback,
+  getTtsProviderKey,
+  ElevenLabsClient,
+  setPendingVoiceIdEntry,
+  getPendingVoiceIdEntry,
+} from "@dave/notifications";
+import { getWriteApprovalSetting, setWriteApprovalSetting } from "@dave/memory";
 import {
   getModelConfig,
   setModelConfig,
@@ -69,22 +91,28 @@ async function handleAccount(deps: CommandRouterDeps, chatId: number): Promise<v
     await deps.client.sendMessage({ chat_id: chatId, text: "No EA report yet -- connect your MT5 EA first (see /ea)." });
     return;
   }
+  const eaStatus = getEaConnectionStatus(deps.userId);
   const text =
     `<b>Account</b>\n` +
     `Account: ${snapshot.account}\n` +
     `Balance: ${formatMoney(snapshot.balance)}\n` +
     `Equity: ${formatMoney(snapshot.equity)}\n` +
     `Margin: ${formatMoney(snapshot.margin)}\n` +
-    `Free margin: ${formatMoney(snapshot.freeMargin)}`;
+    `Free margin: ${formatMoney(snapshot.freeMargin)}\n` +
+    `EA connection: ${eaStatus.connected ? "🟢 connected" : `🔴 disconnected${eaStatus.secondsSinceLastSeen !== null ? ` (last seen ${eaStatus.secondsSinceLastSeen}s ago)` : " (never connected)"}`}`;
   await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML" });
 }
 
+/** Real fix (spec: per-service 🟢/🔴/🟡 status): the EA/MT5 bridge's real connection state
+ * (getEaConnectionStatus, backed by the real lastSeen heartbeat every EA report already writes)
+ * is now honestly shown here instead of just raw position counts with no connectivity signal. */
 async function handleConnection(deps: CommandRouterDeps, chatId: number): Promise<void> {
   const state = getLastKnownState(deps.userId);
-  const text =
-    `<b>Connection</b>\n` +
-    `Open positions: ${state.positions.length}\n` +
-    `Pending orders: ${state.pendingOrders.length}`;
+  const eaStatus = getEaConnectionStatus(deps.userId);
+  const eaLine = eaStatus.connected
+    ? "🟢 MT5/EA bridge: connected"
+    : `🔴 MT5/EA bridge: ${eaStatus.lastSeenAt === null ? "never connected" : `disconnected (last seen ${eaStatus.secondsSinceLastSeen}s ago)`}`;
+  const text = `<b>Connection</b>\n${eaLine}\nOpen positions: ${state.positions.length}\nPending orders: ${state.pendingOrders.length}`;
   await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML" });
 }
 
@@ -111,12 +139,19 @@ function providersKeyboard(current: ProviderName, configuredProviders: Set<Provi
   return keyboard(rows);
 }
 
+/** Real fix (user: "when providers is not set it to say provider not set") -- Primary previously
+ * always printed getModelConfig's stored/default provider name as if it were a working, ready
+ * choice, even on a totally fresh install where it's just DEFAULT_CONFIG's fallback ("airllm")
+ * with zero real keys behind it. Now explicitly says "(not set -- no working key)" when the
+ * primary provider isn't actually ready (airllm excepted: self-hosted, no key required). */
 async function handleProviders(deps: CommandRouterDeps, chatId: number): Promise<void> {
   const config = getModelConfig(deps.userId);
   const configuredProviders = new Set(listProviderKeys(deps.db, deps.userId).map((k) => k.provider));
   const catalogCount = listProviderCatalog().filter((e) => e.id !== "custom").length;
+  const primaryReady = config.primary === "airllm" || configuredProviders.has(config.primary);
+  const primaryLine = primaryReady ? config.primary : `${config.primary} (not set -- no working key)`;
   const text =
-    `<b>AI Provider</b>\nPrimary: ${config.primary}\nFallback: ${config.fallback.join(", ") || "none"}\n\n` +
+    `<b>AI Provider</b>\nPrimary: ${primaryLine}\nFallback: ${config.fallback.join(", ") || "none"}\n\n` +
     `${catalogCount} providers available. Tap a provider to see its keys:`;
   await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup: providersKeyboard(config.primary, configuredProviders) });
 }
@@ -158,28 +193,45 @@ function primaryKeyFor(deps: CommandRouterDeps, provider: ProviderName): StoredP
   return keys.find((k) => k.isPrimary) ?? keys[0];
 }
 
+/** Real fix (user: "the model should be fetched not hardcoded and default") -- this used to show
+ * the catalog's hardcoded `defaultModel` as "Current" the moment a key existed, even if the user
+ * had never actually picked a model -- indistinguishable from a real, deliberate choice. Now only
+ * a model the user (or a previous live fetch) actually SET is ever shown as current; otherwise it
+ * honestly says "not set" and pushes the user toward the real live-fetch picker below, rather than
+ * quietly relying on the hardcoded default. */
 async function handleModels(deps: CommandRouterDeps, chatId: number): Promise<void> {
   const config = getModelConfig(deps.userId);
   const provider = config.primary;
   const entry = listProviderCatalog().find((e) => e.id === provider)!;
-  const key = primaryKeyFor(deps, provider);
-  if (provider !== "airllm" && !key) {
-    await deps.client.sendMessage({ chat_id: chatId, text: `No key configured for <b>${provider}</b> yet -- add one in the admin panel, or /providers to switch.`, parse_mode: "HTML" });
+
+  // AirLLM is fixed, self-hosted infrastructure (Qwen3-235B via AIRLLM_BASE_URL) -- there is no
+  // per-key model to pick and no real /models endpoint to fetch (modelsPath is null), so it gets
+  // its own honest, static answer instead of a broken empty fetch/manual-entry flow.
+  if (provider === "airllm") {
+    await deps.client.sendMessage({ chat_id: chatId, text: `<b>Model for airllm</b>\nFixed: <code>${entry.defaultModel}</code> (self-hosted via AIRLLM_BASE_URL -- not user-selectable).`, parse_mode: "HTML" });
     return;
   }
-  const activeModel = key?.config.model ?? entry.defaultModel;
+
+  const key = primaryKeyFor(deps, provider);
+  if (!key) {
+    await deps.client.sendMessage({ chat_id: chatId, text: `Provider not set: <b>${provider}</b> has no working key -- add one in the admin panel, or /providers to switch.`, parse_mode: "HTML" });
+    return;
+  }
+  const chosenModel = key.config.model;
+  const currentLine = chosenModel ? `Current: <code>${chosenModel}</code>` : `Model not set yet -- will use ${provider}'s own default (<code>${entry.defaultModel}</code>) until you pick one.`;
+
   if (entry.manualModelEntry) {
     setPendingManualModelEntry(deps.db, deps.userId, provider);
     await deps.client.sendMessage({
       chat_id: chatId,
-      text: `<b>Model for ${provider}</b>\nCurrent: <code>${activeModel}</code>\n\n${provider} requires manual model entry -- reply with the exact model ID as your next message and I'll set it.`,
+      text: `<b>Model for ${provider}</b>\n${currentLine}\n\n${provider} requires manual model entry -- reply with the exact model ID as your next message and I'll set it.`,
       parse_mode: "HTML",
     });
     return;
   }
   await deps.client.sendMessage({
     chat_id: chatId,
-    text: `<b>Model for ${provider}</b>\nCurrent: <code>${activeModel}</code>\n\nTap below to fetch the live model list from ${provider}'s real API and pick one.`,
+    text: `<b>Model for ${provider}</b>\n${currentLine}\n\nTap below to fetch the live model list from ${provider}'s real API and pick one.`,
     parse_mode: "HTML",
     reply_markup: keyboard([[coloredButton("🔄 Fetch live models", "blue", `fetchmodels:${provider}`)]]),
   });
@@ -201,14 +253,39 @@ export async function tryHandlePendingModelEntry(deps: CommandRouterDeps, chatId
   return true;
 }
 
+/** Fish Audio has no listable-voices endpoint -- same next-message-IS-the-value capture as manual model entry. */
+export async function tryHandlePendingVoiceEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const provider = getPendingVoiceIdEntry(deps.db, deps.userId);
+  if (!provider) return false;
+  setPendingVoiceIdEntry(deps.db, deps.userId, null);
+  setVoiceId(deps.db, deps.userId, provider, text.trim());
+  await deps.client.sendMessage({ chat_id: chatId, text: `Voice for <b>${provider}</b> set to <code>${text.trim()}</code>.`, parse_mode: "HTML" });
+  return true;
+}
+
 function modeLabel(mode: RiskMode, value?: number): string {
   if (mode === "on") return `On (${value})`;
   return mode === "auto" ? "Auto" : "Off";
 }
 
-function settingsKeyboard(userId: string) {
+/** Real fix (spec: "/settings holds SETTINGS ONLY", broken into real sections instead of one flat
+ * screen -- RISK/TRADING, TRADING MODE, PAIR GROUP, VOICE, MEMORY. Update Brief/Notifications/
+ * Security-Schedule/Trailing-breakeven-TP1-3/protected-limit-change UI are real, tracked gaps, not
+ * built into this screen yet -- see the audit report for what's pending. */
+function settingsTopKeyboard(): ReturnType<typeof keyboard> {
+  return keyboard([
+    [coloredButton("Risk / Trading", "blue", "settings:risk"), coloredButton("Trading Mode", "blue", "settings:tradingmode")],
+    [coloredButton("Pair Group", "blue", "settings:pairgroup"), coloredButton("Voice", "blue", "settings:voice")],
+    [coloredButton("Memory", "blue", "settings:memory")],
+  ]);
+}
+
+async function handleSettings(deps: CommandRouterDeps, chatId: number): Promise<void> {
+  await deps.client.sendMessage({ chat_id: chatId, text: "<b>Settings</b>\nTrading-rule content (what/when/how to trade) lives in your uploaded rules file, never here.", parse_mode: "HTML", reply_markup: settingsTopKeyboard() });
+}
+
+function riskSettingsKeyboard(userId: string) {
   const settings = getRiskSettings(userId);
-  const autoApproval = getAutoApprovalEnabled(userId);
   return settingsScreen(
     [
       [
@@ -216,14 +293,78 @@ function settingsKeyboard(userId: string) {
         { label: `TP: ${modeLabel(settings.tpMode, settings.tpValue)}`, callbackData: "cyclemode:tp", active: false },
       ],
       [{ label: `Lot: ${modeLabel(settings.lotMode, settings.lotValue)}`, callbackData: "cyclemode:lot", active: false }],
-      [{ label: `Auto-approve Dave's proposals: ${autoApproval ? "On" : "Off"}`, callbackData: "toggleautoapproval", active: autoApproval }],
     ],
-    "settings:back"
+    "settings:top"
   );
 }
 
-async function handleSettings(deps: CommandRouterDeps, chatId: number): Promise<void> {
-  await deps.client.sendMessage({ chat_id: chatId, text: "<b>Settings</b>", parse_mode: "HTML", reply_markup: settingsKeyboard(deps.userId) });
+/** TRADING MODE section: Auto (own judgment + skill library) vs Trading Skills (locked to one taught skill). */
+function tradingModeKeyboard(userId: string): ReturnType<typeof keyboard> {
+  const state = getTradingMode(userId);
+  return keyboard([
+    [coloredButton(state.mode === "auto" ? "✅ Auto" : "Auto", state.mode === "auto" ? "green" : "neutral", "tradingmode:auto")],
+    [coloredButton(state.mode === "trading-skills" ? `✅ Trading Skills (${state.lockedSkillId ?? "none"})` : "Trading Skills", state.mode === "trading-skills" ? "green" : "neutral", "tradingmode:pickskill")],
+    [{ text: "⬅️ Back", callback_data: "settings:top" }],
+  ]);
+}
+
+function skillPickerKeyboard(userId: string): ReturnType<typeof keyboard> {
+  const skills = listSkills(userId);
+  const rows: ReturnType<typeof coloredButton>[][] = skills.map((s) => [coloredButton(s.name, "neutral", `tradingmode:setskill:${s.id}`)]);
+  rows.push([{ text: "⬅️ Back", callback_data: "settings:tradingmode" }]);
+  return keyboard(rows);
+}
+
+/** PAIR GROUP section: exactly one active + one fallback at a time, per pair-groups.ts's own real invariant. */
+function pairGroupKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const groups = listGroups(userId);
+  const info = getActiveGroupInfo(userId);
+  const lines = [
+    `<b>Pair Group</b>`,
+    `Active: ${info.activeGroup?.name ?? "none"}`,
+    `Fallback: ${info.fallbackGroup?.name ?? "none"}`,
+    info.pausedForExtremeConditions ? "⚠️ Paused for extreme market conditions." : "",
+    "",
+    groups.length === 0 ? "No pair groups defined yet -- create one in the admin panel." : "Tap to set active/fallback:",
+  ].filter(Boolean);
+  const rows: ReturnType<typeof coloredButton>[][] = groups.map((g) => [
+    coloredButton(g.id === info.activeGroup?.id ? `✅ ${g.name}` : g.name, g.id === info.activeGroup?.id ? "green" : "neutral", `pairgroup:active:${g.id}`),
+    coloredButton(g.id === info.fallbackGroup?.id ? `✅ Fallback` : "Set fallback", g.id === info.fallbackGroup?.id ? "green" : "neutral", `pairgroup:fallback:${g.id}`),
+  ]);
+  rows.push([{ text: "⬅️ Back", callback_data: "settings:top" }]);
+  return { text: lines.join("\n"), reply_markup: keyboard(rows) };
+}
+
+/** VOICE section: on/off, TTS provider, per-provider voice ID (ElevenLabs: real live-fetched picker; Fish Audio: no listable-voices endpoint, captured via the next free-text message). */
+const fetchedVoicesCache = new Map<string, { voiceId: string; name: string }[]>();
+
+function voiceSettingsView(deps: CommandRouterDeps): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const settings = getVoiceSettings(deps.db, deps.userId);
+  const baseKeyboard = buildVoiceSettingsKeyboard(settings);
+  const rows = [...baseKeyboard.inline_keyboard];
+  if (settings.enabled) {
+    if (settings.activeProvider === "fish-audio") {
+      rows.push([{ text: settings.fishVoiceId ? `Fish voice: ${settings.fishVoiceId} (tap to change)` : "Set Fish Audio voice ID", callback_data: "voice:manualvoice:fish-audio" }]);
+    } else {
+      rows.push([{ text: settings.elevenlabsVoiceId ? `ElevenLabs voice: ${settings.elevenlabsVoiceId} (tap to change)` : "🔄 Fetch live ElevenLabs voices", callback_data: "voice:fetchvoices:elevenlabs" }]);
+    }
+  }
+  rows.push([{ text: "⬅️ Back", callback_data: "settings:top" }]);
+  const text = `<b>Voice</b>\n${settings.enabled ? `On -- ${settings.activeProvider}` : "Off"}`;
+  return { text, reply_markup: keyboard(rows) };
+}
+
+/** MEMORY section: write-approval (off by default -- Dave asks before saving to memory) + the
+ * existing Dave-initiated-settings-change auto-approval switch, relocated here per the spec's
+ * section naming (same single underlying control -- see the audit report). */
+function memoryKeyboard(userId: string): ReturnType<typeof keyboard> {
+  const writeApproval = getWriteApprovalSetting(userId);
+  const autoApproval = getAutoApprovalEnabled(userId);
+  return keyboard([
+    [coloredButton(`Ask before saving to memory: ${writeApproval ? "On" : "Off"}`, writeApproval ? "green" : "red", "togglewriteapproval")],
+    [coloredButton(`Auto-approve Dave's proposals: ${autoApproval ? "On" : "Off"}`, autoApproval ? "green" : "red", "toggleautoapproval")],
+    [{ text: "⬅️ Back", callback_data: "settings:top" }],
+  ]);
 }
 
 async function handleReset(deps: CommandRouterDeps, chatId: number, historyKey: string): Promise<void> {
@@ -304,6 +445,13 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
   const data = callback.data ?? "";
   let ackText: string | undefined;
 
+  const renderInPlace = async (text: string, reply_markup: ReturnType<typeof keyboard>) => {
+    if (!chatId || !callback.message) return;
+    await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text, parse_mode: "HTML", reply_markup }).catch(() =>
+      deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup })
+    );
+  };
+
   try {
     if (data.startsWith("cyclemode:")) {
       const field = data.slice("cyclemode:".length) as RiskField;
@@ -312,21 +460,109 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         const current = field === "sl" ? settings.slMode : field === "tp" ? settings.tpMode : settings.lotMode;
         setRiskMode(deps.userId, field, nextMode(current));
         ackText = `${field.toUpperCase()} updated`;
-        if (chatId && callback.message) {
-          await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: "<b>Settings</b>", parse_mode: "HTML", reply_markup: settingsKeyboard(deps.userId) }).catch(() =>
-            deps.client.sendMessage({ chat_id: chatId, text: "<b>Settings</b>", parse_mode: "HTML", reply_markup: settingsKeyboard(deps.userId) })
-          );
+        await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
+      }
+    } else if (data === "settings:top") {
+      ackText = undefined;
+      await renderInPlace("<b>Settings</b>\nTrading-rule content (what/when/how to trade) lives in your uploaded rules file, never here.", settingsTopKeyboard());
+    } else if (data === "settings:risk") {
+      ackText = undefined;
+      await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
+    } else if (data === "settings:tradingmode") {
+      ackText = undefined;
+      await renderInPlace("<b>Trading Mode</b>", tradingModeKeyboard(deps.userId));
+    } else if (data === "tradingmode:auto") {
+      setTradingMode(deps.userId, "auto");
+      ackText = "Trading mode set to Auto";
+      await renderInPlace("<b>Trading Mode</b>", tradingModeKeyboard(deps.userId));
+    } else if (data === "tradingmode:pickskill") {
+      ackText = undefined;
+      await renderInPlace("<b>Pick a skill to lock to</b>", skillPickerKeyboard(deps.userId));
+    } else if (data.startsWith("tradingmode:setskill:")) {
+      const skillId = data.slice("tradingmode:setskill:".length);
+      try {
+        setTradingMode(deps.userId, "trading-skills", skillId);
+        ackText = "Trading mode set to Trading Skills";
+      } catch (err) {
+        ackText = err instanceof TradingSkillsModeRequiresSkillError ? err.message : `Error: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      await renderInPlace("<b>Trading Mode</b>", tradingModeKeyboard(deps.userId));
+    } else if (data === "settings:pairgroup") {
+      ackText = undefined;
+      const view = pairGroupKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("pairgroup:active:")) {
+      setActiveGroup(deps.userId, data.slice("pairgroup:active:".length));
+      ackText = "Active pair group updated";
+      const view = pairGroupKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("pairgroup:fallback:")) {
+      setFallbackGroup(deps.userId, data.slice("pairgroup:fallback:".length));
+      ackText = "Fallback pair group updated";
+      const view = pairGroupKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:voice") {
+      ackText = undefined;
+      const view = voiceSettingsView(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("voice:manualvoice:")) {
+      setPendingVoiceIdEntry(deps.db, deps.userId, "fish-audio");
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Reply with your Fish Audio reference_id (voice ID) as your next message." });
+    } else if (data.startsWith("voice:fetchvoices:")) {
+      const key = getTtsProviderKey(deps.db, deps.userId, "elevenlabs");
+      if (!key) {
+        ackText = "No ElevenLabs key configured -- add one in the admin panel first";
+      } else {
+        try {
+          const voices = await new ElevenLabsClient(key).listVoices();
+          fetchedVoicesCache.set(deps.userId, voices);
+          ackText = `${voices.length} voices fetched`;
+          if (chatId) {
+            const settings = getVoiceSettings(deps.db, deps.userId);
+            await deps.client.sendMessage({
+              chat_id: chatId,
+              text: `<b>ElevenLabs voices</b> (${voices.length}) -- tap to select:`,
+              parse_mode: "HTML",
+              reply_markup: buildVoicePickerKeyboard("elevenlabs", voices, settings.elevenlabsVoiceId),
+            });
+          }
+        } catch (err) {
+          ackText = `Real fetch failed: ${err instanceof Error ? err.message : String(err)}`;
         }
       }
+    } else if (data.startsWith("voice:pick:")) {
+      const parsed = parseVoiceCallback(data);
+      if (parsed?.action === "pick") {
+        setVoiceId(deps.db, deps.userId, parsed.provider, parsed.voiceId);
+        ackText = `Voice set to ${parsed.voiceId}`;
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `ElevenLabs voice set to <code>${parsed.voiceId}</code>.`, parse_mode: "HTML" });
+      }
+    } else if (data.startsWith("voice:")) {
+      const parsed = parseVoiceCallback(data);
+      if (parsed?.action === "toggle") {
+        const settings = getVoiceSettings(deps.db, deps.userId);
+        setVoiceEnabled(deps.db, deps.userId, !settings.enabled);
+        ackText = `Voice ${!settings.enabled ? "enabled" : "disabled"}`;
+      } else if (parsed?.action === "provider") {
+        setActiveProvider(deps.db, deps.userId, parsed.provider);
+        ackText = `TTS provider set to ${parsed.provider}`;
+      }
+      const view = voiceSettingsView(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:memory") {
+      ackText = undefined;
+      await renderInPlace("<b>Memory</b>", memoryKeyboard(deps.userId));
+    } else if (data === "togglewriteapproval") {
+      const enabled = getWriteApprovalSetting(deps.userId);
+      setWriteApprovalSetting(deps.userId, !enabled);
+      ackText = `Write-approval ${!enabled ? "enabled" : "disabled"}`;
+      await renderInPlace("<b>Memory</b>", memoryKeyboard(deps.userId));
     } else if (data === "toggleautoapproval") {
       const enabled = getAutoApprovalEnabled(deps.userId);
       setAutoApprovalEnabled(deps.userId, !enabled);
       ackText = `Auto-approval ${!enabled ? "enabled" : "disabled"}`;
-      if (chatId && callback.message) {
-        await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: "<b>Settings</b>", parse_mode: "HTML", reply_markup: settingsKeyboard(deps.userId) }).catch(() =>
-          deps.client.sendMessage({ chat_id: chatId, text: "<b>Settings</b>", parse_mode: "HTML", reply_markup: settingsKeyboard(deps.userId) })
-        );
-      }
+      await renderInPlace("<b>Memory</b>", memoryKeyboard(deps.userId));
     } else if (data.startsWith("provider:")) {
       const name = data.slice("provider:".length) as ProviderName;
       ackText = undefined;
@@ -374,7 +610,11 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         ackText = "No key configured for this provider";
       } else {
         const result = await fetchAvailableModels(name, key.config);
-        if (result.error) {
+        if (result.manualEntryRequired) {
+          // Defensive: /models never shows a fetch button for a manual-entry (or endpoint-less)
+          // provider, but a stale keyboard from before a catalog change could still be tapped.
+          ackText = `${name} has no live model list -- reply with the model ID as a message instead`;
+        } else if (result.error) {
           ackText = `Fetch failed: ${result.error}`;
           if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Real fetch failed: ${result.error}` });
         } else {

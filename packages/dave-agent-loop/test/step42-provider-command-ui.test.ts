@@ -70,7 +70,7 @@ try {
   const buttonProviders = buttons.map((b) => b.callback_data.replace("provider:", ""));
   console.log(`    ${buttons.length} provider buttons: ${buttonProviders.slice(0, 6).join(", ")}...`);
   assert.ok(buttons.length >= 28, `expected at least 28 provider buttons, got ${buttons.length}`);
-  assert.ok(buttonProviders.includes("openai") && buttonProviders.includes("monsterapi") && buttonProviders.includes("openrouter"));
+  assert.ok(buttonProviders.includes("openai") && buttonProviders.includes("zai") && buttonProviders.includes("azure") && buttonProviders.includes("openrouter"));
 
   console.log("\n[2] Tapping a provider opens its REAL detail screen (stored keys + set-primary), does not silently set primary...");
   addProviderKey(db, OWNER, "openai", "my openai key", { apiKey: "sk-real-fake-key" });

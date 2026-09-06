@@ -14,7 +14,7 @@ import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
@@ -254,8 +254,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // free-text falls through to the LLM.
       if (message.text) {
         const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
-        const consumed = await tryHandlePendingModelEntry(routerDeps, chatId, message.text);
-        if (consumed) return;
+        if (await tryHandlePendingModelEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingVoiceEntry(routerDeps, chatId, message.text)) return;
       }
 
       const registry = getOrBuildRegistry(deps, client, chatId);

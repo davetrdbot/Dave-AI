@@ -16,7 +16,7 @@
  */
 import type { ProviderName } from "./providers.js";
 
-export type AuthStyle = "bearer" | "x-goog-api-key" | "sigv4" | "alias";
+export type AuthStyle = "bearer" | "api-key-header" | "sigv4" | "alias";
 
 export interface ProviderCatalogEntry {
   readonly id: ProviderName;
@@ -110,16 +110,29 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   sambanova: OPENAI_COMPAT("sambanova", "SambaNova Cloud", "https://api.sambanova.ai/v1", "Meta-Llama-3.3-70B-Instruct", "OpenAI-compatible, models-list path not independently re-verified -- low confidence, flagged."),
   novita: OPENAI_COMPAT("novita", "Novita AI", "https://api.novita.ai/v3/openai", "deepseek-ai/DeepSeek-V3.1-Terminus", "Base path verified as /v3/openai; catalog rotates, no fixed flagship -- default updated off the stale V3 id, which the marketplace has moved past."),
   ai21: OPENAI_COMPAT("ai21", "AI21 Labs", "https://api.ai21.com/studio/v1", "jamba-large-1.7", "Confirmed: chat/completions uses an OpenAI-style message array but AI21 is NOT fully OpenAI-compatible beyond that -- flagged partial. Default updated to the real current versioned model id (bare \"jamba-large\" no longer resolves).", null),
-  monsterapi: {
+  zai: {
     ...OPENAI_COMPAT(
-      "monsterapi",
-      "MonsterAPI",
-      "https://llm.monsterapi.ai/v1",
-      "meta-llama/Meta-Llama-3.1-8B-Instruct",
-      "Real, currently-operating hosted inference API (its Swagger/docs are explicitly marked BETA). OpenAI-compatible chat-completions shape, confirmed via multiple third-party integrations (Portkey, LlamaIndex, Haystack). No live queryable /v1/models endpoint found (model list is a static docs page) -- manual model entry, same as OpenRouter/OrcaRouter/HuggingFace. Distinct from MonsterAPI's OLDER \"Monster Deploy\" product (per-deployment unique subdomains) -- this entry is the general-purpose hosted API, not that one.",
+      "zai",
+      "Z.AI (GLM)",
+      "https://api.z.ai/api/paas/v4",
+      "glm-5.3",
+      "Real, currently-operating hosted API for Zhipu AI's GLM models -- confirmed OpenAI-compatible chat/completions shape at /api/paas/v4 (an alternate /api/openai/v1 base also exists; this is the one Z.AI's own docs lead with). Bearer auth confirmed. No independently-confirmed live /v1/models list endpoint -- manual model entry, same posture as OpenRouter/OrcaRouter/HuggingFace rather than guessing one.",
       null
     ),
     manualModelEntry: true,
+  },
+  azure: {
+    id: "azure",
+    displayName: "Azure OpenAI",
+    baseUrl: (config) => `https://${config.accountId ?? ""}.openai.azure.com/openai/deployments/${config.model ?? "deployment"}`,
+    chatPath: "/chat/completions?api-version=2024-06-01",
+    modelsPath: null,
+    authStyle: "api-key-header",
+    manualModelEntry: true,
+    defaultModel: "",
+    openAICompatible: true,
+    requiresExtraConfig: ["accountId"],
+    notes: "Confirmed real REST shape: https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=2024-06-01, auth via a real `api-key` header (NOT Authorization: Bearer -- a genuinely different auth mechanism from every other OpenAI-compatible entry here). `accountId` carries the Azure resource name; `model` carries the deployment name (Azure deployment names are user-chosen and don't map 1:1 to a listable model catalog) -- manual entry, since a deployment name isn't something to guess or auto-fetch.",
   },
   cloudflare: {
     id: "cloudflare",

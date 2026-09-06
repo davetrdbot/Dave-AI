@@ -95,7 +95,8 @@ export type ProviderName =
   | "huggingface"
   | "orcarouter"
   | "bedrock"
-  | "monsterapi"
+  | "zai"
+  | "azure"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {
@@ -344,7 +345,14 @@ export class OpenAICompatibleProvider implements Provider {
     private readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly model: string,
-    private readonly chatPath = "/chat/completions"
+    private readonly chatPath = "/chat/completions",
+    /** Real fix: authStyle was purely decorative catalog metadata -- every provider through this
+     * class always sent `Authorization: Bearer`, regardless of what the catalog declared. Azure
+     * OpenAI genuinely needs a different mechanism (a real `api-key` header, confirmed against
+     * Microsoft's own docs -- Bearer is not accepted there), so this is now a real, honored switch,
+     * not just documentation. Every existing provider keeps its current (correct) Bearer behavior
+     * by default. */
+    private readonly authHeaderStyle: "bearer" | "api-key-header" = "bearer"
   ) {}
 
   /**
@@ -380,7 +388,10 @@ export class OpenAICompatibleProvider implements Provider {
         `${this.baseUrl}${this.chatPath}`,
         {
           method: "POST",
-          headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
+          headers:
+            this.authHeaderStyle === "api-key-header"
+              ? { "content-type": "application/json", "api-key": this.apiKey }
+              : { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
           body: JSON.stringify({ model: this.model, messages: this.toOpenAIMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
         },
         timeoutMs
