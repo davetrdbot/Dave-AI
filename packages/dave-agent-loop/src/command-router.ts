@@ -25,6 +25,11 @@ import {
   setPendingLimitEntry,
   getPendingLimitEntry,
   type ProtectedLimitField,
+  getTrailingStopConfig,
+  setTrailingStopConfig,
+  setPendingTrailingEntry,
+  getPendingTrailingEntry,
+  type TrailingField,
   getActiveGroupInfo,
   listGroups,
   setActiveGroup,
@@ -331,7 +336,47 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
     [coloredButton("Risk / Trading", "blue", "settings:risk"), coloredButton("Trading Mode", "blue", "settings:tradingmode")],
     [coloredButton("Pair Group", "blue", "settings:pairgroup"), coloredButton("Voice", "blue", "settings:voice")],
     [coloredButton("Memory", "blue", "settings:memory"), coloredButton("E2B Keys", "blue", "settings:e2b")],
+    [coloredButton("Trailing / Breakeven", "blue", "settings:trailing")],
   ]);
+}
+
+/** Real fix (spec: "Trailing/breakeven... TP1/TP2/TP3 trigger values") -- the real backend
+ * (trailing-config.ts) already existed, but nothing let the user set these 3 values from
+ * Telegram. Honestly labeled per the real config shape (an SL lock-in level for each TP
+ * stage, not a separate "trigger price" concept -- see breakeven-trailing.ts). Note: there is
+ * deliberately no global on/off toggle here -- breakeven/trailing is opt-in PER POSITION,
+ * decided by Dave at trade time (a real, explicit fix from earlier in this build: "a normal
+ * trade should NOT get this by default"), not a blanket account-wide switch that would
+ * contradict that design. */
+function trailingKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const config = getTrailingStopConfig(userId);
+  const lines = [
+    "<b>Trailing / Breakeven</b>",
+    "SL lock-in level Dave moves to at each TP stage (opt-in per position, not automatic on every trade):",
+  ];
+  const rows: ReturnType<typeof coloredButton>[][] = [
+    [{ text: config ? `TP1 -> SL ${config.slAtTp1} (tap to change)` : "Set TP1 SL level", callback_data: "trailing:slAtTp1" }],
+    [{ text: config ? `TP2 -> SL ${config.slAtTp2} (tap to change)` : "Set TP2 SL level", callback_data: "trailing:slAtTp2" }],
+    [{ text: config ? `TP3 -> SL ${config.slAtTp3} (tap to change)` : "Set TP3 SL level", callback_data: "trailing:slAtTp3" }],
+    [{ text: "⬅️ Back", callback_data: "settings:top" }],
+  ];
+  return { text: lines.join("\n"), reply_markup: keyboard(rows) };
+}
+
+export async function tryHandlePendingTrailingEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const field = getPendingTrailingEntry(deps.userId);
+  if (!field) return false;
+  setPendingTrailingEntry(deps.userId, null);
+  const value = Number(text.trim());
+  if (!Number.isFinite(value)) {
+    await deps.client.sendMessage({ chat_id: chatId, text: `That doesn't look like a real price level -- reply with just the number. Tap the row in /settings to try again.` });
+    return true;
+  }
+  const existing = getTrailingStopConfig(deps.userId) ?? { slAtTp1: 0, slAtTp2: 0, slAtTp3: 0 };
+  const updated = { ...existing, [field]: value };
+  setTrailingStopConfig(deps.userId, updated);
+  await deps.client.sendMessage({ chat_id: chatId, text: `✅ ${field} set to ${value}` });
+  return true;
 }
 
 /** Real fix (user: "e2b... should be settable in the telegram") -- same real backend
@@ -744,6 +789,15 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       }
       const view = voiceSettingsView(deps);
       await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:trailing") {
+      ackText = undefined;
+      const view = trailingKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("trailing:")) {
+      const field = data.slice("trailing:".length) as TrailingField;
+      setPendingTrailingEntry(deps.userId, field);
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Reply with the ${field} SL price level as your next message.` });
     } else if (data === "settings:e2b") {
       ackText = undefined;
       const view = e2bKeyboard(deps);
