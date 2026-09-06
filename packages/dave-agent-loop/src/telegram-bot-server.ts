@@ -6,7 +6,7 @@ import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import type { RFeedTradeExecutor, HistoryRequestManager } from "@dave/rfeed";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName, type ContentBlock } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, isDaveCommand, withThinkingIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, isDaveCommand, withThinkingIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
 import { classifyToolAction } from "./action-classifier.js";
@@ -161,6 +161,12 @@ function getOrBuildRegistry(deps: TelegramBotServerDeps, client: TelegramClient,
 export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promise<TelegramBotServer> {
   const client = new TelegramClient(deps.botToken);
   const registration = await enableTelegramWebhook(client, deps.ownerUserId, deps.publicBaseUrl);
+  // Real gap fixed: registerDefaultCommandMenu (setMyCommands) only
+  // ever existed as a tool Dave itself could choose to call -- nothing
+  // called it automatically at startup, so the real 9 commands never
+  // showed up in Telegram's native "/" menu on a fresh pairing. Best-
+  // effort: a failure here must not block the bot from coming online.
+  await registerDefaultCommandMenu(client).catch((err) => console.error(`[telegram] failed to register command menu: ${err instanceof Error ? err.message : String(err)}`));
 
   // Real fix (F5): syncMorningBriefCron() fires a real cron on schedule,
   // but nothing ever called it with a real content-composing handler in
