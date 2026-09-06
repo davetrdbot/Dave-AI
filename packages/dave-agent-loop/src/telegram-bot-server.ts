@@ -5,14 +5,15 @@ import type { DaveDatabase } from "@dave/db";
 import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import type { RFeedTradeExecutor, HistoryRequestManager } from "@dave/rfeed";
-import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName, type ContentBlock } from "@dave/brain";
+import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName, type ContentBlock, type CompletionMessage } from "@dave/brain";
 import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, withThinkingIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
 import { classifyToolAction } from "./action-classifier.js";
 import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
-import { AgentLoop } from "./agent-loop.js";
+import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
+import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
@@ -64,6 +65,14 @@ function modelConfigProvider(db: DaveDatabase, userId: string): Provider {
 export interface TelegramBotServer {
   server: Server;
   webhookUrl: string;
+}
+
+/** Real fix companion: a paused run's saved history ends with an assistant message whose
+ * ask_user tool call has no matching tool_result yet -- this finds that call's real id so
+ * resume() can supply the answer against the exact right toolCallId, not a fresh turn. */
+function findPendingAskUserToolCallId(history: CompletionMessage[]): string | undefined {
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant" && m.toolCalls?.length);
+  return lastAssistant?.toolCalls?.find((c) => c.name === ASK_USER_TOOL_NAME)?.id;
 }
 
 function inboxDir(ownerUserId: string): string {
@@ -282,23 +291,27 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
           return;
         }
       }
-      history.push({ role: "user", content: userContent });
+      // Real bug fixed: ask_user (ask-user.ts) genuinely pauses the loop and its question
+      // WAS being sent to the user, but nothing ever resumed the paused run -- the next
+      // message just started a fresh loop.run() over history that still had a dangling
+      // assistant tool_call with no matching tool_result, which every real provider's API
+      // rejects as malformed. Confirmed via this exact code path having no getPendingQuestion/
+      // resume() reference anywhere. Now: if a question is genuinely pending for this owner,
+      // this message IS the real answer -- resume the exact paused call, not a fresh turn.
+      const pendingQuestion = message.text ? getPendingQuestion(deps.ownerUserId) : undefined;
+      const pendingToolCallId = pendingQuestion ? findPendingAskUserToolCallId(history) : undefined;
 
       try {
-        // Real fix (Step 9): ThinkingIndicator's typed action icons were
-        // built and tested in isolation but never actually driven by a
-        // real message -- nothing called it from here. Wraps every real
-        // tool-calling turn: the "typing..." action starts immediately
-        // (zero AI decision, per its own 9.1 contract), each real tool
-        // call updates the live draft with its classified icon, and it
-        // finalizes into a real persisted message either way.
         await withThinkingIndicator(client, chatId, async (indicator) => {
-          const result = await loop.run(history, {
-            maxSteps: 8,
-            onStep: (step) => {
-              void indicator.update(classifyToolAction(step.toolName), step.toolName);
-            },
-          });
+          const onStep = (step: AgentStep) => void indicator.update(classifyToolAction(step.toolName), step.toolName);
+          let result: AgentRunResult;
+          if (pendingQuestion && pendingToolCallId) {
+            clearPendingQuestion(deps.ownerUserId);
+            result = await loop.resume({ status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] }, message.text as string, { maxSteps: 8, onStep });
+          } else {
+            history.push({ role: "user", content: userContent });
+            result = await loop.run(history, { maxSteps: 8, onStep });
+          }
           saveConversationHistory(deps.db, historyKey, result.history);
           const finalText = result.status === "done" ? result.text || "(no text)" : result.question.question;
           return { result: undefined, finalText };

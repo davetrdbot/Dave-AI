@@ -80,7 +80,11 @@ export class AgentLoop {
   }
 
   /** Continues a paused (`awaiting_user`) run with the user's real answer. */
-  async resume(paused: Extract<AgentRunResult, { status: "awaiting_user" }>, userAnswer: string, opts: { maxSteps?: number; timeoutMs?: number } = {}): Promise<AgentRunResult> {
+  async resume(
+    paused: Extract<AgentRunResult, { status: "awaiting_user" }>,
+    userAnswer: string,
+    opts: { maxSteps?: number; timeoutMs?: number; onStep?: (step: AgentStep) => void } = {}
+  ): Promise<AgentRunResult> {
     const history: CompletionMessage[] = [...paused.history, { role: "tool", toolCallId: paused.toolCallId, content: userAnswer }];
     return this.run(history, opts);
   }
