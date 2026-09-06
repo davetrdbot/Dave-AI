@@ -1,6 +1,7 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
 import { DavemaClient, getDavemaKey } from "@dave/davema";
 import { EaBridge } from "@dave/ea-bridge";
@@ -76,6 +77,60 @@ function loadSystemPrompt(): string {
   return sections.join("\n\n---\n\n");
 }
 
+/**
+ * Real gap fixed (Railway platform limitation discovered while wiring
+ * this up): a persistent Volume can only ever be attached to ONE
+ * Railway service at a time -- confirmed directly against the real API
+ * ("Volume ... is already mounted to service ... Please detach it via
+ * `railway volume detach` first"), so the admin panel cannot be a
+ * separate Railway service and still share this bot's real SQLite
+ * files (Telegram credentials, provider keys, ...). Instead, the admin
+ * panel's own built Next.js server runs as a real child process INSIDE
+ * this same container/service -- same volume, same filesystem, no
+ * sharing problem at all -- and every request this dispatcher doesn't
+ * recognize as a bot route is reverse-proxied to it. DATA_DIR (the
+ * admin routes' own real override, see packages/dave-admin/server/db-path.ts)
+ * is derived from the same dbPath this process itself uses, so both
+ * genuinely read/write the identical files without a second env var
+ * to keep in sync.
+ */
+const ADMIN_INTERNAL_PORT = 3980;
+
+function spawnAdminPanel(dataDir: string): ChildProcess | undefined {
+  const adminDir = join(process.cwd(), "packages", "dave-admin");
+  const nextBin = join(adminDir, "node_modules", ".bin", "next");
+  if (!existsSync(nextBin) || !existsSync(join(adminDir, ".next"))) {
+    console.error("[admin] packages/dave-admin isn't built (missing .next) -- admin panel disabled, everything else still running");
+    return undefined;
+  }
+  const child = spawn(nextBin, ["start", "-p", String(ADMIN_INTERNAL_PORT)], {
+    cwd: adminDir,
+    env: { ...process.env, PORT: String(ADMIN_INTERNAL_PORT), DATA_DIR: dataDir },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  child.on("exit", (code, signal) => {
+    if (!signal) console.error(`[admin] process exited unexpectedly (code ${code})`);
+  });
+  return child;
+}
+
+/** Reverse-proxies one request to the admin panel's real internal Next.js server. */
+function proxyToAdmin(req: IncomingMessage, res: ServerResponse): void {
+  const proxied = httpRequest(
+    { host: "127.0.0.1", port: ADMIN_INTERNAL_PORT, path: req.url, method: req.method, headers: req.headers },
+    (proxyRes) => {
+      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+      proxyRes.pipe(res);
+    }
+  );
+  proxied.on("error", (err) => {
+    console.error(`[admin] proxy error: ${err.message}`);
+    if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "admin panel unavailable" }));
+  });
+  req.pipe(proxied);
+}
+
 function subServerHandler(server: Server): (req: IncomingMessage, res: ServerResponse) => void {
   const listeners = server.listeners("request") as ((req: IncomingMessage, res: ServerResponse) => void)[];
   if (listeners.length !== 1) throw new Error(`Expected exactly one "request" listener on this sub-server, found ${listeners.length}`);
@@ -124,6 +179,8 @@ export async function main(): Promise<void> {
   const rfeedBridge = new RFeedBridge({
     onConnect: (userId) => console.log(`[rfeed] connected: ${userId}`),
   });
+
+  const adminProcess = spawnAdminPanel(dirname(dbPath));
 
   const eaServer = eaBridge.createServer();
   const rfeedServer = rfeedBridge.createServer();
@@ -195,7 +252,10 @@ export async function main(): Promise<void> {
 
   let telegramRetryTimer: ReturnType<typeof setInterval> | undefined;
   if (!(await tryStartTelegram())) {
-    console.error("[telegram] not live yet (no token set) -- checking every 30s; pair it from the admin panel to bring it online with no restart needed");
+    // Expected, not an error: a fresh deploy legitimately has no token
+    // paired yet. console.log, not console.error, so this doesn't show
+    // up flagged red in Railway's dashboard as if the process crashed.
+    console.log("[telegram] not live yet (no token set) -- checking every 30s; pair it from the admin panel to bring it online with no restart needed");
     telegramRetryTimer = setInterval(() => {
       void tryStartTelegram().then((started) => {
         if (started && telegramRetryTimer) clearInterval(telegramRetryTimer);
@@ -213,6 +273,10 @@ export async function main(): Promise<void> {
     const match = routes.find(([prefix]) => url.startsWith(prefix));
     if (match) {
       match[1](req, res);
+      return;
+    }
+    if (adminProcess) {
+      proxyToAdmin(req, res);
       return;
     }
     res.writeHead(404, { "content-type": "application/json" });
@@ -237,6 +301,7 @@ export async function main(): Promise<void> {
     heartbeat.stop();
     if (telegramRetryTimer) clearInterval(telegramRetryTimer);
     watchdog.stop();
+    adminProcess?.kill("SIGTERM");
     await new Promise<void>((resolve) => root.close(() => resolve()));
     console.log("[dave-ai] shutdown complete");
     process.exit(0);
