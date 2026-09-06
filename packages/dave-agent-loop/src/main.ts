@@ -5,7 +5,6 @@ import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
 import { DavemaClient, getDavemaKey } from "@dave/davema";
 import { EaBridge } from "@dave/ea-bridge";
-import { RFeedBridge } from "@dave/rfeed";
 import { createHiddenWebhookServer } from "@dave/memory";
 import { startWatchdog, startHeartbeatLoop } from "@dave/safety";
 import { getTelegramCredentials } from "@dave/telegram";
@@ -176,20 +175,15 @@ export async function main(): Promise<void> {
   const eaBridge = new EaBridge({
     onConnect: (userId) => console.log(`[ea] connected: ${userId}`),
   });
-  const rfeedBridge = new RFeedBridge({
-    onConnect: (userId) => console.log(`[rfeed] connected: ${userId}`),
-  });
 
   const adminProcess = spawnAdminPanel(dirname(dbPath));
 
   const eaServer = eaBridge.createServer();
-  const rfeedServer = rfeedBridge.createServer();
   const automationServer = createAutomationWebhookServer();
   const userHookServer = createHiddenWebhookServer();
 
   const routes: [string, (req: IncomingMessage, res: ServerResponse) => void][] = [
     ["/hooks/ea/", subServerHandler(eaServer)],
-    ["/hooks/rfeed/", subServerHandler(rfeedServer)],
     ["/hooks/automation/", subServerHandler(automationServer)],
     ["/hooks/user/", subServerHandler(userHookServer)],
     ["/hooks/worker/", subServerHandler(userHookServer)],
@@ -229,8 +223,6 @@ export async function main(): Promise<void> {
         db,
         davema,
         executor: eaBridge.getExecutor(ownerUserId),
-        rfeedExecutor: rfeedBridge.getExecutor(ownerUserId),
-        rfeedHistoryManager: rfeedBridge.getHistoryManager(ownerUserId),
         botToken: telegramBotToken,
         publicBaseUrl,
         systemPrompt: loadSystemPrompt(),

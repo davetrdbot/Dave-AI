@@ -22,21 +22,21 @@ import { createSkill, listSkills, updateSkillContent, type Skill } from "./skill
  */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export type InternalToolDocTopic = "e2b-sandbox" | "ea-webhook" | "rfeed-tools";
+export type InternalToolDocTopic = "e2b-sandbox" | "ea-webhook";
 
 const DOC_PATHS: Record<InternalToolDocTopic, string> = {
   "e2b-sandbox": join(__dirname, "..", "..", "..", "docs", "skills", "e2b-sandbox-skill.md"),
   "ea-webhook": join(__dirname, "..", "..", "..", "docs", "skills", "ea-webhook-skill.md"),
-  "rfeed-tools": join(__dirname, "..", "..", "..", "docs", "skills", "rfeed-tools-skill.md"),
 };
 
 /**
  * Which real tool names are "unfamiliar" enough to require reading the
  * matching doc first. Deliberately the tools whose CORRECT use depends
  * on understanding something non-obvious (E2B's gRPC-vs-REST split,
- * the EA webhook's request-driven round trip, R_Feed's demo-only
- * scope) -- not every tool needs this, only the ones where guessing is
- * genuinely risky.
+ * the EA webhook's request-driven round trip) -- not every tool needs
+ * this, only the ones where guessing is genuinely risky. (Item 7:
+ * R_Feed/demo-account trading is retired -- its tool mappings are
+ * removed, not just left dangling on a retired tool array.)
  */
 const TOOL_TOPIC_MAP: Record<string, InternalToolDocTopic> = {
   create_e2b_sandbox: "e2b-sandbox",
@@ -45,11 +45,6 @@ const TOOL_TOPIC_MAP: Record<string, InternalToolDocTopic> = {
   trade_modify: "ea-webhook",
   partial_close: "ea-webhook",
   full_close: "ea-webhook",
-  request_history: "rfeed-tools",
-  place_paper_trade: "rfeed-tools",
-  modify_paper_trade: "rfeed-tools",
-  partial_close_paper_trade: "rfeed-tools",
-  close_paper_trade: "rfeed-tools",
 };
 
 export function topicForTool(toolName: string): InternalToolDocTopic | undefined {
@@ -93,7 +88,7 @@ const SKILL_NAME_PREFIX = "How to use: ";
  * not just a file on disk nobody's skill list ever mentions.
  */
 export function seedInternalToolDocSkills(userId: string): Skill[] {
-  const topics: InternalToolDocTopic[] = ["e2b-sandbox", "ea-webhook", "rfeed-tools"];
+  const topics: InternalToolDocTopic[] = ["e2b-sandbox", "ea-webhook"];
   return topics.map((topic) => {
     const name = `${SKILL_NAME_PREFIX}${topic}`;
     const content = readInternalToolDoc(topic);

@@ -2,7 +2,6 @@ import type { DaveDatabase } from "@dave/db";
 import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import { TRADING_TOOLS } from "@dave/trading";
-import { RFEED_TOOLS, type RFeedTradeExecutor, type HistoryRequestManager } from "@dave/rfeed";
 import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
@@ -44,8 +43,6 @@ export interface FullRegistryDeps {
   db: DaveDatabase;
   davema: DavemaClient;
   executor: TradeExecutor;
-  rfeedExecutor: RFeedTradeExecutor;
-  rfeedHistoryManager: HistoryRequestManager;
   /** Optional -- push_message_to_user is only registered when a real Telegram client + chat are supplied. */
   telegram?: { client: TelegramClient; chatId: number };
 }
@@ -61,14 +58,12 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   const automationDispatch = (userId: string, toolName: string, toolArgs: Record<string, unknown>) => registry.execute(toolName, toolArgs);
 
   const tradingCtx = { userId: deps.userId, davema: deps.davema, executor: deps.executor };
-  const rfeedCtx = { userId: deps.userId, db: deps.db, executor: deps.rfeedExecutor, historyManager: deps.rfeedHistoryManager };
   const dbOnlyCtx = { userId: deps.userId, db: deps.db };
   const ownerCtx = { ownerUserId: deps.userId };
   const skillCtx = { userId: deps.userId };
   const workflowCtx = { userId: deps.userId, db: deps.db, dispatch: automationDispatch };
 
   registry.register(adaptTools(TRADING_TOOLS, tradingCtx));
-  registry.register(adaptTools(RFEED_TOOLS, rfeedCtx));
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(EA_ANALYSIS_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, davema: deps.davema, workspaceRoot: process.cwd() }));

@@ -1,6 +1,6 @@
 ---
 name: e2b-sandbox
-description: E2B — additional disposable compute, alongside your main DSH-native sandbox. Use for isolated one-off tasks (e.g. R_Feed backtest analysis) you don't want touching your main sandbox's state.
+description: E2B — additional disposable compute, alongside your main DSH-native sandbox. Use for isolated one-off tasks (e.g. a backtest analysis) you don't want touching your main sandbox's state.
 use_when: You need a throwaway compute environment for a single isolated task, or the main sandbox is busy/unsuitable for something you don't want bleeding into its state.
 ---
 
@@ -11,7 +11,7 @@ DSH-native, same-world process confinement -- use it for your everyday
 tool execution. E2B is a SEPARATE, disposable option: spin one up,
 use it for one isolated job, throw it away. Reach for it when you
 specifically want isolation from your main sandbox's state -- e.g.
-R_Feed backtest analysis you don't want mixing with anything else
+a backtest analysis you don't want mixing with anything else
 you're doing.
 
 ## Real tools you have

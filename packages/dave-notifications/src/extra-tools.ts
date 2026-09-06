@@ -61,7 +61,7 @@ export const NOTIFICATION_TOOLS: NotificationToolDefinition[] = [
   {
     name: "send_ea_connected_notification",
     description: "Send the real connection-confirmed notification for Dave's or R_Feed's EA. Real no-op (returns skipped:true) if the user has push notifications OFF.",
-    parameters: { type: "object", properties: { system: { type: "string", enum: ["dave", "rfeed"] } }, required: ["system"] },
+    parameters: { type: "object", properties: { system: { type: "string", enum: ["dave"] } }, required: ["system"] },
     // Real gap fixed (spec: "Push notifications on/off" -- a toggle that didn't actually stop
     // anything would be a ghost feature): checked against the real, stored setting, not just
     // documented as respected.
@@ -73,7 +73,7 @@ export const NOTIFICATION_TOOLS: NotificationToolDefinition[] = [
   {
     name: "send_trade_opened_notification",
     description: "Send the real trade-opened notification -- system + symbol + lots + reason, all together. Real no-op (returns skipped:true) if the user has push OR trade-opened notifications OFF.",
-    parameters: { type: "object", properties: { system: { type: "string", enum: ["dave", "rfeed"] }, symbol: { type: "string" }, lots: { type: "number" }, reason: { type: "string" } }, required: ["system", "symbol", "lots", "reason"] },
+    parameters: { type: "object", properties: { system: { type: "string", enum: ["dave"] }, symbol: { type: "string" }, lots: { type: "number" }, reason: { type: "string" } }, required: ["system", "symbol", "lots", "reason"] },
     execute: async (args, ctx) => {
       const settings = getNotificationSettings(ctx.db, ctx.userId);
       if (!settings.pushEnabled || !settings.tradeOpenedEnabled) return { skipped: true, reason: "push or trade-opened notifications are off" };
@@ -85,7 +85,7 @@ export const NOTIFICATION_TOOLS: NotificationToolDefinition[] = [
     description: "Send the real trade-closed notification, routed to the right specific alert (TP-hit/SL-hit/general close) by the real reported reason.",
     parameters: {
       type: "object",
-      properties: { system: { type: "string", enum: ["dave", "rfeed"] }, symbol: { type: "string" }, pnl: { type: "number" }, reason: { type: "string", enum: ["tp", "sl", "dave", "manual"] }, daveCloseReason: { type: "string" } },
+      properties: { system: { type: "string", enum: ["dave"] }, symbol: { type: "string" }, pnl: { type: "number" }, reason: { type: "string", enum: ["tp", "sl", "dave", "manual"] }, daveCloseReason: { type: "string" } },
       required: ["system", "symbol", "pnl", "reason"],
     },
     execute: async (args, ctx) => {

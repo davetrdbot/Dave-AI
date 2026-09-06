@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TelegramClient } from "@dave/telegram";
 import { EaBridge, type EaReport } from "@dave/ea-bridge";
-import { RFeedBridge, type RFeedReport } from "@dave/rfeed";
 import {
   formatMoney,
   formatConnectionAlert,
@@ -35,15 +34,13 @@ try {
   // --- [2] Every notification type mentions the system, clearly labeled ---
   console.log("\n[2] Every alert type clearly labels which system triggered it...\n");
   assert.ok(formatConnectionAlert("dave").includes("Dave"));
-  assert.ok(formatConnectionAlert("rfeed").includes("R_Feed"));
   console.log(`    dave: "${formatConnectionAlert("dave")}"`);
-  console.log(`    rfeed: "${formatConnectionAlert("rfeed")}"`);
 
   let connectionSent: any;
   const connectionCapture = { sendMessage: async (p: any) => { connectionSent = p; return { message_id: 7 }; } } as unknown as TelegramClient;
-  await sendConnectionAlert(connectionCapture, 99, "rfeed");
+  await sendConnectionAlert(connectionCapture, 99, "dave");
   assert.equal(connectionSent.chat_id, 99);
-  assert.ok(connectionSent.text.includes("R_Feed"));
+  assert.ok(connectionSent.text.includes("Dave"));
   console.log(`    sendConnectionAlert() real call captured: ${JSON.stringify(connectionSent)}`);
 
   // --- [3] Trade-opened: system + symbol + lots + reason, ALL in one message ---
@@ -57,8 +54,8 @@ try {
 
   // --- [4] Trade-closed: system + symbol + exact P&L + reason ---
   console.log("\n[4] Trade-closed alert: system + symbol + exact P&L + reason together...\n");
-  const closedText = formatTradeClosedAlert({ system: "rfeed", symbol: "EURUSD", pnl: -4.5, reason: "Structure broke down, cutting the loss early." });
-  assert.ok(closedText.includes("R_Feed"));
+  const closedText = formatTradeClosedAlert({ system: "dave", symbol: "EURUSD", pnl: -4.5, reason: "Structure broke down, cutting the loss early." });
+  assert.ok(closedText.includes("Dave"));
   assert.ok(closedText.includes("EURUSD"));
   assert.ok(closedText.includes("-$4.50"));
   assert.ok(closedText.includes("cutting the loss early"));
@@ -92,7 +89,7 @@ try {
   assert.ok(sentText!.includes("Momentum stalled"));
   console.log(`    reason="dave" -> ${sentText}`);
 
-  await routeClosedPositionAlert(capturingClient, 1, { system: "rfeed", symbol: "XAUUSD", pnl: -1.2, reason: "manual" });
+  await routeClosedPositionAlert(capturingClient, 1, { system: "dave", symbol: "XAUUSD", pnl: -1.2, reason: "manual" });
   assert.ok(sentText!.includes("Closed manually"));
   console.log(`    reason="manual" -> ${sentText}`);
 
@@ -199,28 +196,6 @@ try {
   assert.ok(!modifyEvents.some((e) => e.includes("unexpected")), "a Dave-initiated modify must NOT be misreported as manual");
   console.log("    real Dave-initiated modify correctly NOT flagged as manual");
   await new Promise<void>((resolve) => daveModifyServer.close(() => resolve()));
-
-  // --- [10] Same connection/closed-position wiring for R_Feed ---
-  console.log("\n[10] R_Feed: real onConnect + onClosedPosition wiring too...\n");
-  const rfeedEvents: string[] = [];
-  const rfeedBridge = new RFeedBridge({
-    onConnect: (userId) => rfeedEvents.push(`connect:${userId}`),
-    onClosedPosition: (userId, closed) => rfeedEvents.push(`closed:${userId}:${closed.reason}`),
-  });
-  const rfeedServer = rfeedBridge.createServer();
-  await new Promise<void>((resolve) => rfeedServer.listen(0, resolve));
-  const rfeedAddr = rfeedServer.address() as any;
-  const rfeedHook = (await import("@dave/rfeed")).getOrCreateRFeedWebhook("tg-rfeed-notif");
-  const firstRfeedReport: RFeedReport = { type: "heartbeat", account: "50000", balance: 10000, positions: [], pendingOrders: [] };
-  await fetch(`http://127.0.0.1:${rfeedAddr.port}${rfeedHook.path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(firstRfeedReport) });
-  const secondRfeedReport: RFeedReport = {
-    type: "heartbeat", account: "50000", balance: 10005, positions: [], pendingOrders: [],
-    closedPositions: [{ ticket: "R1", symbol: "BOOM_500", pnl: 5, reason: "manual" }],
-  };
-  await fetch(`http://127.0.0.1:${rfeedAddr.port}${rfeedHook.path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(secondRfeedReport) });
-  assert.deepEqual(rfeedEvents, ["connect:tg-rfeed-notif", "closed:tg-rfeed-notif:manual"]);
-  console.log(`    real R_Feed events: ${rfeedEvents.join(", ")}`);
-  await new Promise<void>((resolve) => rfeedServer.close(() => resolve()));
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

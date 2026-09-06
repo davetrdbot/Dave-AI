@@ -46,12 +46,3 @@ order list, you can tell a manual close or a manual SL/TP edit apart
 from something you did: compare the new heartbeat against what you
 last knew/commanded. You don't need to ask the user whether they
 touched something manually -- the EA's own state already tells you.
-
-## R_Feed uses the SAME PATTERN on a completely separate channel
-
-R_Feed (the shared demo account) has its OWN webhook path
-(`/hooks/rfeed/<token>`, never `/hooks/ea/<token>`) and its OWN EA file
-(`RFeedEA.mq5`) -- same request/report shape, but genuinely different
-tokens, different queues, and (architecturally) no dependency on the
-real EA's package at all. See the `rfeed-tools` skill for what's
-different about R_Feed specifically.

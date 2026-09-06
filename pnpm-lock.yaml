@@ -20,9 +20,6 @@ importers:
       '@dave/ea-bridge':
         specifier: workspace:*
         version: link:packages/dave-ea-bridge
-      '@dave/rfeed':
-        specifier: workspace:*
-        version: link:packages/dave-rfeed
     devDependencies:
       '@types/node':
         specifier: ^26.4.1
@@ -139,9 +136,6 @@ importers:
       '@dave/notifications':
         specifier: workspace:*
         version: link:../dave-notifications
-      '@dave/rfeed':
-        specifier: workspace:*
-        version: link:../dave-rfeed
       '@dave/safety':
         specifier: workspace:*
         version: link:../dave-safety
@@ -285,27 +279,12 @@ importers:
       '@dave/io':
         specifier: workspace:*
         version: link:../dave-io
-      '@dave/rfeed':
-        specifier: workspace:*
-        version: link:../dave-rfeed
       '@dave/telegram':
         specifier: workspace:*
         version: link:../dave-telegram
       '@dave/workers':
         specifier: workspace:*
         version: link:../dave-workers
-
-  packages/dave-rfeed:
-    dependencies:
-      '@dave/db':
-        specifier: workspace:*
-        version: link:../dave-db
-      '@dave/telegram':
-        specifier: workspace:*
-        version: link:../dave-telegram
-      '@dave/trading':
-        specifier: workspace:*
-        version: link:../dave-trading
 
   packages/dave-safety:
     dependencies:

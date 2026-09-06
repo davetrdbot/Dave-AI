@@ -4,7 +4,6 @@ import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
-import type { RFeedTradeExecutor, HistoryRequestManager } from "@dave/rfeed";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName, type ContentBlock, type CompletionMessage } from "@dave/brain";
 import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, markdownToTelegramHtml, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
@@ -41,8 +40,6 @@ export interface TelegramBotServerDeps {
   db: DaveDatabase;
   davema: DavemaClient;
   executor: TradeExecutor;
-  rfeedExecutor: RFeedTradeExecutor;
-  rfeedHistoryManager: HistoryRequestManager;
   botToken: string;
   publicBaseUrl: string;
   systemPrompt: string;
@@ -247,8 +244,6 @@ function getOrBuildRegistry(deps: TelegramBotServerDeps, client: TelegramClient,
         db: deps.db,
         davema: deps.davema,
         executor: deps.executor,
-        rfeedExecutor: deps.rfeedExecutor,
-        rfeedHistoryManager: deps.rfeedHistoryManager,
         telegram: { client, chatId },
       })
     );

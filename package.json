@@ -10,7 +10,6 @@
     "@dave/db": "workspace:*",
     "@dave/davema": "workspace:*",
     "@dave/ea-bridge": "workspace:*",
-    "@dave/rfeed": "workspace:*",
     "@dave/agent-loop": "workspace:*"
   },
   "devDependencies": {

@@ -11,7 +11,6 @@ import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
 import { FIRECRAWL_TOOLS } from "@dave/firecrawl";
 import { TRADING_TOOLS } from "@dave/trading";
-import { RFeedBridge, RFEED_TOOLS } from "@dave/rfeed";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS } from "@dave/workers";
@@ -42,22 +41,18 @@ try {
   const db = new DaveDatabase(join(workDir, "dave.db"));
   const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
-  const rfeedBridge = new RFeedBridge();
 
   const registry = buildFullToolRegistry({
     userId: OWNER,
     db,
     davema,
     executor,
-    rfeedExecutor: rfeedBridge.getExecutor(OWNER),
-    rfeedHistoryManager: rfeedBridge.getHistoryManager(OWNER),
   });
 
   // --- [1] Every single package's tools genuinely landed in the ONE registry ---
   console.log("[1] Every package's real tool array is genuinely present in the ONE unified registry...\n");
   const expectedTotal =
     TRADING_TOOLS.length +
-    RFEED_TOOLS.length +
     PROVIDER_TOOLS.length +
     LOVABLE_TOOLS.length +
     LOVABLE_SETTINGS_TOOLS.length +
@@ -94,7 +89,6 @@ try {
 
   const mustHave = [
     "trade_execute", "find_setup", // dave-trading
-    "request_history", "place_paper_trade", // dave-rfeed
     "list_providers", "create_custom_provider", // dave-brain
     "generate_image", // dave-lovable-mcp
     "set_risk_mode", "propose_settings_change", // dave-workers settings
@@ -206,8 +200,6 @@ try {
     db,
     davema,
     executor,
-    rfeedExecutor: rfeedBridge.getExecutor(OWNER),
-    rfeedHistoryManager: rfeedBridge.getHistoryManager(OWNER),
     telegram: { client: telegramClient, chatId: 847213 },
   });
   assert.ok(registryWithPush.has("push_message_to_user"));
@@ -228,7 +220,6 @@ try {
   assert.ok(skillNames.includes("Using Your Tools"));
   assert.ok(skillNames.includes("How to use: e2b-sandbox"));
   assert.ok(skillNames.includes("How to use: ea-webhook"));
-  assert.ok(skillNames.includes("How to use: rfeed-tools"));
   console.log(`    real permanent skills present after registry build: ${skillNames.join(", ")}`);
 
   // --- [7] Update 17 settings-audit tools: real conversational read/write, matching admin-UI coverage ---

@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { DaveDatabase } from "@dave/db";
 import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor } from "@dave/ea-bridge";
-import { RFeedBridge } from "@dave/rfeed";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
 
@@ -35,14 +34,11 @@ try {
   const db = new DaveDatabase(join(workDir, "dave.db"));
   const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
-  const rfeedBridge = new RFeedBridge();
   const registry = buildFullToolRegistry({
     userId: OWNER,
     db,
     davema,
     executor,
-    rfeedExecutor: rfeedBridge.getExecutor(OWNER),
-    rfeedHistoryManager: rfeedBridge.getHistoryManager(OWNER),
   });
 
   let callCount = 0;

@@ -9,7 +9,6 @@
   "references": [
     { "path": "../dave-brain" },
     { "path": "../dave-trading" },
-    { "path": "../dave-rfeed" },
     { "path": "../dave-lovable-mcp" },
     { "path": "../dave-workers" },
     { "path": "../dave-skills" },

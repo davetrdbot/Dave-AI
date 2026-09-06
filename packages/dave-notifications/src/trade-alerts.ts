@@ -1,14 +1,15 @@
 import type { TelegramClient } from "@dave/telegram";
 
 /**
- * Update 10: connection/opened/closed/TP-hit notifications, for BOTH
- * the real account (Dave EA) and the demo account (R_Feed EA), always
- * clearly labeled which system triggered it.
+ * Update 10: connection/opened/closed/TP-hit notifications, clearly labeled which system
+ * triggered it. (Item 7: R_Feed/demo-account trading is retired -- "dave" is the only real
+ * system now, kept as a real field rather than removed outright since every call site already
+ * threads it through and every alert is still genuinely labeled.)
  */
-export type TradeSystem = "dave" | "rfeed";
+export type TradeSystem = "dave";
 
-function systemLabel(system: TradeSystem): string {
-  return system === "dave" ? "🟢 Dave (real account)" : "🔵 R_Feed (demo account)";
+function systemLabel(_system: TradeSystem): string {
+  return "🟢 Dave (real account)";
 }
 
 /** "+$12.30" / "-$4.50" -- always signed, always 2 decimals. */

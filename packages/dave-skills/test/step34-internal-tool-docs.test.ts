@@ -26,19 +26,16 @@ try {
   console.log("[1] The three real skill docs genuinely exist on disk with real content...\n");
   const e2bDoc = readInternalToolDoc("e2b-sandbox");
   const eaDoc = readInternalToolDoc("ea-webhook");
-  const rfeedDoc = readInternalToolDoc("rfeed-tools");
   assert.ok(e2bDoc.includes("gRPC"), "the E2B doc must genuinely explain the real gRPC-vs-REST limit");
   assert.ok(eaDoc.includes("heartbeat"), "the EA webhook doc must genuinely explain the real heartbeat round trip");
-  assert.ok(rfeedDoc.includes("CustomSymbolTradeRefusedError"), "the R_Feed doc must genuinely reference the real safety error type");
-  console.log(`    e2b-sandbox-skill.md: ${e2bDoc.length} bytes; ea-webhook-skill.md: ${eaDoc.length} bytes; rfeed-tools-skill.md: ${rfeedDoc.length} bytes`);
+  console.log(`    e2b-sandbox-skill.md: ${e2bDoc.length} bytes; ea-webhook-skill.md: ${eaDoc.length} bytes`);
 
   // --- [2] Tool-to-topic mapping is real and specific ---
   console.log("\n[2] Real tool-to-doc-topic mapping...\n");
   assert.equal(topicForTool("create_e2b_sandbox"), "e2b-sandbox");
   assert.equal(topicForTool("trade_execute"), "ea-webhook");
-  assert.equal(topicForTool("place_paper_trade"), "rfeed-tools");
   assert.equal(topicForTool("list_skills"), undefined, "a tool with no genuine 'unfamiliar' risk must NOT be gated");
-  console.log("    create_e2b_sandbox->e2b-sandbox, trade_execute->ea-webhook, place_paper_trade->rfeed-tools, list_skills->ungated");
+  console.log("    create_e2b_sandbox->e2b-sandbox, trade_execute->ea-webhook, list_skills->ungated");
 
   // --- [3] REAL enforcement: calling an unfamiliar tool without recalling its doc genuinely throws ---
   console.log("\n[3] Real enforcement: an unfamiliar tool call WITHOUT reading its doc first genuinely throws...\n");
@@ -87,12 +84,11 @@ try {
   // --- [5] Permanent skills: the three docs seeded as real, undeletable per-user skills ---
   console.log("\n[5] The three docs seeded as real, PERMANENT per-user skills (list_skills shows them, deletion refused)...\n");
   const seeded = seedInternalToolDocSkills(OWNER);
-  assert.equal(seeded.length, 3);
+  assert.equal(seeded.length, 2);
   assert.ok(seeded.every((s) => s.permanent === true));
   const names = listSkills(OWNER).map((s) => s.name);
   assert.ok(names.includes("How to use: e2b-sandbox"));
   assert.ok(names.includes("How to use: ea-webhook"));
-  assert.ok(names.includes("How to use: rfeed-tools"));
   console.log(`    real permanent skills seeded: ${seeded.map((s) => s.name).join(", ")}`);
 
   let permErr = false;
@@ -110,8 +106,8 @@ try {
     reseeded.map((s) => s.id).sort(),
     seeded.map((s) => s.id).sort()
   );
-  assert.equal(listSkills(OWNER).filter((s) => s.name.startsWith("How to use:")).length, 3, "must never duplicate on re-seed");
-  console.log("    same 3 skill ids after re-seeding -- no duplicates created");
+  assert.equal(listSkills(OWNER).filter((s) => s.name.startsWith("How to use:")).length, 2, "must never duplicate on re-seed");
+  console.log("    same 2 skill ids after re-seeding -- no duplicates created");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

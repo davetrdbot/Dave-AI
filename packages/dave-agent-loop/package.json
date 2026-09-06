@@ -8,7 +8,6 @@
   "dependencies": {
     "@dave/brain": "workspace:*",
     "@dave/trading": "workspace:*",
-    "@dave/rfeed": "workspace:*",
     "@dave/lovable-mcp": "workspace:*",
     "@dave/workers": "workspace:*",
     "@dave/skills": "workspace:*",
