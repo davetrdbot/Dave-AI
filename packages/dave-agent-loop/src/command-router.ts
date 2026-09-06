@@ -86,6 +86,7 @@ import {
   addProviderKeysBulk,
   setPendingKeyEntry,
   getPendingKeyEntry,
+  removeProviderKey,
   type ProviderName,
   type StoredProviderKey,
 } from "@dave/brain";
@@ -300,7 +301,12 @@ function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { 
   for (const key of keys) {
     const health = key.healthy ? "🟢" : "🔴";
     const star = key.isPrimary ? "⭐ " : "";
-    rows.push([coloredButton(`${star}${health} ${key.label}`, key.isPrimary ? "green" : "neutral", `activatekey:${key.id}`)]);
+    // Item 1 real gap fixed: a stored key could only ever be added or activated, never removed --
+    // deleting one meant going to the admin panel. Real delete, right next to the key it belongs to.
+    rows.push([
+      coloredButton(`${star}${health} ${key.label}`, key.isPrimary ? "green" : "neutral", `activatekey:${key.id}`),
+      coloredButton("🗑 Delete", "red", `deletekey:${key.id}`),
+    ]);
   }
   if (provider !== "airllm" && provider !== "custom" && keys.length < 10) {
     rows.push([coloredButton("➕ Add key(s)", "blue", `addkey:${provider}`)]);
@@ -603,6 +609,40 @@ export async function tryHandlePendingLimitEntry(deps: CommandRouterDeps, chatId
     parse_mode: "HTML",
     reply_markup: listPendingApprovalsKeyboard(change.id),
   });
+  return true;
+}
+
+const AFFIRMATIVE_REPLY = /^\s*(yes|y|approve|approved|confirm|confirmed|ok|okay)[.!]?\s*$/i;
+const NEGATIVE_REPLY = /^\s*(no|n|decline|declined|cancel|cancelled|canceled)[.!]?\s*$/i;
+
+/**
+ * Item 11 real bug fixed: "when Dave asks for approval... if the user answers via a normal typed
+ * 'yes', it should NOT then ask again via UI buttons afterward." Previously a typed "yes" had no
+ * real handler at all -- it just fell through to the agent loop, which (having no way to know a
+ * real approval was already pending) could re-propose the same change and send a SECOND UI
+ * prompt on top of the first. This intercepts a real affirmative/negative reply BEFORE the agent
+ * loop ever sees it, and treats it as EXACTLY equivalent to tapping the real Approve/Decline
+ * button on the one pending change -- same real approveSettingsChange/declineSettingsChange call,
+ * same confirmation message. Only acts when there is EXACTLY one real pending change (ambiguous
+ * with more than one -- falls through to normal conversation rather than guessing which).
+ */
+export async function tryHandlePendingApprovalReply(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const isAffirmative = AFFIRMATIVE_REPLY.test(text);
+  const isNegative = NEGATIVE_REPLY.test(text);
+  if (!isAffirmative && !isNegative) return false;
+  const pending = listPendingLimitChanges(deps.userId);
+  if (pending.length !== 1) return false;
+  const change = pending[0];
+  if (isAffirmative) {
+    const settings = approveSettingsChange(deps.userId, change.id);
+    await deps.client.sendMessage({
+      chat_id: chatId,
+      text: `✅ Approved. SL=${modeLabel(settings.slMode, settings.slValue)} TP=${modeLabel(settings.tpMode, settings.tpValue)} Lot=${modeLabel(settings.lotMode, settings.lotValue)} MaxOpenTrades=${settings.maxOpenTrades ?? "not set"} MaxDailyLoss=${settings.maxDailyLossPct ?? "not set"}%`,
+    });
+  } else {
+    declineSettingsChange(deps.userId, change.id);
+    await deps.client.sendMessage({ chat_id: chatId, text: "Declined -- no change made." });
+  }
   return true;
 }
 
@@ -1092,6 +1132,27 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
     } else if (data === "providers:back") {
       ackText = undefined;
       if (chatId) await handleProviders(deps, chatId, callback.message?.message_id);
+    } else if (data.startsWith("deletekey:")) {
+      const keyId = data.slice("deletekey:".length);
+      const key = getProviderKeyById(deps.db, deps.userId, keyId);
+      if (!key) {
+        ackText = "Key not found";
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
+      } else {
+        const provider = key.provider;
+        const wasPrimary = key.isPrimary;
+        removeProviderKey(deps.db, deps.userId, keyId);
+        ackText = "Key deleted";
+        await confirm(`Deleted ${provider} key: ${key.label}`);
+        if (wasPrimary) {
+          const remaining = listProviderKeys(deps.db, deps.userId, provider);
+          if (remaining.length > 0) setPrimaryProviderKey(deps.db, deps.userId, remaining[0].id);
+        }
+        if (chatId && callback.message) {
+          const view = providerDetailView(deps, provider);
+          await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup });
+        }
+      }
     } else if (data.startsWith("activatekey:")) {
       const keyId = data.slice("activatekey:".length);
       const key = getProviderKeyById(deps.db, deps.userId, keyId);
