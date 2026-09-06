@@ -56,6 +56,9 @@ import {
   fetchAvailableModels,
   setPendingManualModelEntry,
   getPendingManualModelEntry,
+  addProviderKeysBulk,
+  setPendingKeyEntry,
+  getPendingKeyEntry,
   type ProviderName,
   type StoredProviderKey,
 } from "@dave/brain";
@@ -167,15 +170,18 @@ function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { 
   if (provider === "airllm") {
     lines.push("Self-hosted via AIRLLM_BASE_URL -- no stored key needed.");
   } else if (keys.length === 0) {
-    lines.push("No keys stored yet -- add one in the admin panel's Provider Keys tab.");
+    lines.push("No keys stored yet -- add one below, or in the admin panel's Provider Keys tab.");
   } else {
-    lines.push(`${keys.length} stored key(s):`);
+    lines.push(`${keys.length}/10 stored key(s):`);
   }
   const rows: ReturnType<typeof coloredButton>[][] = [];
   for (const key of keys) {
     const health = key.healthy ? "🟢" : "🔴";
     const star = key.isPrimary ? "⭐ " : "";
     rows.push([coloredButton(`${star}${health} ${key.label}`, key.isPrimary ? "green" : "neutral", `activatekey:${key.id}`)]);
+  }
+  if (provider !== "airllm" && provider !== "custom" && keys.length < 10) {
+    rows.push([coloredButton("➕ Add key(s)", "blue", `addkey:${provider}`)]);
   }
   rows.push([coloredButton(config.primary === provider ? "✅ Primary provider" : "Set as primary provider", config.primary === provider ? "green" : "blue", `setprimaryprovider:${provider}`)]);
   rows.push([{ text: "⬅️ Back", callback_data: "providers:back" }]);
@@ -260,6 +266,24 @@ export async function tryHandlePendingVoiceEntry(deps: CommandRouterDeps, chatId
   setPendingVoiceIdEntry(deps.db, deps.userId, null);
   setVoiceId(deps.db, deps.userId, provider, text.trim());
   await deps.client.sendMessage({ chat_id: chatId, text: `Voice for <b>${provider}</b> set to <code>${text.trim()}</code>.`, parse_mode: "HTML" });
+  return true;
+}
+
+/** Real fix (user: "I can set up to 10 keys in the telegram and paste the settable
+ * credentials in telegram") -- the user's next message is one or more API keys, one per
+ * line (a single pasted key is just a 1-line case of the same real bulk-add path, which
+ * already enforces the 10-key cap and reports per-line success/failure honestly). */
+export async function tryHandlePendingKeyEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const provider = getPendingKeyEntry(deps.db, deps.userId);
+  if (!provider) return false;
+  setPendingKeyEntry(deps.db, deps.userId, null);
+  const results = addProviderKeysBulk(deps.db, deps.userId, provider, provider, text);
+  const lines = results.map((r, i) => (r.ok ? `Line ${i + 1}: OK (${r.key!.label})` : `Line ${i + 1}: FAILED -- ${r.error}`));
+  await deps.client.sendMessage({
+    chat_id: chatId,
+    text: `<b>Adding key(s) for ${provider}</b>\n${lines.join("\n")}`,
+    parse_mode: "HTML",
+  });
   return true;
 }
 
@@ -608,6 +632,16 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>
           deps.client.sendMessage({ chat_id: chatId, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup })
         );
+      }
+    } else if (data.startsWith("addkey:")) {
+      const provider = data.slice("addkey:".length) as ProviderName;
+      setPendingKeyEntry(deps.db, deps.userId, provider);
+      ackText = undefined;
+      if (chatId) {
+        await deps.client.sendMessage({
+          chat_id: chatId,
+          text: `Reply with your ${provider} API key as your next message.\n\nTo add multiple at once (up to 10), paste one per line -- each is validated and stored individually, so one bad line never blocks the rest.`,
+        });
       }
     } else if (data === "providers:back") {
       ackText = undefined;

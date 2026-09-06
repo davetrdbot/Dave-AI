@@ -5,6 +5,7 @@ export * from "./provider-catalog.js";
 export * from "./provider-factory.js";
 export * from "./provider-keys.js";
 export * from "./manual-model-entry.js";
+export * from "./pending-key-entry.js";
 export * from "./model-fetch.js";
 export * from "./custom-providers.js";
 export * from "./provider-tools.js";

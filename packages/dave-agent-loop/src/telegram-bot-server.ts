@@ -17,7 +17,7 @@ import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic } from "@dave/safety";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
@@ -279,6 +279,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
         if (await tryHandlePendingModelEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingVoiceEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingKeyEntry(routerDeps, chatId, message.text)) return;
       }
 
       // Real gap fixed: a genuine slash command that ISN'T one of the 9 (mistyped, or an old
