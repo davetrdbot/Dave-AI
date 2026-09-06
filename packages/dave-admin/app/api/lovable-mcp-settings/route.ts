@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 import { getLovableMcpSettings, setLovableMcpSettings } from "@dave/lovable-mcp";
 
 /**
@@ -12,7 +12,7 @@ import { getLovableMcpSettings, setLovableMcpSettings } from "@dave/lovable-mcp"
  */
 export async function GET(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get("userId") ?? "default";
-  const db = new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  const db = new DaveDatabase(dbPathFor(userId));
   try {
     const settings = getLovableMcpSettings(db, userId);
     return NextResponse.json({ url: settings.url, tokenSet: Boolean(settings.token) });
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get("userId") ?? "default";
   const body = await req.json();
-  const db = new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  const db = new DaveDatabase(dbPathFor(userId));
   try {
     setLovableMcpSettings(db, userId, { url: body.url ?? null, token: body.token ?? null });
     const settings = getLovableMcpSettings(db, userId);

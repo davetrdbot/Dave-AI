@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 import { addProviderKey, editProviderKey, removeProviderKey, listProviderKeys, checkProviderKeyHealth, type ProviderName } from "@dave/brain";
 
 /** Update 4: admin UI's key-CRUD surface, mirroring provider-tools.ts's agent tools. */
 function dbFor(userId: string): DaveDatabase {
-  return new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  return new DaveDatabase(dbPathFor(userId));
 }
 
 export async function GET(req: NextRequest) {

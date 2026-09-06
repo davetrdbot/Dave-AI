@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 import { mcpList } from "@dave/mcp-manager";
 import { getLovableMcpSettings } from "@dave/lovable-mcp";
 
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
     status: `connected -- ${c.tools.length} tool(s) discovered`,
   }));
 
-  const db = new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  const db = new DaveDatabase(dbPathFor(userId));
   let lovable: { name: string; kind: string; status: string };
   try {
     const settings = getLovableMcpSettings(db, userId);

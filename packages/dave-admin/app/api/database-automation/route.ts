@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 
 /**
  * Step 16 is real now -- this used to honestly report "not built yet".
@@ -10,7 +10,7 @@ import { DaveDatabase } from "@dave/db";
  */
 export async function GET(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get("userId") ?? "default";
-  const db = new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  const db = new DaveDatabase(dbPathFor(userId));
   try {
     const tables = db.listTables().filter((t) => t !== "workflow_runs");
     const tableCounts = Object.fromEntries(tables.map((t) => [t, db.aggregate(t, userId, "COUNT")]));

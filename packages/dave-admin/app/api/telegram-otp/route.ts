@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 import { startTelegramOtpPairing, checkTelegramOtpPairing, getTelegramPairingStatus, InvalidTelegramBotTokenError } from "@dave/telegram";
 
 /**
@@ -11,7 +11,7 @@ import { startTelegramOtpPairing, checkTelegramOtpPairing, getTelegramPairingSta
  * getUpdates() and confirms once it sees that exact message.
  */
 function dbFor(userId: string): DaveDatabase {
-  return new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  return new DaveDatabase(dbPathFor(userId));
 }
 
 export async function GET(req: NextRequest) {

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 import { addFirecrawlKey, listFirecrawlKeys, removeFirecrawlKey } from "@dave/firecrawl";
 
 /** Part 3 (B1): Firecrawl key management -- real agent tools + this admin UI route, same pattern as e2b-keys/route.ts. */
 function dbFor(userId: string): DaveDatabase {
-  return new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  return new DaveDatabase(dbPathFor(userId));
 }
 
 export async function GET(req: NextRequest) {

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 import { addE2BKey, listE2BKeys, removeE2BKey, checkE2BKeyHealth } from "@dave/e2b";
 
 /** Update 17 (settings audit): E2B key management had real agent tools (Update 12) but no admin UI route. */
 function dbFor(userId: string): DaveDatabase {
-  return new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  return new DaveDatabase(dbPathFor(userId));
 }
 
 export async function GET(req: NextRequest) {

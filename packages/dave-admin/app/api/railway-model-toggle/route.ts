@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 import { getRailwayModelLoadEnabled, setRailwayModelLoadEnabled } from "@dave/brain";
 
 /**
@@ -10,7 +10,7 @@ import { getRailwayModelLoadEnabled, setRailwayModelLoadEnabled } from "@dave/br
  */
 export async function GET(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get("userId") ?? "default";
-  const db = new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  const db = new DaveDatabase(dbPathFor(userId));
   try {
     return NextResponse.json({ enabled: getRailwayModelLoadEnabled(db, userId) });
   } finally {
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get("userId") ?? "default";
   const body = await req.json();
-  const db = new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  const db = new DaveDatabase(dbPathFor(userId));
   try {
     setRailwayModelLoadEnabled(db, userId, Boolean(body.enabled));
     return NextResponse.json({ ok: true, enabled: getRailwayModelLoadEnabled(db, userId) });

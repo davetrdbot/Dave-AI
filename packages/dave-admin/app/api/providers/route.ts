@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
+import { dbPathFor } from "../../../server/db-path";
 import { listProviderCatalog, listCustomProviders, createCustomProvider, editCustomProvider, deleteCustomProvider } from "@dave/brain";
 
 /**
@@ -9,7 +9,7 @@ import { listProviderCatalog, listCustomProviders, createCustomProvider, editCus
  * + key), plus list the full built-in catalog.
  */
 function dbFor(userId: string): DaveDatabase {
-  return new DaveDatabase(join(process.cwd(), "data", "db", `${userId}.db`));
+  return new DaveDatabase(dbPathFor(userId));
 }
 
 export async function GET(req: NextRequest) {
