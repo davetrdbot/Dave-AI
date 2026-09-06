@@ -6,7 +6,7 @@ import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import type { RFeedTradeExecutor, HistoryRequestManager } from "@dave/rfeed";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName, type ContentBlock, type CompletionMessage } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, markdownToTelegramHtml, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
 import { classifyToolAction } from "./action-classifier.js";
@@ -115,7 +115,8 @@ async function runAgentTurn(
         result = await loop.run(history, { maxSteps: 8, onStep });
       }
       saveConversationHistory(deps.db, historyKey, result.history);
-      const finalText = result.status === "done" ? result.text || "(no text)" : result.question.question;
+      const rawFinalText = result.status === "done" ? result.text || "(no text)" : result.question.question;
+      const finalText = markdownToTelegramHtml(rawFinalText);
       return { result: undefined, finalText };
     });
   } catch (err) {
