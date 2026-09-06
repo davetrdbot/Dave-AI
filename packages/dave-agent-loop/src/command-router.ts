@@ -3,6 +3,7 @@ import type { DavemaClient } from "@dave/davema";
 import { checkSandboxHealth } from "@dave/sandbox";
 import {
   TelegramClient,
+  TelegramError,
   parseCommand,
   eaPickerKeyboard,
   personalizeEaFile,
@@ -91,6 +92,7 @@ import {
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
+import { friendlyErrorMessage } from "./error-messages.js";
 
 /**
  * Real gap fixed (A2/A3): onUpdate had zero command router -- every
@@ -138,11 +140,29 @@ function appendMenuHome(kb: ReturnType<typeof keyboard>): ReturnType<typeof keyb
  * to edit) still send fresh; screens reached via a menu/back button tap (editMessageId is the
  * tapped message's own id) now genuinely edit that SAME message instead of stacking a new one.
  */
+/**
+ * Item 4 real bug fixed (re-verified after being reported as still broken): editMessageText's
+ * fallback-to-sendMessage ALWAYS fired on ANY failure -- including Telegram's genuinely common
+ * "Bad Request: message is not modified" (fires whenever the tapped button's destination screen
+ * has the EXACT same text+keyboard already showing, e.g. tapping Back twice, or navigating back
+ * to a screen you were already on). That's not a real failure -- editing to identical content
+ * IS what "already showing" looks like -- but the blind catch treated it as one and sent a brand
+ * new message anyway, which is exactly the "growing stack of messages" symptom being reported.
+ * Now that specific, expected case is a silent success; only a GENUINE edit failure (message too
+ * old, deleted, no permission) falls back to a new message.
+ */
+async function editOrSend(client: TelegramClient, params: { chat_id: number | string; message_id: number; text: string; parse_mode?: "HTML"; reply_markup?: ReturnType<typeof keyboard> }): Promise<void> {
+  try {
+    await client.editMessageText(params);
+  } catch (err) {
+    if (err instanceof TelegramError && /message is not modified/i.test(err.message)) return;
+    await client.sendMessage({ chat_id: params.chat_id, text: params.text, parse_mode: params.parse_mode, reply_markup: params.reply_markup });
+  }
+}
+
 async function sendOrEditScreen(deps: CommandRouterDeps, chatId: number, text: string, reply_markup: ReturnType<typeof keyboard> | undefined, editMessageId?: number): Promise<void> {
   if (editMessageId) {
-    await deps.client.editMessageText({ chat_id: chatId, message_id: editMessageId, text, parse_mode: "HTML", reply_markup }).catch(() =>
-      deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup })
-    );
+    await editOrSend(deps.client, { chat_id: chatId, message_id: editMessageId, text, parse_mode: "HTML", reply_markup });
   } else {
     await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup });
   }
@@ -855,9 +875,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
 
   const renderInPlace = async (text: string, reply_markup: ReturnType<typeof keyboard>) => {
     if (!chatId || !callback.message) return;
-    await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text, parse_mode: "HTML", reply_markup }).catch(() =>
-      deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup })
-    );
+    await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text, parse_mode: "HTML", reply_markup });
   };
 
   try {
@@ -1059,9 +1077,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = undefined;
       if (chatId && callback.message) {
         const view = providerDetailView(deps, name);
-        await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>
-          deps.client.sendMessage({ chat_id: chatId, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup })
-        );
+        await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup });
       }
     } else if (data.startsWith("addkey:")) {
       const provider = data.slice("addkey:".length) as ProviderName;
@@ -1090,9 +1106,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         await confirm(`Provider switched to ${key.provider} (key: ${key.label})`);
         if (chatId && callback.message) {
           const view = providerDetailView(deps, key.provider);
-          await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>
-            deps.client.sendMessage({ chat_id: chatId, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup })
-          );
+          await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup });
         }
       }
     } else if (data.startsWith("setprimaryprovider:")) {
@@ -1103,9 +1117,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       await confirm(`Provider switched to ${name}`);
       if (chatId && callback.message) {
         const view = providerDetailView(deps, name);
-        await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>
-          deps.client.sendMessage({ chat_id: chatId, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup })
-        );
+        await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup });
       }
     } else if (data.startsWith("modelfor:")) {
       const name = data.slice("modelfor:".length) as ProviderName;
@@ -1200,13 +1212,16 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = undefined;
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    ackText = `Error: ${message}`;
+    // Item 3 real bug fixed: this used to send the raw err.message straight to the user (e.g.
+    // a raw "no stored keys for provider ..." internal error) -- now the same clean, honest
+    // mapping used everywhere else in this build.
+    const clean = friendlyErrorMessage(err);
+    ackText = clean;
     // Real fix: the callback was already acknowledged above (Telegram only accepts one
     // answerCallbackQuery per callback_query id) -- an unhandled error must still genuinely
     // reach the user somehow, so it goes out as a real chat message instead of a toast nobody
     // can see after the fact.
-    if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `⚠️ ${message}` }).catch(() => undefined);
+    if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: clean }).catch(() => undefined);
   }
 }
 

@@ -60,6 +60,9 @@ importers:
       '@dave/mcp-manager':
         specifier: workspace:*
         version: link:../dave-mcp-manager
+      '@dave/memory':
+        specifier: workspace:*
+        version: link:../dave-memory
       '@dave/sandbox':
         specifier: workspace:*
         version: link:../dave-sandbox

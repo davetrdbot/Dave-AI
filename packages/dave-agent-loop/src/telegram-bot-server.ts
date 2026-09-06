@@ -24,6 +24,7 @@ import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandl
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
+import { friendlyErrorMessage } from "./error-messages.js";
 
 /**
  * The real, persistent replacement for a one-off polling script: a
@@ -155,7 +156,7 @@ async function runAgentTurn(
       await client.sendMessage({ chat_id: chatId, text: "Tap an option:", reply_markup: { inline_keyboard: rows } });
     }
   } catch (err) {
-    await client.sendMessage({ chat_id: chatId, text: `Something went wrong handling that: ${err instanceof Error ? err.message : String(err)}` });
+    await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) });
   } finally {
     clearBusy(deps.ownerUserId);
   }
@@ -467,7 +468,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
           // unsupported image format, or Telegram's file download
           // itself failing -- must tell the user why, not silently drop
           // the message or crash the process.
-          await client.sendMessage({ chat_id: chatId, text: `Couldn't process that attachment: ${err instanceof Error ? err.message : String(err)}` });
+          console.error("[telegram-bot-server] failed to process attachment:", err);
+          await client.sendMessage({ chat_id: chatId, text: "⚠️ Couldn't process that attachment. Try again in a moment." });
           return;
         }
       }

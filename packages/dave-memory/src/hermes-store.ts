@@ -138,3 +138,13 @@ export function readLive(userId: string, file: MemoryFile): string {
   ensureUserMemory(userId);
   return readFileSync(filePath(userId, file), "utf8");
 }
+
+/**
+ * Item 12: writes the user's own real goal.yaml content directly (the user's own stated
+ * trading goals/principles, not agent-invented content) -- previously there was no writer at
+ * all, only readLive()/get_goal_config's read side.
+ */
+export function writeLive(userId: string, file: MemoryFile, content: string): void {
+  ensureUserMemory(userId);
+  writeFileSync(filePath(userId, file), content, "utf8");
+}
