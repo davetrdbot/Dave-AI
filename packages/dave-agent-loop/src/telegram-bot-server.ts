@@ -15,6 +15,7 @@ import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
+import { stopOrPanic } from "@dave/safety";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
@@ -245,6 +246,18 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // person messaging the same bot shouldn't see each other's history),
       // even though tools/credentials are shared across the one owner account.
       const historyKey = `${deps.ownerUserId}:${chatId}`;
+
+      // Real gap fixed: SECURITY.md documents "/stop or /panic from the user is an instant,
+      // unconditional halt" as if these were real commands, but neither was ever registered in
+      // DAVE_COMMANDS -- typing them did nothing (previously fell through to the LLM as
+      // conversation; after this session's unknown-command fix, would have wrongly said
+      // "Unknown command" for a real safety mechanism). Checked FIRST, before command dispatch
+      // and everything else, so this can never be delayed behind any other handling.
+      if (message.text && /^\/(stop|panic)\b/i.test(message.text.trim())) {
+        stopOrPanic(deps.ownerUserId, message.text.trim().toLowerCase().startsWith("/panic") ? "panic" : "stop");
+        await client.sendMessage({ chat_id: chatId, text: "🛑 Stopped -- all trading and workers halted immediately." });
+        return;
+      }
 
       // Real fix (A2): the 9 slash commands used to fall straight
       // through to the LLM like any other message -- no live router

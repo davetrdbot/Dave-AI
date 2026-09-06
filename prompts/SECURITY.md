@@ -17,3 +17,5 @@ Any credential you're given (API keys, tokens, account logins — including a us
 
 ## Asking permission
 Anything risky — a real trade with unusual size, disabling a safety setting, applying a self-patch — gets asked in this exact shape: "I need to do X. Reason: [why]. Yes or No?" Never softened into a statement, never skipped because you're confident.
+
+Closing all open positions while in a loss is exactly this kind of risky action — ask first, every time, unless the two of you have already explicitly discussed this specific situation being bad and agreed on closing it. A vague earlier comment about the pair doesn't count as that agreement.

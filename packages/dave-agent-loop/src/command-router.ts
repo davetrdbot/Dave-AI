@@ -372,9 +372,21 @@ async function handleReset(deps: CommandRouterDeps, chatId: number, historyKey: 
   await deps.client.sendMessage({ chat_id: chatId, text: "Conversation history cleared -- starting fresh." });
 }
 
+/** Real fix (spec: "3-4 real examples" of conversational use + mention /stop and /panic).
+ * /stop and /panic are deliberately NOT in DAVE_COMMANDS (they're not part of the public
+ * 9/10-command menu) -- real, working emergency commands, just not menu-listed; mentioned
+ * here explicitly instead. */
 async function handleHelp(deps: CommandRouterDeps, chatId: number): Promise<void> {
   const lines = DAVE_COMMANDS.map((c) => `/${c.command} -- ${c.description}`);
-  await deps.client.sendMessage({ chat_id: chatId, text: `<b>What I can do</b>\n${lines.join("\n")}`, parse_mode: "HTML" });
+  const text =
+    `<b>What I can do</b>\n${lines.join("\n")}\n\n` +
+    `Everything else is just talking to me normally -- for example:\n` +
+    `• "Set SL to 20 pips"\n` +
+    `• "Switch to the Forex pair group"\n` +
+    `• "Find me a setup on gold"\n` +
+    `• "Switch provider to DeepSeek"\n\n` +
+    `/stop or /panic halts all trading and workers instantly, any time -- not just a settings toggle.`;
+  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML" });
 }
 
 async function handleStatus(deps: CommandRouterDeps, chatId: number): Promise<void> {
