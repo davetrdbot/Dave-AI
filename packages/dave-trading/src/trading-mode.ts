@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -37,4 +37,9 @@ export function setTradingMode(userId: string, mode: TradingMode, lockedSkillId?
   const dir = dirname(p);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(p, JSON.stringify({ mode, lockedSkillId: mode === "trading-skills" ? lockedSkillId : undefined }, null, 2), "utf8");
+}
+
+/** Item 8 (/reset "config/settings back to defaults"): deletes the file so getTradingMode's own real default ("auto") takes over. */
+export function resetTradingModeForUser(userId: string): void {
+  rmSync(path(userId), { force: true });
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -44,6 +44,12 @@ export function getWriteApprovalSetting(userId: string): boolean {
 
 export function setWriteApprovalSetting(userId: string, enabled: boolean): void {
   writeJson(settingsPath(userId), { writeApprovalEnabled: enabled });
+}
+
+/** Item 8 (/reset "config/settings back to defaults"): deletes both files so getWriteApprovalSetting's own real default (off) takes over and no stale pending writes survive. */
+export function resetWriteApprovalForUser(userId: string): void {
+  rmSync(settingsPath(userId), { force: true });
+  rmSync(pendingPath(userId), { force: true });
 }
 
 function readPending(userId: string): PendingWrite[] {

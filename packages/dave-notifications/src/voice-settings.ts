@@ -68,6 +68,12 @@ export function setVoiceId(db: DaveDatabase, ownerUserId: string, provider: TtsP
   db.update(TABLE, ownerUserId, row.id, provider === "fish-audio" ? { fish_voice_id: voiceId } : { elevenlabs_voice_id: voiceId });
 }
 
+/** Item 8 (/reset "config/settings back to defaults"): deletes the row so getVoiceSettings's own real defaults (off, fish-audio, no voice ids) apply again. Does NOT touch the stored TTS provider API keys -- those are credentials, not a "setting". */
+export function resetVoiceSettingsForUser(db: DaveDatabase, ownerUserId: string): void {
+  ensureTable(db);
+  for (const row of db.query(TABLE, ownerUserId, {}) as unknown as SettingsRow[]) db.deleteRow(TABLE, ownerUserId, row.id);
+}
+
 export class VoiceDisabledError extends Error {
   constructor() {
     super("voice output is turned off for this user -- the whole feature is togglable off entirely, and it's off");

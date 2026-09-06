@@ -90,6 +90,19 @@ export function setFallbackGroup(userId: string, groupId: string): void {
   saveState(userId, state);
 }
 
+/**
+ * Item 8 (/reset "config/settings back to defaults"): clears the active/fallback SELECTION only
+ * -- the user's own defined groups (created in the admin panel, real authored content, not a
+ * setting) are deliberately preserved, same reasoning as goal.yaml surviving a reset.
+ */
+export function resetPairGroupSelectionForUser(userId: string): void {
+  const state = readState(userId);
+  state.activeGroupId = null;
+  state.fallbackGroupId = null;
+  state.pausedForExtremeConditions = false;
+  saveState(userId, state);
+}
+
 export interface ActiveGroupInfo {
   activeGroup: PairGroup | null;
   fallbackGroup: PairGroup | null;

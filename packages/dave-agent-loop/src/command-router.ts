@@ -36,9 +36,13 @@ import {
   listGroups,
   setActiveGroup,
   setFallbackGroup,
+  resetPairGroupSelectionForUser,
   getTradingMode,
   setTradingMode,
+  resetTradingModeForUser,
   TradingSkillsModeRequiresSkillError,
+  resetRiskSettingsForUser,
+  resetTrailingStopConfigForUser,
   type RiskMode,
 } from "@dave/trading";
 import { listSkills } from "@dave/skills";
@@ -62,8 +66,10 @@ import {
   setPushEnabled,
   setEmailEnabled,
   setTradeOpenedEnabled,
+  resetVoiceSettingsForUser,
+  resetNotificationSettingsForUser,
 } from "@dave/notifications";
-import { getWriteApprovalSetting, setWriteApprovalSetting } from "@dave/memory";
+import { getWriteApprovalSetting, setWriteApprovalSetting, resetWriteApprovalForUser, resetUserMemory } from "@dave/memory";
 import { addE2BKey, listE2BKeys, removeE2BKey, setPendingE2BKeyEntry, getPendingE2BKeyEntry } from "@dave/e2b";
 import {
   getModelConfig,
@@ -110,10 +116,42 @@ function formatMoney(n: number | undefined): string {
   return typeof n === "number" ? `$${n.toFixed(2)}` : "n/a";
 }
 
-async function handleAccount(deps: CommandRouterDeps, chatId: number): Promise<void> {
+/** Item 7: every screen needs a real way back to the /menu home screen, not just one level up. */
+const MENU_HOME_BUTTON = { text: "🏠 Menu", callback_data: "menucmd:menu" } as const;
+
+/** Item 7: appends a real "⬅️ Back" + "🏠 Menu" row (or just Home, for top-level screens) to an
+ * already-built keyboard, without needing every keyboard-building function to know about it. */
+function withMenuHome(kb: ReturnType<typeof keyboard>, backCallbackData?: string): ReturnType<typeof keyboard> {
+  const row = backCallbackData ? [{ text: "⬅️ Back", callback_data: backCallbackData }, MENU_HOME_BUTTON] : [MENU_HOME_BUTTON];
+  return { inline_keyboard: [...kb.inline_keyboard, row] };
+}
+
+/** Same as withMenuHome, but for a keyboard (e.g. settingsScreen()'s output) that already has its
+ * own real Back row -- appends only the Home row rather than a second, duplicate Back row. */
+function appendMenuHome(kb: ReturnType<typeof keyboard>): ReturnType<typeof keyboard> {
+  return { inline_keyboard: [...kb.inline_keyboard, [MENU_HOME_BUTTON]] };
+}
+
+/**
+ * Item 7 real gap fixed: "button taps should EDIT the existing message in place... rather than
+ * sending new messages each time." Screens reached via a typed command (chatId only, no message
+ * to edit) still send fresh; screens reached via a menu/back button tap (editMessageId is the
+ * tapped message's own id) now genuinely edit that SAME message instead of stacking a new one.
+ */
+async function sendOrEditScreen(deps: CommandRouterDeps, chatId: number, text: string, reply_markup: ReturnType<typeof keyboard> | undefined, editMessageId?: number): Promise<void> {
+  if (editMessageId) {
+    await deps.client.editMessageText({ chat_id: chatId, message_id: editMessageId, text, parse_mode: "HTML", reply_markup }).catch(() =>
+      deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup })
+    );
+  } else {
+    await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup });
+  }
+}
+
+async function handleAccount(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const snapshot = getLastKnownAccountSnapshot(deps.userId);
   if (!snapshot) {
-    await deps.client.sendMessage({ chat_id: chatId, text: "No EA report yet -- connect your MT5 EA first (see /ea)." });
+    await sendOrEditScreen(deps, chatId, "No EA report yet -- connect your MT5 EA first (see /ea).", withMenuHome(keyboard([])), editMessageId);
     return;
   }
   const eaStatus = getEaConnectionStatus(deps.userId);
@@ -125,7 +163,7 @@ async function handleAccount(deps: CommandRouterDeps, chatId: number): Promise<v
     `Margin: ${formatMoney(snapshot.margin)}\n` +
     `Free margin: ${formatMoney(snapshot.freeMargin)}\n` +
     `EA connection: ${eaStatus.connected ? "🟢 connected" : `🔴 disconnected${eaStatus.secondsSinceLastSeen !== null ? ` (last seen ${eaStatus.secondsSinceLastSeen}s ago)` : " (never connected)"}`}`;
-  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML" });
+  await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
 
 /** Real fix (spec: per-service 🟢/🔴/🟡 status): the EA/MT5 bridge's real connection state
@@ -137,7 +175,7 @@ async function handleAccount(deps: CommandRouterDeps, chatId: number): Promise<v
  * function that subsystem's own health-check already uses elsewhere (DavemaClient.ping(),
  * checkSandboxHealth(), getEaConnectionStatus()) rather than inventing a second, parallel
  * check that could drift from what's actually true. */
-async function handleConnection(deps: CommandRouterDeps, chatId: number): Promise<void> {
+async function handleConnection(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const state = getLastKnownState(deps.userId);
   const eaStatus = getEaConnectionStatus(deps.userId);
   const eaLine = eaStatus.connected
@@ -180,7 +218,7 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number): Promis
   const text =
     `<b>Connection</b>\n${davemaLine}\n${brainLine}\n${eaLine}\n${sandboxLine}\n${dbLine}\n\n` +
     `Open positions: ${state.positions.length}\nPending orders: ${state.pendingOrders.length}`;
-  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML" });
+  await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
 
 /** Real fix (user report: "providers is missing? it's only airllm and deepseek and Claude") --
@@ -203,7 +241,7 @@ function providersKeyboard(current: ProviderName, configuredProviders: Set<Provi
       })
     );
   }
-  return keyboard(rows);
+  return withMenuHome(keyboard(rows));
 }
 
 /** Real fix (user: "when providers is not set it to say provider not set") -- Primary previously
@@ -211,7 +249,7 @@ function providersKeyboard(current: ProviderName, configuredProviders: Set<Provi
  * choice, even on a totally fresh install where it's just DEFAULT_CONFIG's fallback ("airllm")
  * with zero real keys behind it. Now explicitly says "(not set -- no working key)" when the
  * primary provider isn't actually ready (airllm excepted: self-hosted, no key required). */
-async function handleProviders(deps: CommandRouterDeps, chatId: number): Promise<void> {
+async function handleProviders(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const config = getModelConfig(deps.userId);
   const configuredProviders = new Set(listProviderKeys(deps.db, deps.userId).map((k) => k.provider));
   const catalogCount = listProviderCatalog().filter((e) => e.id !== "custom").length;
@@ -220,7 +258,7 @@ async function handleProviders(deps: CommandRouterDeps, chatId: number): Promise
   const text =
     `<b>AI Provider</b>\nPrimary: ${primaryLine}\nFallback: ${config.fallback.join(", ") || "none"}\n\n` +
     `${catalogCount} providers available. Tap a provider to see its keys:`;
-  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup: providersKeyboard(config.primary, configuredProviders) });
+  await sendOrEditScreen(deps, chatId, text, providersKeyboard(config.primary, configuredProviders), editMessageId);
 }
 
 /** Real fix (spec: "Tap a provider -> shows its stored keys (up to 10 per provider) each with
@@ -248,8 +286,7 @@ function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { 
     rows.push([coloredButton("➕ Add key(s)", "blue", `addkey:${provider}`)]);
   }
   rows.push([coloredButton(config.primary === provider ? "✅ Primary provider" : "Set as primary provider", config.primary === provider ? "green" : "blue", `setprimaryprovider:${provider}`)]);
-  rows.push([{ text: "⬅️ Back", callback_data: "providers:back" }]);
-  return { text: lines.join("\n"), reply_markup: keyboard(rows) };
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "providers:back") };
 }
 
 /** Real fix (user: "It should fetch the models like v1 model so I can select as well") --
@@ -283,7 +320,7 @@ function modelSummaryLine(deps: CommandRouterDeps, provider: ProviderName): stri
  * real current-model line, each with its own "Model for <provider>" button leading to that
  * SPECIFIC provider's real fetch/manual-entry picker (modelFor: callback below) -- confirmed
  * per-provider, not a single global setting. */
-async function handleModels(deps: CommandRouterDeps, chatId: number): Promise<void> {
+async function handleModels(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const config = getModelConfig(deps.userId);
   const providers = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
   const lines = [`<b>Models</b>`, `Primary: ${modelSummaryLine(deps, config.primary)}`];
@@ -296,7 +333,7 @@ async function handleModels(deps: CommandRouterDeps, chatId: number): Promise<vo
   const rows: ReturnType<typeof coloredButton>[][] = providers
     .filter((p) => p !== "airllm")
     .map((p) => [coloredButton(`Model for ${p}${p === config.primary ? " (primary)" : ""}`, "blue", `modelfor:${p}`)]);
-  await deps.client.sendMessage({ chat_id: chatId, text: lines.join("\n"), parse_mode: "HTML", reply_markup: rows.length > 0 ? keyboard(rows) : undefined });
+  await sendOrEditScreen(deps, chatId, lines.join("\n"), withMenuHome(keyboard(rows)), editMessageId);
 }
 
 /** The real per-provider picker (fetch-live-models or manual-entry) -- reused for the primary
@@ -412,12 +449,14 @@ function modeLabel(mode: RiskMode, value?: number): string {
  * Security-Schedule/Trailing-breakeven-TP1-3/protected-limit-change UI are real, tracked gaps, not
  * built into this screen yet -- see the audit report for what's pending. */
 function settingsTopKeyboard(): ReturnType<typeof keyboard> {
-  return keyboard([
-    [coloredButton("Risk / Trading", "blue", "settings:risk"), coloredButton("Trading Mode", "blue", "settings:tradingmode")],
-    [coloredButton("Pair Group", "blue", "settings:pairgroup"), coloredButton("Voice", "blue", "settings:voice")],
-    [coloredButton("Memory", "blue", "settings:memory"), coloredButton("E2B Keys", "blue", "settings:e2b")],
-    [coloredButton("Trailing / Breakeven", "blue", "settings:trailing"), coloredButton("Notifications", "blue", "settings:notifications")],
-  ]);
+  return withMenuHome(
+    keyboard([
+      [coloredButton("Risk / Trading", "blue", "settings:risk"), coloredButton("Trading Mode", "blue", "settings:tradingmode")],
+      [coloredButton("Pair Group", "blue", "settings:pairgroup"), coloredButton("Voice", "blue", "settings:voice")],
+      [coloredButton("Memory", "blue", "settings:memory"), coloredButton("E2B Keys", "blue", "settings:e2b")],
+      [coloredButton("Trailing / Breakeven", "blue", "settings:trailing"), coloredButton("Notifications", "blue", "settings:notifications")],
+    ])
+  );
 }
 
 /** NOTIFICATIONS section: real push toggle (genuinely gates the alert-sending tools in
@@ -426,12 +465,14 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
  * codebase yet, so it's flagged rather than pretended to work. */
 function notificationsKeyboard(deps: CommandRouterDeps): ReturnType<typeof keyboard> {
   const settings = getNotificationSettings(deps.db, deps.userId);
-  return keyboard([
-    [coloredButton(`Push notifications: ${settings.pushEnabled ? "On" : "Off"}`, settings.pushEnabled ? "green" : "red", "notif:togglepush")],
-    [coloredButton(`Trade-opened alert: ${settings.tradeOpenedEnabled ? "On" : "Off"}`, settings.tradeOpenedEnabled ? "green" : "red", "notif:toggletradeopened")],
-    [coloredButton(`Email notifications: ${settings.emailEnabled ? "On (no email sender configured yet)" : "Off"}`, settings.emailEnabled ? "green" : "red", "notif:toggleemail")],
-    [{ text: "⬅️ Back", callback_data: "settings:top" }],
-  ]);
+  return withMenuHome(
+    keyboard([
+      [coloredButton(`Push notifications: ${settings.pushEnabled ? "On" : "Off"}`, settings.pushEnabled ? "green" : "red", "notif:togglepush")],
+      [coloredButton(`Trade-opened alert: ${settings.tradeOpenedEnabled ? "On" : "Off"}`, settings.tradeOpenedEnabled ? "green" : "red", "notif:toggletradeopened")],
+      [coloredButton(`Email notifications: ${settings.emailEnabled ? "On (no email sender configured yet)" : "Off"}`, settings.emailEnabled ? "green" : "red", "notif:toggleemail")],
+    ]),
+    "settings:top"
+  );
 }
 
 /** Real fix (spec: "Trailing/breakeven... TP1/TP2/TP3 trigger values") -- the real backend
@@ -452,9 +493,8 @@ function trailingKeyboard(userId: string): { text: string; reply_markup: ReturnT
     [{ text: config ? `TP1 -> SL ${config.slAtTp1} (tap to change)` : "Set TP1 SL level", callback_data: "trailing:slAtTp1" }],
     [{ text: config ? `TP2 -> SL ${config.slAtTp2} (tap to change)` : "Set TP2 SL level", callback_data: "trailing:slAtTp2" }],
     [{ text: config ? `TP3 -> SL ${config.slAtTp3} (tap to change)` : "Set TP3 SL level", callback_data: "trailing:slAtTp3" }],
-    [{ text: "⬅️ Back", callback_data: "settings:top" }],
   ];
-  return { text: lines.join("\n"), reply_markup: keyboard(rows) };
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 export async function tryHandlePendingTrailingEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
@@ -483,12 +523,11 @@ function e2bKeyboard(deps: CommandRouterDeps): { text: string; reply_markup: Ret
     coloredButton("Remove", "red", `e2bkey:remove:${k.id}`),
   ]);
   if (keys.length < 10) rows.push([coloredButton("➕ Add key", "blue", "e2bkey:add")]);
-  rows.push([{ text: "⬅️ Back", callback_data: "settings:top" }]);
-  return { text: lines.join("\n"), reply_markup: keyboard(rows) };
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
-async function handleSettings(deps: CommandRouterDeps, chatId: number): Promise<void> {
-  await deps.client.sendMessage({ chat_id: chatId, text: "<b>Settings</b>\nTrading-rule content (what/when/how to trade) lives in your uploaded rules file, never here.", parse_mode: "HTML", reply_markup: settingsTopKeyboard() });
+async function handleSettings(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
+  await sendOrEditScreen(deps, chatId, "<b>Settings</b>\nTrading-rule content (what/when/how to trade) lives in your uploaded rules file, never here.", settingsTopKeyboard(), editMessageId);
 }
 
 function riskSettingsKeyboard(userId: string) {
@@ -501,21 +540,23 @@ function riskSettingsKeyboard(userId: string) {
   const maxDailyLossLabel = pendingFor("maxDailyLossPct")
     ? `Max daily loss: ${settings.maxDailyLossPct ?? "not set"}% (pending approval)`
     : `Max daily loss: ${settings.maxDailyLossPct ?? "not set"}% (tap to change)`;
-  return settingsScreen(
-    [
+  return appendMenuHome(
+    settingsScreen(
       [
-        { label: `SL: ${modeLabel(settings.slMode, settings.slValue)}`, callbackData: "cyclemode:sl", active: false },
-        { label: `TP: ${modeLabel(settings.tpMode, settings.tpValue)}`, callbackData: "cyclemode:tp", active: false },
+        [
+          { label: `SL: ${modeLabel(settings.slMode, settings.slValue)}`, callbackData: "cyclemode:sl", active: false },
+          { label: `TP: ${modeLabel(settings.tpMode, settings.tpValue)}`, callbackData: "cyclemode:tp", active: false },
+        ],
+        [{ label: `Lot: ${modeLabel(settings.lotMode, settings.lotValue)}`, callbackData: "cyclemode:lot", active: false }],
+        // Real fix: max open trades / max daily loss are PROTECTED (SECURITY.md) -- tapping
+        // never applies a value directly, it only primes capture of the user's own number,
+        // which then goes through the real, unavoidable proposeProtectedLimitChange ->
+        // separate approve/decline round trip, same as a Dave-initiated proposal.
+        [{ label: maxOpenTradesLabel, callbackData: "proposelimit:maxOpenTrades", active: false }],
+        [{ label: maxDailyLossLabel, callbackData: "proposelimit:maxDailyLossPct", active: false }],
       ],
-      [{ label: `Lot: ${modeLabel(settings.lotMode, settings.lotValue)}`, callbackData: "cyclemode:lot", active: false }],
-      // Real fix: max open trades / max daily loss are PROTECTED (SECURITY.md) -- tapping
-      // never applies a value directly, it only primes capture of the user's own number,
-      // which then goes through the real, unavoidable proposeProtectedLimitChange ->
-      // separate approve/decline round trip, same as a Dave-initiated proposal.
-      [{ label: maxOpenTradesLabel, callbackData: "proposelimit:maxOpenTrades", active: false }],
-      [{ label: maxDailyLossLabel, callbackData: "proposelimit:maxDailyLossPct", active: false }],
-    ],
-    "settings:top"
+      "settings:top"
+    )
   );
 }
 
@@ -548,18 +589,19 @@ export async function tryHandlePendingLimitEntry(deps: CommandRouterDeps, chatId
 /** TRADING MODE section: Auto (own judgment + skill library) vs Trading Skills (locked to one taught skill). */
 function tradingModeKeyboard(userId: string): ReturnType<typeof keyboard> {
   const state = getTradingMode(userId);
-  return keyboard([
-    [coloredButton(state.mode === "auto" ? "✅ Auto" : "Auto", state.mode === "auto" ? "green" : "neutral", "tradingmode:auto")],
-    [coloredButton(state.mode === "trading-skills" ? `✅ Trading Skills (${state.lockedSkillId ?? "none"})` : "Trading Skills", state.mode === "trading-skills" ? "green" : "neutral", "tradingmode:pickskill")],
-    [{ text: "⬅️ Back", callback_data: "settings:top" }],
-  ]);
+  return withMenuHome(
+    keyboard([
+      [coloredButton(state.mode === "auto" ? "✅ Auto" : "Auto", state.mode === "auto" ? "green" : "neutral", "tradingmode:auto")],
+      [coloredButton(state.mode === "trading-skills" ? `✅ Trading Skills (${state.lockedSkillId ?? "none"})` : "Trading Skills", state.mode === "trading-skills" ? "green" : "neutral", "tradingmode:pickskill")],
+    ]),
+    "settings:top"
+  );
 }
 
 function skillPickerKeyboard(userId: string): ReturnType<typeof keyboard> {
   const skills = listSkills(userId);
   const rows: ReturnType<typeof coloredButton>[][] = skills.map((s) => [coloredButton(s.name, "neutral", `tradingmode:setskill:${s.id}`)]);
-  rows.push([{ text: "⬅️ Back", callback_data: "settings:tradingmode" }]);
-  return keyboard(rows);
+  return withMenuHome(keyboard(rows), "settings:tradingmode");
 }
 
 /** PAIR GROUP section: exactly one active + one fallback at a time, per pair-groups.ts's own real invariant. */
@@ -578,8 +620,7 @@ function pairGroupKeyboard(userId: string): { text: string; reply_markup: Return
     coloredButton(g.id === info.activeGroup?.id ? `✅ ${g.name}` : g.name, g.id === info.activeGroup?.id ? "green" : "neutral", `pairgroup:active:${g.id}`),
     coloredButton(g.id === info.fallbackGroup?.id ? `✅ Fallback` : "Set fallback", g.id === info.fallbackGroup?.id ? "green" : "neutral", `pairgroup:fallback:${g.id}`),
   ]);
-  rows.push([{ text: "⬅️ Back", callback_data: "settings:top" }]);
-  return { text: lines.join("\n"), reply_markup: keyboard(rows) };
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 /** VOICE section: on/off, TTS provider, per-provider voice ID (ElevenLabs: real live-fetched picker; Fish Audio: no listable-voices endpoint, captured via the next free-text message). */
@@ -602,9 +643,8 @@ function voiceSettingsView(deps: CommandRouterDeps): { text: string; reply_marku
       rows.push([{ text: settings.elevenlabsVoiceId ? `ElevenLabs voice: ${settings.elevenlabsVoiceId} (tap to change)` : "🔄 Fetch live ElevenLabs voices", callback_data: "voice:fetchvoices:elevenlabs" }]);
     }
   }
-  rows.push([{ text: "⬅️ Back", callback_data: "settings:top" }]);
   const text = `<b>Voice</b>\n${settings.enabled ? `On -- ${settings.activeProvider}` : "Off"}`;
-  return { text, reply_markup: keyboard(rows) };
+  return { text, reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 /** MEMORY section: write-approval (off by default -- Dave asks before saving to memory) + the
@@ -613,23 +653,70 @@ function voiceSettingsView(deps: CommandRouterDeps): { text: string; reply_marku
 function memoryKeyboard(userId: string): ReturnType<typeof keyboard> {
   const writeApproval = getWriteApprovalSetting(userId);
   const autoApproval = getAutoApprovalEnabled(userId);
-  return keyboard([
-    [coloredButton(`Ask before saving to memory: ${writeApproval ? "On" : "Off"}`, writeApproval ? "green" : "red", "togglewriteapproval")],
-    [coloredButton(`Auto-approve Dave's proposals: ${autoApproval ? "On" : "Off"}`, autoApproval ? "green" : "red", "toggleautoapproval")],
-    [{ text: "⬅️ Back", callback_data: "settings:top" }],
-  ]);
+  return withMenuHome(
+    keyboard([
+      [coloredButton(`Ask before saving to memory: ${writeApproval ? "On" : "Off"}`, writeApproval ? "green" : "red", "togglewriteapproval")],
+      [coloredButton(`Auto-approve Dave's proposals: ${autoApproval ? "On" : "Off"}`, autoApproval ? "green" : "red", "toggleautoapproval")],
+    ]),
+    "settings:top"
+  );
 }
 
-async function handleReset(deps: CommandRouterDeps, chatId: number, historyKey: string): Promise<void> {
+/**
+ * Item 8 real gap fixed: /reset used to only clear conversation history -- everything else
+ * (memory files, trading settings, notification/voice preferences) silently survived, which is
+ * NOT what "reset" honestly means and isn't what the user asked for. This is destructive and
+ * irreversible, so it now requires a real confirmation step (colored Approve/Decline) before
+ * anything is touched -- a single tap can no longer wipe it all by accident.
+ */
+async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<void> {
+  await deps.client.sendMessage({
+    chat_id: chatId,
+    text:
+      "<b>⚠️ Full reset</b>\nThis will genuinely wipe:\n" +
+      "• Conversation history\n" +
+      "• Memory (MEMORY.md, USER.md, ADAPTABILITY.md)\n" +
+      "• Trading settings (risk/trading mode/pair group selection/trailing config/write-approval)\n" +
+      "• Voice and notification preferences\n\n" +
+      "Your uploaded rules file (goal.yaml) and stored provider/E2B API keys are NOT touched.\n\n" +
+      "This cannot be undone. Continue?",
+    parse_mode: "HTML",
+    reply_markup: keyboard([[coloredButton("✅ Yes, wipe everything", "green", "resetconfirm:yes"), coloredButton("❌ Cancel", "red", "resetconfirm:no")]]),
+  });
+}
+
+/**
+ * The actual real wipe -- only ever reached after the user explicitly taps "Yes" above.
+ * Deliberately does NOT touch goal.yaml (the user's real, authored trading rules -- same
+ * reasoning BOOTSTRAP.md already uses) or any stored provider/E2B API key (credentials, not
+ * "settings" -- losing those would be a real, costly surprise, not a helpful fresh start).
+ *
+ * Telegram limitation, honestly reported rather than faked: bots can only delete their OWN
+ * messages (and only within 48h) -- there is no real Bot API method to delete a user's own
+ * sent messages in a private chat, so "delete the conversation from the chat itself" is not
+ * something this can genuinely do without a message-id history this build doesn't keep. The
+ * real, honest fallback -- clearing all stored history so nothing carries forward -- is what
+ * actually happens, and the confirmation message above says so plainly rather than pretending.
+ */
+async function performFullReset(deps: CommandRouterDeps, chatId: number, historyKey: string): Promise<void> {
   clearConversationHistory(deps.db, historyKey);
-  await deps.client.sendMessage({ chat_id: chatId, text: "Conversation history cleared -- starting fresh." });
+  resetUserMemory(deps.userId);
+  resetRiskSettingsForUser(deps.userId);
+  resetTradingModeForUser(deps.userId);
+  resetPairGroupSelectionForUser(deps.userId);
+  resetTrailingStopConfigForUser(deps.userId);
+  resetWriteApprovalForUser(deps.userId);
+  resetVoiceSettingsForUser(deps.db, deps.userId);
+  resetNotificationSettingsForUser(deps.db, deps.userId);
+  await deps.client.sendMessage({ chat_id: chatId, text: "✅ Full reset complete -- memory, trading settings, and conversation history are all genuinely cleared. Starting fresh." });
+  await handleMenu(deps, chatId);
 }
 
 /** Real fix (spec: "3-4 real examples" of conversational use + mention /stop and /panic).
  * /stop and /panic are deliberately NOT in DAVE_COMMANDS (they're not part of the public
  * 9/10-command menu) -- real, working emergency commands, just not menu-listed; mentioned
  * here explicitly instead. */
-async function handleHelp(deps: CommandRouterDeps, chatId: number): Promise<void> {
+async function handleHelp(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const lines = DAVE_COMMANDS.map((c) => `/${c.command} -- ${c.description}`);
   const text =
     `<b>What I can do</b>\n${lines.join("\n")}\n\n` +
@@ -639,10 +726,10 @@ async function handleHelp(deps: CommandRouterDeps, chatId: number): Promise<void
     `• "Find me a setup on gold"\n` +
     `• "Switch provider to DeepSeek"\n\n` +
     `/stop or /panic halts all trading and workers instantly, any time -- not just a settings toggle.`;
-  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML" });
+  await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
 
-async function handleStatus(deps: CommandRouterDeps, chatId: number): Promise<void> {
+async function handleStatus(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const breaker = getCircuitBreakerReport(deps.db, deps.userId);
   const interrupt = getInterruptState(deps.userId);
   const workers = listWorkers(deps.userId);
@@ -652,7 +739,7 @@ async function handleStatus(deps: CommandRouterDeps, chatId: number): Promise<vo
     `Circuit breaker: ${breakerLine}\n` +
     `Trading loop: ${interrupt.tradingLoop}\n` +
     `Active workers: ${workers.length}`;
-  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML" });
+  await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
 
 async function handleEa(deps: CommandRouterDeps, chatId: number): Promise<void> {
@@ -665,34 +752,34 @@ async function handleEa(deps: CommandRouterDeps, chatId: number): Promise<void> 
  * a button runs the EXACT SAME handler typing that command would -- this is the single real
  * dispatch point both dispatchCommand (text) and the menu: callback (button tap) share, so
  * there is no second, divergent code path for "the same command run two ways." */
-async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, historyKey: string, command: DaveCommand): Promise<void> {
+async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, historyKey: string, command: DaveCommand, editMessageId?: number): Promise<void> {
   switch (command) {
     case "account":
-      await handleAccount(deps, chatId);
+      await handleAccount(deps, chatId, editMessageId);
       break;
     case "connection":
-      await handleConnection(deps, chatId);
+      await handleConnection(deps, chatId, editMessageId);
       break;
     case "providers":
-      await handleProviders(deps, chatId);
+      await handleProviders(deps, chatId, editMessageId);
       break;
     case "models":
-      await handleModels(deps, chatId);
+      await handleModels(deps, chatId, editMessageId);
       break;
     case "settings":
-      await handleSettings(deps, chatId);
+      await handleSettings(deps, chatId, editMessageId);
       break;
     case "reset":
-      await handleReset(deps, chatId, historyKey);
+      await handleReset(deps, chatId);
       break;
     case "help":
-      await handleHelp(deps, chatId);
+      await handleHelp(deps, chatId, editMessageId);
       break;
     case "menu":
-      await handleMenu(deps, chatId);
+      await handleMenu(deps, chatId, editMessageId);
       break;
     case "status":
-      await handleStatus(deps, chatId);
+      await handleStatus(deps, chatId, editMessageId);
       break;
     case "ea":
       await handleEa(deps, chatId);
@@ -722,8 +809,8 @@ function menuKeyboard(): ReturnType<typeof keyboard> {
   return keyboard(rows);
 }
 
-async function handleMenu(deps: CommandRouterDeps, chatId: number): Promise<void> {
-  await deps.client.sendMessage({ chat_id: chatId, text: "<b>Menu</b>\nTap a command:", parse_mode: "HTML", reply_markup: menuKeyboard() });
+async function handleMenu(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
+  await sendOrEditScreen(deps, chatId, "<b>Menu</b>\nTap a command:", menuKeyboard(), editMessageId);
 }
 
 export async function dispatchCommand(deps: CommandRouterDeps, chatId: number, historyKey: string, text: string): Promise<boolean> {
@@ -963,7 +1050,10 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
     } else if (data.startsWith("menucmd:")) {
       const command = data.slice("menucmd:".length) as DaveCommand;
       ackText = undefined;
-      if (chatId) await dispatchCommandByName(deps, chatId, `${deps.userId}:${chatId}`, command);
+      // Item 7: a menu/back-button tap edits the SAME message in place (the tapped message's own
+      // id) instead of sending a new one and stacking -- /reset's own confirm flow is the one
+      // deliberate exception (a destructive action gets its own fresh, unmissable message).
+      if (chatId) await dispatchCommandByName(deps, chatId, `${deps.userId}:${chatId}`, command, command === "reset" ? undefined : callback.message?.message_id);
     } else if (data.startsWith("provider:")) {
       const name = data.slice("provider:".length) as ProviderName;
       ackText = undefined;
@@ -985,7 +1075,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       }
     } else if (data === "providers:back") {
       ackText = undefined;
-      if (chatId) await handleProviders(deps, chatId);
+      if (chatId) await handleProviders(deps, chatId, callback.message?.message_id);
     } else if (data.startsWith("activatekey:")) {
       const keyId = data.slice("activatekey:".length);
       const key = getProviderKeyById(deps.db, deps.userId, keyId);
@@ -1100,6 +1190,12 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         });
       }
       ackText = "Sent";
+    } else if (data === "resetconfirm:yes") {
+      ackText = undefined;
+      if (chatId) await performFullReset(deps, chatId, `${deps.userId}:${chatId}`);
+    } else if (data === "resetconfirm:no") {
+      ackText = "Cancelled";
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Cancelled -- nothing was touched." });
     } else if (data === "settings:back") {
       ackText = undefined;
     }

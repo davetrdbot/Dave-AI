@@ -53,11 +53,13 @@ try {
   assert.ok(menuButtons.every((b) => b.callback_data.startsWith("menucmd:")), "every menu button must route through the real command dispatch");
   assert.ok(!menuBody.text.includes("--"), "the message body itself must not be the old '/command -- description' text dump");
 
-  console.log("\n[2] Tapping a menu button genuinely runs the SAME handler as typing the command...");
+  console.log("\n[2] Tapping a menu button genuinely runs the SAME handler as typing the command (same content -- item 7: the tap now EDITS the tapped message in place, so the real method differs, sendMessage vs editMessageText, but the screen content must be identical)...");
   const statusButton = menuButtons.find((b) => b.callback_data === "menucmd:status")!;
   sentTelegramCalls.length = 0;
   await dispatchCallback(deps, { id: "cb1", data: statusButton.callback_data, message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
-  const tappedResult = sentTelegramCalls.find((c) => c.method === "sendMessage");
+  const tappedResult = sentTelegramCalls.find((c) => c.method === "editMessageText" || c.method === "sendMessage");
+  console.log(`    real method used for the tap: ${tappedResult!.method}`);
+  assert.equal(tappedResult!.method, "editMessageText", "item 7: a menu-button tap must genuinely EDIT the tapped message in place, not send a new one");
   sentTelegramCalls.length = 0;
   await dispatchCommand(deps, CHAT_ID, `${OWNER}:${CHAT_ID}`, "/status");
   const typedResult = sentTelegramCalls.find((c) => c.method === "sendMessage");

@@ -69,3 +69,9 @@ export function setTradeOpenedEnabled(db: DaveDatabase, ownerUserId: string, ena
   const row = getOrCreateRow(db, ownerUserId);
   db.update(TABLE, ownerUserId, row.id, { trade_opened_enabled: enabled ? 1 : 0 });
 }
+
+/** Item 8 (/reset "config/settings back to defaults"): deletes the row so getNotificationSettings's own real defaults apply again on next access. */
+export function resetNotificationSettingsForUser(db: DaveDatabase, ownerUserId: string): void {
+  ensureTable(db);
+  for (const row of db.query(TABLE, ownerUserId, {}) as unknown as SettingsRow[]) db.deleteRow(TABLE, ownerUserId, row.id);
+}

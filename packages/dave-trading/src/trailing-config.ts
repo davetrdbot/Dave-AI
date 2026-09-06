@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { BreakevenTrailingConfig } from "./breakeven-trailing.js";
 
@@ -23,4 +23,9 @@ export function setTrailingStopConfig(userId: string, config: BreakevenTrailingC
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(path, JSON.stringify(config, null, 2), "utf8");
+}
+
+/** Item 8 (/reset "config/settings back to defaults"): deletes the file so getTrailingStopConfig genuinely reports "not set" again. */
+export function resetTrailingStopConfigForUser(userId: string): void {
+  rmSync(configPath(userId), { force: true });
 }

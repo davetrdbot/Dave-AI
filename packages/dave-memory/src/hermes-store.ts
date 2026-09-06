@@ -61,6 +61,21 @@ export function ensureUserMemory(userId: string): void {
 }
 
 /**
+ * Item 8 (/reset "Delete all memory files (MEMORY.md, USER.md, ADAPTABILITY.md) back to
+ * empty"). Deliberately excludes goal.yaml -- that's the user's uploaded trading rules file,
+ * real authored content the user would have to redo from scratch, not conversational memory;
+ * same reasoning BOOTSTRAP.md already uses for why the rules file survives a fresh cold start.
+ */
+export function resetUserMemory(userId: string): void {
+  const dir = userDir(userId);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  for (const file of ["MEMORY.md", "USER.md", "ADAPTABILITY.md"] as const) {
+    const template = existsSync(templatePath(file)) ? readFileSync(templatePath(file), "utf8") : "";
+    writeFileSync(filePath(userId, file), template, "utf8");
+  }
+}
+
+/**
  * Loads a FROZEN snapshot of this user's memory files. Per the Hermes
  * pattern (Step 1.4), this snapshot is meant to be read once at session
  * start and placed first in the prompt (static-first, per Step 1.7) — it
