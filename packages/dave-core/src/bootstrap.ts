@@ -21,12 +21,12 @@ export interface Transport {
 }
 
 const OPENING_MESSAGE =
-  "Hey, I just came online — I'm Dave \u{1F605}\n\nBefore we dive into anything, I want to get to know you a bit. Quick one first:";
+  "Hey, I just came online — I'm Dave \u{1F605}. Quick one before we get going:";
 const Q1_NAME = "What should I call you?";
 const Q2_STYLE =
-  "Got it. How do you like people to communicate with you — terse and to the point, or more detail? Want me checking in often, or only when it actually matters?";
+  "Terse and to the point, or more detail? And should I check in often, or only when it matters?";
 const Q3_RULES_ACK =
-  "Good to know. Last thing: I'm ready to trade whenever you upload your rules file — until then I'm just getting oriented, not touching any trades.";
+  "Last thing — I won't touch a trade until you upload your rules file. Send it whenever you're ready.";
 
 function progressPath(userId: string): string {
   return join(process.cwd(), "data", "bootstrap", `${userId}.json`);
@@ -125,9 +125,8 @@ export class BootstrapFlow {
         const name = progress.name ?? "there";
         await this.transport.send(
           userId,
-          `Alright ${name}, here's what I've got: I'll call you ${name}, and I'll keep the ` +
-            `"${progress.styleNote}" communication style in mind. You're all set — talk to me ` +
-            `normally from here, and upload your rules file whenever you're ready to trade.`
+          `Got it, ${name}. I'll keep "${progress.styleNote}" in mind. Talk to me normally from ` +
+            `here — send your rules file whenever you're ready.`
         );
         return true;
       }

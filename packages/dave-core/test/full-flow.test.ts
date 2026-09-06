@@ -53,7 +53,7 @@ const consumed1 = await flow.handleMessage(USER_ID, "David");
 assert.equal(consumed1, true);
 console.log(`    User: "David"`);
 console.log(`    Dave: "${sentMessages[2].text}"`);
-assert.match(sentMessages[2].text, /communicate/i);
+assert.match(sentMessages[2].text, /terse|detail/i);
 
 console.log("\n[5] User answers Q2 (communication style)...");
 const consumed2 = await flow.handleMessage(USER_ID, "Terse, only check in when it matters");
