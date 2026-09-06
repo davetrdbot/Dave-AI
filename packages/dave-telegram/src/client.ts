@@ -316,6 +316,17 @@ export class TelegramClient {
     return this.call<{ message_id: number; poll: { id: string; question: string; options: { text: string; voter_count: number }[] } }>("sendPoll", params);
   }
 
+  /**
+   * Real gap fixed (item 7: "Dave can SEND a poll, but cannot edit an existing poll afterward").
+   * The real Bot API has no method to change a live poll's options in place -- `stopPoll` (closing
+   * it, freezing its final results) is the only real, honest "edit" a poll supports; changing the
+   * question/options for real means stopping this one and sending a fresh poll, which
+   * `editPoll()` below does explicitly rather than pretending an in-place edit exists.
+   */
+  stopPoll(params: { chat_id: number | string; message_id: number }) {
+    return this.call<{ id: string; question: string; options: { text: string; voter_count: number }[]; is_closed: boolean }>("stopPoll", params);
+  }
+
   sendChatAction(params: { chat_id: number | string; action: "typing" | "upload_document" | "upload_photo" }) {
     return this.call<true>("sendChatAction", params);
   }

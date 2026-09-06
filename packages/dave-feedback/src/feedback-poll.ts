@@ -86,3 +86,25 @@ export async function sendFeedbackPoll(
   }, pollId);
   return { messageId: sent.message_id, pollId, webhook };
 }
+
+/**
+ * Real "poll editing" (item 7 of the live production bug report: "Add real poll-editing
+ * capability (stopPoll / editing poll options where Telegram's API allows)"). The real Bot API
+ * has no method to change a live poll's question/options in place -- the only honest way to
+ * "edit" one is `stopPoll` (closes the old poll, freezing its final results) followed by sending
+ * a genuinely new poll with the updated question/options and its own new webhook registration.
+ * Returns both the old poll's real final results AND the new poll's real send result.
+ */
+export async function editPoll(
+  client: TelegramClient,
+  db: DaveDatabase,
+  ownerUserId: string,
+  chatId: number | string,
+  oldMessageId: number,
+  newQuestion: string,
+  newOptions: string[]
+): Promise<{ stoppedPoll: { id: string; question: string; options: { text: string; voter_count: number }[]; is_closed: boolean }; next: { messageId: number; pollId: string; webhook: AutomationWebhook } }> {
+  const stoppedPoll = await client.stopPoll({ chat_id: chatId, message_id: oldMessageId });
+  const next = await sendFeedbackPoll(client, db, ownerUserId, chatId, newQuestion, newOptions);
+  return { stoppedPoll, next };
+}

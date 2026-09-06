@@ -125,6 +125,7 @@ async function runAgentTurn(
   const taskDescription = typeof userContent === "string" ? userContent.slice(0, 80) : "processing your message";
   setBusy(deps.ownerUserId, taskDescription);
   try {
+    let finalResult: AgentRunResult | undefined;
     await withThinkingIndicator(client, chatId, async (indicator) => {
       const onStep = (step: AgentStep) => void indicator.update(classifyToolAction(step.toolName), step.toolName);
       let result: AgentRunResult;
@@ -136,10 +137,23 @@ async function runAgentTurn(
         result = await loop.run(history, { maxSteps: 8, onStep });
       }
       saveConversationHistory(deps.db, historyKey, result.history);
+      finalResult = result;
       const rawFinalText = result.status === "done" ? result.text || "(no text)" : result.question.question;
       const finalText = markdownToTelegramHtml(rawFinalText);
       return { result: undefined, finalText };
     });
+    // Real gap fixed (item 7: "inline-button-based questions Dave asks aren't being
+    // received/processed correctly") -- ask_user previously had no way to offer clickable
+    // choices at all. When the paused question carries real options, send them as real inline
+    // buttons (askuser:<toolCallId>:<index>) in a follow-up message; tapping one is handled
+    // below in the real callback_query path, resuming the SAME paused loop exactly like a typed
+    // answer would.
+    if (finalResult?.status === "awaiting_user" && finalResult.question.options && finalResult.question.options.length > 0) {
+      const options = finalResult.question.options;
+      const toolCallId = finalResult.toolCallId;
+      const rows = options.map((opt, i) => [{ text: opt, callback_data: `askuser:${toolCallId}:${i}` }]);
+      await client.sendMessage({ chat_id: chatId, text: "Tap an option:", reply_markup: { inline_keyboard: rows } });
+    }
   } catch (err) {
     await client.sendMessage({ chat_id: chatId, text: `Something went wrong handling that: ${err instanceof Error ? err.message : String(err)}` });
   } finally {
@@ -331,6 +345,32 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
             const historyKeyForPending = `${deps.ownerUserId}:${pending.chatId}`;
             await runAgentTurn(deps, client, pending.chatId, historyKeyForPending, pending.text, pending.text);
           }
+          return;
+        }
+
+        // Real gap fixed (item 7: inline-button ask_user answers were never received/processed
+        // -- this callback_data prefix had NO handler anywhere, so a tap silently did nothing).
+        // Intercepted here (not in command-router's generic dispatchCallback) because resuming
+        // the paused loop needs runAgentTurn, which only this module has in scope.
+        const askUserData = update.callback_query.data ?? "";
+        if (askUserData.startsWith("askuser:") && cbChatId !== undefined) {
+          const [, toolCallId, indexStr] = askUserData.split(":");
+          const pendingQuestion = getPendingQuestion(deps.ownerUserId);
+          const historyKeyForAskUser = `${deps.ownerUserId}:${cbChatId}`;
+          const history = loadConversationHistory(deps.db, historyKeyForAskUser);
+          const actualToolCallId = findPendingAskUserToolCallId(history);
+          if (!pendingQuestion || actualToolCallId !== toolCallId) {
+            await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "That question is no longer waiting" }).catch(() => undefined);
+            return;
+          }
+          const chosen = pendingQuestion.options?.[Number(indexStr)];
+          if (chosen === undefined) {
+            await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "That option expired -- please answer in a message" }).catch(() => undefined);
+            return;
+          }
+          await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: `Picked: ${chosen}` }).catch(() => undefined);
+          await client.sendMessage({ chat_id: cbChatId, text: `You picked: ${chosen}` });
+          await runAgentTurn(deps, client, cbChatId, historyKeyForAskUser, chosen, chosen);
           return;
         }
 
