@@ -43,8 +43,13 @@ import {
   ElevenLabsClient,
   setPendingVoiceIdEntry,
   getPendingVoiceIdEntry,
+  setPendingTtsKeyEntry,
+  getPendingTtsKeyEntry,
+  hasTtsProviderKey,
+  setTtsProviderKey,
 } from "@dave/notifications";
 import { getWriteApprovalSetting, setWriteApprovalSetting } from "@dave/memory";
+import { addE2BKey, listE2BKeys, removeE2BKey, setPendingE2BKeyEntry, getPendingE2BKeyEntry } from "@dave/e2b";
 import {
   getModelConfig,
   setModelConfig,
@@ -269,6 +274,27 @@ export async function tryHandlePendingVoiceEntry(deps: CommandRouterDeps, chatId
   return true;
 }
 
+/** Real fix (user: "elevenlabs... should be settable in the telegram") -- sets the TTS
+ * provider's own API key from a real Telegram message, previously admin-panel-only. */
+export async function tryHandlePendingTtsKeyEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const provider = getPendingTtsKeyEntry(deps.db, deps.userId);
+  if (!provider) return false;
+  setPendingTtsKeyEntry(deps.db, deps.userId, null);
+  setTtsProviderKey(deps.db, deps.userId, provider, text.trim());
+  await deps.client.sendMessage({ chat_id: chatId, text: `✅ ${provider} API key saved.` });
+  return true;
+}
+
+/** Real fix (user: "e2b... should be settable in the telegram") -- E2B keys previously only
+ * had an admin-panel route. */
+export async function tryHandlePendingE2BKeyEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  if (!getPendingE2BKeyEntry(deps.db, deps.userId)) return false;
+  setPendingE2BKeyEntry(deps.db, deps.userId, false);
+  const key = addE2BKey(deps.db, deps.userId, `E2B ${listE2BKeys(deps.db, deps.userId).length}`, text.trim());
+  await deps.client.sendMessage({ chat_id: chatId, text: `✅ E2B key saved (${key.label}).` });
+  return true;
+}
+
 /** Real fix (user: "I can set up to 10 keys in the telegram and paste the settable
  * credentials in telegram") -- the user's next message is one or more API keys, one per
  * line (a single pasted key is just a 1-line case of the same real bulk-add path, which
@@ -300,8 +326,22 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
   return keyboard([
     [coloredButton("Risk / Trading", "blue", "settings:risk"), coloredButton("Trading Mode", "blue", "settings:tradingmode")],
     [coloredButton("Pair Group", "blue", "settings:pairgroup"), coloredButton("Voice", "blue", "settings:voice")],
-    [coloredButton("Memory", "blue", "settings:memory")],
+    [coloredButton("Memory", "blue", "settings:memory"), coloredButton("E2B Keys", "blue", "settings:e2b")],
   ]);
+}
+
+/** Real fix (user: "e2b... should be settable in the telegram") -- same real backend
+ * (e2b-keys.ts) the admin panel already used, now reachable from /settings too. */
+function e2bKeyboard(deps: CommandRouterDeps): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const keys = listE2BKeys(deps.db, deps.userId);
+  const lines = [`<b>E2B Keys</b>`, keys.length === 0 ? "No keys stored yet." : `${keys.length}/10 stored key(s):`];
+  const rows: ReturnType<typeof coloredButton>[][] = keys.map((k) => [
+    coloredButton(`${k.healthy ? "🟢" : "🔴"} ${k.label}`, "neutral", `e2bkey:noop:${k.id}`),
+    coloredButton("Remove", "red", `e2bkey:remove:${k.id}`),
+  ]);
+  if (keys.length < 10) rows.push([coloredButton("➕ Add key", "blue", "e2bkey:add")]);
+  rows.push([{ text: "⬅️ Back", callback_data: "settings:top" }]);
+  return { text: lines.join("\n"), reply_markup: keyboard(rows) };
 }
 
 async function handleSettings(deps: CommandRouterDeps, chatId: number): Promise<void> {
@@ -367,6 +407,12 @@ function voiceSettingsView(deps: CommandRouterDeps): { text: string; reply_marku
   const baseKeyboard = buildVoiceSettingsKeyboard(settings);
   const rows = [...baseKeyboard.inline_keyboard];
   if (settings.enabled) {
+    // Real gap fixed (user: "elevenlabs... should be settable in the telegram") -- this only
+    // ever let you pick a voice/provider, never actually SET the provider's own API key
+    // (admin-panel-only before this). Shown first since a voice/model pick is meaningless
+    // without a real key behind it.
+    const hasKey = hasTtsProviderKey(deps.db, deps.userId, settings.activeProvider);
+    rows.push([{ text: hasKey ? `${settings.activeProvider} key: set (tap to change)` : `🔑 Set ${settings.activeProvider} API key`, callback_data: `voice:setkey:${settings.activeProvider}` }]);
     if (settings.activeProvider === "fish-audio") {
       rows.push([{ text: settings.fishVoiceId ? `Fish voice: ${settings.fishVoiceId} (tap to change)` : "Set Fish Audio voice ID", callback_data: "voice:manualvoice:fish-audio" }]);
     } else {
@@ -431,10 +477,12 @@ async function handleEa(deps: CommandRouterDeps, chatId: number): Promise<void> 
 }
 
 /** Real command dispatch. Returns true if `text` was a recognized command and was handled (caller should NOT also forward it to the LLM). */
-export async function dispatchCommand(deps: CommandRouterDeps, chatId: number, historyKey: string, text: string): Promise<boolean> {
-  const parsed = parseCommand(text);
-  if (!parsed) return false;
-  const command: DaveCommand = parsed.command;
+/** Real fix (user: "/menu should be UI, not a list of commands") -- a real inline-keyboard
+ * menu, same visual pattern as every other screen in this build (2 per row, Back row). Tapping
+ * a button runs the EXACT SAME handler typing that command would -- this is the single real
+ * dispatch point both dispatchCommand (text) and the menu: callback (button tap) share, so
+ * there is no second, divergent code path for "the same command run two ways." */
+async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, historyKey: string, command: DaveCommand): Promise<void> {
   switch (command) {
     case "account":
       await handleAccount(deps, chatId);
@@ -455,8 +503,10 @@ export async function dispatchCommand(deps: CommandRouterDeps, chatId: number, h
       await handleReset(deps, chatId, historyKey);
       break;
     case "help":
-    case "menu":
       await handleHelp(deps, chatId);
+      break;
+    case "menu":
+      await handleMenu(deps, chatId);
       break;
     case "status":
       await handleStatus(deps, chatId);
@@ -465,6 +515,36 @@ export async function dispatchCommand(deps: CommandRouterDeps, chatId: number, h
       await handleEa(deps, chatId);
       break;
   }
+}
+
+const MENU_BUTTONS: { command: DaveCommand; label: string }[] = [
+  { command: "account", label: "💰 Account" },
+  { command: "connection", label: "🔌 Connection" },
+  { command: "providers", label: "🤖 Providers" },
+  { command: "models", label: "🧠 Models" },
+  { command: "settings", label: "⚙️ Settings" },
+  { command: "status", label: "📊 Status" },
+  { command: "ea", label: "📄 EA File" },
+  { command: "reset", label: "🔄 Reset" },
+  { command: "help", label: "❓ Help" },
+];
+
+function menuKeyboard(): ReturnType<typeof keyboard> {
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  for (let i = 0; i < MENU_BUTTONS.length; i += 2) {
+    rows.push(MENU_BUTTONS.slice(i, i + 2).map((b) => coloredButton(b.label, "blue", `menucmd:${b.command}`)));
+  }
+  return keyboard(rows);
+}
+
+async function handleMenu(deps: CommandRouterDeps, chatId: number): Promise<void> {
+  await deps.client.sendMessage({ chat_id: chatId, text: "<b>Menu</b>\nTap a command:", parse_mode: "HTML", reply_markup: menuKeyboard() });
+}
+
+export async function dispatchCommand(deps: CommandRouterDeps, chatId: number, historyKey: string, text: string): Promise<boolean> {
+  const parsed = parseCommand(text);
+  if (!parsed) return false;
+  await dispatchCommandByName(deps, chatId, historyKey, parsed.command);
   return true;
 }
 
@@ -562,6 +642,11 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = undefined;
       const view = voiceSettingsView(deps);
       await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("voice:setkey:")) {
+      const provider = data.slice("voice:setkey:".length) as "fish-audio" | "elevenlabs";
+      setPendingTtsKeyEntry(deps.db, deps.userId, provider);
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Reply with your ${provider} API key as your next message.` });
     } else if (data.startsWith("voice:manualvoice:")) {
       setPendingVoiceIdEntry(deps.db, deps.userId, "fish-audio");
       ackText = undefined;
@@ -609,6 +694,23 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       }
       const view = voiceSettingsView(deps);
       await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:e2b") {
+      ackText = undefined;
+      const view = e2bKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "e2bkey:add") {
+      setPendingE2BKeyEntry(deps.db, deps.userId, true);
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Reply with your E2B API key as your next message." });
+    } else if (data.startsWith("e2bkey:remove:")) {
+      const keyId = data.slice("e2bkey:remove:".length);
+      removeE2BKey(deps.db, deps.userId, keyId);
+      ackText = "Key removed";
+      await confirm("E2B key removed");
+      const view = e2bKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("e2bkey:noop:")) {
+      ackText = undefined;
     } else if (data === "settings:memory") {
       ackText = undefined;
       await renderInPlace("<b>Memory</b>", memoryKeyboard(deps.userId));
@@ -624,6 +726,10 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = `Auto-approval ${!enabled ? "enabled" : "disabled"}`;
       await confirm(`Auto-approve Dave's proposals: ${!enabled ? "On" : "Off"}`);
       await renderInPlace("<b>Memory</b>", memoryKeyboard(deps.userId));
+    } else if (data.startsWith("menucmd:")) {
+      const command = data.slice("menucmd:".length) as DaveCommand;
+      ackText = undefined;
+      if (chatId) await dispatchCommandByName(deps, chatId, `${deps.userId}:${chatId}`, command);
     } else if (data.startsWith("provider:")) {
       const name = data.slice("provider:".length) as ProviderName;
       ackText = undefined;

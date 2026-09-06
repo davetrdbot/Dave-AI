@@ -16,8 +16,11 @@ import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js"
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic } from "@dave/safety";
+import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
+import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
+import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
@@ -67,6 +70,59 @@ function modelConfigProvider(db: DaveDatabase, userId: string): Provider {
 export interface TelegramBotServer {
   server: Server;
   webhookUrl: string;
+}
+
+/** The real, shared agent-turn path -- both a normal incoming message AND the "Pause and do it
+ * myself" delegation button run through this exact function, so there is no second, divergent
+ * way a message actually gets processed. Brackets the real run with setBusy()/clearBusy() so a
+ * genuinely concurrent second message can detect it and ask (see the delegation flow above). */
+async function runAgentTurn(
+  deps: TelegramBotServerDeps,
+  client: TelegramClient,
+  chatId: number,
+  historyKey: string,
+  userContent: string | ContentBlock[],
+  messageText: string | undefined
+): Promise<void> {
+  const registry = getOrBuildRegistry(deps, client, chatId);
+  const provider = modelConfigProvider(deps.db, deps.ownerUserId);
+  const loop = new AgentLoop(provider, registry);
+
+  let history = loadConversationHistory(deps.db, historyKey);
+  if (history.length === 0) history = [{ role: "system", content: deps.systemPrompt }];
+
+  // Real bug fixed: ask_user (ask-user.ts) genuinely pauses the loop and its question
+  // WAS being sent to the user, but nothing ever resumed the paused run -- the next
+  // message just started a fresh loop.run() over history that still had a dangling
+  // assistant tool_call with no matching tool_result, which every real provider's API
+  // rejects as malformed. Confirmed via this exact code path having no getPendingQuestion/
+  // resume() reference anywhere. Now: if a question is genuinely pending for this owner,
+  // this message IS the real answer -- resume the exact paused call, not a fresh turn.
+  const pendingQuestion = messageText ? getPendingQuestion(deps.ownerUserId) : undefined;
+  const pendingToolCallId = pendingQuestion ? findPendingAskUserToolCallId(history) : undefined;
+
+  const taskDescription = typeof userContent === "string" ? userContent.slice(0, 80) : "processing your message";
+  setBusy(deps.ownerUserId, taskDescription);
+  try {
+    await withThinkingIndicator(client, chatId, async (indicator) => {
+      const onStep = (step: AgentStep) => void indicator.update(classifyToolAction(step.toolName), step.toolName);
+      let result: AgentRunResult;
+      if (pendingQuestion && pendingToolCallId) {
+        clearPendingQuestion(deps.ownerUserId);
+        result = await loop.resume({ status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] }, messageText as string, { maxSteps: 8, onStep });
+      } else {
+        history.push({ role: "user", content: userContent });
+        result = await loop.run(history, { maxSteps: 8, onStep });
+      }
+      saveConversationHistory(deps.db, historyKey, result.history);
+      const finalText = result.status === "done" ? result.text || "(no text)" : result.question.question;
+      return { result: undefined, finalText };
+    });
+  } catch (err) {
+    await client.sendMessage({ chat_id: chatId, text: `Something went wrong handling that: ${err instanceof Error ? err.message : String(err)}` });
+  } finally {
+    clearBusy(deps.ownerUserId);
+  }
 }
 
 /** Real fix companion: a paused run's saved history ends with an assistant message whose
@@ -226,6 +282,36 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       if (update.callback_query) {
         const cbChatId = update.callback_query.message?.chat.id;
         if (cbChatId !== undefined) recordActiveChat(deps.db, deps.ownerUserId, cbChatId);
+
+        // Real gap fixed (mid-task delegation): the 3 real buttons a delegation prompt sends
+        // need runAgentTurn/createWorker, which only this module (not command-router.ts) has
+        // in scope -- intercepted here, before the generic dispatchCallback.
+        const delegateData = update.callback_query.data ?? "";
+        if (delegateData.startsWith("delegate:") && cbChatId !== undefined) {
+          const pending = getPendingDelegation(deps.ownerUserId);
+          setPendingDelegation(deps.ownerUserId, null);
+          const action = delegateData.slice("delegate:".length);
+          if (!pending) {
+            await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "That request is no longer waiting" }).catch(() => undefined);
+            return;
+          }
+          if (action === "skip") {
+            await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "Skipped" }).catch(() => undefined);
+            await client.sendMessage({ chat_id: pending.chatId, text: "Skipped -- let me know if you still need that." });
+          } else if (action === "worker") {
+            await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "Assigning a worker" }).catch(() => undefined);
+            const worker = createWorker(deps.ownerUserId, { assignment: "temporary", role: "generic", task: pending.text });
+            sendCommsMessage(deps.ownerUserId, DAVE_PARTICIPANT_ID, worker.id, pending.text);
+            await client.sendMessage({ chat_id: pending.chatId, text: `Handed to ${worker.name} (#${worker.name.toLowerCase()}) -- I'll keep going on what I was doing.` });
+          } else if (action === "pause") {
+            await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "Pausing to handle it now" }).catch(() => undefined);
+            await client.sendMessage({ chat_id: pending.chatId, text: "Pausing what I was doing -- on it now." });
+            const historyKeyForPending = `${deps.ownerUserId}:${pending.chatId}`;
+            await runAgentTurn(deps, client, pending.chatId, historyKeyForPending, pending.text, pending.text);
+          }
+          return;
+        }
+
         const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
         await dispatchCallback(routerDeps, update.callback_query);
         return;
@@ -280,6 +366,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         if (await tryHandlePendingModelEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingVoiceEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingKeyEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingTtsKeyEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingE2BKeyEntry(routerDeps, chatId, message.text)) return;
       }
 
       // Real gap fixed: a genuine slash command that ISN'T one of the 9 (mistyped, or an old
@@ -302,13 +390,6 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         if (await new BootstrapFlow(bootstrapTransport).handleMessage(deps.ownerUserId, message.text)) return;
       }
 
-      const registry = getOrBuildRegistry(deps, client, chatId);
-      const provider = modelConfigProvider(deps.db, deps.ownerUserId);
-      const loop = new AgentLoop(provider, registry);
-
-      let history = loadConversationHistory(deps.db, historyKey);
-      if (history.length === 0) history = [{ role: "system", content: deps.systemPrompt }];
-
       let userContent: string | ContentBlock[];
       if (message.text) {
         userContent = message.text;
@@ -326,34 +407,21 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
           return;
         }
       }
-      // Real bug fixed: ask_user (ask-user.ts) genuinely pauses the loop and its question
-      // WAS being sent to the user, but nothing ever resumed the paused run -- the next
-      // message just started a fresh loop.run() over history that still had a dangling
-      // assistant tool_call with no matching tool_result, which every real provider's API
-      // rejects as malformed. Confirmed via this exact code path having no getPendingQuestion/
-      // resume() reference anywhere. Now: if a question is genuinely pending for this owner,
-      // this message IS the real answer -- resume the exact paused call, not a fresh turn.
-      const pendingQuestion = message.text ? getPendingQuestion(deps.ownerUserId) : undefined;
-      const pendingToolCallId = pendingQuestion ? findPendingAskUserToolCallId(history) : undefined;
 
-      try {
-        await withThinkingIndicator(client, chatId, async (indicator) => {
-          const onStep = (step: AgentStep) => void indicator.update(classifyToolAction(step.toolName), step.toolName);
-          let result: AgentRunResult;
-          if (pendingQuestion && pendingToolCallId) {
-            clearPendingQuestion(deps.ownerUserId);
-            result = await loop.resume({ status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] }, message.text as string, { maxSteps: 8, onStep });
-          } else {
-            history.push({ role: "user", content: userContent });
-            result = await loop.run(history, { maxSteps: 8, onStep });
-          }
-          saveConversationHistory(deps.db, historyKey, result.history);
-          const finalText = result.status === "done" ? result.text || "(no text)" : result.question.question;
-          return { result: undefined, finalText };
-        });
-      } catch (err) {
-        await client.sendMessage({ chat_id: chatId, text: `Something went wrong handling that: ${err instanceof Error ? err.message : String(err)}` });
+      // Real gap fixed (user: "Dave doesn't just silently switch or silently ignore" a new
+      // request that arrives while busy with something else). Checked only for genuinely
+      // concurrent overlap -- setBusy()/clearBusy() bracket the real agent-loop run below, so
+      // this is only ever true if a second webhook delivery lands while the first is still
+      // in flight, not on every message.
+      const busy = message.text ? getBusyState(deps.ownerUserId) : null;
+      if (busy && message.text) {
+        setPendingDelegation(deps.ownerUserId, { text: message.text, chatId });
+        const prompt = buildDelegationPrompt(busy);
+        await client.sendMessage({ chat_id: chatId, text: prompt.text, reply_markup: prompt.reply_markup });
+        return;
       }
+
+      await runAgentTurn(deps, client, chatId, historyKey, userContent, message.text);
     },
   });
 
