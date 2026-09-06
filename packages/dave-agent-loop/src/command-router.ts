@@ -38,6 +38,7 @@ import {
   setActiveGroup,
   setFallbackGroup,
   resetPairGroupSelectionForUser,
+  seedDefaultPairGroups,
   getTradingMode,
   setTradingMode,
   resetTradingModeForUser,
@@ -666,6 +667,7 @@ function skillPickerKeyboard(userId: string): ReturnType<typeof keyboard> {
 
 /** PAIR GROUP section: exactly one active + one fallback at a time, per pair-groups.ts's own real invariant. */
 function pairGroupKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  seedDefaultPairGroups(userId);
   const groups = listGroups(userId);
   const info = getActiveGroupInfo(userId);
   const lines = [

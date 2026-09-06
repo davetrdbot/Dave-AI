@@ -103,6 +103,73 @@ export function resetPairGroupSelectionForUser(userId: string): void {
   saveState(userId, state);
 }
 
+/**
+ * Item 8 (Batch B): exactly 8 real seeded groups -- 7 named categories plus one
+ * empty, user-configurable Fallback group (no "Local" category, per the user's
+ * explicit spec). Symbol lists are the user's own real lists, verbatim -- not
+ * invented. Seeding is additive-only (see seedDefaultPairGroups below): it never
+ * overwrites a group the user has since edited or renamed via the admin panel's
+ * pair-group designer, which still works unmodified on top of this.
+ */
+export const DEFAULT_PAIR_GROUPS: PairGroup[] = [
+  {
+    id: "synthetic",
+    name: "Synthetic",
+    symbols: [
+      "BOOM_100", "BOOM_200", "CRASH_100", "CRASH_200", "VOL_10", "VOL_20", "VOL_80", "STORM_200", "STORM_500",
+      "VOLATILITY_10_INDEX", "VOLATILITY_25_INDEX", "VOLATILITY_50_INDEX", "VOLATILITY_75_INDEX", "VOLATILITY_100_INDEX",
+      "VOLATILITY_10_1S_INDEX", "VOLATILITY_25_1S_INDEX", "VOLATILITY_50_1S_INDEX", "VOLATILITY_75_1S_INDEX", "VOLATILITY_100_1S_INDEX",
+      "BOOM_300_INDEX", "BOOM_500_INDEX", "BOOM_1000_INDEX", "CRASH_300_INDEX", "CRASH_500_INDEX", "CRASH_1000_INDEX",
+      "STEP_INDEX", "JUMP_10_INDEX", "JUMP_25_INDEX", "JUMP_50_INDEX", "JUMP_75_INDEX", "JUMP_100_INDEX",
+      "RANGE_BREAK_100_INDEX", "RANGE_BREAK_200_INDEX",
+    ],
+  },
+  {
+    id: "forex",
+    name: "Forex",
+    symbols: [
+      "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY",
+      "EURAUD", "EURCHF", "EURCAD", "EURNZD", "GBPAUD", "GBPCAD", "GBPCHF", "GBPNZD", "AUDJPY", "AUDCAD",
+      "AUDCHF", "AUDNZD", "CADJPY", "CADCHF", "CHFJPY", "NZDJPY", "NZDCAD", "NZDCHF",
+    ],
+  },
+  {
+    id: "crypto",
+    name: "Crypto",
+    symbols: ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "ADAUSD", "DOGEUSD", "BNBUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT", "LTCUSD", "AVAXUSD"],
+  },
+  { id: "metals", name: "Metals", symbols: ["XAUUSD", "XAGUSD", "XPTUSD", "XPDUSD"] },
+  { id: "indexes", name: "Indexes", symbols: ["US30", "US100", "NAS100", "SPX500", "GER40", "UK100", "JP225", "AUS200"] },
+  { id: "energies", name: "Energies", symbols: ["USOIL", "UKOIL", "NGAS"] },
+  {
+    id: "stocks",
+    name: "Stocks",
+    symbols: [
+      "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA", "NFLX", "AMD", "INTC",
+      "BA", "DIS", "KO", "PEP", "WMT", "JPM", "V", "MA", "XOM", "PFE",
+    ],
+  },
+  { id: "fallback", name: "Fallback", symbols: [] },
+];
+
+/**
+ * Additive, idempotent seeding: adds any DEFAULT_PAIR_GROUPS entry whose id the
+ * user doesn't already have (by id, not name), never touching/overwriting a
+ * group the user already has under that id -- so re-running this after the
+ * user has renamed/edited a seeded group or added their own via the admin
+ * panel designer never clobbers their edits, and never duplicates. Returns the
+ * groups actually added.
+ */
+export function seedDefaultPairGroups(userId: string): PairGroup[] {
+  const state = readState(userId);
+  const existingIds = new Set(state.groups.map((g) => g.id));
+  const added = DEFAULT_PAIR_GROUPS.filter((g) => !existingIds.has(g.id));
+  if (added.length === 0) return [];
+  state.groups.push(...added);
+  saveState(userId, state);
+  return added;
+}
+
 export interface ActiveGroupInfo {
   activeGroup: PairGroup | null;
   fallbackGroup: PairGroup | null;
