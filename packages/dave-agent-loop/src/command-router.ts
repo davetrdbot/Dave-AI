@@ -23,7 +23,20 @@ import {
   declineSettingsChange,
   type RiskMode,
 } from "@dave/trading";
-import { getModelConfig, setModelConfig, listProviderCatalog, listProviderKeys, type ProviderName } from "@dave/brain";
+import {
+  getModelConfig,
+  setModelConfig,
+  listProviderCatalog,
+  listProviderKeys,
+  setPrimaryProviderKey,
+  editProviderKey,
+  getProviderKeyById,
+  fetchAvailableModels,
+  setPendingManualModelEntry,
+  getPendingManualModelEntry,
+  type ProviderName,
+  type StoredProviderKey,
+} from "@dave/brain";
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
@@ -79,7 +92,8 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number): Promis
  * this used to hardcode 3 providers even after the catalog grew to all 28+AirLLM. Now it lists
  * every catalog entry, per-provider marking whether the user has a configured key (AirLLM excepted --
  * it's self-hosted via AIRLLM_BASE_URL, no key needed) so picking one that isn't ready yet is an
- * informed choice, not a silent dead end. */
+ * informed choice, not a silent dead end. Tapping a provider opens its detail screen (real stored
+ * keys, tap-to-activate) rather than blindly setting it primary. */
 function providersKeyboard(current: ProviderName, configuredProviders: Set<ProviderName>): ReturnType<typeof keyboard> {
   const catalog = listProviderCatalog().filter((e) => e.id !== "custom");
   const rows: ReturnType<typeof coloredButton>[][] = [];
@@ -103,24 +117,88 @@ async function handleProviders(deps: CommandRouterDeps, chatId: number): Promise
   const catalogCount = listProviderCatalog().filter((e) => e.id !== "custom").length;
   const text =
     `<b>AI Provider</b>\nPrimary: ${config.primary}\nFallback: ${config.fallback.join(", ") || "none"}\n\n` +
-    `${catalogCount} providers available. Tap to set primary (add API keys for a provider in the admin panel first):`;
+    `${catalogCount} providers available. Tap a provider to see its keys:`;
   await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup: providersKeyboard(config.primary, configuredProviders) });
 }
 
+/** Real fix (spec: "Tap a provider -> shows its stored keys (up to 10 per provider) each with
+ * health status, tap a key to activate"). Renders the provider detail screen sent both from
+ * /providers' provider: callback and re-rendered in place after activating a key. */
+function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const entry = listProviderCatalog().find((e) => e.id === provider)!;
+  const keys = listProviderKeys(deps.db, deps.userId, provider);
+  const config = getModelConfig(deps.userId);
+  const lines = [`<b>${entry.displayName}</b>`, entry.notes, ""];
+  if (provider === "airllm") {
+    lines.push("Self-hosted via AIRLLM_BASE_URL -- no stored key needed.");
+  } else if (keys.length === 0) {
+    lines.push("No keys stored yet -- add one in the admin panel's Provider Keys tab.");
+  } else {
+    lines.push(`${keys.length} stored key(s):`);
+  }
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  for (const key of keys) {
+    const health = key.healthy ? "🟢" : "🔴";
+    const star = key.isPrimary ? "⭐ " : "";
+    rows.push([coloredButton(`${star}${health} ${key.label}`, key.isPrimary ? "green" : "neutral", `activatekey:${key.id}`)]);
+  }
+  rows.push([coloredButton(config.primary === provider ? "✅ Primary provider" : "Set as primary provider", config.primary === provider ? "green" : "blue", `setprimaryprovider:${provider}`)]);
+  rows.push([{ text: "⬅️ Back", callback_data: "providers:back" }]);
+  return { text: lines.join("\n"), reply_markup: keyboard(rows) };
+}
+
+/** Real fix (user: "It should fetch the models like v1 model so I can select as well") --
+ * live-fetches the active provider's real model list and lets the user pick one via buttons,
+ * instead of just printing a static default. OpenRouter/OrcaRouter/HuggingFace stay manual-entry
+ * (per the master spec), captured via the next free-text message (see tryHandlePendingModelEntry). */
+const fetchedModelsCache = new Map<string, { provider: ProviderName; models: string[] }>();
+
+function primaryKeyFor(deps: CommandRouterDeps, provider: ProviderName): StoredProviderKey | undefined {
+  const keys = listProviderKeys(deps.db, deps.userId, provider);
+  return keys.find((k) => k.isPrimary) ?? keys[0];
+}
+
 async function handleModels(deps: CommandRouterDeps, chatId: number): Promise<void> {
-  const configuredProviders = new Set(listProviderKeys(deps.db, deps.userId).map((k) => k.provider));
-  const lines = listProviderCatalog()
-    .filter((e) => e.id !== "custom")
-    .map((e) => {
-      const ready = e.id === "airllm" || configuredProviders.has(e.id);
-      const modelNote = e.manualModelEntry ? "manual model entry (set in admin panel)" : `default: ${e.defaultModel}`;
-      return `${e.id}: ${modelNote}${ready ? "" : " -- no key configured"}`;
+  const config = getModelConfig(deps.userId);
+  const provider = config.primary;
+  const entry = listProviderCatalog().find((e) => e.id === provider)!;
+  const key = primaryKeyFor(deps, provider);
+  if (provider !== "airllm" && !key) {
+    await deps.client.sendMessage({ chat_id: chatId, text: `No key configured for <b>${provider}</b> yet -- add one in the admin panel, or /providers to switch.`, parse_mode: "HTML" });
+    return;
+  }
+  const activeModel = key?.config.model ?? entry.defaultModel;
+  if (entry.manualModelEntry) {
+    setPendingManualModelEntry(deps.db, deps.userId, provider);
+    await deps.client.sendMessage({
+      chat_id: chatId,
+      text: `<b>Model for ${provider}</b>\nCurrent: <code>${activeModel}</code>\n\n${provider} requires manual model entry -- reply with the exact model ID as your next message and I'll set it.`,
+      parse_mode: "HTML",
     });
+    return;
+  }
   await deps.client.sendMessage({
     chat_id: chatId,
-    text: `<b>Models per provider</b>\n${lines.join("\n")}\n\nManage keys and per-key models in the admin panel's Provider Keys tab.`,
+    text: `<b>Model for ${provider}</b>\nCurrent: <code>${activeModel}</code>\n\nTap below to fetch the live model list from ${provider}'s real API and pick one.`,
     parse_mode: "HTML",
+    reply_markup: keyboard([[coloredButton("🔄 Fetch live models", "blue", `fetchmodels:${provider}`)]]),
   });
+}
+
+/** Best-effort: the user's next free-text message after /models on a manual-entry provider IS
+ * the model ID. Returns true if it consumed the message (caller must not also forward it to the LLM). */
+export async function tryHandlePendingModelEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const provider = getPendingManualModelEntry(deps.db, deps.userId);
+  if (!provider) return false;
+  setPendingManualModelEntry(deps.db, deps.userId, null);
+  const key = primaryKeyFor(deps, provider);
+  if (!key) {
+    await deps.client.sendMessage({ chat_id: chatId, text: `No key configured for <b>${provider}</b> -- add one in the admin panel first.`, parse_mode: "HTML" });
+    return true;
+  }
+  editProviderKey(deps.db, deps.userId, key.id, { config: { model: text.trim() } });
+  await deps.client.sendMessage({ chat_id: chatId, text: `Model for <b>${provider}</b> set to <code>${text.trim()}</code>.`, parse_mode: "HTML" });
+  return true;
 }
 
 function modeLabel(mode: RiskMode, value?: number): string {
@@ -251,10 +329,88 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       }
     } else if (data.startsWith("provider:")) {
       const name = data.slice("provider:".length) as ProviderName;
+      ackText = undefined;
+      if (chatId && callback.message) {
+        const view = providerDetailView(deps, name);
+        await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>
+          deps.client.sendMessage({ chat_id: chatId, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup })
+        );
+      }
+    } else if (data === "providers:back") {
+      ackText = undefined;
+      if (chatId) await handleProviders(deps, chatId);
+    } else if (data.startsWith("activatekey:")) {
+      const keyId = data.slice("activatekey:".length);
+      const key = getProviderKeyById(deps.db, deps.userId, keyId);
+      if (!key?.provider) {
+        ackText = "Key not found";
+      } else {
+        setPrimaryProviderKey(deps.db, deps.userId, keyId);
+        const config = getModelConfig(deps.userId);
+        setModelConfig(deps.userId, { primary: key.provider, fallback: config.fallback.filter((p) => p !== key.provider) });
+        ackText = "Key activated";
+        if (chatId && callback.message) {
+          const view = providerDetailView(deps, key.provider);
+          await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>
+            deps.client.sendMessage({ chat_id: chatId, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup })
+          );
+        }
+      }
+    } else if (data.startsWith("setprimaryprovider:")) {
+      const name = data.slice("setprimaryprovider:".length) as ProviderName;
       const config = getModelConfig(deps.userId);
       setModelConfig(deps.userId, { primary: name, fallback: config.fallback.filter((p) => p !== name) });
       ackText = `Primary provider set to ${name}`;
-      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Primary provider set to <b>${name}</b>.`, parse_mode: "HTML" });
+      if (chatId && callback.message) {
+        const view = providerDetailView(deps, name);
+        await deps.client.editMessageText({ chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup }).catch(() =>
+          deps.client.sendMessage({ chat_id: chatId, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup })
+        );
+      }
+    } else if (data.startsWith("fetchmodels:")) {
+      const name = data.slice("fetchmodels:".length) as ProviderName;
+      const key = primaryKeyFor(deps, name);
+      if (!key) {
+        ackText = "No key configured for this provider";
+      } else {
+        const result = await fetchAvailableModels(name, key.config);
+        if (result.error) {
+          ackText = `Fetch failed: ${result.error}`;
+          if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Real fetch failed: ${result.error}` });
+        } else {
+          fetchedModelsCache.set(deps.userId, { provider: name, models: result.models });
+          ackText = `${result.models.length} models fetched`;
+          if (chatId) {
+            const rows: ReturnType<typeof coloredButton>[][] = [];
+            for (let i = 0; i < result.models.length; i += 2) {
+              const pair = result.models.slice(i, i + 2);
+              rows.push(pair.map((m, j) => coloredButton(m, "neutral", `pickmodel:${i + j}`)));
+            }
+            await deps.client.sendMessage({
+              chat_id: chatId,
+              text: `<b>${name}'s live models</b> (${result.models.length}) -- tap to select:`,
+              parse_mode: "HTML",
+              reply_markup: keyboard(rows),
+            });
+          }
+        }
+      }
+    } else if (data.startsWith("pickmodel:")) {
+      const index = Number(data.slice("pickmodel:".length));
+      const cached = fetchedModelsCache.get(deps.userId);
+      if (!cached || !Number.isInteger(index) || !cached.models[index]) {
+        ackText = "That list expired -- fetch again";
+      } else {
+        const modelId = cached.models[index];
+        const key = primaryKeyFor(deps, cached.provider);
+        if (!key) {
+          ackText = "No key configured for this provider";
+        } else {
+          editProviderKey(deps.db, deps.userId, key.id, { config: { model: modelId } });
+          ackText = `Model set to ${modelId}`;
+          if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Model for <b>${cached.provider}</b> set to <code>${modelId}</code>.`, parse_mode: "HTML" });
+        }
+      }
     } else if (data.startsWith("approve:") || data.startsWith("decline:")) {
       const [action, , pendingId] = data.split(":");
       if (action === "approve") {

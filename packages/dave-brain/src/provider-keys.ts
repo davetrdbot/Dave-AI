@@ -150,6 +150,12 @@ export function listProviderKeys(db: DaveDatabase, userId: string, provider?: Pr
   return rows.map(toStoredKey);
 }
 
+export function getProviderKeyById(db: DaveDatabase, userId: string, keyId: string): StoredProviderKey | undefined {
+  ensureTable(db);
+  const row = db.getById(TABLE, userId, keyId);
+  return row ? toStoredKey(row) : undefined;
+}
+
 /** Real health check: a minimal real completion request against the real provider. */
 export async function checkProviderKeyHealth(db: DaveDatabase, userId: string, key: StoredProviderKey, timeoutMs = 8000): Promise<boolean> {
   const provider = buildProvider(key.provider, key.config);

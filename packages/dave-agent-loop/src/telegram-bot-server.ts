@@ -14,7 +14,7 @@ import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
@@ -246,6 +246,16 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
         const handled = await dispatchCommand(routerDeps, chatId, historyKey, message.text);
         if (handled) return;
+      }
+
+      // Real fix ("fetch the models like v1 model so I can select as well"): /models on a
+      // manual-entry provider (OpenRouter/OrcaRouter/HuggingFace) asks the user to reply with
+      // the model ID as their next message -- this is that capture, checked before anything
+      // free-text falls through to the LLM.
+      if (message.text) {
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl };
+        const consumed = await tryHandlePendingModelEntry(routerDeps, chatId, message.text);
+        if (consumed) return;
       }
 
       const registry = getOrBuildRegistry(deps, client, chatId);
