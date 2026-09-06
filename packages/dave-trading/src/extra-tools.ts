@@ -1,4 +1,4 @@
-import { checkCorrelationBeforeSizing, type DavemaClient } from "@dave/davema";
+import type { DavemaClient } from "@dave/davema";
 import { processPriceTick, type Position } from "./breakeven-trailing.js";
 import { getTrailingStopConfig, setTrailingStopConfig } from "./trailing-config.js";
 import { registerTrailingPosition, unregisterTrailingPosition, listTrailingPositions } from "./trailing-runtime.js";
@@ -118,17 +118,23 @@ export const MT5_ACCOUNT_TOOLS: ExtraToolDefinition[] = [
   },
 ];
 
+/**
+ * Item 5 real gap fixed: DAVEMA (the external market-data HTTP API) is retired -- these two
+ * tools used to make a live HTTP call to it. `correlation_check`'s underlying /correlation
+ * endpoint isn't ported to the new EA-based path yet (tracked as remaining work, honestly
+ * reported rather than left silently calling a retired API), so it now fails loudly with a
+ * clear message instead of a confusing network error against a dead endpoint. The real
+ * replacement analysis tools (get_trend/get_momentum/get_volatility) live in
+ * @dave/ea-bridge's tools.ts, not here -- that package already depends on this one, so putting
+ * them here would create a circular package dependency.
+ */
 export const DAVEMA_TOOLS: ExtraToolDefinition[] = [
   {
-    name: "davema",
-    description: "Real, direct DAVEMA query -- any of the 46 real endpoints (structure/liquidity/confluence/etc), for a symbol/timeframe.",
-    parameters: { type: "object", properties: { endpoint: { type: "string" }, symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["endpoint", "symbol"] },
-    execute: async (args, ctx) => ctx.davema.data(args.endpoint as any, args.symbol as string, (args.timeframe as string) ?? "M15"),
-  },
-  {
     name: "correlation_check",
-    description: "Real DAVEMA /correlation + /strength check for a symbol before sizing -- returns warnHighCorrelation=true and a real reason if it's secretly correlated (>70%) with EURUSD, so you don't stack risk unknowingly.",
+    description: "NOT YET AVAILABLE -- correlation analysis is being re-ported from the retired DAVEMA API to the new on-demand EA analysis tools (get_trend/get_momentum/get_volatility and more to come). Do not call this.",
     parameters: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["symbol"] },
-    execute: async (args, ctx) => checkCorrelationBeforeSizing(ctx.davema, args.symbol as string, (args.timeframe as string) ?? "M15"),
+    execute: async () => {
+      throw new Error("correlation_check is not available yet -- DAVEMA (the old external API) is retired, and this specific check hasn't been re-ported to the new EA-based analysis tools yet.");
+    },
   },
 ];

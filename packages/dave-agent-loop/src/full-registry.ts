@@ -3,7 +3,7 @@ import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import { TRADING_TOOLS } from "@dave/trading";
 import { RFEED_TOOLS, type RFeedTradeExecutor, type HistoryRequestManager } from "@dave/rfeed";
-import { EA_STATE_TOOLS } from "@dave/ea-bridge";
+import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
@@ -70,6 +70,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(TRADING_TOOLS, tradingCtx));
   registry.register(adaptTools(RFEED_TOOLS, rfeedCtx));
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
+  registry.register(adaptTools(EA_ANALYSIS_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, davema: deps.davema, workspaceRoot: process.cwd() }));
   registry.register(adaptTools(KNOWLEDGE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(MCP_MANAGER_TOOLS, { userId: deps.userId }));

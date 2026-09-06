@@ -47,6 +47,12 @@ export interface EaCommandResult {
   status: "ok" | "error";
   message?: string;
   ticket?: string; // for open commands, the real ticket MT5 assigned
+  /**
+   * Item 5 (DAVEMA retirement): the real computed payload for an "analyze" command --
+   * whatever JSON the EA's own on-demand computation produced for the requested endpoint
+   * (trend/momentum/volatility/etc), symbol, and timeframe. Absent for trade commands.
+   */
+  data?: unknown;
 }
 
 /**
@@ -92,7 +98,15 @@ export type EaCommand =
   | { id: string; action: "open"; symbol: string; type: string; lots: number; price?: number; sl?: number; tp?: number }
   | { id: string; action: "modify"; ticket: string; sl?: number | null; tp?: number | null; price?: number }
   | { id: string; action: "close"; ticket: string; lots?: number }
-  | { id: string; action: "delete_pending"; ticket: string };
+  | { id: string; action: "delete_pending"; ticket: string }
+  /**
+   * Item 5 (DAVEMA retirement): the on-demand analysis request -- DAVEMA used to compute this
+   * externally over HTTP; now the EA itself computes it locally (real ported MQL5 logic, see
+   * ea/DaveEA.mq5's Ep_* functions) and reports it back via the SAME command-result channel
+   * every trade command already uses, not a new push/stream. `symbol` can be ANY symbol in the
+   * terminal's Market Watch, not just the chart the EA is attached to (item 13).
+   */
+  | { id: string; action: "analyze"; endpoint: string; symbol: string; timeframe: string };
 
 function tokensPath(): string {
   return join(process.cwd(), "data", "ea-bridge", "tokens.json");
@@ -112,6 +126,44 @@ function accountSnapshotPath(userId: string): string {
 
 function lastSeenPath(userId: string): string {
   return join(process.cwd(), "data", "ea-bridge", userId, "last-seen.json");
+}
+
+function analysisResultsPath(userId: string): string {
+  return join(process.cwd(), "data", "ea-bridge", userId, "analysis-results.json");
+}
+
+/** Item 5: caps how many recent analyze results are kept per user -- these are short-lived (a
+ * requestAnalysis() call consumes its own result within seconds), this is just a safety bound
+ * against an abandoned request's result piling up forever. */
+const MAX_STORED_ANALYSIS_RESULTS = 50;
+
+/** Real gap this closes: report.results were only ever handed to the caller-supplied onReport
+ * hook, with nothing durable a separate async caller (requestAnalysis, polling from a totally
+ * different request) could read back by commandId. */
+function storeAnalysisResults(userId: string, results: EaCommandResult[]): void {
+  // A successful TRADE result (open/modify/close/delete_pending) has no `data` and is already
+  // handled by its own real caller elsewhere -- excluded here so this store isn't flooded with
+  // irrelevant entries on every heartbeat. An ERROR result is kept regardless of origin (an
+  // analyze command's real failure must still reach takeAnalysisResult -- there's no cheap way
+  // to tell an analyze error from a trade error by shape alone, and an unrelated trade error
+  // sitting here unconsumed is harmless, just evicted eventually by the cap below).
+  const relevant = results.filter((r) => r.data !== undefined || r.status === "error");
+  if (relevant.length === 0) return;
+  const existing = readJson<EaCommandResult[]>(analysisResultsPath(userId), []);
+  const merged = [...existing, ...relevant].slice(-MAX_STORED_ANALYSIS_RESULTS);
+  writeJson(analysisResultsPath(userId), merged);
+}
+
+/** Real gap this closes: nothing let a caller read back a specific analyze command's real
+ * result by id -- this is what requestAnalysis() polls. Consumes (removes) the result once
+ * read, same "no double-delivery" contract the command queue itself already follows. */
+export function takeAnalysisResult(userId: string, commandId: string): EaCommandResult | undefined {
+  const existing = readJson<EaCommandResult[]>(analysisResultsPath(userId), []);
+  const index = existing.findIndex((r) => r.commandId === commandId);
+  if (index === -1) return undefined;
+  const [result] = existing.splice(index, 1);
+  writeJson(analysisResultsPath(userId), existing);
+  return result;
 }
 
 /**
@@ -292,6 +344,7 @@ export function createEaWebhookServer(handlers: EaReportHandlers = {}): Server {
     const previous = getLastKnownState(userId);
     saveLastKnownState(userId, report.positions ?? [], report.pendingOrders ?? []);
     saveAccountSnapshot(userId, report);
+    storeAnalysisResults(userId, report.results ?? []);
     handlers.onReport?.(userId, report, previous);
 
     const commands = drainQueue(userId);

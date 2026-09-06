@@ -1,12 +1,19 @@
 //+------------------------------------------------------------------+
 //|                                                      DaveEA.mq5   |
-//|  Dave's MT5 bridge -- deliberately "dumb": no analysis happens    |
-//|  here. It pushes account/positions/pending-orders/heartbeat to    |
-//|  Dave's webhook, and executes the open/modify/close/delete-       |
-//|  pending instructions that come back in that SAME HTTP response   |
+//|  Dave's MT5 bridge. Pushes account/positions/pending-orders/      |
+//|  heartbeat to Dave's webhook on the same PushSeconds cadence as    |
+//|  always, and executes the open/modify/close/delete-pending/       |
+//|  analyze instructions that come back in that SAME HTTP response    |
 //|  (WebRequest is one-directional -- there is no other way for      |
-//|  Dave to reach this EA). All thinking happens inside Dave itself, |
-//|  using DAVEMA for market data.                                    |
+//|  Dave to reach this EA).                                          |
+//|                                                                    |
+//|  Item 5 (DAVEMA retirement): this EA now ALSO computes real market |
+//|  analysis (trend/momentum/volatility, more endpoints to follow)    |
+//|  locally on demand, via the "analyze" command -- DAVEMA (the old   |
+//|  external HTTP API) is retired. This is genuinely on-demand, not a |
+//|  new streaming channel: the heartbeat cadence above is completely  |
+//|  unchanged, analysis only computes when a real "analyze" command   |
+//|  actually arrives.                                                 |
 //|                                                                    |
 //|  Honest architecture note (Part 1 item 10): because WebRequest is  |
 //|  one-directional, there is no real way for Dave to force an        |
@@ -346,6 +353,17 @@ void AppendResult(string commandId, bool ok, string message, string ticket)
                            (ticket != "" ? ",\"ticket\":\"" + ticket + "\"" : "") + "}";
   }
 
+// Item 5 (DAVEMA retirement): the "analyze" command's real result carries a raw computed JSON
+// object in `data`, not a ticket/message -- this is the on-demand replacement for what DAVEMA
+// used to return over HTTP, reported back through this SAME command-result channel.
+void AppendResultData(string commandId, string dataJson)
+  {
+   if(g_pendingResultsJson != "") g_pendingResultsJson += ",";
+   g_pendingResultsJson += "{\"commandId\":\"" + commandId + "\"," +
+                           "\"status\":\"ok\"," +
+                           "\"data\":" + dataJson + "}";
+  }
+
 //+------------------------------------------------------------------+
 //| Narrow parser for Dave's OWN response shape                       |
 //| {"commands":[{"id":"...","action":"...","symbol":"...", ...}]}    |
@@ -498,10 +516,282 @@ void ExecuteOneCommand(string obj)
       bool ok = trade.OrderDelete(ticket);
       AppendResult(id, ok, ok ? "deleted" : ("failed: " + trade.ResultRetcodeDescription()), "");
      }
+   else if(action == "analyze")
+     {
+      string symbol = ResolveBrokerSymbol(JsonGetString(obj, "symbol"));
+      string tfStr = JsonGetString(obj, "timeframe");
+      string endpoint = JsonGetString(obj, "endpoint");
+      RunAnalysis(id, endpoint, symbol, tfStr);
+     }
    else
      {
       AppendResult(id, false, "unknown action \"" + action + "\"", "");
      }
+  }
+
+//+------------------------------------------------------------------+
+//| ITEM 5 -- DAVEMA RETIREMENT: real on-demand analysis, computed     |
+//| locally, right here in the EA -- no external API call. Ported     |
+//| from the REAL reference DAVEMA EA's own indicator math (same      |
+//| SMA/EMA/RSI/MACD/Stochastic/CCI/WilliamsR/ATR/StdDev formulas),    |
+//| not guessed. This is a genuinely SEPARATE on-demand computation   |
+//| from the heartbeat above -- PushSeconds/OnTimer is completely     |
+//| untouched; this only runs when a real "analyze" command arrives.  |
+//|                                                                    |
+//| ITEM 13 -- MULTI-SYMBOL FROM ONE CHART: CopySeries below loads     |
+//| bars for WHATEVER symbol+timeframe the command asks for, not the  |
+//| chart's own symbol/period -- one EA instance can analyze any      |
+//| symbol in Market Watch, not just the one it's attached to.        |
+//+------------------------------------------------------------------+
+#define DAVEEA_BARS 220
+
+ENUM_TIMEFRAMES TimeframeFromString(string tf)
+  {
+   if(tf == "M1")  return PERIOD_M1;
+   if(tf == "M5")  return PERIOD_M5;
+   if(tf == "M15") return PERIOD_M15;
+   if(tf == "M30") return PERIOD_M30;
+   if(tf == "H1")  return PERIOD_H1;
+   if(tf == "H4")  return PERIOD_H4;
+   if(tf == "D1")  return PERIOD_D1;
+   if(tf == "W1")  return PERIOD_W1;
+   return PERIOD_M15; // real DAVEMA default, ported verbatim
+  }
+
+// Real bars loaded for the REQUESTED symbol+timeframe, index 0 = most recent (series order) --
+// same convention the reference DAVEMA EA's O/H/L/C arrays used.
+int    g_anb = 0;
+double g_aO[], g_aH[], g_aL[], g_aC[];
+
+bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
+  {
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   int copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
+   if(copied <= 20) return false; // not enough real history to compute anything meaningful yet
+   g_anb = copied;
+   ArrayResize(g_aO, copied); ArrayResize(g_aH, copied); ArrayResize(g_aL, copied); ArrayResize(g_aC, copied);
+   for(int i = 0; i < copied; i++)
+     {
+      g_aO[i] = rates[i].open; g_aH[i] = rates[i].high; g_aL[i] = rates[i].low; g_aC[i] = rates[i].close;
+     }
+   return true;
+  }
+
+// --- Real indicator math, ported verbatim from the reference DAVEMA EA ---
+double A_SMA(int period, int shift = 0)
+  {
+   if(shift + period > g_anb) return 0;
+   double s = 0; for(int i = shift; i < shift + period; i++) s += g_aC[i];
+   return s / period;
+  }
+double A_EMA(int period, int shift = 0)
+  {
+   int span = MathMin(g_anb - shift, period * 4);
+   if(span < period) return 0;
+   double k = 2.0 / (period + 1.0);
+   double e = g_aC[shift + span - 1];
+   for(int i = shift + span - 2; i >= shift; i--) e = g_aC[i] * k + e * (1 - k);
+   return e;
+  }
+double A_StdDev(int period, int shift = 0)
+  {
+   if(shift + period > g_anb) return 0;
+   double m = A_SMA(period, shift), s = 0;
+   for(int i = shift; i < shift + period; i++) s += MathPow(g_aC[i] - m, 2);
+   return MathSqrt(s / period);
+  }
+double A_TrueRange(int i)
+  {
+   if(i + 1 >= g_anb) return g_aH[i] - g_aL[i];
+   return MathMax(g_aH[i] - g_aL[i], MathMax(MathAbs(g_aH[i] - g_aC[i + 1]), MathAbs(g_aL[i] - g_aC[i + 1])));
+  }
+double A_ATR(int period, int shift = 0)
+  {
+   if(shift + period + 1 > g_anb) return 0;
+   double s = 0; for(int i = shift; i < shift + period; i++) s += A_TrueRange(i);
+   return s / period;
+  }
+double A_RSI(int period, int shift = 0)
+  {
+   if(shift + period + 1 >= g_anb) return 50;
+   double g = 0, l = 0;
+   for(int i = shift; i < shift + period; i++)
+     {
+      double d = g_aC[i] - g_aC[i + 1];
+      if(d > 0) g += d; else l -= d;
+     }
+   g /= period; l /= period;
+   if(l == 0) return 100;
+   double rs = g / l;
+   return 100.0 - (100.0 / (1.0 + rs));
+  }
+void A_MACD(double &main, double &sig, double &hist)
+  {
+   main = A_EMA(12) - A_EMA(26);
+   double vals[9];
+   for(int i = 0; i < 9; i++) vals[i] = A_EMA(12, i) - A_EMA(26, i);
+   double k = 2.0 / 10.0, e = vals[8];
+   for(int i = 7; i >= 0; i--) e = vals[i] * k + e * (1 - k);
+   sig  = e;
+   hist = main - sig;
+  }
+void A_Stochastic(int kP, int dP, double &k, double &d)
+  {
+   k = 50; d = 50;
+   if(kP + dP >= g_anb) return;
+   double ks[]; ArrayResize(ks, dP);
+   for(int j = 0; j < dP; j++)
+     {
+      double hi = g_aH[j], lo = g_aL[j];
+      for(int i = j; i < j + kP; i++) { hi = MathMax(hi, g_aH[i]); lo = MathMin(lo, g_aL[i]); }
+      ks[j] = (hi - lo) > 0 ? (g_aC[j] - lo) / (hi - lo) * 100.0 : 50;
+     }
+   k = ks[0];
+   double s = 0; for(int j = 0; j < dP; j++) s += ks[j];
+   d = s / dP;
+  }
+double A_CCI(int period)
+  {
+   if(period + 1 >= g_anb) return 0;
+   double tp[]; ArrayResize(tp, period);
+   for(int i = 0; i < period; i++) tp[i] = (g_aH[i] + g_aL[i] + g_aC[i]) / 3.0;
+   double m = 0; for(int i = 0; i < period; i++) m += tp[i]; m /= period;
+   double dev = 0; for(int i = 0; i < period; i++) dev += MathAbs(tp[i] - m); dev /= period;
+   return dev > 0 ? (tp[0] - m) / (0.015 * dev) : 0;
+  }
+double A_WilliamsR(int period)
+  {
+   if(period >= g_anb) return -50;
+   double hi = g_aH[0], lo = g_aL[0];
+   for(int i = 0; i < period; i++) { hi = MathMax(hi, g_aH[i]); lo = MathMin(lo, g_aL[i]); }
+   return (hi - lo) > 0 ? (hi - g_aC[0]) / (hi - lo) * -100.0 : -50;
+  }
+
+double A_Pips(string sym, double priceDiff)
+  {
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double pip = (digits == 3 || digits == 5) ? point * 10 : point;
+   return pip > 0 ? priceDiff / pip : 0;
+  }
+
+// --- Real endpoint builders, ported verbatim from Ep_Trend/Ep_Momentum/Ep_Volatility ---
+string A_Trend(string sym)
+  {
+   double ma20 = A_SMA(20), ma50 = A_SMA(50), ma200 = A_SMA(MathMin(200, g_anb - 1));
+   double ema9 = A_EMA(9), ema21 = A_EMA(21);
+   double ma20p = A_SMA(20, 5), ma50p = A_SMA(50, 5), ma200p = A_SMA(MathMin(200, g_anb - 6), 5);
+   int score = 0;
+   if(g_aC[0] > ma20)  score++; else score--;
+   if(g_aC[0] > ma50)  score++; else score--;
+   if(g_aC[0] > ma200) score++; else score--;
+   if(ema9 > ema21) score++; else score--;
+   if(ma20 > ma50)  score++; else score--;
+   string bias = score >= 4 ? "STRONG_BULL" : score >= 2 ? "BULL" : score <= -4 ? "STRONG_BEAR" : score <= -2 ? "BEAR" : "NEUTRAL";
+   bool allBull = g_aC[0] > ma20 && ma20 > ma50 && ma50 > ma200;
+   bool allBear = g_aC[0] < ma20 && ma20 < ma50 && ma50 < ma200;
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   return "{\"bias\":\"" + bias + "\",\"score\":" + IntegerToString(score) + "," +
+          "\"slope_20\":" + DoubleToString(A_Pips(sym, ma20 - ma20p), 2) + "," +
+          "\"slope_50\":" + DoubleToString(A_Pips(sym, ma50 - ma50p), 2) + "," +
+          "\"ma20\":" + DoubleToString(ma20, digits) + ",\"ma50\":" + DoubleToString(ma50, digits) + ",\"ma200\":" + DoubleToString(ma200, digits) + "," +
+          "\"ema9\":" + DoubleToString(ema9, digits) + ",\"ema21\":" + DoubleToString(ema21, digits) + "," +
+          "\"price_vs_ma20\":\"" + (g_aC[0] > ma20 ? "ABOVE" : "BELOW") + "\"," +
+          "\"price_vs_ma50\":\"" + (g_aC[0] > ma50 ? "ABOVE" : "BELOW") + "\"," +
+          "\"price_vs_ma200\":\"" + (g_aC[0] > ma200 ? "ABOVE" : "BELOW") + "\"," +
+          "\"ema9_vs_ema21\":\"" + (ema9 > ema21 ? "ABOVE" : "BELOW") + "\"," +
+          "\"ma_rising_20\":" + (ma20 > ma20p ? "true" : "false") + ",\"ma_rising_50\":" + (ma50 > ma50p ? "true" : "false") + "," +
+          "\"ma_rising_200\":" + (ma200 > ma200p ? "true" : "false") + "," +
+          "\"golden_cross\":" + ((ma50 > ma200 && A_SMA(50, 3) <= A_SMA(MathMin(200, g_anb - 4), 3)) ? "true" : "false") + "," +
+          "\"death_cross\":" + ((ma50 < ma200 && A_SMA(50, 3) >= A_SMA(MathMin(200, g_anb - 4), 3)) ? "true" : "false") + "," +
+          "\"price_above_all_mas\":" + (allBull ? "true" : "false") + "," +
+          "\"ma_alignment\":\"" + (allBull ? "PERFECT_BULL" : allBear ? "PERFECT_BEAR" : "MIXED") + "\"," +
+          "\"dist_ma200_pips\":" + DoubleToString(A_Pips(sym, g_aC[0] - ma200), 1) + "," +
+          "\"dist_ma50_pips\":" + DoubleToString(A_Pips(sym, g_aC[0] - ma50), 1) + "}";
+  }
+
+string A_Momentum()
+  {
+   double rsi = A_RSI(14), rsiPrev = A_RSI(14, 1);
+   double m, s, h; A_MACD(m, s, h);
+   double mPrev = A_EMA(12, 1) - A_EMA(26, 1);
+   double k, d; A_Stochastic(14, 3, k, d);
+   double cci = A_CCI(20), wr = A_WilliamsR(14);
+   double roc = g_anb > 10 && g_aC[10] != 0 ? (g_aC[0] - g_aC[10]) / g_aC[10] * 100.0 : 0;
+   int bull = 0, bear = 0;
+   if(rsi > 50) bull++; else bear++;
+   if(h > 0)    bull++; else bear++;
+   if(k > d)    bull++; else bear++;
+   if(cci > 0)  bull++; else bear++;
+   if(wr > -50) bull++; else bear++;
+   if(roc > 0)  bull++; else bear++;
+   return "{\"rsi\":" + DoubleToString(rsi, 2) + ",\"rsi_prev\":" + DoubleToString(rsiPrev, 2) + "," +
+          "\"rsi_zone\":\"" + (rsi > 70 ? "OVERBOUGHT" : rsi < 30 ? "OVERSOLD" : "NEUTRAL") + "\"," +
+          "\"rsi_slope\":" + DoubleToString(rsi - rsiPrev, 2) + "," +
+          "\"macd_main\":" + DoubleToString(m, 8) + ",\"macd_signal\":" + DoubleToString(s, 8) + ",\"macd_hist\":" + DoubleToString(h, 8) + "," +
+          "\"macd_dir\":\"" + (h > 0 ? "BULL" : "BEAR") + "\"," +
+          "\"macd_above_zero\":" + (m > 0 ? "true" : "false") + "," +
+          "\"macd_hist_growing\":" + (MathAbs(h) > MathAbs(mPrev - s) ? "true" : "false") + "," +
+          "\"stoch_k\":" + DoubleToString(k, 2) + ",\"stoch_d\":" + DoubleToString(d, 2) + "," +
+          "\"stoch_zone\":\"" + (k > 80 ? "OVERBOUGHT" : k < 20 ? "OVERSOLD" : "NEUTRAL") + "\"," +
+          "\"stoch_cross\":\"" + (k > d ? "BULL" : "BEAR") + "\"," +
+          "\"cci\":" + DoubleToString(cci, 2) + ",\"cci_zone\":\"" + (cci > 100 ? "OVERBOUGHT" : cci < -100 ? "OVERSOLD" : "NEUTRAL") + "\"," +
+          "\"williams_r\":" + DoubleToString(wr, 2) + ",\"williams_zone\":\"" + (wr > -20 ? "OVERBOUGHT" : wr < -80 ? "OVERSOLD" : "NEUTRAL") + "\"," +
+          "\"roc\":" + DoubleToString(roc, 4) + "," +
+          "\"momentum_score\":" + IntegerToString(bull - bear) + ",\"max_score\":6," +
+          "\"overall_signal\":\"" + (bull > bear ? "BULL" : bull < bear ? "BEAR" : "NEUTRAL") + "\"," +
+          "\"bull_signals_count\":" + IntegerToString(bull) + ",\"bear_signals_count\":" + IntegerToString(bear) + "}";
+  }
+
+string A_Volatility(string sym)
+  {
+   double atr = A_ATR(14), atrPrev = A_ATR(14, 5), atrLong = A_ATR(MathMin(50, g_anb - 2));
+   double sd = A_StdDev(20), ma20 = A_SMA(20);
+   double bbU = ma20 + 2 * sd, bbL = ma20 - 2 * sd;
+   double kcU = ma20 + 1.5 * atr, kcL = ma20 - 1.5 * atr;
+   double pctB = (bbU - bbL) > 0 ? (g_aC[0] - bbL) / (bbU - bbL) : 0.5;
+   int above = 0, total = 0;
+   for(int i = 0; i < MathMin(g_anb - 15, 100); i++) { total++; if(A_ATR(14, i) < atr) above++; }
+   double pctile = total > 0 ? (double)above / total * 100.0 : 50;
+   double hv = A_StdDev(10) / MathMax(g_aC[0], SymbolInfoDouble(sym, SYMBOL_POINT)) * 100.0;
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   return "{\"atr\":" + DoubleToString(atr, digits) + ",\"atr_pips\":" + DoubleToString(A_Pips(sym, atr), 1) + "," +
+          "\"atr_state\":\"" + (atr > atrLong * 1.2 ? "EXPANDING" : atr < atrLong * 0.8 ? "CONTRACTING" : "NORMAL") + "\"," +
+          "\"atr_percentile\":" + DoubleToString(pctile, 1) + "," +
+          "\"atr_vs_avg\":" + DoubleToString(atrLong > 0 ? atr / atrLong : 1, 3) + "," +
+          "\"bb_upper\":" + DoubleToString(bbU, digits) + ",\"bb_mid\":" + DoubleToString(ma20, digits) + ",\"bb_lower\":" + DoubleToString(bbL, digits) + "," +
+          "\"bb_width_pips\":" + DoubleToString(A_Pips(sym, bbU - bbL), 1) + "," +
+          "\"bb_position\":\"" + (g_aC[0] > bbU ? "ABOVE_UPPER" : g_aC[0] < bbL ? "BELOW_LOWER" : "INSIDE") + "\"," +
+          "\"bb_pct_b\":" + DoubleToString(pctB, 3) + "," +
+          "\"bb_squeeze\":" + ((bbU < kcU && bbL > kcL) ? "true" : "false") + "," +
+          "\"kc_upper\":" + DoubleToString(kcU, digits) + ",\"kc_lower\":" + DoubleToString(kcL, digits) + "," +
+          "\"kc_position\":\"" + (g_aC[0] > kcU ? "ABOVE" : g_aC[0] < kcL ? "BELOW" : "INSIDE") + "\"," +
+          "\"expanding\":" + (atr > atrPrev ? "true" : "false") + ",\"contracting\":" + (atr < atrPrev ? "true" : "false") + "," +
+          "\"historical_vol_10\":" + DoubleToString(hv, 4) + "," +
+          "\"regime\":\"" + (pctile > 70 ? "HIGH" : pctile < 30 ? "LOW" : "NORMAL") + "\"}";
+  }
+
+/** Real dispatch: loads the REQUESTED symbol+timeframe's own real bars, then computes
+ * whichever endpoint was asked for. Unknown/not-yet-ported endpoints get an honest error
+ * result instead of silently returning nothing. */
+void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr)
+  {
+   if(!LoadAnalysisSeries(symbol, TimeframeFromString(tfStr)))
+     {
+      AppendResult(commandId, false, "not enough real history loaded yet for " + symbol + " " + tfStr, "");
+      return;
+     }
+   string data = "";
+   if(endpoint == "trend") data = A_Trend(symbol);
+   else if(endpoint == "momentum") data = A_Momentum();
+   else if(endpoint == "volatility") data = A_Volatility(symbol);
+   else
+     {
+      AppendResult(commandId, false, "endpoint \"" + endpoint + "\" is not ported yet", "");
+      return;
+     }
+   AppendResultData(commandId, data);
   }
 
 //+------------------------------------------------------------------+

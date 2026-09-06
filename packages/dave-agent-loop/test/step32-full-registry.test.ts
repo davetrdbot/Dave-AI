@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { DaveDatabase } from "@dave/db";
 import { DavemaClient } from "@dave/davema";
-import { EaTradeExecutor, EA_STATE_TOOLS } from "@dave/ea-bridge";
+import { EaTradeExecutor, EA_STATE_TOOLS, EA_ANALYSIS_TOOLS } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
@@ -82,6 +82,7 @@ try {
     MT5_ACCOUNT_TOOLS.length +
     DAVEMA_TOOLS.length +
     EA_STATE_TOOLS.length +
+    EA_ANALYSIS_TOOLS.length +
     CORE_TOOLS.length +
     KNOWLEDGE_TOOLS.length +
     MCP_MANAGER_TOOLS.length +
