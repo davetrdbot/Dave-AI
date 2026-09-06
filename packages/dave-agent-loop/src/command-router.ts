@@ -49,7 +49,7 @@ export interface CommandRouterDeps {
 const PROVIDERS: ProviderName[] = ["airllm", "deepseek", "claude"];
 /** Read-only, honest listing -- these providers' models are hardcoded in dave-brain's provider classes, not user-editable per-provider yet. */
 const PROVIDER_MODELS: Record<string, string> = {
-  airllm: "self-hosted (configured endpoint)",
+  airllm: "Qwen3-235B (self-hosted via AirLLM, AIRLLM_BASE_URL)",
   deepseek: "deepseek-chat",
   claude: "claude-sonnet-5",
 };
