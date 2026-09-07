@@ -63,6 +63,10 @@ export interface TelegramBotServerDeps {
  * paraphrase stays as a quick-read label; the real endpoint text rides alongside it so the user
  * can verify it themselves instead of taking Dave's word for it.
  */
+/** Largest delay `setTimeout` can legally take (2^31-1 ms, ~24.8 days) -- used as an effectively
+ *  unlimited timeout for providers exempted from the real request timeout entirely. */
+const NO_TIMEOUT_MS = 2147483647;
+
 function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
   return {
     name: "model-config" as ProviderName,
@@ -77,7 +81,13 @@ function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: st
         // user-configurable timeout; every fallback attempt after it gets a separate (usually
         // shorter) one -- a slow/dead primary no longer burns the SAME long timeout on every
         // provider down the chain. Falls back to the caller's own default if nothing's configured.
-        const timeoutMs = getProviderTimeoutMs(userId, p === 0) || defaultTimeoutMs;
+        // Real exception (user: "specially for Nvidia they shouldn't be any timeout"): nvidia-nim
+        // genuinely runs much slower/less predictably than the other providers (real large-model
+        // cold starts on build.nvidia.com), so it's exempted from the configured/default timeout
+        // entirely -- NO_TIMEOUT_MS is the largest delay setTimeout can legally take (2^31-1ms,
+        // ~24.8 days), which is effectively "wait as long as it takes" without special-casing
+        // fetchWithTimeout's own real AbortController mechanism.
+        const timeoutMs = provider === "nvidia-nim" ? NO_TIMEOUT_MS : getProviderTimeoutMs(userId, p === 0) || defaultTimeoutMs;
         try {
           return await generateWithKeyFailover(db, userId, provider, req, timeoutMs, {
             onKeySwitch: async ({ fromIndex, toIndex, nextLabel, reason, quotaExhausted }) => {
