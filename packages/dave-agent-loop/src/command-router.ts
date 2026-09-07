@@ -92,6 +92,7 @@ import {
   type StoredProviderKey,
 } from "@dave/brain";
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
+import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes } from "./trading-loop.js";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
 import { friendlyErrorMessage } from "./error-messages.js";
@@ -787,7 +788,7 @@ async function handleHelp(deps: CommandRouterDeps, chatId: number, editMessageId
     `• "Switch to the Forex pair group"\n` +
     `• "Find me a setup on gold"\n` +
     `• "Switch provider to DeepSeek"\n\n` +
-    `/start_trading turns on autonomous trading (I act on real setups on my own, and only message you when something actually happens); /stop_trading turns it off cleanly.\n` +
+    `/start_trading turns on autonomous trading (I act on real setups on my own, and only message you when something actually happens) -- /start_trading <minutes> also sets/changes how often I scan (default 5); /stop_trading turns it off cleanly.\n` +
     `/stop or /panic halts all trading and workers instantly, any time -- not just a settings toggle.`;
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
@@ -797,10 +798,11 @@ async function handleStatus(deps: CommandRouterDeps, chatId: number, editMessage
   const interrupt = getInterruptState(deps.userId);
   const workers = listWorkers(deps.userId);
   const breakerLine = breaker.tripped ? formatTripReport(breaker) : `OK (${breaker.consecutiveErrors} consecutive errors)`;
+  const tradingLoopLine = isAutonomousTradingRunning(deps.userId) ? `${interrupt.tradingLoop} (every ${getTradingLoopIntervalMinutes(deps.userId)} min)` : interrupt.tradingLoop;
   const text =
     `<b>Status</b>\n` +
     `Circuit breaker: ${breakerLine}\n` +
-    `Trading loop: ${interrupt.tradingLoop}\n` +
+    `Trading loop: ${tradingLoopLine}\n` +
     `Active workers: ${workers.length}`;
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }

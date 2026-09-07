@@ -94,7 +94,21 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(VISION_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(SANDBOX_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(DB_TOOLS, dbOnlyCtx));
-  registry.register(adaptTools(AUTOMATION_TOOLS, dbOnlyCtx));
+  // Real gap fixed (user: "every 3 minutes send me hi never fired"): create/pause/resume/delete
+  // used to only ever write a DB row -- the real node-cron/webhook wiring only happened once, at
+  // THIS registry-build call below (wireScheduledAutomations/wireWebhookAutomations), which is
+  // itself only built once per chat and cached for the process's lifetime. `resync` re-runs both
+  // immediately after any automation-tool call changes a row, so a new/resumed automation is
+  // armed right away and a paused/deleted one is torn down right away.
+  const automationCtx = {
+    userId: deps.userId,
+    db: deps.db,
+    resync: () => {
+      wireScheduledAutomations(deps.db, deps.userId, automationDispatch);
+      wireWebhookAutomations(deps.db, deps.userId, automationDispatch);
+    },
+  };
+  registry.register(adaptTools(AUTOMATION_TOOLS, automationCtx));
   registry.register(adaptTools(WORKFLOW_TOOLS, workflowCtx));
   registry.register(adaptTools(TRAILING_TOOLS, tradingCtx));
   registry.register(adaptTools(MT5_ACCOUNT_TOOLS, tradingCtx));

@@ -18,9 +18,27 @@ export type AutomationDispatch = (userId: string, toolName: string, toolArgs: Re
 
 export function wireScheduledAutomations(db: DaveDatabase, userId: string, dispatch: AutomationDispatch): Map<string, () => Promise<unknown>> {
   const handlers = new Map<string, () => Promise<unknown>>();
-  const automations = listAutomations(db, userId).filter((a): a is Automation & { cronExpression: string } => a.enabled && a.triggerType === "scheduled" && !!a.cronExpression);
+  const all = listAutomations(db, userId);
+  const active = all.filter((a): a is Automation & { cronExpression: string } => a.enabled && a.triggerType === "scheduled" && !!a.cronExpression);
+  const activeIds = new Set(active.map((a) => a.id));
 
-  for (const automation of automations) {
+  // Real gap fixed (user: "every 3 minutes send me hi never fired"): this function is the ONLY
+  // place a scheduled automation's real node-cron trigger ever gets registered, and it was only
+  // ever called once, at registry-BUILD time (buildFullToolRegistry(), itself only built once
+  // per chat and cached for the process's lifetime). create_automation/pause_automation/
+  // resume_automation/delete_automation all just wrote a DB row -- none of them re-ran this, so
+  // an automation created (or paused/resumed) after the registry's first build had zero live
+  // effect until a full process restart happened to rebuild it. Fixed at both ends: this
+  // function is now also called from automation-tools.ts's `resync` callback right after every
+  // create/pause/resume, so it takes effect immediately; and it now ALSO tears down any
+  // previously-registered trigger for an automation that still exists as a DB row but is no
+  // longer active (paused, or switched away from "scheduled") -- previously re-wiring only ever
+  // ADDED/replaced triggers, so a paused automation kept firing on its old schedule forever.
+  for (const automation of all) {
+    if (!activeIds.has(automation.id)) unregisterScheduledTrigger(automation.id);
+  }
+
+  for (const automation of active) {
     const handler = () => dispatch(automation.userId, automation.toolName, automation.toolArgs);
     handlers.set(automation.id, handler);
     unregisterScheduledTrigger(automation.id); // idempotent re-wire (e.g. registry rebuilt) -- never double-register the same id
@@ -41,7 +59,15 @@ export function wireScheduledAutomations(db: DaveDatabase, userId: string, dispa
  */
 export function wireWebhookAutomations(db: DaveDatabase, userId: string, dispatch: AutomationDispatch): Map<string, AutomationWebhook> {
   const routes = new Map<string, AutomationWebhook>();
-  const automations = listAutomations(db, userId).filter((a): a is Automation & { webhookToken: string } => a.enabled && a.triggerType === "webhook" && !!a.webhookToken);
+  const all = listAutomations(db, userId);
+  const automations = all.filter((a): a is Automation & { webhookToken: string } => a.enabled && a.triggerType === "webhook" && !!a.webhookToken);
+
+  // Same real gap as wireScheduledAutomations above -- a paused webhook automation must stop
+  // accepting real POSTs, not just be filtered out of future re-wires while the old route stays live.
+  const activeTokens = new Set(automations.map((a) => a.webhookToken));
+  for (const automation of all) {
+    if (automation.webhookToken && !activeTokens.has(automation.webhookToken)) unregisterWebhookTrigger(automation.webhookToken);
+  }
 
   for (const automation of automations) {
     const route = registerWebhookTrigger(

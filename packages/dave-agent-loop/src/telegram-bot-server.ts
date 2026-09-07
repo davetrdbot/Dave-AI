@@ -15,7 +15,7 @@ import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js"
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic, isTradingHalted } from "@dave/safety";
-import { startAutonomousTradingLoop, stopAutonomousTradingLoop } from "./trading-loop.js";
+import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes } from "./trading-loop.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
@@ -461,14 +461,34 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // start_trading"): turns the real autonomous cycle (trading-loop.ts) on/off. Checked here,
       // same as /stop and /panic above, so it's a real, always-available command rather than
       // something the LLM has to interpret.
-      if (message.text && /^\/start_trading\b/i.test(message.text.trim())) {
+      //
+      // Real gap fixed (user: "every 5 min -- make this settable and configurable"): an optional
+      // trailing number of minutes, e.g. "/start_trading 10", sets the real persisted cadence
+      // (trading-loop-config.ts). Works whether the loop is currently off (starts it at that
+      // cadence) or already running (re-arms it live at the new cadence, no stop/start needed).
+      const startTradingMatch = message.text?.trim().match(/^\/start_trading(?:\s+(\d+))?\s*$/i);
+      if (startTradingMatch) {
+        const requestedMinutes = startTradingMatch[1] ? Number(startTradingMatch[1]) : undefined;
+        if (requestedMinutes !== undefined) {
+          try {
+            setAutonomousTradingIntervalMinutes(deps.ownerUserId, requestedMinutes);
+          } catch (err) {
+            await client.sendMessage({ chat_id: chatId, text: err instanceof Error ? err.message : String(err) });
+            return;
+          }
+        }
+        const wasAlreadyRunning = isAutonomousTradingRunning(deps.ownerUserId);
         const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId));
-        await client.sendMessage({
-          chat_id: chatId,
-          text: started
-            ? "▶️ Autonomous trading is on. I'll scan my active pair group and act on real setups on my own initiative -- I'll only message you when something actually happens (a trade, a TP/SL hit, or a real question). /stop_trading turns this off, /stop or /panic is still the instant hard kill."
-            : "Autonomous trading is already running.",
-        });
+        const interval = getTradingLoopIntervalMinutes(deps.ownerUserId);
+        let text: string;
+        if (started) {
+          text = `▶️ Autonomous trading is on (cadence: every ${interval} min). I'll scan my active pair group and act on real setups on my own initiative -- I'll only message you when something actually happens (a trade, a TP/SL hit, or a real question). /stop_trading turns this off, /stop or /panic is still the instant hard kill. Change the cadence any time with /start_trading <minutes>.`;
+        } else if (requestedMinutes !== undefined && wasAlreadyRunning) {
+          text = `🔄 Autonomous trading cadence updated to every ${interval} min, applied immediately.`;
+        } else {
+          text = `Autonomous trading is already running (cadence: every ${interval} min).`;
+        }
+        await client.sendMessage({ chat_id: chatId, text });
         return;
       }
       if (message.text && /^\/stop_trading\b/i.test(message.text.trim())) {

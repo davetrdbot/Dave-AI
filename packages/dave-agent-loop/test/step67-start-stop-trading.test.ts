@@ -88,7 +88,7 @@ try {
   console.log("\n[3] Calling /start_trading again does NOT stack a second interval...");
   sentMessages.length = 0;
   await postText("/start_trading");
-  const alreadyRunning = sentMessages.find((m) => m.method === "sendMessage" && (m.body as { text: string }).text === "Autonomous trading is already running.");
+  const alreadyRunning = sentMessages.find((m) => m.method === "sendMessage" && (m.body as { text: string }).text?.startsWith("Autonomous trading is already running"));
   assert.ok(alreadyRunning, "a second /start_trading must be recognized as a no-op, not a second loop");
 
   console.log("\n[4] A real webhook POST with '/stop_trading' genuinely stops the real loop...");
