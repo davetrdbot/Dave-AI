@@ -570,10 +570,24 @@ export class BedrockProvider implements Provider {
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
     const start = Date.now();
     const path = `/model/${encodeURIComponent(this.model)}/converse`;
+    // Real bug fixed (provider audit -- user: "check the providers... check if prompt caching is
+    // implemented for all providers"): system messages were silently DROPPED entirely (`.filter
+    // ((m) => m.role !== "system")` with nowhere else sending them) -- Bedrock never actually saw
+    // Dave's system prompt at all. Real Converse API shape: system is its own top-level array of
+    // content blocks, not a "system"-roled message. Also real prompt caching added here for the
+    // first time: `cachePoint` blocks (AWS's real, documented Converse API mechanism, confirmed
+    // working for Claude/Nova on Bedrock) on the system block and the last conversational message,
+    // same "cache the stable prefix" pattern ClaudeProvider already uses directly against Anthropic.
+    const systemMessages = req.messages.filter((m) => m.role === "system");
+    const conversational = req.messages.filter((m) => m.role !== "system");
+    const system = systemMessages.length > 0 ? [{ text: systemMessages.map((m) => (typeof m.content === "string" ? m.content : "")).join("\n\n") }, { cachePoint: { type: "default" } }] : undefined;
+    const messages = conversational.map((m, i) => ({
+      role: m.role,
+      content: [{ text: typeof m.content === "string" ? m.content : "" }, ...(i === conversational.length - 1 ? [{ cachePoint: { type: "default" } }] : [])],
+    }));
     const body = JSON.stringify({
-      messages: req.messages
-        .filter((m) => m.role !== "system")
-        .map((m) => ({ role: m.role, content: [{ text: typeof m.content === "string" ? m.content : "" }] })),
+      ...(system ? { system } : {}),
+      messages,
       inferenceConfig: { maxTokens: req.maxTokens ?? 512 },
     });
     const now = new Date();
@@ -594,8 +608,14 @@ export class BedrockProvider implements Provider {
     if (!res.ok) {
       throw new ProviderError("bedrock", `HTTP ${res.status}: ${await res.text()}`);
     }
-    const json = (await res.json()) as { output: { message: { content: { text: string }[] } } };
+    const json = (await res.json()) as {
+      output: { message: { content: { text: string }[] } };
+      usage?: { cacheReadInputTokens?: number; cacheWriteInputTokens?: number };
+    };
     const text = json.output.message.content.find((b) => b.text)?.text ?? "";
-    return { text, provider: "bedrock", latencyMs: Date.now() - start };
+    const cacheUsage = json.usage && (json.usage.cacheReadInputTokens !== undefined || json.usage.cacheWriteInputTokens !== undefined)
+      ? { cacheCreationInputTokens: json.usage.cacheWriteInputTokens ?? 0, cacheReadInputTokens: json.usage.cacheReadInputTokens ?? 0 }
+      : undefined;
+    return { text, provider: "bedrock", latencyMs: Date.now() - start, cacheUsage };
   }
 }
