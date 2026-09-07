@@ -134,6 +134,17 @@ export function createTelegramWebhookServer(handlers: TelegramWebhookHandlers): 
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
 
-    await handlers.onUpdate(record.userId, update);
+    // Real crash fixed (user: "Nvidia is no longer working again" -- root cause traced through
+    // real Railway logs: an unescaped "<minutes>" in /help's text made Telegram's real HTML
+    // parser reject the sendMessage call with a 400, which came back as an uncaught rejection
+    // here (this callback was never wrapped) -- Node's default behavior is to crash the WHOLE
+    // process on an unhandled rejection, killing every in-flight request for every user,
+    // including whatever real nvidia-nim/other request happened to be running at that moment.
+    // No single update handler's error may ever be allowed to take the entire bot down again.
+    try {
+      await handlers.onUpdate(record.userId, update);
+    } catch (err) {
+      console.error(`[telegram-webhook] onUpdate genuinely failed for user ${record.userId} -- swallowed here so the whole process stays up for every other user:`, err);
+    }
   });
 }

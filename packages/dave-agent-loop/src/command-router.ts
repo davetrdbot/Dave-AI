@@ -316,6 +316,16 @@ function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { 
     rows.push([coloredButton("➕ Add key(s)", "blue", `addkey:${provider}`)]);
   }
   rows.push([coloredButton(config.primary === provider ? "✅ Primary provider" : "Set as primary provider", config.primary === provider ? "green" : "blue", `setprimaryprovider:${provider}`)]);
+  // Real gap fixed (user: "the fallback you set it to Claude and deepseek and airllm only the
+  // fallback should be configurable in the /provider"): the fallback chain used to only ever be
+  // DEFAULT_CONFIG's hardcoded ["deepseek", "claude"] (or whatever was left over after switching
+  // primary), with no real UI to change it -- this real toggle button adds/removes THIS provider
+  // from the user's own fallback list. Hidden for the current primary (it's already tried first;
+  // being its own fallback would be meaningless) and for airllm (no key to fail over from).
+  if (provider !== config.primary && provider !== "airllm") {
+    const inFallback = config.fallback.includes(provider);
+    rows.push([coloredButton(inFallback ? "✅ In fallback chain" : "Add to fallback chain", inFallback ? "green" : "blue", `togglefallback:${provider}`)]);
+  }
   return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "providers:back") };
 }
 
@@ -887,7 +897,7 @@ async function handleHelp(deps: CommandRouterDeps, chatId: number, editMessageId
     `• "Switch to the Forex pair group"\n` +
     `• "Find me a setup on gold"\n` +
     `• "Switch provider to DeepSeek"\n\n` +
-    `/start_trading turns on autonomous trading (I act on real setups on my own, and only message you when something actually happens) -- /start_trading <minutes> also sets/changes how often I scan (default 5); /stop_trading turns it off cleanly.\n` +
+    `/start_trading turns on autonomous trading (I act on real setups on my own, and only message you when something actually happens) -- /start_trading followed by a number of minutes also sets/changes how often I scan (default 5); /stop_trading turns it off cleanly.\n` +
     `/stop or /panic halts all trading and workers instantly, any time -- not just a settings toggle.`;
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
@@ -1346,6 +1356,17 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       }
       // Same fix as activatekey: above -- model choice offered immediately, not a separate trip.
       if (chatId) await sendModelPickerForProvider(deps, chatId, name);
+    } else if (data.startsWith("togglefallback:")) {
+      const name = data.slice("togglefallback:".length) as ProviderName;
+      const config = getModelConfig(deps.userId);
+      const inFallback = config.fallback.includes(name);
+      const newFallback = inFallback ? config.fallback.filter((p) => p !== name) : [...config.fallback, name];
+      setModelConfig(deps.userId, { primary: config.primary, fallback: newFallback });
+      ackText = inFallback ? `Removed ${name} from fallback chain` : `Added ${name} to fallback chain`;
+      if (chatId && callback.message) {
+        const view = providerDetailView(deps, name);
+        await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup });
+      }
     } else if (data.startsWith("modelfor:")) {
       const name = data.slice("modelfor:".length) as ProviderName;
       ackText = `Model for ${name}`;
