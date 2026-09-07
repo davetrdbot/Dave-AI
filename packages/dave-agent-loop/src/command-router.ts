@@ -91,6 +91,9 @@ import {
 } from "@dave/notifications";
 import { getWriteApprovalSetting, setWriteApprovalSetting, resetWriteApprovalForUser, resetUserMemory } from "@dave/memory";
 import { addE2BKey, listE2BKeys, removeE2BKey, setPendingE2BKeyEntry, getPendingE2BKeyEntry } from "@dave/e2b";
+import { addFirecrawlKey, listFirecrawlKeys, removeFirecrawlKey, setPendingFirecrawlKeyEntry, getPendingFirecrawlKeyEntry } from "@dave/firecrawl";
+import { mcpConnect, listMcpServerConfigs, addMcpServerConfig, removeMcpServerConfig, InvalidMcpServerUrlError } from "@dave/mcp-manager";
+import { setPendingMcpServerEntry, getPendingMcpServerEntry } from "./pending-mcp-server-entry.js";
 import {
   getModelConfig,
   setModelConfig,
@@ -560,6 +563,29 @@ export async function tryHandlePendingE2BKeyEntry(deps: CommandRouterDeps, chatI
   return true;
 }
 
+export async function tryHandlePendingFirecrawlKeyEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  if (!getPendingFirecrawlKeyEntry(deps.db, deps.userId)) return false;
+  setPendingFirecrawlKeyEntry(deps.db, deps.userId, false);
+  const key = addFirecrawlKey(deps.db, deps.userId, `Firecrawl ${listFirecrawlKeys(deps.db, deps.userId).length}`, text.trim());
+  await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ Firecrawl key saved (${key.label}).` });
+  return true;
+}
+
+/** Format: "name | url" or "name | url | token" on one line. */
+export async function tryHandlePendingMcpServerEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  if (!getPendingMcpServerEntry(deps.db, deps.userId)) return false;
+  setPendingMcpServerEntry(deps.db, deps.userId, false);
+  const parts = text.split("|").map((p) => p.trim());
+  const [name, url, token] = parts.length >= 2 ? parts : [parts[0], parts[0]];
+  try {
+    const config = addMcpServerConfig(deps.userId, name, url, token || undefined);
+    await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ MCP server saved: ${config.name} (${config.url})` });
+  } catch (err) {
+    await deps.client.sendMessage({ chat_id: chatId, text: err instanceof InvalidMcpServerUrlError ? err.message : `Error: ${err instanceof Error ? err.message : String(err)}` });
+  }
+  return true;
+}
+
 /** Real fix (user: "I can set up to 20 keys in the telegram and paste the settable
  * credentials in telegram") -- the user's next message is one or more API keys, one per
  * line (a single pasted key is just a 1-line case of the same real bulk-add path, which
@@ -603,6 +629,7 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("AI Response Timeout", "blue", "settings:providertimeout")],
       [coloredButton("Trading Session", "blue", "settings:session")],
       [coloredButton("Confidence Rate", "blue", "settings:confidence")],
+      [coloredButton("Firecrawl Keys", "blue", "settings:firecrawl"), coloredButton("MCP Servers", "blue", "settings:mcp")],
     ])
   );
 }
@@ -811,6 +838,36 @@ function e2bKeyboard(deps: CommandRouterDeps): { text: string; reply_markup: Ret
     coloredButton("Remove", "red", `e2bkey:remove:${k.id}`),
   ]);
   if (keys.length < 10) rows.push([coloredButton("➕ Add key", "blue", "e2bkey:add")]);
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
+}
+
+/** Real gap fixed (user: "add more providers and make provision for... add firecrawl") -- same
+ *  real backend (firecrawl-keys.ts, an exact mirror of e2b-keys.ts) the admin panel already used,
+ *  now reachable from /settings too. */
+function firecrawlKeyboard(deps: CommandRouterDeps): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const keys = listFirecrawlKeys(deps.db, deps.userId);
+  const lines = [`<b>Firecrawl Keys</b>`, keys.length === 0 ? "No keys stored yet." : `${keys.length}/10 stored key(s):`];
+  const rows: ReturnType<typeof coloredButton>[][] = keys.map((k) => [
+    coloredButton(`${k.healthy ? "🟢" : "🔴"} ${k.label}`, "neutral", `firecrawlkey:noop:${k.id}`),
+    coloredButton("Remove", "red", `firecrawlkey:remove:${k.id}`),
+  ]);
+  if (keys.length < 10) rows.push([coloredButton("➕ Add key", "blue", "firecrawlkey:add")]);
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
+}
+
+/** Real gap fixed (user: "add provision for mcps you added that to the code but you haven't
+ *  implemented it yet") -- real provisioning UI for the generic MCP manager (mcp-manager.ts):
+ *  saved name+url+token per server, and a real "Connect now" that opens a live socket and
+ *  reports the real tool count discovered, same as calling mcp_connect would. */
+function mcpServersKeyboard(deps: CommandRouterDeps): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const servers = listMcpServerConfigs(deps.userId);
+  const lines = [`<b>MCP Servers</b>`, servers.length === 0 ? "No servers saved yet." : `${servers.length} saved server(s):`, "", "Saved here so Dave doesn't need to ask you for a URL every time it wants to use one."];
+  const rows: ReturnType<typeof coloredButton>[][] = servers.map((s) => [
+    coloredButton(s.name, "neutral", `mcpsrv:noop:${s.id}`),
+    coloredButton("Connect", "green", `mcpsrv:connect:${s.id}`),
+    coloredButton("Remove", "red", `mcpsrv:remove:${s.id}`),
+  ]);
+  rows.push([coloredButton("➕ Add MCP server", "blue", "mcpsrv:add")]);
   return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
@@ -1530,6 +1587,56 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const view = e2bKeyboard(deps);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data.startsWith("e2bkey:noop:")) {
+      ackText = undefined;
+    } else if (data === "settings:firecrawl") {
+      ackText = undefined;
+      const view = firecrawlKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "firecrawlkey:add") {
+      setPendingFirecrawlKeyEntry(deps.db, deps.userId, true);
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Reply with your Firecrawl API key as your next message." });
+    } else if (data.startsWith("firecrawlkey:remove:")) {
+      const keyId = data.slice("firecrawlkey:remove:".length);
+      removeFirecrawlKey(deps.db, deps.userId, keyId);
+      ackText = "Key removed";
+      await confirm("Firecrawl key removed");
+      const view = firecrawlKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("firecrawlkey:noop:")) {
+      ackText = undefined;
+    } else if (data === "settings:mcp") {
+      ackText = undefined;
+      const view = mcpServersKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "mcpsrv:add") {
+      setPendingMcpServerEntry(deps.db, deps.userId, true);
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Reply with the server as: name | url (add | token at the end if it needs one).\n\ne.g. My tools | https://mcp.example.com/mcp | sk-abc123" });
+    } else if (data.startsWith("mcpsrv:connect:")) {
+      const id = data.slice("mcpsrv:connect:".length);
+      const config = listMcpServerConfigs(deps.userId).find((s) => s.id === id);
+      if (!config) {
+        ackText = "Server not found";
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
+      } else {
+        try {
+          const conn = await mcpConnect(deps.userId, config.url, config.token);
+          ackText = "Connected";
+          if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `✅ Connected to ${config.name} -- ${conn.tools.length} real tool(s) discovered: ${conn.tools.map((t) => t.name).join(", ") || "(none)"}` });
+        } catch (err) {
+          ackText = "Connection failed";
+          if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Real connection failed: ${err instanceof Error ? err.message : String(err)}` });
+        }
+      }
+    } else if (data.startsWith("mcpsrv:remove:")) {
+      const id = data.slice("mcpsrv:remove:".length);
+      removeMcpServerConfig(deps.userId, id);
+      ackText = "Server removed";
+      await confirm("MCP server removed");
+      const view = mcpServersKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("mcpsrv:noop:")) {
       ackText = undefined;
     } else if (data === "settings:memory") {
       ackText = undefined;
