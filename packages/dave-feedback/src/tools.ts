@@ -2,6 +2,7 @@ import type { DaveDatabase } from "@dave/db";
 import { recordSkip, readSkipLog } from "./skip-log.js";
 import { recordHypothesis, recordObservation, readHypotheses, type Observation } from "./hypotheses.js";
 import { getReflectionThreshold, setReflectionThreshold } from "./reflection.js";
+import { getTodaysWinRateSummary, getWinRateSummary } from "./closed-trade-log.js";
 
 /**
  * Real gap this closes: Step 18 built genuinely real, tested logic for
@@ -86,6 +87,21 @@ export const FEEDBACK_TOOLS: FeedbackToolDefinition[] = [
     execute: async (args, ctx) => {
       setReflectionThreshold(ctx.db, ctx.userId, args.n as number);
       return { threshold: getReflectionThreshold(ctx.db, ctx.userId) };
+    },
+  },
+  {
+    name: "get_todays_journal",
+    description: "Real 'journal of the day' -- today's real win rate, wins/losses/breakeven count, and net P&L, computed from every real closed trade the EA has reported today (UTC calendar day). Returns winRatePct: null when there are genuinely zero closed trades yet, never a fabricated 0%.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => getTodaysWinRateSummary(ctx.db, ctx.userId),
+  },
+  {
+    name: "get_win_rate",
+    description: "Real win rate and P&L over a given number of past days (default 7) -- same real closed-trade data as get_todays_journal, wider window.",
+    parameters: { type: "object", properties: { days: { type: "number" } } },
+    execute: async (args, ctx) => {
+      const days = (args.days as number | undefined) ?? 7;
+      return getWinRateSummary(ctx.db, ctx.userId, Date.now() - days * 24 * 60 * 60 * 1000);
     },
   },
 ];

@@ -6,3 +6,4 @@ export * from "./reflection.js";
 export * from "./dreaming-cron.js";
 export * from "./weekly-export.js";
 export * from "./tools.js";
+export * from "./closed-trade-log.js";

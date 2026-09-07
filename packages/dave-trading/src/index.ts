@@ -15,3 +15,4 @@ export * from "./pair-group-tools.js";
 export * from "./trailing-config.js";
 export * from "./trailing-runtime.js";
 export * from "./extra-tools.js";
+export * from "./trading-session-config.js";

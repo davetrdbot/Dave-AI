@@ -23,7 +23,11 @@ export function composeBriefContent(userId: string): string {
 
   const balanceLine = snapshot ? `Balance: $${snapshot.balance.toFixed(2)} | Equity: $${(snapshot.equity ?? snapshot.balance).toFixed(2)}` : "Balance: no EA report yet";
   const positionsLine = `Open trades: ${state.positions.length}${state.positions.length > 0 ? ` (${state.positions.map((p) => p.symbol).join(", ")})` : ""}`;
-  const watchlistLine = group.activeGroup ? `Watchlist (${group.activeGroup.name}): ${group.activeGroup.symbols.join(", ") || "no symbols configured"}` : "Watchlist: no active pair group configured";
+  const watchlistLine = group.activePairSymbol
+    ? `Watchlist: ${group.activePairSymbol} (single pair)`
+    : group.activeGroup
+      ? `Watchlist (${group.activeGroup.name}): ${group.activeGroup.symbols.join(", ") || "no symbols configured"}`
+      : "Watchlist: no active pair group configured";
   const pausedLine = group.pausedForExtremeConditions ? "\n⚠️ Paused for extreme market conditions." : "";
 
   return `<b>☀️ Morning Brief</b>\n${balanceLine}\n${positionsLine}\n${watchlistLine}${pausedLine}`;

@@ -3,11 +3,16 @@ import {
   setTradingMode,
   setActiveGroup,
   setFallbackGroup,
+  setActivePairSymbol,
+  clearActivePairSymbol,
+  getTradingSession,
+  setTradingSession,
   proposeSettingsChange,
   getAutoApprovalEnabled,
   setAutoApprovalEnabled,
   type RiskMode,
   type TradingMode,
+  type TradingSession,
 } from "@dave/trading";
 import type { ToolDefinition } from "@dave/trading";
 
@@ -62,6 +67,39 @@ export const SETTINGS_TOOLS: ToolDefinition[] = [
     execute: async (args) => {
       if (args.slot === "active") setActiveGroup(args.userId as string, args.groupId as string);
       else setFallbackGroup(args.userId as string, args.groupId as string);
+      return { ok: true };
+    },
+  },
+  {
+    name: "set_active_pair",
+    description: "Narrow scanning/trading down to exactly ONE symbol (e.g. the user says 'just focus on EURUSD, not the whole group'). Overrides the active pair group's symbol list until cleared with clear_active_pair.",
+    parameters: { type: "object", required: ["userId", "symbol"], properties: { userId: { type: "string" }, symbol: { type: "string" } } },
+    execute: async (args) => {
+      setActivePairSymbol(args.userId as string, args.symbol as string);
+      return { ok: true };
+    },
+  },
+  {
+    name: "clear_active_pair",
+    description: "Clear the single-pair override, going back to scanning the whole active pair group.",
+    parameters: { type: "object", required: ["userId"], properties: { userId: { type: "string" } } },
+    execute: async (args) => {
+      clearActivePairSymbol(args.userId as string);
+      return { ok: true };
+    },
+  },
+  {
+    name: "get_trading_session",
+    description: "Get the user's real selected trading session (sydney/asian/london/new_york/all).",
+    parameters: { type: "object", required: ["userId"], properties: { userId: { type: "string" } } },
+    execute: async (args) => ({ session: getTradingSession(args.userId as string) }),
+  },
+  {
+    name: "set_trading_session",
+    description: "Set which real trading session the user wants Dave to trade during. 'all' means no restriction (trade any session).",
+    parameters: { type: "object", required: ["userId", "session"], properties: { userId: { type: "string" }, session: { type: "string", enum: ["sydney", "asian", "london", "new_york", "all"] } } },
+    execute: async (args) => {
+      setTradingSession(args.userId as string, args.session as TradingSession);
       return { ok: true };
     },
   },

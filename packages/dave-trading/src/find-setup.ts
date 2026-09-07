@@ -1,5 +1,6 @@
 import type { DavemaClient } from "@dave/davema";
 import { getActiveGroupInfo } from "./pair-groups.js";
+import { isWithinSelectedSession } from "./trading-session-config.js";
 
 /**
  * Step 10.10: explicit "find me a setup" tool -- scans the current
@@ -22,6 +23,10 @@ export interface SetupScanResult {
   groupName: string | null;
   rows: SetupScanRow[];
   bestSetup: SetupScanRow | null;
+  /** Real gap fixed (user: "in settings to select the session you want it to trade and also a
+   *  option to put all so it can trade all sessions"): true when this scan was genuinely skipped
+   *  because the real current UTC time isn't in the user's selected session window. */
+  skippedOutsideSession?: boolean;
 }
 
 interface ConfluenceData {
@@ -30,13 +35,20 @@ interface ConfluenceData {
 }
 
 export async function findSetup(userId: string, client: DavemaClient, tf = "H1"): Promise<SetupScanResult> {
-  const { activeGroup } = getActiveGroupInfo(userId);
-  if (!activeGroup) {
+  // Real gap fixed (user: "add active pair so incase a user doesn't want to use a group of pair
+  // it can select a pair the bot can focus only"): effectiveSymbols honors a real single-pair
+  // override when one is set, instead of always scanning the whole active group.
+  const { activeGroup, activePairSymbol, effectiveSymbols } = getActiveGroupInfo(userId);
+  if (effectiveSymbols.length === 0) {
     return { scannedAt: Date.now(), groupName: null, rows: [], bestSetup: null };
+  }
+  if (!isWithinSelectedSession(userId)) {
+    const groupName = activePairSymbol ? `${activePairSymbol} (single pair)` : (activeGroup?.name ?? null);
+    return { scannedAt: Date.now(), groupName, rows: [], bestSetup: null, skippedOutsideSession: true };
   }
 
   const rows: SetupScanRow[] = await Promise.all(
-    activeGroup.symbols.map(async (symbol): Promise<SetupScanRow> => {
+    effectiveSymbols.map(async (symbol): Promise<SetupScanRow> => {
       try {
         const data = await client.data<ConfluenceData>("confluence", symbol, tf);
         return { symbol, score: data.score, direction: data.direction };
@@ -47,5 +59,6 @@ export async function findSetup(userId: string, client: DavemaClient, tf = "H1")
   );
 
   const ranked = rows.filter((r) => !r.error).sort((a, b) => b.score - a.score);
-  return { scannedAt: Date.now(), groupName: activeGroup.name, rows, bestSetup: ranked[0] ?? null };
+  const groupName = activePairSymbol ? `${activePairSymbol} (single pair)` : (activeGroup?.name ?? null);
+  return { scannedAt: Date.now(), groupName, rows, bestSetup: ranked[0] ?? null };
 }

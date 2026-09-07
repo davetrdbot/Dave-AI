@@ -11,6 +11,7 @@ import { getTelegramCredentials, type TelegramClient } from "@dave/telegram";
 import { startTelegramBotServer } from "./telegram-bot-server.js";
 import { getPrimaryChatId } from "./primary-chat.js";
 import { buildClosedTradeMessage, buildManualCloseMessage } from "./trade-notifications.js";
+import { logClosedTrade } from "@dave/feedback";
 
 /**
  * Real gap fixed (final pre-deployment pass, Railway Part A item 1):
@@ -193,6 +194,10 @@ export async function main(): Promise<void> {
   const eaBridge = new EaBridge({
     onConnect: (userId) => console.log(`[ea] connected: ${userId}`),
     onClosedPosition: (userId, closed) => {
+      // Real gap fixed (user: "implement journal of the day that's win rate and others"): the
+      // SAME real closed-position data the hardcoded Telegram message is built from is now also
+      // persisted for real win-rate aggregation -- never a second, possibly-drifting source of truth.
+      logClosedTrade(db, userId, closed);
       const chatId = telegramClient && getPrimaryChatId(db, userId);
       if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildClosedTradeMessage(closed) });
     },

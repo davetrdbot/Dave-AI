@@ -20,9 +20,15 @@ interface GroupState {
   activeGroupId: string | null;
   fallbackGroupId: string | null;
   pausedForExtremeConditions: boolean;
+  /** Real gap fixed (user: "add active pair so incase a user doesn't want to use a group of pair
+   *  it can select a pair the bot can focus only"): a real, optional override -- when set, Dave
+   *  scans/trades ONLY this one symbol instead of the whole active group's symbol list. Setting
+   *  the active GROUP does not clear this; the user explicitly clears it (or picks a different
+   *  active pair) to go back to scanning the full group. */
+  activePairSymbol: string | null;
 }
 
-const EMPTY_STATE: GroupState = { groups: [], activeGroupId: null, fallbackGroupId: null, pausedForExtremeConditions: false };
+const EMPTY_STATE: GroupState = { groups: [], activeGroupId: null, fallbackGroupId: null, pausedForExtremeConditions: false, activePairSymbol: null };
 
 function statePath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "pair-groups.json");
@@ -31,7 +37,8 @@ function statePath(userId: string): string {
 function readState(userId: string): GroupState {
   const path = statePath(userId);
   if (!existsSync(path)) return { ...EMPTY_STATE, groups: [] };
-  return JSON.parse(readFileSync(path, "utf8"));
+  // activePairSymbol defaults to null for state files persisted before this field existed.
+  return { activePairSymbol: null, ...JSON.parse(readFileSync(path, "utf8")) };
 }
 
 function saveState(userId: string, state: GroupState): void {
@@ -87,6 +94,22 @@ export function setFallbackGroup(userId: string, groupId: string): void {
   const state = readState(userId);
   if (!state.groups.some((g) => g.id === groupId)) throw new UnknownGroupError(groupId);
   state.fallbackGroupId = groupId;
+  saveState(userId, state);
+}
+
+/** Real gap fixed (user: "add active pair so incase a user doesn't want to use a group of pair it
+ *  can select a pair the bot can focus only"): narrows scanning/trading down to exactly this one
+ *  symbol, real, persisted, independent of which group is active. */
+export function setActivePairSymbol(userId: string, symbol: string): void {
+  const state = readState(userId);
+  state.activePairSymbol = symbol.trim().toUpperCase();
+  saveState(userId, state);
+}
+
+/** Clears the single-pair override -- Dave goes back to scanning the whole active group. */
+export function clearActivePairSymbol(userId: string): void {
+  const state = readState(userId);
+  state.activePairSymbol = null;
   saveState(userId, state);
 }
 
@@ -174,14 +197,24 @@ export interface ActiveGroupInfo {
   activeGroup: PairGroup | null;
   fallbackGroup: PairGroup | null;
   pausedForExtremeConditions: boolean;
+  /** Real, persisted single-pair override -- null when scanning the whole active group. */
+  activePairSymbol: string | null;
+  /** The REAL symbol list to actually scan/trade right now: just [activePairSymbol] when a
+   *  single-pair override is set, otherwise the full active group's symbols (or [] if no group
+   *  is active either). Every real caller (find-setup.ts, the trading loop, etc.) should use
+   *  THIS, not activeGroup.symbols directly, so the override is honored everywhere consistently. */
+  effectiveSymbols: string[];
 }
 
 export function getActiveGroupInfo(userId: string): ActiveGroupInfo {
   const state = readState(userId);
+  const activeGroup = state.groups.find((g) => g.id === state.activeGroupId) ?? null;
   return {
-    activeGroup: state.groups.find((g) => g.id === state.activeGroupId) ?? null,
+    activeGroup,
     fallbackGroup: state.groups.find((g) => g.id === state.fallbackGroupId) ?? null,
     pausedForExtremeConditions: state.pausedForExtremeConditions,
+    activePairSymbol: state.activePairSymbol,
+    effectiveSymbols: state.activePairSymbol ? [state.activePairSymbol] : (activeGroup?.symbols ?? []),
   };
 }
 

@@ -21,7 +21,7 @@ import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } fr
 import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
@@ -516,6 +516,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         if (await tryHandlePendingLimitEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingTrailingEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingMcpUrlEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingActivePairEntry(routerDeps, chatId, message.text)) return;
         // Item 11: a typed "yes"/"no" answering a real pending settings-change approval is
         // handled here, BEFORE the agent loop ever sees it -- otherwise the model has no way
         // to know an approval is already pending and could re-propose the same change, sending

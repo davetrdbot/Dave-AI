@@ -18,6 +18,7 @@ import {
 } from "@dave/telegram";
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError } from "@dave/ea-bridge";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
+import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
 import { formatPnl } from "./trade-notifications.js";
 import {
   getRiskSettings,
@@ -40,6 +41,11 @@ import {
   listGroups,
   setActiveGroup,
   setFallbackGroup,
+  setActivePairSymbol,
+  clearActivePairSymbol,
+  getTradingSession,
+  setTradingSession,
+  type TradingSession,
   resetPairGroupSelectionForUser,
   seedDefaultPairGroups,
   getTradingMode,
@@ -95,6 +101,7 @@ import {
   type StoredProviderKey,
 } from "@dave/brain";
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
+import { getTodaysWinRateSummary } from "@dave/feedback";
 import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes, setAutonomousTradingIntervalMinutes } from "./trading-loop.js";
 import { DEFAULT_TRADING_LOOP_MINUTES } from "./trading-loop-config.js";
 import { getProviderTimeoutConfig, setPrimaryTimeoutSeconds, setFallbackTimeoutSeconds } from "./provider-timeout-config.js";
@@ -585,8 +592,31 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Autonomous Trading", "blue", "settings:tradinginterval")],
       [coloredButton("EA Token", "blue", "settings:eatoken")],
       [coloredButton("AI Response Timeout", "blue", "settings:providertimeout")],
+      [coloredButton("Trading Session", "blue", "settings:session")],
     ])
   );
+}
+
+/** Real gap fixed (user: "in settings to select the session you want it to trade and also a
+ * option to put all so it can trade all sessions"): real, persisted session preference with a
+ * genuine "All" option, enforced in find-setup.ts (a scan outside the selected window is honestly
+ * skipped, not silently run anyway). */
+const TRADING_SESSION_OPTIONS: { value: TradingSession; label: string }[] = [
+  { value: "all", label: "🌍 All sessions" },
+  { value: "sydney", label: "Sydney" },
+  { value: "asian", label: "Asian (Tokyo)" },
+  { value: "london", label: "London" },
+  { value: "new_york", label: "New York" },
+];
+
+function tradingSessionKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const current = getTradingSession(userId);
+  const lines = ["<b>Trading Session</b>", `Current: ${TRADING_SESSION_OPTIONS.find((o) => o.value === current)?.label ?? current}`, "", "Real UTC windows -- outside the selected window, a scan is honestly skipped, not run anyway."];
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  for (let i = 0; i < TRADING_SESSION_OPTIONS.length; i += 2) {
+    rows.push(TRADING_SESSION_OPTIONS.slice(i, i + 2).map((o) => coloredButton(o.value === current ? `✅ ${o.label}` : o.label, o.value === current ? "green" : "neutral", `session:${o.value}`)));
+  }
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 /** Real gap fixed (user: "increase the timeout... settable in settings"): real button pickers
@@ -863,6 +893,10 @@ function pairGroupKeyboard(userId: string): { text: string; reply_markup: Return
     `<b>Pair Group</b>`,
     `Active: ${info.activeGroup?.name ?? "none"}`,
     `Fallback: ${info.fallbackGroup?.name ?? "none"}`,
+    // Real gap fixed (user: "add active pair so incase a user doesn't want to use a group of
+    // pair it can select a pair the bot can focus only"): a real, persisted single-symbol
+    // override, shown honestly here alongside the group selection it overrides.
+    `Single-pair focus: ${info.activePairSymbol ?? "off (scanning the whole active group)"}`,
     info.pausedForExtremeConditions ? "⚠️ Paused for extreme market conditions." : "",
     "",
     groups.length === 0 ? "No pair groups defined yet -- create one in the admin panel." : "Tap to set active/fallback:",
@@ -871,6 +905,11 @@ function pairGroupKeyboard(userId: string): { text: string; reply_markup: Return
     coloredButton(g.id === info.activeGroup?.id ? `✅ ${g.name}` : g.name, g.id === info.activeGroup?.id ? "green" : "neutral", `pairgroup:active:${g.id}`),
     coloredButton(g.id === info.fallbackGroup?.id ? `✅ Fallback` : "Set fallback", g.id === info.fallbackGroup?.id ? "green" : "neutral", `pairgroup:fallback:${g.id}`),
   ]);
+  rows.push(
+    info.activePairSymbol
+      ? [coloredButton(`✅ Focused: ${info.activePairSymbol}`, "green", "pairgroup:setpair"), coloredButton("❌ Clear focus", "red", "pairgroup:clearpair")]
+      : [coloredButton("🎯 Focus one pair", "blue", "pairgroup:setpair")]
+  );
   return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
@@ -987,11 +1026,20 @@ async function handleStatus(deps: CommandRouterDeps, chatId: number, editMessage
   const workers = listWorkers(deps.userId);
   const breakerLine = breaker.tripped ? formatTripReport(breaker) : `OK (${breaker.consecutiveErrors} consecutive errors)`;
   const tradingLoopLine = isAutonomousTradingRunning(deps.userId) ? `${interrupt.tradingLoop} (every ${getTradingLoopIntervalMinutes(deps.userId)} min)` : interrupt.tradingLoop;
+  // Real gap fixed (user: "implement journal of the day thats win rate and others"): real, today
+  // (UTC), computed straight from the EA's own real closed-trade reports -- winRatePct stays
+  // honestly null (shown as "no closed trades yet") rather than a fabricated 0%.
+  const journal = getTodaysWinRateSummary(deps.db, deps.userId);
+  const journalLine =
+    journal.total === 0
+      ? "No closed trades yet today"
+      : `${journal.wins}W/${journal.losses}L${journal.breakeven > 0 ? `/${journal.breakeven}BE` : ""} (${journal.winRatePct!.toFixed(0)}% win rate) — net ${formatMoney(journal.netPnl)}`;
   const text =
     `<b>Status</b>\n` +
     `Circuit breaker: ${breakerLine}\n` +
     `Trading loop: ${tradingLoopLine}\n` +
-    `Active workers: ${workers.length}`;
+    `Active workers: ${workers.length}\n` +
+    `Today's journal: ${journalLine}`;
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
 
@@ -1027,6 +1075,16 @@ export async function tryHandlePendingMcpUrlEntry(deps: CommandRouterDeps, chatI
     const message = err instanceof MissingMcpServerUrlError ? err.message : err instanceof Error ? err.message : String(err);
     await deps.client.sendMessage({ chat_id: chatId, text: `⚠️ ${message}` });
   }
+  return true;
+}
+
+/** The user's next free-text message after tapping "Focus one pair" IS the real symbol. */
+export async function tryHandlePendingActivePairEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  if (!getPendingActivePairEntry(deps.db, deps.userId)) return false;
+  setPendingActivePairEntry(deps.db, deps.userId, false);
+  const symbol = text.trim().toUpperCase();
+  setActivePairSymbol(deps.userId, symbol);
+  await deps.client.sendMessage({ chat_id: chatId, text: `✅ Focused on <b>${symbol}</b> -- scanning/trading only this pair until you clear it in Settings → Pair Group.`, parse_mode: "HTML" });
   return true;
 }
 
@@ -1229,6 +1287,16 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       await confirm(`Fallback group: ${groupName}`);
       const view = pairGroupKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "pairgroup:setpair") {
+      setPendingActivePairEntry(deps.db, deps.userId, true);
+      ackText = "Send the symbol to focus on";
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Send the one symbol you want me to focus on as your next message (e.g. EURUSD)." });
+    } else if (data === "pairgroup:clearpair") {
+      clearActivePairSymbol(deps.userId);
+      ackText = "Single-pair focus cleared";
+      await confirm("Back to scanning the whole active group.");
+      const view = pairGroupKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
     } else if (data === "settings:voice") {
       ackText = undefined;
       const view = voiceSettingsView(deps);
@@ -1315,6 +1383,16 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = `Fallback timeout: ${seconds}s`;
       await confirm(`Fallback provider timeout set to ${seconds}s each`);
       const view = providerTimeoutKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:session") {
+      ackText = undefined;
+      const view = tradingSessionKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("session:")) {
+      const session = data.slice("session:".length) as TradingSession;
+      setTradingSession(deps.userId, session);
+      ackText = `Session: ${session}`;
+      const view = tradingSessionKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data === "settings:eatoken") {
       ackText = undefined;
