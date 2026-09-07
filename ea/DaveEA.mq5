@@ -563,12 +563,31 @@ ENUM_TIMEFRAMES TimeframeFromString(string tf)
 int    g_anb = 0;
 double g_aO[], g_aH[], g_aL[], g_aC[];
 
+// Real gap fixed (user report: "the bars are still entering" -- get_trend/get_momentum/
+// get_volatility failing right after the EA is attached to a fresh symbol/timeframe): MT5
+// caches price history PER symbol+timeframe and downloads it from the broker asynchronously
+// the first time anything asks for it -- CopyRates() on a symbol nothing has touched yet can
+// legitimately return 0 or a handful of bars on the FIRST call, even though the broker has
+// years of real history available. The old code treated that as "not enough real history,
+// period" and failed immediately, which meant analysis only started working once enough LIVE
+// ticks had trickled in one bar at a time -- exactly the "waiting for new ones to enter"
+// symptom reported. The real fix: explicitly ask MT5 to synchronize this series and give it a
+// bounded window to finish the download BEFORE giving up, so a fresh symbol gets its real past
+// history immediately instead of waiting on the future.
 bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
   {
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
    int copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
-   if(copied <= 20) return false; // not enough real history to compute anything meaningful yet
+   if(copied <= 20)
+     {
+      // Not synchronized yet -- give MT5 a real, bounded window (up to ~4s) to finish
+      // downloading this symbol/timeframe's history from the broker, then retry once more.
+      for(int attempt = 0; attempt < 20 && !SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED); attempt++)
+         Sleep(200);
+      copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
+     }
+   if(copied <= 20) return false; // genuinely not enough real history even after waiting for sync
    g_anb = copied;
    ArrayResize(g_aO, copied); ArrayResize(g_aH, copied); ArrayResize(g_aL, copied); ArrayResize(g_aC, copied);
    for(int i = 0; i < copied; i++)

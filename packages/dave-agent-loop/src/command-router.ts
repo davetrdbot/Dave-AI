@@ -283,7 +283,7 @@ async function handleProviders(deps: CommandRouterDeps, chatId: number, editMess
   await sendOrEditScreen(deps, chatId, text, providersKeyboard(config.primary, configuredProviders), editMessageId);
 }
 
-/** Real fix (spec: "Tap a provider -> shows its stored keys (up to 10 per provider) each with
+/** Real fix (spec: "Tap a provider -> shows its stored keys (up to 20 per provider) each with
  * health status, tap a key to activate"). Renders the provider detail screen sent both from
  * /providers' provider: callback and re-rendered in place after activating a key. */
 function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { text: string; reply_markup: ReturnType<typeof keyboard> } {
@@ -448,10 +448,10 @@ export async function tryHandlePendingE2BKeyEntry(deps: CommandRouterDeps, chatI
   return true;
 }
 
-/** Real fix (user: "I can set up to 10 keys in the telegram and paste the settable
+/** Real fix (user: "I can set up to 20 keys in the telegram and paste the settable
  * credentials in telegram") -- the user's next message is one or more API keys, one per
  * line (a single pasted key is just a 1-line case of the same real bulk-add path, which
- * already enforces the 10-key cap and reports per-line success/failure honestly). */
+ * already enforces the 20-key cap and reports per-line success/failure honestly). */
 export async function tryHandlePendingKeyEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
   const provider = getPendingKeyEntry(deps.db, deps.userId);
   if (!provider) return false;
@@ -775,9 +775,9 @@ async function performFullReset(deps: CommandRouterDeps, chatId: number, history
 }
 
 /** Real fix (spec: "3-4 real examples" of conversational use + mention /stop and /panic).
- * /stop and /panic are deliberately NOT in DAVE_COMMANDS (they're not part of the public
- * 9/10-command menu) -- real, working emergency commands, just not menu-listed; mentioned
- * here explicitly instead. */
+ * /stop, /panic, /start_trading, and /stop_trading are deliberately NOT in DAVE_COMMANDS
+ * (they're not part of the public 9/10-command menu) -- real, working commands, just not
+ * menu-listed; mentioned here explicitly instead. */
 async function handleHelp(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const lines = DAVE_COMMANDS.map((c) => `/${c.command} -- ${c.description}`);
   const text =
@@ -787,6 +787,7 @@ async function handleHelp(deps: CommandRouterDeps, chatId: number, editMessageId
     `• "Switch to the Forex pair group"\n` +
     `• "Find me a setup on gold"\n` +
     `• "Switch provider to DeepSeek"\n\n` +
+    `/start_trading turns on autonomous trading (I act on real setups on my own, and only message you when something actually happens); /stop_trading turns it off cleanly.\n` +
     `/stop or /panic halts all trading and workers instantly, any time -- not just a settings toggle.`;
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
@@ -1128,7 +1129,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       if (chatId) {
         await deps.client.sendMessage({
           chat_id: chatId,
-          text: `Reply with your ${provider} API key as your next message.\n\nTo add multiple at once (up to 10), paste one per line -- each is validated and stored individually, so one bad line never blocks the rest.`,
+          text: `Reply with your ${provider} API key as your next message.\n\nTo add multiple at once (up to 20), paste one per line -- each is validated and stored individually, so one bad line never blocks the rest.`,
         });
       }
     } else if (data === "providers:back") {
@@ -1171,6 +1172,11 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
           const view = providerDetailView(deps, key.provider);
           await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup });
         }
+        // Real gap fixed (user: "why do I still have to go to /models and confirm it again"):
+        // setting a key as primary used to leave model choice as a completely separate, second
+        // trip through /models -- now the model picker for the just-activated provider is sent
+        // immediately, right in the same flow, with no extra navigation required.
+        if (chatId) await sendModelPickerForProvider(deps, chatId, key.provider);
       }
     } else if (data.startsWith("setprimaryprovider:")) {
       const name = data.slice("setprimaryprovider:".length) as ProviderName;
@@ -1182,6 +1188,8 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         const view = providerDetailView(deps, name);
         await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: view.text, parse_mode: "HTML", reply_markup: view.reply_markup });
       }
+      // Same fix as activatekey: above -- model choice offered immediately, not a separate trip.
+      if (chatId) await sendModelPickerForProvider(deps, chatId, name);
     } else if (data.startsWith("modelfor:")) {
       const name = data.slice("modelfor:".length) as ProviderName;
       ackText = `Model for ${name}`;

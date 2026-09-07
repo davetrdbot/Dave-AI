@@ -4,15 +4,18 @@ import { buildProvider } from "./provider-factory.js";
 import { ProviderError, type CompletionRequest, type CompletionResult, type ProviderName } from "./providers.js";
 
 /**
- * Update 3: "up to 10 stored keys per provider with health-check
+ * Update 3: "up to 20 stored keys per provider with health-check
  * auto-failover" -- a layer BELOW the existing cross-provider
  * ProviderRouter (provider-router.ts). That router fails over from one
  * provider to another (e.g. airllm -> deepseek -> claude); this fails
  * over between multiple keys held for the SAME provider (e.g. three
  * OpenAI keys, one rate-limited).
+ *
+ * Raised from 10 to 20 per the user's explicit ask -- more headroom
+ * for a provider they burn through keys on quickly.
  */
 const TABLE = "provider_keys";
-const MAX_KEYS_PER_PROVIDER = 10;
+const MAX_KEYS_PER_PROVIDER = 20;
 
 export interface StoredProviderKey {
   id: string;

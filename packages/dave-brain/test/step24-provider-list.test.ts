@@ -181,19 +181,19 @@ try {
 
   await new Promise<void>((resolve) => failoverServer.close(() => resolve()));
 
-  console.log("\n[6b] Real max-10-keys-per-provider limit enforced...\n");
-  for (let i = 0; i < 8; i++) {
+  console.log("\n[6b] Real max-20-keys-per-provider limit enforced...\n");
+  for (let i = 0; i < 18; i++) {
     addProviderKey(db, OWNER, "groq", `extra-${i}`, { apiKey: "x" });
   }
-  assert.equal(listProviderKeys(db, OWNER, "groq").length, 10);
+  assert.equal(listProviderKeys(db, OWNER, "groq").length, 20);
   let limitEnforced = false;
   try {
     addProviderKey(db, OWNER, "groq", "one-too-many", { apiKey: "x" });
   } catch (err) {
-    limitEnforced = err instanceof Error && err.message.includes("10-key limit");
+    limitEnforced = err instanceof Error && err.message.includes("20-key limit");
   }
-  assert.ok(limitEnforced, "must genuinely refuse an 11th key for the same provider");
-  console.log("    the real 10-key cap is enforced -- an 11th add for the same provider is refused");
+  assert.ok(limitEnforced, "must genuinely refuse a 21st key for the same provider");
+  console.log("    the real 20-key cap is enforced -- a 21st add for the same provider is refused");
 
   console.log("\n[6b2] checkProviderKeyHealth(): a real, direct health-check call (not just failover-driven)...\n");
   const staleKey = addProviderKey(db, OWNER, "cerebras", "stale", { apiKey: "x", baseUrlOverride: "http://127.0.0.1:1" });

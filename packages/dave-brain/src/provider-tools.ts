@@ -37,7 +37,7 @@ export const PROVIDER_TOOLS: ToolDefinition[] = [
   },
   {
     name: "add_provider_key",
-    description: "Store a real API key for a built-in provider (up to 10 per provider). Optionally override its base URL or model.",
+    description: "Store a real API key for a built-in provider (up to 20 per provider). Optionally override its base URL or model.",
     parameters: {
       type: "object",
       properties: {
@@ -100,7 +100,7 @@ export const PROVIDER_TOOLS: ToolDefinition[] = [
   },
   {
     name: "add_provider_keys_bulk",
-    description: "Paste multiple API keys for one provider at once (one per line, up to 10 total per provider). Each line is validated and stored individually -- one bad key never blocks the rest.",
+    description: "Paste multiple API keys for one provider at once (one per line, up to 20 total per provider). Each line is validated and stored individually -- one bad key never blocks the rest.",
     parameters: {
       type: "object",
       properties: {

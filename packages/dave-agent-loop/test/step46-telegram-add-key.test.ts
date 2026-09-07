@@ -52,7 +52,7 @@ try {
   const notConsumed = await tryHandlePendingKeyEntry(deps, CHAT_ID, "just chatting with Dave");
   assert.equal(notConsumed, false);
 
-  console.log("\n[4] Bulk paste (multiple keys, one per line, up to 10) genuinely stores each individually...");
+  console.log("\n[4] Bulk paste (multiple keys, one per line, up to 20) genuinely stores each individually...");
   await dispatchCallback(deps, { id: "cb2", data: "addkey:groq", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
   sentMessages.length = 0;
   const bulkText = "gsk-real-key-1\ngsk-real-key-2\n\ngsk-real-key-3";
@@ -65,17 +65,17 @@ try {
   assert.match(sentMessages[0].text, /Line 1: OK/);
   assert.match(sentMessages[0].text, /Line 3: OK/);
 
-  console.log("\n[5] The 'Add key(s)' button genuinely disappears once the real 10-key cap is hit...");
+  console.log("\n[5] The 'Add key(s)' button genuinely disappears once the real 20-key cap is hit...");
   sentMessages.length = 0;
   await dispatchCallback(deps, { id: "cb3", data: "addkey:groq", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
-  await tryHandlePendingKeyEntry(deps, CHAT_ID, Array.from({ length: 7 }, (_, i) => `gsk-real-key-${i + 4}`).join("\n"));
-  assert.equal(listProviderKeys(db, OWNER, "groq").length, 10);
+  await tryHandlePendingKeyEntry(deps, CHAT_ID, Array.from({ length: 17 }, (_, i) => `gsk-real-key-${i + 4}`).join("\n"));
+  assert.equal(listProviderKeys(db, OWNER, "groq").length, 20);
   sentMessages.length = 0;
   await dispatchCallback(deps, { id: "cb4", data: "provider:groq", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
   const detailCall = sentMessages[sentMessages.length - 1];
   const buttonTexts = detailCall?.reply_markup?.inline_keyboard.flat().map((b) => b.text) ?? [];
-  console.log(`    buttons at 10/10 keys: ${JSON.stringify(buttonTexts.filter((t) => t.includes("Add key")))} (must be empty)`);
-  assert.ok(!buttonTexts.some((t) => t.includes("Add key")), "the Add key(s) button must genuinely disappear once the real 10-key cap is hit");
+  console.log(`    buttons at 20/20 keys: ${JSON.stringify(buttonTexts.filter((t) => t.includes("Add key")))} (must be empty)`);
+  assert.ok(!buttonTexts.some((t) => t.includes("Add key")), "the Add key(s) button must genuinely disappear once the real 20-key cap is hit");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

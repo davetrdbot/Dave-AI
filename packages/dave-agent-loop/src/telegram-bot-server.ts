@@ -14,7 +14,8 @@ import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
-import { stopOrPanic } from "@dave/safety";
+import { stopOrPanic, isTradingHalted } from "@dave/safety";
+import { startAutonomousTradingLoop, stopAutonomousTradingLoop } from "./trading-loop.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
@@ -154,6 +155,58 @@ async function runAgentTurn(
     }
   } catch (err) {
     await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) });
+  } finally {
+    clearBusy(deps.ownerUserId);
+  }
+}
+
+/** The real per-tick body of /start_trading's autonomous loop (see trading-loop.ts for the
+ * scheduling itself). Deliberately runs against its OWN, separate conversation history
+ * (`<owner>:autonomous:<chatId>`) rather than the user's real chat thread -- an autonomous
+ * scan's internal back-and-forth isn't something the user should see mixed into their own
+ * conversation later, even though it shares the exact same tools/registry/system prompt (goal.yaml
+ * included). Per IDENTITY.md's "trade quietly" rule, this sends NOTHING to the user unless the
+ * model's own final text is real content -- a bare "NOTHING_TO_REPORT" sentinel (or empty text)
+ * means a normal, quiet cycle where nothing needed saying, and is swallowed here, never sent. */
+async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
+  if (isTradingHalted(deps.ownerUserId)) return;
+  if (getBusyState(deps.ownerUserId)) return; // a real user turn is already in flight -- don't collide with it, just wait for the next tick
+
+  const historyKey = `${deps.ownerUserId}:autonomous:${chatId}`;
+  const registry = getOrBuildRegistry(deps, client, chatId);
+  const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text) => {
+    await client.sendMessage({ chat_id: chatId, text });
+  });
+  const loop = new AgentLoop(provider, registry);
+
+  let history = loadConversationHistory(deps.db, historyKey);
+  if (history.length === 0) history = [{ role: "system", content: deps.systemPrompt }];
+  history.push({
+    role: "user",
+    content:
+      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Scan your active pair group for a genuine setup using your real analysis tools and goal.yaml rules, and act (open/manage a real trade) if one genuinely clears. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT",
+  });
+
+  setBusy(deps.ownerUserId, "autonomous trading cycle");
+  try {
+    const result = await loop.run(history, { maxSteps: 8 });
+    saveConversationHistory(deps.db, historyKey, result.history);
+    if (result.status === "awaiting_user") {
+      const finalText = markdownToTelegramHtml(result.question.question);
+      if (result.question.options && result.question.options.length > 0) {
+        const rows = result.question.options.map((opt, i) => [{ text: opt, callback_data: `askuser:${result.toolCallId}:${i}` }]);
+        await client.sendMessage({ chat_id: chatId, text: finalText, parse_mode: "HTML" });
+        await client.sendMessage({ chat_id: chatId, text: "Tap an option:", reply_markup: { inline_keyboard: rows } });
+      } else {
+        await client.sendMessage({ chat_id: chatId, text: finalText, parse_mode: "HTML" });
+      }
+      return;
+    }
+    const text = (result.text ?? "").trim();
+    if (!text || text === "NOTHING_TO_REPORT") return;
+    await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(text), parse_mode: "HTML" });
+  } catch (err) {
+    console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
   } finally {
     clearBusy(deps.ownerUserId);
   }
@@ -399,7 +452,28 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // and everything else, so this can never be delayed behind any other handling.
       if (message.text && /^\/(stop|panic)\b/i.test(message.text.trim())) {
         stopOrPanic(deps.ownerUserId, message.text.trim().toLowerCase().startsWith("/panic") ? "panic" : "stop");
+        stopAutonomousTradingLoop(deps.ownerUserId);
         await client.sendMessage({ chat_id: chatId, text: "🛑 Stopped -- all trading and workers halted immediately." });
+        return;
+      }
+
+      // Real gap fixed (user: "you forgot /start_trading and /stop_trading, and the loop for
+      // start_trading"): turns the real autonomous cycle (trading-loop.ts) on/off. Checked here,
+      // same as /stop and /panic above, so it's a real, always-available command rather than
+      // something the LLM has to interpret.
+      if (message.text && /^\/start_trading\b/i.test(message.text.trim())) {
+        const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId));
+        await client.sendMessage({
+          chat_id: chatId,
+          text: started
+            ? "▶️ Autonomous trading is on. I'll scan my active pair group and act on real setups on my own initiative -- I'll only message you when something actually happens (a trade, a TP/SL hit, or a real question). /stop_trading turns this off, /stop or /panic is still the instant hard kill."
+            : "Autonomous trading is already running.",
+        });
+        return;
+      }
+      if (message.text && /^\/stop_trading\b/i.test(message.text.trim())) {
+        const stopped = stopAutonomousTradingLoop(deps.ownerUserId);
+        await client.sendMessage({ chat_id: chatId, text: stopped ? "⏸️ Autonomous trading is off. I'll still help directly whenever you message me." : "Autonomous trading wasn't running." });
         return;
       }
 
