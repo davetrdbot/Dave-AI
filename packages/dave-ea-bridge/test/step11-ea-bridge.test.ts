@@ -13,7 +13,7 @@ const USER_ID = "tg-847213";
 console.log("[1] Real EA webhook: token generation, distinct from Step 4/12 namespaces...");
 const hook = getOrCreateEaWebhook(USER_ID);
 console.log(`    path: ${hook.path}`);
-assert.match(hook.path, /^\/hooks\/ea\/[0-9a-f]{48}$/);
+assert.match(hook.path, /^\/hooks\/ea\/DAVE-tg-847213-[0-9A-F]{8}$/, "real DAVE-<userId>-<suffix> token format, per the user's explicit revocable-token ask");
 
 const events: { manualCloses: any[]; results: any[] } = { manualCloses: [], results: [] };
 const bridge = new EaBridge({

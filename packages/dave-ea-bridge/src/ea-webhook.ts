@@ -108,9 +108,32 @@ export type EaCommand =
    */
   | { id: string; action: "analyze"; endpoint: string; symbol: string; timeframe: string };
 
-function tokensPath(): string {
-  return join(process.cwd(), "data", "ea-bridge", "tokens.json");
+/**
+ * Real gap fixed (user: "the ea token should have only one token which is revokable e.g
+ * DAVE-8235751653-B7401D1C -- like this dave + my id is permanent but the other is revokable"):
+ * the token used to be a fully opaque random string with no relationship to the user at all
+ * (and a reverse token->userId lookup table). Now it's a real, structured, human-legible token:
+ * `DAVE-<userId>-<suffix>` -- the `DAVE-<userId>` part is permanent (always the same for this
+ * user), the 8-hex-char suffix is the real revocable part. Revoking regenerates ONLY the suffix,
+ * genuinely invalidating every previously-issued token for that user (a stale/leaked token no
+ * longer resolves) while the user's own identity in the token stays recognizable.
+ */
+function suffixesPath(): string {
+  return join(process.cwd(), "data", "ea-bridge", "token-suffixes.json");
 }
+
+function generateEaTokenSuffix(): string {
+  return randomBytes(4).toString("hex").toUpperCase();
+}
+
+function formatEaToken(userId: string, suffix: string): string {
+  return `DAVE-${userId}-${suffix}`;
+}
+
+/** Anchored so a userId itself containing "-" still parses correctly -- the real suffix is
+ * always exactly the last 8 hex characters, whatever comes before it (greedily, then
+ * backtracked by the regex engine) is the real userId. */
+const EA_TOKEN_PATTERN = /^DAVE-(.+)-([0-9A-Fa-f]{8})$/;
 
 function queuePath(userId: string): string {
   return join(process.cwd(), "data", "ea-bridge", userId, "command-queue.json");
@@ -222,23 +245,45 @@ export interface EaWebhook {
   path: string;
 }
 
+function readSuffix(userId: string): string | undefined {
+  return readJson<Record<string, string>>(suffixesPath(), {})[userId];
+}
+
+function writeSuffix(userId: string, suffix: string): void {
+  const suffixes = readJson<Record<string, string>>(suffixesPath(), {});
+  suffixes[userId] = suffix;
+  writeJson(suffixesPath(), suffixes);
+  // Step 19.5 fix, still real here: tighten this credential-shaped file's permissions.
+  chmodSync(suffixesPath(), 0o600);
+}
+
 export function getOrCreateEaWebhook(userId: string): EaWebhook {
-  const tokens = readJson<Record<string, string>>(tokensPath(), {});
-  const existing = Object.entries(tokens).find(([, uid]) => uid === userId);
-  const token = existing ? existing[0] : randomBytes(24).toString("hex");
-  if (!existing) {
-    tokens[token] = userId;
-    writeJson(tokensPath(), tokens);
-    // Step 19.5 fix: tighten this specific file's permissions -- flagged by a real
-    // audit as the one credential-shaped file in the repo with NO chmod at all
-    // (MT5/DAVEMA credential files already had 0600, this had nothing).
-    chmodSync(tokensPath(), 0o600);
+  let suffix = readSuffix(userId);
+  if (!suffix) {
+    suffix = generateEaTokenSuffix();
+    writeSuffix(userId, suffix);
   }
+  const token = formatEaToken(userId, suffix);
   return { userId, token, path: `${EA_HOOK_PREFIX}/${token}` };
 }
 
+/**
+ * The real revoke: regenerates ONLY the suffix, so every token issued before this call
+ * (including whatever's baked into an already-downloaded/compiled .mq5 file) stops resolving
+ * immediately -- resolveEaToken() checks the CURRENT stored suffix, not any suffix that was
+ * ever valid. Returns the new webhook so the caller (the /settings UI) can show the fresh token
+ * right away; the user re-runs /ea to get a newly personalized file with it.
+ */
+export function revokeEaToken(userId: string): EaWebhook {
+  writeSuffix(userId, generateEaTokenSuffix());
+  return getOrCreateEaWebhook(userId);
+}
+
 export function resolveEaToken(token: string): string | undefined {
-  return readJson<Record<string, string>>(tokensPath(), {})[token];
+  const match = EA_TOKEN_PATTERN.exec(token);
+  if (!match) return undefined;
+  const [, userId, suffix] = match;
+  return readSuffix(userId) === suffix.toUpperCase() ? userId : undefined;
 }
 
 /** Enqueues a command for the EA to pick up on its next report. This is the ONLY way Dave->EA instructions travel. */

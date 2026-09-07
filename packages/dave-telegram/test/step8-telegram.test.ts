@@ -105,7 +105,7 @@ const USER_ID = "tg-847213";
 const ea = personalizeEaFile(USER_ID, "https://dave.example.com");
 console.log(`    webhookUrl: ${ea.webhookUrl}`);
 console.log(`    token:      ${ea.token}`);
-assert.match(ea.webhookUrl, /^https:\/\/dave\.example\.com\/hooks\/ea\/[0-9a-f]{48}$/, "must use the real EA-bridge webhook (/hooks/ea/<token>), not the generic hidden webhook -- that mismatch was the real /account-shows-nothing bug");
+assert.match(ea.webhookUrl, /^https:\/\/dave\.example\.com\/hooks\/ea\/DAVE-tg-847213-[0-9A-F]{8}$/, "must use the real EA-bridge webhook (/hooks/ea/<token>), not the generic hidden webhook -- that mismatch was the real /account-shows-nothing bug -- and the real DAVE-<userId>-<suffix> revocable token format");
 assert.ok(!ea.content.includes("{{WEBHOOK_URL}}"), "no leftover placeholders");
 assert.ok(!ea.content.includes("{{TOKEN}}"), "no leftover placeholders");
 assert.ok(ea.content.includes(ea.webhookUrl), "the real URL must actually be in the file");

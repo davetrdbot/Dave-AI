@@ -16,7 +16,7 @@ import {
   type TelegramCallbackQuery,
   sendSelfDeletingMessage,
 } from "@dave/telegram";
-import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus } from "@dave/ea-bridge";
+import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken } from "@dave/ea-bridge";
 import {
   getRiskSettings,
   setRiskMode,
@@ -489,8 +489,26 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Memory", "blue", "settings:memory"), coloredButton("E2B Keys", "blue", "settings:e2b")],
       [coloredButton("Trailing / Breakeven", "blue", "settings:trailing"), coloredButton("Notifications", "blue", "settings:notifications")],
       [coloredButton("Autonomous Trading", "blue", "settings:tradinginterval")],
+      [coloredButton("EA Token", "blue", "settings:eatoken")],
     ])
   );
+}
+
+/**
+ * Real gap fixed (user: "the ea token should have only one token which is revokable... add that
+ * in the settings ui to revoke it"): shows the real current token (see ea-webhook.ts's
+ * DAVE-<userId>-<suffix> format -- the DAVE-<userId> part is permanent, the suffix is what
+ * revoking regenerates) with a real Revoke button.
+ */
+function eaTokenKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const hook = getOrCreateEaWebhook(userId);
+  const lines = [
+    "<b>EA Token</b>",
+    `Current token: <code>${hook.token}</code>`,
+    "",
+    "This is the real credential your MT5 EA authenticates with -- anyone with it could send commands as if they were your EA. Revoking generates a new one immediately and invalidates the old one (any already-downloaded EA file stops working until you run /ea again for a fresh one).",
+  ];
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard([[coloredButton("🔄 Revoke & regenerate", "red", "eatoken:revoke")]]), "settings:top") };
 }
 
 /** Real gap fixed (user: "the trading interval to scan add it to the settings ui no manual
@@ -1107,6 +1125,16 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = `Cadence: every ${minutes} min`;
       await confirm(`Scan cadence set to every ${minutes} min`);
       const view = tradingIntervalKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:eatoken") {
+      ackText = undefined;
+      const view = eaTokenKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "eatoken:revoke") {
+      revokeEaToken(deps.userId);
+      ackText = "Token revoked";
+      await confirm("EA token revoked -- run /ea to get a freshly personalized file with the new one.");
+      const view = eaTokenKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data === "settings:trailing") {
       ackText = undefined;
