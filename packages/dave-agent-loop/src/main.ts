@@ -106,7 +106,16 @@ function spawnAdminPanel(dataDir: string): ChildProcess | undefined {
   }
   const child = spawn(nextBin, ["start", "-p", String(ADMIN_INTERNAL_PORT)], {
     cwd: adminDir,
-    env: { ...process.env, PORT: String(ADMIN_INTERNAL_PORT), DATA_DIR: dataDir },
+    // Real bug fixed (user: "I gave you the goal.yaml, why it still asking me" -- audited further
+    // and found the SAME bug hits every file-based store several admin routes read/write, not
+    // just goal.yaml): the admin panel runs as its own real child process with its OWN
+    // process.cwd() (packages/dave-admin, per this very spawn) -- any package whose store used a
+    // bare `join(process.cwd(), "data", ...)` path (model-config, workers, pair-groups/risk
+    // settings, the EA's last-known account snapshot, goal.yaml) genuinely wrote to/read from a
+    // DIFFERENT file than the one this bot process uses. DATA_DIR already fixed this for the
+    // database specifically (db-path.ts); DAVE_DATA_ROOT is the same real fix, generalized, for
+    // every other real file-based store admin routes touch.
+    env: { ...process.env, PORT: String(ADMIN_INTERNAL_PORT), DATA_DIR: dataDir, DAVE_DATA_ROOT: process.cwd() },
     stdio: ["ignore", "inherit", "inherit"],
   });
   child.on("exit", (code, signal) => {

@@ -219,7 +219,8 @@ string BuildReportJson()
                    "\"openPrice\":" + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), 5) + "," +
                    "\"sl\":" + DoubleToString(PositionGetDouble(POSITION_SL), 5) + "," +
                    "\"tp\":" + DoubleToString(PositionGetDouble(POSITION_TP), 5) + "," +
-                   "\"currentPrice\":" + DoubleToString(curPrice, 5) + "}";
+                   "\"currentPrice\":" + DoubleToString(curPrice, 5) + "," +
+                   "\"pnl\":" + DoubleToString(PositionGetDouble(POSITION_PROFIT), 2) + "}";
      }
 
    string pendingOrders = "";

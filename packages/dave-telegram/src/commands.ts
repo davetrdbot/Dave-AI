@@ -29,6 +29,7 @@ export const DAVE_COMMANDS = [
   { command: "menu", description: "📋 Show this menu of commands" },
   { command: "status", description: "📊 Circuit breaker, workers, and system status" },
   { command: "account", description: "💰 View your connected MT5 account and balance" },
+  { command: "trades", description: "📈 View and close your real open trades, live" },
   { command: "settings", description: "⚙️ Trading limits, notifications, and preferences" },
   { command: "providers", description: "🤖 Switch AI provider (28+ providers, AirLLM default)" },
   { command: "models", description: "🧠 Pick which model each provider uses" },

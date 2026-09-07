@@ -21,7 +21,7 @@ export interface JournalEntry {
 }
 
 function storePath(userId: string): string {
-  return join(process.cwd(), "data", "workers", userId, "journal.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "workers", userId, "journal.json");
 }
 
 function readEntries(userId: string): JournalEntry[] {

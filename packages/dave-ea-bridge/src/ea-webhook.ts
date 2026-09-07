@@ -32,6 +32,12 @@ export interface EaPosition {
   tp?: number;
   /** Real current bid (sell) / ask (buy) for this position's symbol -- the same price the position could close at right now. Drives breakeven/trailing without depending on a separate DAVEMA round-trip. */
   currentPrice?: number;
+  /** Real live floating profit/loss (MT5's own POSITION_PROFIT, in account currency) -- the exact
+   *  number the MT5 terminal itself shows for this open position right now. Real gap fixed (user,
+   *  with real screenshots of a "Trades" menu showing live per-position P/L): this was never
+   *  reported at all -- Dave had no way to show a real profit/loss figure for an open position
+   *  without guessing at pip value from price alone, which MT5 already computes correctly. */
+  pnl?: number;
 }
 
 export interface EaPendingOrder {
@@ -119,7 +125,7 @@ export type EaCommand =
  * longer resolves) while the user's own identity in the token stays recognizable.
  */
 function suffixesPath(): string {
-  return join(process.cwd(), "data", "ea-bridge", "token-suffixes.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", "token-suffixes.json");
 }
 
 function generateEaTokenSuffix(): string {
@@ -136,23 +142,23 @@ function formatEaToken(userId: string, suffix: string): string {
 const EA_TOKEN_PATTERN = /^DAVE-(.+)-([0-9A-Fa-f]{8})$/;
 
 function queuePath(userId: string): string {
-  return join(process.cwd(), "data", "ea-bridge", userId, "command-queue.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", userId, "command-queue.json");
 }
 
 function lastKnownStatePath(userId: string): string {
-  return join(process.cwd(), "data", "ea-bridge", userId, "last-known-state.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", userId, "last-known-state.json");
 }
 
 function accountSnapshotPath(userId: string): string {
-  return join(process.cwd(), "data", "ea-bridge", userId, "account-snapshot.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", userId, "account-snapshot.json");
 }
 
 function lastSeenPath(userId: string): string {
-  return join(process.cwd(), "data", "ea-bridge", userId, "last-seen.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", userId, "last-seen.json");
 }
 
 function analysisResultsPath(userId: string): string {
-  return join(process.cwd(), "data", "ea-bridge", userId, "analysis-results.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", userId, "analysis-results.json");
 }
 
 /** Item 5: caps how many recent analyze results are kept per user -- these are short-lived (a

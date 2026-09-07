@@ -25,7 +25,7 @@ export interface RiskSettings {
 const DEFAULT_SETTINGS: RiskSettings = { slMode: "off", tpMode: "off", lotMode: "off" };
 
 function settingsPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "risk-settings.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "risk-settings.json");
 }
 
 export function getRiskSettings(userId: string): RiskSettings {
@@ -86,7 +86,7 @@ export type PendingSettingsChange =
 const PROTECTED_FIELDS = new Set<PendingSettingsChange["field"]>(["maxOpenTrades", "maxDailyLossPct"]);
 
 function pendingLimitPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "pending-settings-changes.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "pending-settings-changes.json");
 }
 
 function readPendingLimits(userId: string): PendingSettingsChange[] {
@@ -163,7 +163,7 @@ export function rejectProtectedLimitChange(userId: string, changeId: string): vo
 // --- Auto-approval switch: OFF by default -- Dave must ask before it acts on its own initiative ---
 
 function autoApprovalPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "auto-approval.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "auto-approval.json");
 }
 
 export function getAutoApprovalEnabled(userId: string): boolean {

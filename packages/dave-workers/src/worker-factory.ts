@@ -36,7 +36,7 @@ const NAME_POOL = [
 ];
 
 function registryPath(ownerUserId: string): string {
-  return join(process.cwd(), "data", "workers", ownerUserId, "registry.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "workers", ownerUserId, "registry.json");
 }
 
 function readRegistry(ownerUserId: string): Worker[] {

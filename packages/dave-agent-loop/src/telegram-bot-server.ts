@@ -454,7 +454,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
           return;
         }
 
-        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema };
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema, executor: deps.executor };
         await dispatchCallback(routerDeps, update.callback_query);
         return;
       }
@@ -492,7 +492,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // returns true when it did, so a recognized command never
       // reaches the agent loop below.
       if (message.text && isDaveCommand(message.text)) {
-        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema };
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema, executor: deps.executor };
         const handled = await dispatchCommand(routerDeps, chatId, historyKey, message.text);
         if (handled) return;
       }
@@ -502,7 +502,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // the model ID as their next message -- this is that capture, checked before anything
       // free-text falls through to the LLM.
       if (message.text) {
-        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema };
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema, executor: deps.executor };
         if (await tryHandlePendingModelEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingVoiceEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingKeyEntry(routerDeps, chatId, message.text)) return;

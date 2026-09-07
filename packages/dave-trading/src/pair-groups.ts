@@ -25,7 +25,7 @@ interface GroupState {
 const EMPTY_STATE: GroupState = { groups: [], activeGroupId: null, fallbackGroupId: null, pausedForExtremeConditions: false };
 
 function statePath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "pair-groups.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "pair-groups.json");
 }
 
 function readState(userId: string): GroupState {

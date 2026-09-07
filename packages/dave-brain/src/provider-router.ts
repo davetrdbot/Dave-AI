@@ -15,10 +15,24 @@ export interface ModelConfig {
   fallback: ProviderName[];
 }
 
-const DEFAULT_CONFIG: ModelConfig = { primary: "airllm", fallback: ["deepseek", "claude"] };
+// Real gap fixed (user: "don't hardcode Claude and deepseek as fallback"): a fresh account no
+// longer silently gets deepseek+claude as its fallback chain -- fallback starts genuinely empty,
+// and the user builds it themselves via the real /providers "Add to fallback chain" toggle
+// (command-router.ts's togglefallback: callback).
+const DEFAULT_CONFIG: ModelConfig = { primary: "airllm", fallback: [] };
 
+/**
+ * Real bug fixed (user, repeatedly: "the providers are not still working"): the admin panel runs
+ * as its own real child process with its OWN process.cwd() (packages/dave-admin -- see main.ts's
+ * spawnAdminPanel), so a primary/fallback provider genuinely set through the admin panel's real
+ * "AI Models" tab (packages/dave-admin/app/api/model-config) was written to a COMPLETELY
+ * DIFFERENT file than the one this bot process reads -- the bot kept running on whatever it had
+ * before (or DEFAULT_CONFIG's plain airllm default), no matter what was actually saved in the
+ * admin panel. DAVE_DATA_ROOT (same real fix already applied to @dave/memory's goal.yaml) makes
+ * both processes genuinely read/write the identical file.
+ */
 function configPath(userId: string): string {
-  return join(process.cwd(), "data", "brain", `${userId}-model-config.json`);
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "brain", `${userId}-model-config.json`);
 }
 
 /** Step 5.2: button-driven model-picker UI reads/writes this. Any catalog provider name is valid (see provider-catalog.ts). */

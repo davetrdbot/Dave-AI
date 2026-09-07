@@ -35,8 +35,22 @@ export interface FrozenSnapshot {
   readonly goal: string;
 }
 
+/**
+ * Real bug fixed (user: "I gave you the goal.yaml, why it still asking me" -- the admin panel
+ * runs as its own real child process with its OWN process.cwd() (packages/dave-admin, see
+ * main.ts's spawnAdminPanel), so a goal.yaml genuinely submitted through the admin panel's real
+ * /api/goal-config route was written to a completely different file than the one the bot process
+ * reads -- same class of bug DATA_DIR already fixed for the database (db-path.ts). MEMORY_DATA_DIR
+ * is the same real fix for this package: both processes now genuinely read/write the identical
+ * file when it's set (main.ts sets it when spawning the admin panel); unset (a bare local dev run,
+ * or any other caller) keeps the exact prior behavior.
+ */
+function memoryRoot(): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "memory");
+}
+
 function userDir(userId: string): string {
-  return join(process.cwd(), "data", "memory", userId);
+  return join(memoryRoot(), userId);
 }
 
 function templatePath(file: MemoryFile): string {

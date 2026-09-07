@@ -22,7 +22,7 @@ export interface CommsMessage {
 }
 
 function logPath(ownerUserId: string): string {
-  return join(process.cwd(), "data", "workers", ownerUserId, "comms-log.jsonl");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "workers", ownerUserId, "comms-log.jsonl");
 }
 
 function appendLog(ownerUserId: string, message: CommsMessage): void {

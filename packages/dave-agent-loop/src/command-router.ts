@@ -1,5 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
 import type { DavemaClient } from "@dave/davema";
+import type { TradeExecutor } from "@dave/trading";
 import { checkSandboxHealth } from "@dave/sandbox";
 import {
   TelegramClient,
@@ -17,6 +18,7 @@ import {
 } from "@dave/telegram";
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError } from "@dave/ea-bridge";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
+import { formatPnl } from "./trade-notifications.js";
 import {
   getRiskSettings,
   setRiskMode,
@@ -118,6 +120,8 @@ export interface CommandRouterDeps {
   publicBaseUrl: string;
   /** Optional -- only needed for /connection's real DAVEMA ping. Every other command works fine without it. */
   davema?: DavemaClient;
+  /** Optional -- only needed for the real /trades close/close-all/close-losers buttons. */
+  executor?: TradeExecutor;
 }
 
 function formatMoney(n: number | undefined): string {
@@ -201,6 +205,66 @@ async function handleAccount(deps: CommandRouterDeps, chatId: number, editMessag
  * function that subsystem's own health-check already uses elsewhere (DavemaClient.ping(),
  * checkSandboxHealth(), getEaConnectionStatus()) rather than inventing a second, parallel
  * check that could drift from what's actually true. */
+/**
+ * Real gap fixed (user, with real screenshots of the exact desired UI: "in the menu ui add a
+ * button called trades... refreshes every 2 sec like edit to the new one there you can close
+ * your trade check which one are in profit and others"). Real live per-position P/L now flows
+ * from the EA's own real POSITION_PROFIT (see ea-webhook.ts's EaPosition.pnl) -- previously never
+ * reported at all, so a real profit/loss figure per open trade genuinely couldn't be shown.
+ */
+function tradesScreen(deps: CommandRouterDeps, liveSeconds?: number): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const { positions } = getLastKnownState(deps.userId);
+  if (positions.length === 0) {
+    return { text: "<b>Trades</b>\nNo open positions right now.", reply_markup: withMenuHome(keyboard([[coloredButton("🔄 Refresh", "neutral", "trades:refresh")]])) };
+  }
+  const lines = ["<b>Trades</b>", ...positions.map((p) => `${(p.pnl ?? 0) >= 0 ? "🟢" : "🔴"} ${p.symbol} ${p.type.toUpperCase()} ${p.lots} @ ${p.openPrice} — ${formatPnl(p.pnl ?? 0)}`)];
+  if (liveSeconds) lines.push("", `🔴 Live -- refreshing every ${liveSeconds}s`);
+  const rows: ReturnType<typeof coloredButton>[][] = positions.map((p) => [coloredButton(`❌ Close ${p.symbol} (${formatPnl(p.pnl ?? 0)})`, "red", `trades:close:${p.ticket}`)]);
+  const losers = positions.filter((p) => (p.pnl ?? 0) < 0);
+  rows.push([coloredButton(`🛑 Close ALL (${positions.length})`, "red", "trades:closeall")]);
+  if (losers.length > 0) rows.push([coloredButton(`🔴 Close losers (${losers.length})`, "red", "trades:closelosers")]);
+  rows.push([coloredButton("🔄 Refresh", "neutral", "trades:refresh"), coloredButton(liveSeconds ? "⏸️ Stop live" : "📡 Live (3s)", liveSeconds ? "red" : "blue", "trades:live")]);
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows)) };
+}
+
+async function handleTrades(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
+  const screen = tradesScreen(deps);
+  await sendOrEditScreen(deps, chatId, screen.text, screen.reply_markup, editMessageId);
+}
+
+const LIVE_TRADES_INTERVAL_MS = 3000;
+const LIVE_TRADES_MAX_MS = 5 * 60 * 1000; // bounded -- a real background timer must not run forever unattended
+const liveTradesTimers = new Map<string, ReturnType<typeof setInterval>>();
+
+function stopLiveTrades(key: string): void {
+  const timer = liveTradesTimers.get(key);
+  if (timer) {
+    clearInterval(timer);
+    liveTradesTimers.delete(key);
+  }
+}
+
+/** Real live-refresh: edits the SAME message in place every LIVE_TRADES_INTERVAL_MS with fresh
+ *  real position data, matching the user's real screenshot ("Live (3s)" toggle). Auto-stops after
+ *  a bounded real duration rather than running as an unattended background timer forever. */
+function startLiveTrades(deps: CommandRouterDeps, chatId: number, messageId: number): void {
+  const key = `${deps.userId}:${chatId}`;
+  stopLiveTrades(key);
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    void (async () => {
+      if (Date.now() - startedAt > LIVE_TRADES_MAX_MS) {
+        stopLiveTrades(key);
+        return;
+      }
+      const screen = tradesScreen(deps, LIVE_TRADES_INTERVAL_MS / 1000);
+      await editOrSend(deps.client, { chat_id: chatId, message_id: messageId, text: screen.text, parse_mode: "HTML", reply_markup: screen.reply_markup });
+    })();
+  }, LIVE_TRADES_INTERVAL_MS);
+  timer.unref?.();
+  liveTradesTimers.set(key, timer);
+}
+
 async function handleConnection(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const state = getLastKnownState(deps.userId);
   const eaStatus = getEaConnectionStatus(deps.userId);
@@ -1014,6 +1078,9 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
     case "ea":
       await handleEa(deps, chatId);
       break;
+    case "trades":
+      await handleTrades(deps, chatId, editMessageId);
+      break;
   }
 }
 
@@ -1025,6 +1092,7 @@ const MENU_BUTTONS: { command: DaveCommand; label: string }[] = [
   { command: "panic", label: "🚨 Panic" },
   { command: "status", label: "📊 Status" },
   { command: "account", label: "💰 Account" },
+  { command: "trades", label: "📈 Trades" },
   { command: "settings", label: "⚙️ Settings" },
   { command: "providers", label: "🤖 Providers" },
   { command: "models", label: "🧠 Models" },
@@ -1500,6 +1568,42 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       setPendingMcpUrlEntry(deps.db, deps.userId, true);
       ackText = "Send the MCP server URL";
       if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Send your real MCP trading server's URL as your next message (e.g. https://your-mcp-server.example.com)." });
+    } else if (data === "trades:refresh") {
+      ackText = "Refreshed";
+      if (chatId && callback.message) {
+        const screen = tradesScreen(deps);
+        await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: screen.text, parse_mode: "HTML", reply_markup: screen.reply_markup });
+      }
+    } else if (data === "trades:live") {
+      const key = `${deps.userId}:${chatId}`;
+      const wasLive = liveTradesTimers.has(key);
+      if (wasLive) stopLiveTrades(key);
+      ackText = wasLive ? "Live refresh stopped" : `Live refresh started (${LIVE_TRADES_INTERVAL_MS / 1000}s)`;
+      if (chatId && callback.message) {
+        if (!wasLive) startLiveTrades(deps, chatId, callback.message.message_id);
+        const screen = tradesScreen(deps, wasLive ? undefined : LIVE_TRADES_INTERVAL_MS / 1000);
+        await editOrSend(deps.client, { chat_id: chatId, message_id: callback.message.message_id, text: screen.text, parse_mode: "HTML", reply_markup: screen.reply_markup });
+      }
+    } else if (data === "trades:closeall" || data === "trades:closelosers" || data.startsWith("trades:close:")) {
+      if (!deps.executor) {
+        ackText = "No trade executor configured";
+      } else {
+        const { positions } = getLastKnownState(deps.userId);
+        const targets =
+          data === "trades:closeall" ? positions : data === "trades:closelosers" ? positions.filter((p) => (p.pnl ?? 0) < 0) : positions.filter((p) => p.ticket === data.slice("trades:close:".length));
+        const results = await Promise.all(
+          targets.map(async (p) => {
+            try {
+              await deps.executor!.closePosition(p.ticket);
+              return `✅ ${p.symbol} #${p.ticket} closing`;
+            } catch (err) {
+              return `⚠️ ${p.symbol} #${p.ticket} failed: ${err instanceof Error ? err.message : String(err)}`;
+            }
+          })
+        );
+        ackText = `${targets.length} close request(s) sent`;
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: results.length > 0 ? results.join("\n") : "Nothing to close." });
+      }
     } else if (data === "resetconfirm:yes") {
       ackText = undefined;
       if (chatId) await performFullReset(deps, chatId, `${deps.userId}:${chatId}`);

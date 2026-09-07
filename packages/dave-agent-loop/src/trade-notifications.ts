@@ -10,7 +10,7 @@ import type { EaClosedPosition, EaPosition } from "@dave/ea-bridge";
  * model involvement.
  */
 
-function formatPnl(pnl: number): string {
+export function formatPnl(pnl: number): string {
   const sign = pnl >= 0 ? "+" : "-";
   return `${sign}$${Math.abs(pnl).toFixed(2)}`;
 }

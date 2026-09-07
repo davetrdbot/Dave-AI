@@ -24,7 +24,7 @@ export interface ToolRequest {
 }
 
 function requestsPath(ownerUserId: string): string {
-  return join(process.cwd(), "data", "workers", ownerUserId, "tool-requests.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "workers", ownerUserId, "tool-requests.json");
 }
 
 function readRequests(ownerUserId: string): ToolRequest[] {
