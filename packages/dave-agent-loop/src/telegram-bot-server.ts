@@ -102,7 +102,12 @@ async function runAgentTurn(
       }
       saveConversationHistory(deps.db, historyKey, result.history);
       finalResult = result;
-      const rawFinalText = result.status === "done" ? result.text || "(no text)" : result.question.question;
+      // Real bug fixed (user: "sometimes it shows (no text) like this everytime"): a turn that
+      // ends with tool calls but no closing remark from the model (common after a purely
+      // action-driven turn, e.g. placing a trade with nothing left to say) used to literally send
+      // the placeholder string "(no text)" as if it were Dave's real reply -- looked exactly like
+      // a bug because it was one. A real, minimal, honest completion signal instead.
+      const rawFinalText = result.status === "done" ? result.text || "✅ Done." : result.question.question;
       const finalText = markdownToTelegramHtml(rawFinalText);
       return { result: undefined, finalText };
     });

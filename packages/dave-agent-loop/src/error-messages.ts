@@ -29,16 +29,19 @@ export class AllConfiguredProvidersFailedError extends Error {
 }
 
 /**
- * Distinguishes a genuine external API error (a real HTTP status/body from the provider's own
- * endpoint -- shown VERBATIM per the user's explicit ask, so they can verify it themselves rather
- * than trust Dave's paraphrase) from an internal, Dave-generated message like `no stored keys for
- * provider "X"` (never a real endpoint response -- still gets the same clean, non-leaking
- * treatment item 3 already established, just inline here instead of a second full message).
+ * Real gap fixed AGAIN (user, explicitly, in all caps, repeatedly: "I want to see the raw json
+ * error from the provider... don't add anything to that... just only the json error"): every
+ * previous version still wrapped the real error in Dave's own text -- a "[provider] HTTP xxx:"
+ * prefix (from ProviderError's own message format), a "⚠️ ... failed" sentence, a "None of your
+ * configured providers worked" header, a "Fix a key..." footer. None of that is the real endpoint
+ * error; per this explicit, repeated instruction, this returns ONLY the raw JSON body a provider
+ * actually sent back -- nothing else, no matter how many providers were tried. Falls back to the
+ * reason verbatim (still nothing added) when there's genuinely no JSON in it (e.g. a raw fetch/
+ * network error with no HTTP response body at all).
  */
-function describeAttemptReason(reason: string): string {
-  const noStoredKeys = /no stored keys for provider "([^"]+)"/.exec(reason);
-  if (noStoredKeys) return "no working keys";
-  return reason;
+export function extractRawProviderError(reason: string): string {
+  const firstBrace = reason.indexOf("{");
+  return firstBrace === -1 ? reason : reason.slice(firstBrace);
 }
 
 export function friendlyErrorMessage(err: unknown): string {
@@ -46,8 +49,18 @@ export function friendlyErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
 
   if (err instanceof AllConfiguredProvidersFailedError) {
-    const lines = err.attempts.map((a) => `• ${a.provider}: ${describeAttemptReason(a.reason)}`);
-    return `⚠️ None of your configured providers worked:\n${lines.join("\n")}\n\nFix a key or switch providers via /providers.`;
+    if (err.attempts.length === 0) return "No provider is configured at all.";
+    // Real distinction kept: "no stored keys" is Dave's own internal state (there's no real
+    // endpoint JSON to show for a provider that was never given a key), so it still honestly
+    // names the provider so the user knows what to fix -- a REAL endpoint error (an actual raw
+    // JSON body a provider sent back) gets shown as ONLY that JSON, nothing else, per the user's
+    // explicit, repeated, all-caps instruction.
+    return err.attempts
+      .map((a) => {
+        const noStoredKeys = /no stored keys for provider "([^"]+)"/.exec(a.reason);
+        return noStoredKeys ? `${a.provider} has no working keys` : extractRawProviderError(a.reason);
+      })
+      .join("\n");
   }
 
   const noStoredKeys = /no stored keys for provider "([^"]+)"/.exec(message);

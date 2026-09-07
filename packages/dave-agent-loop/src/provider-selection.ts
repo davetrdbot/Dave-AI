@@ -1,7 +1,7 @@
 import type { DaveDatabase } from "@dave/db";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName } from "@dave/brain";
 import { getProviderTimeoutMs, MAX_TIMEOUT_SECONDS } from "./provider-timeout-config.js";
-import { AllConfiguredProvidersFailedError } from "./error-messages.js";
+import { AllConfiguredProvidersFailedError, extractRawProviderError } from "./error-messages.js";
 
 /**
  * Pulled out of telegram-bot-server.ts so this real, shared provider-selection logic (owner's
@@ -26,19 +26,13 @@ import { AllConfiguredProvidersFailedError } from "./error-messages.js";
 export const NVIDIA_TIMEOUT_MS = MAX_TIMEOUT_SECONDS * 1000;
 
 /**
- * Real gap fixed AGAIN (user, explicitly, repeatedly, and angrily: "I told you that the error
- * should be fetch from the endpoint I want to see it on my own not you tell me my bot is not
- * working"): the previous version still put Dave's OWN guessed label ("ran out of credit") in
- * front of the real error, decided by a regex (`isQuotaExhaustedError`) that was WRONG here --
- * it matched bare `429`/"rate limit exceeded"/"too many requests" as "quota exhausted" even
- * though a plain rate limit (too many requests right now, real code "rate_limited") is NOT the
- * same real condition as a genuinely exhausted quota/billing plan ("insufficient_quota"). The
- * user saw "ran out of credit" directly contradicted by the real error text sitting right below
- * it ("Rate limit exceeded"), which is exactly the confusing, untrustworthy result they called
- * out. Fix: stop guessing/labeling the failure type in the user-facing message entirely -- state
- * only the plain fact of what's happening (a key/provider failed, what's tried next) and show
- * ONLY the real endpoint text, verbatim, so the user reads the actual cause themselves instead of
- * taking Dave's interpretation of it.
+ * Real gap fixed A THIRD TIME (user, explicit, repeated, in caps: "I want to see the raw json
+ * error from the provider... don't add anything to that... just only the json error"): every
+ * previous version still wrapped the real error in Dave's own sentence -- a "🔄 ... switching to
+ * key #2" lead-in, a "⚠️ provider failed" sentence, a "[provider] HTTP xxx:" prefix. None of that
+ * is the real endpoint error. Per this explicit instruction, every notification below now sends
+ * ONLY `extractRawProviderError(reason)` -- the raw JSON body a provider actually returned, and
+ * nothing else, not even which provider or key it was about.
  */
 export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
   return {
@@ -59,17 +53,12 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
         const timeoutMs = provider === "nvidia-nim" ? NVIDIA_TIMEOUT_MS : getProviderTimeoutMs(userId, p === 0) || defaultTimeoutMs;
         try {
           return await generateWithKeyFailover(db, userId, provider, req, timeoutMs, {
-            onKeySwitch: async ({ fromIndex, toIndex, nextLabel, reason }) => {
-              await notify(`🔄 ${provider} key #${fromIndex} failed, switching to key #${toIndex} (${nextLabel}).\n${reason}`);
+            onKeySwitch: async ({ reason }) => {
+              await notify(extractRawProviderError(reason));
             },
             onProviderExhausted: async ({ reason }) => {
               attempts.push({ provider, reason });
-              const nextProvider = order[p + 1];
-              // Real gap also fixed: this used to only notify when quotaExhausted was true, or
-              // when there was no fallback -- a non-quota failure WITH a real fallback configured
-              // silently notified no one at all. Every real exhaustion is worth telling the user
-              // about, regardless of how it's classified.
-              await notify(`⚠️ ${provider} failed${nextProvider ? ` — switching to ${nextProvider}` : " — no fallback provider is configured"}.\n${reason}`);
+              await notify(extractRawProviderError(reason));
             },
           });
         } catch (err) {
