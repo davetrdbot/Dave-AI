@@ -1,4 +1,5 @@
 import type { EaClosedPosition, EaPosition } from "@dave/ea-bridge";
+import type { OrderRequest } from "@dave/trading";
 
 /**
  * Real gap fixed (user, with real screenshots of the live bot as proof: "a hardcoded message to
@@ -43,4 +44,31 @@ export function buildManualCloseMessage(position: EaPosition): string {
  */
 export function buildSkippedSetupMessage(symbol: string, reason: string): string {
   return `⏭ Skipping ${symbol}\n${reason}`;
+}
+
+/** Real gap fixed (user: "implement confidence rate so when it's placing a trade it should send
+ *  like the screenshot"): a real, hardcoded trade-placement message carrying Dave's own real
+ *  confidence score for this specific trade -- fixed shape, zero LLM prose, same non-LLM pattern
+ *  as buildClosedTradeMessage above. */
+export function buildTradePlacedMessage(order: OrderRequest, confidence: number, ticket: string): string {
+  const levels = [order.sl !== undefined ? `SL ${order.sl}` : null, order.tp !== undefined ? `TP ${order.tp}` : null].filter(Boolean).join(" / ");
+  return [
+    `📈 ${order.symbol} ${order.type.toUpperCase()} ${order.lots} lots opened. Ticket #${ticket}.`,
+    `🎯 Confidence: ${confidence}%`,
+    levels ? levels : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Below the user's confidence threshold and auto-approval is off -- a real Approve/Decline round
+ *  trip is required before this order is ever sent, per the user's explicit request. */
+export function buildTradeApprovalRequestMessage(order: OrderRequest, confidence: number, threshold: number, reason?: string): string {
+  return [
+    `⚠️ ${order.symbol} ${order.type.toUpperCase()} ${order.lots} lots -- confidence ${confidence}% is below your ${threshold}% threshold.`,
+    reason ? reason : null,
+    "Approve to place it, or decline to skip.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

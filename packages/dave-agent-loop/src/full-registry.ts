@@ -29,6 +29,8 @@ import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
 import { runWorkerTask } from "./worker-loop.js";
 import type { Worker } from "@dave/workers";
+import type { OrderRequest } from "@dave/trading";
+import { buildTradePlacedMessage, buildTradeApprovalRequestMessage } from "./trade-notifications.js";
 
 /**
  * Update 11 (post-Update-9 follow-up): "you actually forgot to give
@@ -69,7 +71,43 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   const skillCtx = { userId: deps.userId };
   const workflowCtx = { userId: deps.userId, db: deps.db, dispatch: automationDispatch };
 
-  registry.register(adaptTools(TRADING_TOOLS, tradingCtx));
+  // Real gap fixed (user, with a real screenshot: "implement confidence rate so when it's
+  // placing a trade it should send like the screenshot"): trade_execute's own result already
+  // carries confidence/needsApproval/ticket -- wrapped here (same reason as create_subagent
+  // below: needs a live Telegram client, which dave-trading correctly has no dependency on) so
+  // the fixed-template message actually reaches the user instead of being left to the LLM's own
+  // prose, or to the tool result never being read as a user-facing message at all.
+  const wrappedTradingTools = adaptTools(TRADING_TOOLS, tradingCtx).map((tool): AgentTool => {
+    if (tool.name !== "trade_execute") return tool;
+    return {
+      ...tool,
+      execute: async (args: Record<string, unknown>) => {
+        const result = (await tool.execute(args)) as Record<string, unknown>;
+        if (deps.telegram) {
+          const order = args as unknown as OrderRequest;
+          const confidence = args.confidence as number | undefined;
+          if (result.needsApproval && typeof confidence === "number") {
+            void deps.telegram.client
+              .sendMessage({
+                chat_id: deps.telegram.chatId,
+                text: buildTradeApprovalRequestMessage(order, confidence, result.threshold as number, args.reason as string | undefined),
+                reply_markup: {
+                  inline_keyboard: [[
+                    { text: "✅ Approve", callback_data: `tradeapprove:${result.pendingId as string}`, style: "success" },
+                    { text: "❌ Decline", callback_data: `tradedecline:${result.pendingId as string}`, style: "danger" },
+                  ]],
+                },
+              })
+              .catch(() => undefined);
+          } else if (result.ticket && typeof confidence === "number") {
+            void deps.telegram.client.sendMessage({ chat_id: deps.telegram.chatId, text: buildTradePlacedMessage(order, confidence, result.ticket as string) }).catch(() => undefined);
+          }
+        }
+        return result;
+      },
+    };
+  });
+  registry.register(wrappedTradingTools);
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(EA_ANALYSIS_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, davema: deps.davema, workspaceRoot: process.cwd() }));

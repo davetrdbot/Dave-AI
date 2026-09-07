@@ -10,6 +10,9 @@ import {
   proposeSettingsChange,
   getAutoApprovalEnabled,
   setAutoApprovalEnabled,
+  getConfidenceSettings,
+  setConfidenceThreshold,
+  setAutoApproveBelowThreshold,
   type RiskMode,
   type TradingMode,
   type TradingSession,
@@ -133,5 +136,23 @@ export const SETTINGS_TOOLS: ToolDefinition[] = [
       setAutoApprovalEnabled(args.userId as string, Boolean(args.enabled));
       return { ok: true };
     },
+  },
+  {
+    name: "get_confidence_settings",
+    description: "Get the user's real confidence threshold (0-100) and whether trades below it auto-approve instead of requiring the user's explicit approval.",
+    parameters: { type: "object", required: ["userId"], properties: { userId: { type: "string" } } },
+    execute: async (args) => getConfidenceSettings(args.userId as string),
+  },
+  {
+    name: "set_confidence_threshold",
+    description: "Set the user's confidence threshold (0-100). trade_execute calls below this score require the user's approval unless auto-approve-below-threshold is on.",
+    parameters: { type: "object", required: ["userId", "threshold"], properties: { userId: { type: "string" }, threshold: { type: "number" } } },
+    execute: async (args) => setConfidenceThreshold(args.userId as string, args.threshold as number),
+  },
+  {
+    name: "set_auto_approve_below_threshold",
+    description: "Turn on/off auto-approval for trades below the user's confidence threshold -- same setting a user can toggle themselves in /settings.",
+    parameters: { type: "object", required: ["userId", "enabled"], properties: { userId: { type: "string" }, enabled: { type: "boolean" } } },
+    execute: async (args) => setAutoApproveBelowThreshold(args.userId as string, Boolean(args.enabled)),
   },
 ];

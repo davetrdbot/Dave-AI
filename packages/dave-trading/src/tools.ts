@@ -4,6 +4,7 @@ import { findSetup } from "./find-setup.js";
 import { tradeExecute, tradeModify, partialClose, fullClose, deletePendingOrder, deleteAllPendingOrders } from "./trade-execute.js";
 import { validateOrder, resolveEntryPrice, isPendingOrderType, type OrderRequest } from "./order-types.js";
 import { enableBreakevenTrailing, disableBreakevenTrailing } from "./breakeven-trailing.js";
+import { evaluateConfidenceGate } from "./confidence-gate.js";
 
 /**
  * Agentic tool exposure. Real gap this fills: everything in this
@@ -57,7 +58,11 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       "Place a real order. For buy_limit/sell_limit/buy_stop/sell_stop, price is optional: if omitted, a real current " +
       "market quote is pulled from DAVEMA and a sensible entry is calculated a few pips off it. If DAVEMA is " +
       "unreachable, this returns needsUserInput=true with a question to ask the user instead of failing silently or " +
-      "rejecting the order -- never guess a strategy-significant entry price out of thin air.",
+      "rejecting the order -- never guess a strategy-significant entry price out of thin air. Pass your own real " +
+      "confidence (0-100) for this specific setup: below the user's confidence threshold (see " +
+      "get_confidence_settings), the order is queued for the user's explicit approval instead of firing immediately, " +
+      "unless they've turned on auto-approval for that case -- this returns needsApproval=true with a pendingId " +
+      "rather than a ticket when that happens.",
     parameters: {
       type: "object",
       required: ["symbol", "type", "lots"],
@@ -68,10 +73,13 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         price: { type: "number", description: "explicit entry price for pending order types -- auto-calculated from a live quote if omitted" },
         sl: { type: "number" },
         tp: { type: "number" },
+        confidence: { type: "number", description: "your own real assessed confidence (0-100) for this specific trade" },
+        reason: { type: "string", description: "brief reason behind the confidence score, shown to the user if approval is needed" },
       },
     },
     execute: async (args, ctx) => {
-      const order = args as unknown as OrderRequest;
+      const { confidence, reason, ...rest } = args;
+      const order = rest as unknown as OrderRequest;
       if (isPendingOrderType(order.type) && order.price === undefined) {
         let referencePrice: number | undefined;
         try {
@@ -89,7 +97,14 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         }
         order.price = resolution.price;
       }
-      return tradeExecute(ctx.executor, order);
+      if (typeof confidence === "number") {
+        const gate = evaluateConfidenceGate(ctx.userId, order, confidence, reason as string | undefined);
+        if (gate.needsApproval) {
+          return { needsApproval: true, pendingId: gate.pendingId, confidence, threshold: gate.threshold };
+        }
+      }
+      const result = await tradeExecute(ctx.executor, order);
+      return typeof confidence === "number" ? { ...result, confidence } : result;
     },
   },
   {

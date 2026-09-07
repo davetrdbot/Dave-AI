@@ -19,7 +19,7 @@ import {
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError } from "@dave/ea-bridge";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
-import { formatPnl } from "./trade-notifications.js";
+import { formatPnl, buildTradePlacedMessage } from "./trade-notifications.js";
 import {
   getRiskSettings,
   setRiskMode,
@@ -55,6 +55,15 @@ import {
   resetRiskSettingsForUser,
   resetTrailingStopConfigForUser,
   type RiskMode,
+  getConfidenceSettings,
+  setConfidenceThreshold,
+  setAutoApproveBelowThreshold,
+  setPendingConfidenceEntry,
+  getPendingConfidenceEntry,
+  takePendingTradeApproval,
+  TradeApprovalNotFoundError,
+  resetConfidenceSettingsForUser,
+  tradeExecute,
 } from "@dave/trading";
 import { listSkills } from "@dave/skills";
 import {
@@ -593,8 +602,41 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("EA Token", "blue", "settings:eatoken")],
       [coloredButton("AI Response Timeout", "blue", "settings:providertimeout")],
       [coloredButton("Trading Session", "blue", "settings:session")],
+      [coloredButton("Confidence Rate", "blue", "settings:confidence")],
     ])
   );
+}
+
+/** Real gap fixed (user, with a real screenshot: "implement confidence rate... a setting to
+ *  auto approval trade below the confidence rate"): the real threshold + auto-approve toggle
+ *  trade_execute's confidence gate (confidence-gate.ts) actually reads. */
+function confidenceKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const settings = getConfidenceSettings(userId);
+  const lines = [
+    "<b>Confidence Rate</b>",
+    `Threshold: ${settings.threshold}%`,
+    `Below threshold: ${settings.autoApproveBelowThreshold ? "Auto-approved" : "Asks you to approve"}`,
+    "",
+    "Trades I place below this confidence score wait for your Approve/Decline unless auto-approve is on.",
+  ];
+  const rows: ReturnType<typeof coloredButton>[][] = [
+    [{ text: `Set threshold (currently ${settings.threshold}%)`, callback_data: "confidence:setthreshold" }],
+    [coloredButton(`Auto-approve below threshold: ${settings.autoApproveBelowThreshold ? "On" : "Off"}`, settings.autoApproveBelowThreshold ? "green" : "red", "confidence:toggleauto")],
+  ];
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
+}
+
+export async function tryHandlePendingConfidenceEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  if (!getPendingConfidenceEntry(deps.userId)) return false;
+  setPendingConfidenceEntry(deps.userId, false);
+  const value = Number(text.trim());
+  if (!Number.isFinite(value) || value < 0 || value > 100) {
+    await deps.client.sendMessage({ chat_id: chatId, text: "That doesn't look like a real confidence threshold -- reply with a number between 0 and 100. Tap the row in /settings to try again." });
+    return true;
+  }
+  setConfidenceThreshold(deps.userId, value);
+  await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ Confidence threshold set to ${value}%` });
+  return true;
 }
 
 /** Real gap fixed (user: "in settings to select the session you want it to trade and also a
@@ -998,6 +1040,7 @@ async function performFullReset(deps: CommandRouterDeps, chatId: number, history
   resetWriteApprovalForUser(deps.userId);
   resetVoiceSettingsForUser(deps.db, deps.userId);
   resetNotificationSettingsForUser(deps.db, deps.userId);
+  resetConfidenceSettingsForUser(deps.userId);
   await deps.client.sendMessage({ chat_id: chatId, text: "✅ Full reset complete -- memory, trading settings, and conversation history are all genuinely cleared. Starting fresh." });
   await handleMenu(deps, chatId);
 }
@@ -1394,6 +1437,43 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = `Session: ${session}`;
       const view = tradingSessionKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:confidence") {
+      ackText = undefined;
+      const view = confidenceKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "confidence:setthreshold") {
+      setPendingConfidenceEntry(deps.userId, true);
+      ackText = "Send the new threshold";
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Reply with your confidence threshold (0-100) as your next message." });
+    } else if (data === "confidence:toggleauto") {
+      const settings = getConfidenceSettings(deps.userId);
+      setAutoApproveBelowThreshold(deps.userId, !settings.autoApproveBelowThreshold);
+      ackText = `Auto-approve below threshold ${!settings.autoApproveBelowThreshold ? "enabled" : "disabled"}`;
+      await confirm(`Auto-approve below threshold: ${!settings.autoApproveBelowThreshold ? "On" : "Off"}`);
+      const view = confidenceKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("tradeapprove:") || data.startsWith("tradedecline:")) {
+      const approve = data.startsWith("tradeapprove:");
+      const pendingId = data.slice(approve ? "tradeapprove:".length : "tradedecline:".length);
+      try {
+        const entry = takePendingTradeApproval(deps.userId, pendingId);
+        if (approve) {
+          if (!deps.executor) {
+            ackText = "No trade executor configured";
+            if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
+          } else {
+            const { ticket } = await tradeExecute(deps.executor, entry.order);
+            ackText = "Approved";
+            if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: buildTradePlacedMessage(entry.order, entry.confidence, ticket) });
+          }
+        } else {
+          ackText = "Declined";
+          if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Declined -- ${entry.order.symbol} ${entry.order.type.toUpperCase()} was not placed.` });
+        }
+      } catch (err) {
+        ackText = err instanceof TradeApprovalNotFoundError ? "Already handled" : `Error: ${err instanceof Error ? err.message : String(err)}`;
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
+      }
     } else if (data === "settings:eatoken") {
       ackText = undefined;
       const view = eaTokenKeyboard(deps.userId);
