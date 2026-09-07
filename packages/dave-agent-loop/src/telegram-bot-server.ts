@@ -21,7 +21,7 @@ import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } fr
 import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
@@ -50,6 +50,11 @@ export interface TelegramBotServerDeps {
 export interface TelegramBotServer {
   server: Server;
   webhookUrl: string;
+  /** Real gap fixed (user: "a hardcoded message to send when a trade is closed"): exposed so a
+   *  caller (main.ts, wiring EaBridge's real onClosedPosition/onManualClose events) can send a
+   *  fast, consistent, non-LLM-generated notification straight to the user's chat -- without
+   *  waiting on (or paying for) an agent-loop turn just to narrate a trade closing. */
+  client: TelegramClient;
 }
 
 /** The real, shared agent-turn path -- both a normal incoming message AND the "Pause and do it
@@ -505,6 +510,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         if (await tryHandlePendingE2BKeyEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingLimitEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingTrailingEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingMcpUrlEntry(routerDeps, chatId, message.text)) return;
         // Item 11: a typed "yes"/"no" answering a real pending settings-change approval is
         // handled here, BEFORE the agent loop ever sees it -- otherwise the model has no way
         // to know an approval is already pending and could re-propose the same change, sending
@@ -568,5 +574,5 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     },
   });
 
-  return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}` };
+  return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}`, client };
 }

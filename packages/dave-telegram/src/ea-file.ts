@@ -3,7 +3,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getOrCreateEaWebhook } from "@dave/ea-bridge";
 import type { TelegramClient } from "./client.js";
-import { keyboard } from "./buttons.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE_PATH = join(__dirname, "..", "..", "..", "ea", "DaveEA.mq5");
@@ -27,22 +26,6 @@ const TEMPLATE_PATH = join(__dirname, "..", "..", "..", "ea", "DaveEA.mq5");
  * `@dave/ea-bridge` -- the EA-specific token system already mounted at
  * `/hooks/ea/<token>` in main.ts, the one `getLastKnownAccountSnapshot`/
  * `getEaConnectionStatus`/the command queue all actually read.
- */
-
-export function eaPickerKeyboard() {
-  return keyboard([
-    [{ text: "🖥️ Dave's default MT5 account", callback_data: "ea:default" }],
-    [{ text: "🔑 My own MT5 account", callback_data: "ea:own" }],
-  ]);
-}
-
-/**
- * Known gap, flagged rather than silently left: the two picker buttons
- * above aren't wired to different behavior yet -- both currently lead to
- * the same personalizeEaFile() call regardless of which is pressed.
- * "My own MT5 account" needs Step 10.8's separate-credentials storage to
- * actually branch on, so this is correctly Step 10's job to finish, not
- * something to fake here.
  */
 
 export function personalizeEaFile(userId: string, publicBaseUrl: string): { filename: string; content: string; webhookUrl: string; token: string } {

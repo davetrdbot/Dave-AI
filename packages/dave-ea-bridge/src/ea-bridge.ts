@@ -54,9 +54,18 @@ export class EaBridge {
       this.events.onCommandResult?.(userId, result);
     }
 
+    // Real bug fixed (found wiring real onClosedPosition/onManualClose to Telegram for the first
+    // time -- previously nothing consumed either, so this double-fire was invisible): a
+    // TP/SL-closed ticket disappears from `positions` same as a genuinely manual close, but it's
+    // reported through `closedPositions`, NOT `daveClosedThisCycle` (that set only tracks
+    // commands DAVE issued through the executor). Without this, every TP/SL close would ALSO
+    // fire onManualClose, sending a wrong "closed manually in MT5" message right alongside the
+    // correct one.
+    const reportedClosedTickets = new Set((report.closedPositions ?? []).map((c) => c.ticket));
     const disappeared = detectManualCloses(previousPositions, report.positions ?? []);
     for (const position of disappeared) {
       if (daveClosedThisCycle.has(position.ticket)) continue; // Dave's own close, not manual
+      if (reportedClosedTickets.has(position.ticket)) continue; // already reported (TP/SL/etc), not manual
       this.events.onManualClose?.(userId, position);
     }
 

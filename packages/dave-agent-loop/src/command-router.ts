@@ -5,7 +5,6 @@ import {
   TelegramClient,
   TelegramError,
   parseCommand,
-  eaPickerKeyboard,
   personalizeEaFile,
   settingsScreen,
   keyboard,
@@ -16,7 +15,8 @@ import {
   type TelegramCallbackQuery,
   sendSelfDeletingMessage,
 } from "@dave/telegram";
-import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken } from "@dave/ea-bridge";
+import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError } from "@dave/ea-bridge";
+import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import {
   getRiskSettings,
   setRiskMode,
@@ -931,8 +931,39 @@ async function handleStatus(deps: CommandRouterDeps, chatId: number, editMessage
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
 
+/** Real fix (user: "when sending the ea it normally does need a ui that's not necessary...
+ * remove it the ui should be Dave EA and mcp for trading so incase they don't want to use the ea
+ * I can provide my mcp for the placing of trade"): the old picker's two buttons ("Dave's default
+ * MT5 account" / "My own MT5 account") were a known, documented dead end -- both led to the exact
+ * same flow, nothing genuinely branched on the choice. Replaced with a REAL choice: the file-based
+ * MT5 EA (unchanged, still real), or a real MCP trading server (mcp-trade-adapter.ts's
+ * McpTradeExecutor, which already existed but had no UI to actually pick it) -- every real trade
+ * call routes through whichever one is genuinely configured (DynamicTradeExecutor). */
 async function handleEa(deps: CommandRouterDeps, chatId: number): Promise<void> {
-  await deps.client.sendMessage({ chat_id: chatId, text: "Which MT5 account is this EA for?", reply_markup: eaPickerKeyboard() });
+  const config = getTradingModeConfig(deps.userId);
+  const text =
+    `<b>Trade Execution</b>\n` +
+    `Current: ${config.mode === "mcp" ? `MCP (${config.mcpServerUrl})` : "Dave EA (MT5)"}\n\n` +
+    `How should Dave place your trades?`;
+  const rows = [
+    [coloredButton(config.mode === "ea" ? "✅ Dave EA (MT5)" : "Dave EA (MT5)", config.mode === "ea" ? "green" : "neutral", "eaexec:ea")],
+    [coloredButton(config.mode === "mcp" ? "✅ MCP for trading" : "MCP for trading", config.mode === "mcp" ? "green" : "neutral", "eaexec:mcp")],
+  ];
+  await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup: withMenuHome(keyboard(rows)) });
+}
+
+/** The user's next free-text message after tapping "MCP for trading" IS the real MCP server URL. */
+export async function tryHandlePendingMcpUrlEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  if (!getPendingMcpUrlEntry(deps.db, deps.userId)) return false;
+  setPendingMcpUrlEntry(deps.db, deps.userId, false);
+  try {
+    const config = setMcpTradingMode(deps.userId, text.trim());
+    await deps.client.sendMessage({ chat_id: chatId, text: `✅ Trade execution set to MCP: <code>${config.mcpServerUrl}</code>. Real trade calls will connect to it from now on.`, parse_mode: "HTML" });
+  } catch (err) {
+    const message = err instanceof MissingMcpServerUrlError ? err.message : err instanceof Error ? err.message : String(err);
+    await deps.client.sendMessage({ chat_id: chatId, text: `⚠️ ${message}` });
+  }
+  return true;
 }
 
 /** Real command dispatch. Returns true if `text` was a recognized command and was handled (caller should NOT also forward it to the LLM). */
@@ -1453,8 +1484,8 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         ackText = "Declined";
         if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Declined -- no change made." });
       }
-    } else if (data === "ea:default" || data === "ea:own") {
-      // Known gap (ea-file.ts): both buttons currently lead to the same personalized-EA flow; "own account" branching needs separate-credentials storage (Step 10.8), not faked here.
+    } else if (data === "eaexec:ea") {
+      setEaTradingMode(deps.userId);
       if (chatId) {
         const { filename, content, webhookUrl, token } = personalizeEaFile(deps.userId, deps.publicBaseUrl);
         await deps.client.sendDocument({
@@ -1465,6 +1496,10 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         });
       }
       ackText = "Sent";
+    } else if (data === "eaexec:mcp") {
+      setPendingMcpUrlEntry(deps.db, deps.userId, true);
+      ackText = "Send the MCP server URL";
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Send your real MCP trading server's URL as your next message (e.g. https://your-mcp-server.example.com)." });
     } else if (data === "resetconfirm:yes") {
       ackText = undefined;
       if (chatId) await performFullReset(deps, chatId, `${deps.userId}:${chatId}`);

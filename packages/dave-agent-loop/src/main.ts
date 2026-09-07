@@ -4,11 +4,13 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
 import { DavemaClient, getDavemaKey } from "@dave/davema";
-import { EaBridge } from "@dave/ea-bridge";
+import { EaBridge, DynamicTradeExecutor } from "@dave/ea-bridge";
 import { createHiddenWebhookServer } from "@dave/memory";
 import { startWatchdog, startHeartbeatLoop } from "@dave/safety";
-import { getTelegramCredentials } from "@dave/telegram";
+import { getTelegramCredentials, type TelegramClient } from "@dave/telegram";
 import { startTelegramBotServer } from "./telegram-bot-server.js";
+import { getPrimaryChatId } from "./primary-chat.js";
+import { buildClosedTradeMessage, buildManualCloseMessage } from "./trade-notifications.js";
 
 /**
  * Real gap fixed (final pre-deployment pass, Railway Part A item 1):
@@ -172,8 +174,23 @@ export async function main(): Promise<void> {
     // own log aggregation) is the fallback channel either way.
   });
 
+  // Real gap fixed (user, with real screenshots of the live bot as proof: "a hardcoded message
+  // to send when a trade is closed"): dave-ea-bridge already parses real closed-position/manual-
+  // close data off every real EA report -- these events just never had a live Telegram client to
+  // notify. `telegramClient` is set once tryStartTelegram() (below) genuinely succeeds; the
+  // handlers read it (and the real persisted primary chat) at FIRE time, not at construction
+  // time, so a trade closing before Telegram is paired is silently skipped rather than crashing.
+  let telegramClient: TelegramClient | undefined;
   const eaBridge = new EaBridge({
     onConnect: (userId) => console.log(`[ea] connected: ${userId}`),
+    onClosedPosition: (userId, closed) => {
+      const chatId = telegramClient && getPrimaryChatId(db, userId);
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildClosedTradeMessage(closed) });
+    },
+    onManualClose: (userId, position) => {
+      const chatId = telegramClient && getPrimaryChatId(db, userId);
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualCloseMessage(position) });
+    },
   });
 
   const adminProcess = spawnAdminPanel(dirname(dbPath));
@@ -222,12 +239,17 @@ export async function main(): Promise<void> {
         ownerUserId,
         db,
         davema,
-        executor: eaBridge.getExecutor(ownerUserId),
+        // Real gap fixed (user: "so incase they don't want to use the ea I can provide my mcp
+        // for the placing of trade"): routes every real trade call through whichever backend
+        // (the MT5 EA, or a real configured MCP trading server) the user has actually chosen
+        // via /ea -- re-checked live on every call, no restart needed to switch.
+        executor: new DynamicTradeExecutor(ownerUserId, eaBridge.getExecutor(ownerUserId)),
         botToken: telegramBotToken,
         publicBaseUrl,
         systemPrompt: loadSystemPrompt(),
       });
       routes.push(["/hooks/telegram/", subServerHandler(bot.server)]);
+      telegramClient = bot.client;
       telegramWired = true;
       console.log(`[telegram] webhook registered: ${bot.webhookUrl}`);
       return true;

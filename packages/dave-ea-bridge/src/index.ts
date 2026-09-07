@@ -6,3 +6,5 @@ export * from "./manual-modify-detector.js";
 export * from "./ea-bridge.js";
 export * from "./mcp-trade-adapter.js";
 export * from "./tools.js";
+export * from "./trading-mode-config.js";
+export * from "./dynamic-trade-executor.js";
