@@ -94,6 +94,7 @@ import {
 } from "@dave/brain";
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
 import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes, setAutonomousTradingIntervalMinutes } from "./trading-loop.js";
+import { getProviderTimeoutConfig, setPrimaryTimeoutSeconds, setFallbackTimeoutSeconds } from "./provider-timeout-config.js";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
 import { friendlyErrorMessage } from "./error-messages.js";
@@ -367,6 +368,12 @@ async function handleModels(deps: CommandRouterDeps, chatId: number, editMessage
 
 /** The real per-provider picker (fetch-live-models or manual-entry) -- reused for the primary
  * provider AND any configured fallback provider, via the modelfor: callback. */
+// Real gap fixed (user: "this too should automatically delete in 20 sec") -- the model-picker
+// messages below are the same transient-confirmation class of noise as the other self-deleting
+// toasts, just given a longer window (20s, not the default 10s) since these carry a real button
+// the user needs a moment to actually tap.
+const MODEL_PICKER_SELF_DELETE_MS = 20_000;
+
 async function sendModelPickerForProvider(deps: CommandRouterDeps, chatId: number, provider: ProviderName): Promise<void> {
   const entry = listProviderCatalog().find((e) => e.id === provider)!;
 
@@ -374,13 +381,13 @@ async function sendModelPickerForProvider(deps: CommandRouterDeps, chatId: numbe
   // per-key model to pick and no real /models endpoint to fetch (modelsPath is null), so it gets
   // its own honest, static answer instead of a broken empty fetch/manual-entry flow.
   if (provider === "airllm") {
-    await deps.client.sendMessage({ chat_id: chatId, text: `<b>Model for airllm</b>\nFixed: <code>${entry.defaultModel}</code> (self-hosted via AIRLLM_BASE_URL -- not user-selectable).`, parse_mode: "HTML" });
+    await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `<b>Model for airllm</b>\nFixed: <code>${entry.defaultModel}</code> (self-hosted via AIRLLM_BASE_URL -- not user-selectable).`, parse_mode: "HTML" }, MODEL_PICKER_SELF_DELETE_MS);
     return;
   }
 
   const key = primaryKeyFor(deps, provider);
   if (!key) {
-    await deps.client.sendMessage({ chat_id: chatId, text: `Provider not set: <b>${provider}</b> has no working key -- add one in the admin panel, or /providers to switch.`, parse_mode: "HTML" });
+    await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `Provider not set: <b>${provider}</b> has no working key -- add one in the admin panel, or /providers to switch.`, parse_mode: "HTML" }, MODEL_PICKER_SELF_DELETE_MS);
     return;
   }
   const chosenModel = key.config.model;
@@ -388,19 +395,23 @@ async function sendModelPickerForProvider(deps: CommandRouterDeps, chatId: numbe
 
   if (entry.manualModelEntry) {
     setPendingManualModelEntry(deps.db, deps.userId, provider);
-    await deps.client.sendMessage({
-      chat_id: chatId,
-      text: `<b>Model for ${provider}</b>\n${currentLine}\n\n${provider} requires manual model entry -- reply with the exact model ID as your next message and I'll set it.`,
-      parse_mode: "HTML",
-    });
+    await sendSelfDeletingMessage(
+      deps.client,
+      { chat_id: chatId, text: `<b>Model for ${provider}</b>\n${currentLine}\n\n${provider} requires manual model entry -- reply with the exact model ID as your next message and I'll set it.`, parse_mode: "HTML" },
+      MODEL_PICKER_SELF_DELETE_MS
+    );
     return;
   }
-  await deps.client.sendMessage({
-    chat_id: chatId,
-    text: `<b>Model for ${provider}</b>\n${currentLine}\n\nTap below to fetch the live model list from ${provider}'s real API and pick one.`,
-    parse_mode: "HTML",
-    reply_markup: keyboard([[coloredButton("🔄 Fetch live models", "blue", `fetchmodels:${provider}`)]]),
-  });
+  await sendSelfDeletingMessage(
+    deps.client,
+    {
+      chat_id: chatId,
+      text: `<b>Model for ${provider}</b>\n${currentLine}\n\nTap below to fetch the live model list from ${provider}'s real API and pick one.`,
+      parse_mode: "HTML",
+      reply_markup: keyboard([[coloredButton("🔄 Fetch live models", "blue", `fetchmodels:${provider}`)]]),
+    },
+    MODEL_PICKER_SELF_DELETE_MS
+  );
 }
 
 /** Best-effort: the user's next free-text message after /models on a manual-entry provider IS
@@ -490,8 +501,45 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Trailing / Breakeven", "blue", "settings:trailing"), coloredButton("Notifications", "blue", "settings:notifications")],
       [coloredButton("Autonomous Trading", "blue", "settings:tradinginterval")],
       [coloredButton("EA Token", "blue", "settings:eatoken")],
+      [coloredButton("AI Response Timeout", "blue", "settings:providertimeout")],
     ])
   );
+}
+
+/** Real gap fixed (user: "increase the timeout... settable in settings"): real button pickers
+ * for the primary provider's timeout and every fallback provider's own (usually shorter)
+ * timeout -- no typing, same pattern as the trading-cadence picker above. */
+const PRIMARY_TIMEOUT_PRESETS_SECONDS = [10, 15, 20, 30, 45, 60] as const;
+const FALLBACK_TIMEOUT_PRESETS_SECONDS = [3, 5, 10, 15] as const;
+
+function providerTimeoutKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const config = getProviderTimeoutConfig(userId);
+  const lines = [
+    "<b>AI Response Timeout</b>",
+    `Primary provider: ${config.primarySeconds}s`,
+    `Fallback provider(s): ${config.fallbackSeconds}s each`,
+    "",
+    "A slow/dead primary provider only costs its own timeout, not the same wait repeated for every fallback -- keep fallback short so a bad primary doesn't stall the whole chain.",
+    "",
+    "Primary timeout:",
+  ];
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  for (let i = 0; i < PRIMARY_TIMEOUT_PRESETS_SECONDS.length; i += 3) {
+    rows.push(
+      PRIMARY_TIMEOUT_PRESETS_SECONDS.slice(i, i + 3).map((s) =>
+        coloredButton(s === config.primarySeconds ? `✅ ${s}s` : `${s}s`, s === config.primarySeconds ? "green" : "neutral", `providertimeout:primary:${s}`)
+      )
+    );
+  }
+  rows.push([{ text: "Fallback timeout:", callback_data: "noop" }]);
+  for (let i = 0; i < FALLBACK_TIMEOUT_PRESETS_SECONDS.length; i += 4) {
+    rows.push(
+      FALLBACK_TIMEOUT_PRESETS_SECONDS.slice(i, i + 4).map((s) =>
+        coloredButton(s === config.fallbackSeconds ? `✅ ${s}s` : `${s}s`, s === config.fallbackSeconds ? "green" : "neutral", `providertimeout:fallback:${s}`)
+      )
+    );
+  }
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 /**
@@ -1125,6 +1173,24 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       ackText = `Cadence: every ${minutes} min`;
       await confirm(`Scan cadence set to every ${minutes} min`);
       const view = tradingIntervalKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:providertimeout") {
+      ackText = undefined;
+      const view = providerTimeoutKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("providertimeout:primary:")) {
+      const seconds = Number(data.slice("providertimeout:primary:".length));
+      setPrimaryTimeoutSeconds(deps.userId, seconds);
+      ackText = `Primary timeout: ${seconds}s`;
+      await confirm(`Primary provider timeout set to ${seconds}s`);
+      const view = providerTimeoutKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("providertimeout:fallback:")) {
+      const seconds = Number(data.slice("providertimeout:fallback:".length));
+      setFallbackTimeoutSeconds(deps.userId, seconds);
+      ackText = `Fallback timeout: ${seconds}s`;
+      await confirm(`Fallback provider timeout set to ${seconds}s each`);
+      const view = providerTimeoutKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data === "settings:eatoken") {
       ackText = undefined;

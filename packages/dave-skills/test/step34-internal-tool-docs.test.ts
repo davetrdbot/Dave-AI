@@ -22,13 +22,15 @@ const OWNER = "user-1";
 try {
   process.chdir(workDir);
 
-  // --- [1] The three real doc files genuinely exist and contain real content ---
-  console.log("[1] The three real skill docs genuinely exist on disk with real content...\n");
+  // --- [1] The real doc files genuinely exist and contain real content ---
+  console.log("[1] The real skill docs genuinely exist on disk with real content...\n");
   const e2bDoc = readInternalToolDoc("e2b-sandbox");
   const eaDoc = readInternalToolDoc("ea-webhook");
+  const analysisDoc = readInternalToolDoc("ea-analysis");
   assert.ok(e2bDoc.includes("gRPC"), "the E2B doc must genuinely explain the real gRPC-vs-REST limit");
   assert.ok(eaDoc.includes("heartbeat"), "the EA webhook doc must genuinely explain the real heartbeat round trip");
-  console.log(`    e2b-sandbox-skill.md: ${e2bDoc.length} bytes; ea-webhook-skill.md: ${eaDoc.length} bytes`);
+  assert.ok(analysisDoc.includes("get_ict") && analysisDoc.includes("get_all_analysis") && analysisDoc.includes("46"), "item 5: the analysis doc must genuinely teach all 46 real endpoints, not a subset");
+  console.log(`    e2b-sandbox-skill.md: ${e2bDoc.length} bytes; ea-webhook-skill.md: ${eaDoc.length} bytes; ea-analysis-skill.md: ${analysisDoc.length} bytes`);
 
   // --- [2] Tool-to-topic mapping is real and specific ---
   console.log("\n[2] Real tool-to-doc-topic mapping...\n");
@@ -81,14 +83,15 @@ try {
   assert.equal(ungatedResult, "ran immediately");
   console.log("    real, immediate execution -- no doc gate applies to tools outside the mapped set");
 
-  // --- [5] Permanent skills: the three docs seeded as real, undeletable per-user skills ---
-  console.log("\n[5] The three docs seeded as real, PERMANENT per-user skills (list_skills shows them, deletion refused)...\n");
+  // --- [5] Permanent skills: the docs seeded as real, undeletable per-user skills ---
+  console.log("\n[5] The real docs seeded as PERMANENT per-user skills (list_skills shows them, deletion refused)...\n");
   const seeded = seedInternalToolDocSkills(OWNER);
-  assert.equal(seeded.length, 2);
+  assert.equal(seeded.length, 3, "e2b-sandbox, ea-webhook, and ea-analysis (item 5: all 46 endpoints taught as a real skill)");
   assert.ok(seeded.every((s) => s.permanent === true));
   const names = listSkills(OWNER).map((s) => s.name);
   assert.ok(names.includes("How to use: e2b-sandbox"));
   assert.ok(names.includes("How to use: ea-webhook"));
+  assert.ok(names.includes("How to use: ea-analysis"));
   console.log(`    real permanent skills seeded: ${seeded.map((s) => s.name).join(", ")}`);
 
   let permErr = false;
@@ -106,8 +109,8 @@ try {
     reseeded.map((s) => s.id).sort(),
     seeded.map((s) => s.id).sort()
   );
-  assert.equal(listSkills(OWNER).filter((s) => s.name.startsWith("How to use:")).length, 2, "must never duplicate on re-seed");
-  console.log("    same 2 skill ids after re-seeding -- no duplicates created");
+  assert.equal(listSkills(OWNER).filter((s) => s.name.startsWith("How to use:")).length, 3, "must never duplicate on re-seed");
+  console.log("    same 3 skill ids after re-seeding -- no duplicates created");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

@@ -22,11 +22,17 @@ import { createSkill, listSkills, updateSkillContent, type Skill } from "./skill
  */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export type InternalToolDocTopic = "e2b-sandbox" | "ea-webhook";
+export type InternalToolDocTopic = "e2b-sandbox" | "ea-webhook" | "ea-analysis";
 
 const DOC_PATHS: Record<InternalToolDocTopic, string> = {
   "e2b-sandbox": join(__dirname, "..", "..", "..", "docs", "skills", "e2b-sandbox-skill.md"),
   "ea-webhook": join(__dirname, "..", "..", "..", "docs", "skills", "ea-webhook-skill.md"),
+  // Item 5 (user: "create a skill and teach it all the tools about the endpoints"): all 46 real
+  // DAVEMA analysis endpoints (get_price..get_premium_discount, get_all_analysis, ping_ea),
+  // what each tells you and when to reach for it. Not recall-gated like e2b/ea-webhook below --
+  // these are read-only market-data calls, not a risky/easy-to-misuse mechanism, so it's seeded
+  // as real reference material Dave can consult, not a hard gate on every analysis call.
+  "ea-analysis": join(__dirname, "..", "..", "..", "docs", "skills", "ea-analysis-skill.md"),
 };
 
 /**
@@ -88,7 +94,7 @@ const SKILL_NAME_PREFIX = "How to use: ";
  * not just a file on disk nobody's skill list ever mentions.
  */
 export function seedInternalToolDocSkills(userId: string): Skill[] {
-  const topics: InternalToolDocTopic[] = ["e2b-sandbox", "ea-webhook"];
+  const topics: InternalToolDocTopic[] = ["e2b-sandbox", "ea-webhook", "ea-analysis"];
   return topics.map((topic) => {
     const name = `${SKILL_NAME_PREFIX}${topic}`;
     const content = readInternalToolDoc(topic);

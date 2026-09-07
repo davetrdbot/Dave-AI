@@ -16,6 +16,7 @@ import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic, isTradingHalted } from "@dave/safety";
 import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes } from "./trading-loop.js";
+import { getProviderTimeoutMs } from "./provider-timeout-config.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
@@ -65,12 +66,18 @@ export interface TelegramBotServerDeps {
 function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
   return {
     name: "model-config" as ProviderName,
-    async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+    async generate(req: CompletionRequest, defaultTimeoutMs: number): Promise<CompletionResult> {
       const config = getModelConfig(userId);
       const order = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
       const attempts: { provider: ProviderName; reason: string }[] = [];
       for (let p = 0; p < order.length; p++) {
         const provider = order[p];
+        // Real gap fixed (user: "increase the timeout if possible put 2 and 3 to 5 sec settable
+        // in settings"): the primary provider gets its own (usually longer) real, persisted,
+        // user-configurable timeout; every fallback attempt after it gets a separate (usually
+        // shorter) one -- a slow/dead primary no longer burns the SAME long timeout on every
+        // provider down the chain. Falls back to the caller's own default if nothing's configured.
+        const timeoutMs = getProviderTimeoutMs(userId, p === 0) || defaultTimeoutMs;
         try {
           return await generateWithKeyFailover(db, userId, provider, req, timeoutMs, {
             onKeySwitch: async ({ fromIndex, toIndex, nextLabel, reason, quotaExhausted }) => {
