@@ -27,6 +27,8 @@ import { AUTOMATION_TOOLS, wireScheduledAutomations, wireWebhookAutomations, wir
 import { FEEDBACK_TOOLS, logTrade } from "@dave/feedback";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
+import { runWorkerTask } from "./worker-loop.js";
+import type { Worker } from "@dave/workers";
 
 /**
  * Update 11 (post-Update-9 follow-up): "you actually forgot to give
@@ -45,6 +47,10 @@ export interface FullRegistryDeps {
   executor: TradeExecutor;
   /** Optional -- push_message_to_user is only registered when a real Telegram client + chat are supplied. */
   telegram?: { client: TelegramClient; chatId: number };
+  /** Optional -- required (alongside `telegram`) for create_subagent to actually kick off a real
+   *  worker execution run; without it, create_subagent still creates the bookkeeping record but
+   *  nothing ever runs it (the pre-worker-engine behavior). */
+  publicBaseUrl?: string;
 }
 
 export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
@@ -79,7 +85,43 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(DAVE_TOOL_REQUEST_TOOLS, ownerCtx));
   registry.register(adaptTools(SKILL_TOOLS, skillCtx));
   registry.register(adaptTools(E2B_TOOLS, dbOnlyCtx));
-  registry.register(adaptTools(SUBAGENT_TOOLS, ownerCtx));
+  // Real worker execution engine (user: "yes go ahead build the worker execution engine"):
+  // create_subagent used to only ever write a bookkeeping row -- nothing actually ran the worker.
+  // Wrapped here (rather than inside dave-workers' own subagent-tools.ts) specifically because
+  // triggering a real agent run needs AgentLoop/ToolRegistry (dave-agent-loop) plus a live
+  // Telegram client -- dave-workers must never import dave-agent-loop (that's the reverse of the
+  // real, one-way package dependency: dave-agent-loop depends on dave-workers, not the other way).
+  // `registry` is captured by reference in this closure and is fully built by the time
+  // create_subagent is actually CALLED at runtime (all registration below happens synchronously
+  // before this function returns), so it doubles as the real "granted tool" source of truth
+  // worker-loop.ts's live-grant sync resolves names against.
+  const subagentTools = adaptTools(SUBAGENT_TOOLS, ownerCtx).map((tool): AgentTool => {
+    if (tool.name !== "create_subagent") return tool;
+    return {
+      ...tool,
+      execute: async (args: Record<string, unknown>) => {
+        const worker = (await tool.execute(args)) as Worker;
+        if (deps.telegram && deps.publicBaseUrl) {
+          void runWorkerTask({
+            db: deps.db,
+            ownerUserId: deps.userId,
+            davema: deps.davema,
+            executor: deps.executor,
+            publicBaseUrl: deps.publicBaseUrl,
+            client: deps.telegram.client,
+            chatId: deps.telegram.chatId,
+            worker,
+            task: args.task as string,
+            fullRegistry: registry,
+          }).catch((err) => {
+            console.error(`[dave-agent-loop] worker "${worker.name}" (${worker.id}) run failed to even start:`, err);
+          });
+        }
+        return worker;
+      },
+    };
+  });
+  registry.register(subagentTools);
   registry.register(adaptTools(MEMORY_TOOLS, { actorId: deps.userId }));
   registry.register(adaptTools(MEMORY_EXTRA_TOOLS, { actorId: deps.userId }));
   // Real fix (Step 18 re-verification): a single journal_trade call now

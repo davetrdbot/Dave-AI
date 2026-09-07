@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
-import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName, type ContentBlock, type CompletionMessage } from "@dave/brain";
+import { type ContentBlock, type CompletionMessage } from "@dave/brain";
 import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, markdownToTelegramHtml, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
@@ -16,7 +16,7 @@ import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic, isTradingHalted } from "@dave/safety";
 import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes } from "./trading-loop.js";
-import { getProviderTimeoutMs } from "./provider-timeout-config.js";
+import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
@@ -25,7 +25,7 @@ import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandl
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
-import { friendlyErrorMessage, AllConfiguredProvidersFailedError } from "./error-messages.js";
+import { friendlyErrorMessage } from "./error-messages.js";
 
 /**
  * The real, persistent replacement for a one-off polling script: a
@@ -45,72 +45,6 @@ export interface TelegramBotServerDeps {
   botToken: string;
   publicBaseUrl: string;
   systemPrompt: string;
-}
-
-/**
- * Tries the user's configured primary provider, then their configured fallbacks, via their own
- * stored keys. Item 4/6 real gap fixed: a dying key or an exhausted provider used to fail over
- * silently -- the user never knew a switch happened, and a genuine "ran out of credit" looked
- * identical to any other transient hiccup. `notify` is real: it sends a real Telegram message the
- * moment a key switch or a provider exhaustion genuinely happens, mid-request, without dropping
- * the in-flight response the user is waiting for.
- */
-/**
- * Real gap fixed (user: "should show the errors from the endpoint so I will confirm it, not you
- * saying it"): every failover/exhaustion notification below now includes the actual raw reason
- * string generateWithKeyFailover captured from the real API response (an HTTP status + body, or
- * the underlying fetch error) -- not just Dave's own paraphrase ("ran out of credit"). The
- * paraphrase stays as a quick-read label; the real endpoint text rides alongside it so the user
- * can verify it themselves instead of taking Dave's word for it.
- */
-/** Largest delay `setTimeout` can legally take (2^31-1 ms, ~24.8 days) -- used as an effectively
- *  unlimited timeout for providers exempted from the real request timeout entirely. */
-const NO_TIMEOUT_MS = 2147483647;
-
-function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
-  return {
-    name: "model-config" as ProviderName,
-    async generate(req: CompletionRequest, defaultTimeoutMs: number): Promise<CompletionResult> {
-      const config = getModelConfig(userId);
-      const order = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
-      const attempts: { provider: ProviderName; reason: string }[] = [];
-      for (let p = 0; p < order.length; p++) {
-        const provider = order[p];
-        // Real gap fixed (user: "increase the timeout if possible put 2 and 3 to 5 sec settable
-        // in settings"): the primary provider gets its own (usually longer) real, persisted,
-        // user-configurable timeout; every fallback attempt after it gets a separate (usually
-        // shorter) one -- a slow/dead primary no longer burns the SAME long timeout on every
-        // provider down the chain. Falls back to the caller's own default if nothing's configured.
-        // Real exception (user: "specially for Nvidia they shouldn't be any timeout"): nvidia-nim
-        // genuinely runs much slower/less predictably than the other providers (real large-model
-        // cold starts on build.nvidia.com), so it's exempted from the configured/default timeout
-        // entirely -- NO_TIMEOUT_MS is the largest delay setTimeout can legally take (2^31-1ms,
-        // ~24.8 days), which is effectively "wait as long as it takes" without special-casing
-        // fetchWithTimeout's own real AbortController mechanism.
-        const timeoutMs = provider === "nvidia-nim" ? NO_TIMEOUT_MS : getProviderTimeoutMs(userId, p === 0) || defaultTimeoutMs;
-        try {
-          return await generateWithKeyFailover(db, userId, provider, req, timeoutMs, {
-            onKeySwitch: async ({ fromIndex, toIndex, nextLabel, reason, quotaExhausted }) => {
-              await notify(`🔄 Switched from key #${fromIndex} to key #${toIndex} (${nextLabel}) on ${provider} — key #${fromIndex} ${quotaExhausted ? "ran out of credit" : "failed"}. Real error: ${reason}`);
-            },
-            onProviderExhausted: async ({ reason, quotaExhausted }) => {
-              attempts.push({ provider, reason });
-              const nextProvider = order[p + 1];
-              if (quotaExhausted) {
-                await notify(`⚠️ ${provider} ran out of credit${nextProvider ? ` — switching to the next available key/provider (${nextProvider})` : " — no fallback provider is configured"}. Real error: ${reason}`);
-              } else if (!nextProvider) {
-                await notify(`⚠️ ${provider} failed and no fallback provider is configured. Real error: ${reason}`);
-              }
-            },
-          });
-        } catch (err) {
-          const reason = err instanceof Error ? err.message : String(err);
-          if (!attempts.some((a) => a.provider === provider)) attempts.push({ provider, reason });
-        }
-      }
-      throw new AllConfiguredProvidersFailedError(attempts);
-    },
-  };
 }
 
 export interface TelegramBotServer {
@@ -362,7 +296,7 @@ async function buildInboundContent(
 /** Real, persistent per-chat registry + loop cache -- rebuilding a full 130+-tool registry on every single message would be wasteful. */
 const registryCache = new Map<string, ToolRegistry>();
 
-function getOrBuildRegistry(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): ToolRegistry {
+export function getOrBuildRegistry(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): ToolRegistry {
   // Keyed by chat too -- push_message_to_user/tg_thinking etc. bind to a
   // specific chatId, so a registry built for one chat can't be reused for
   // another, even though both share the same owner account/tools/db.
@@ -376,6 +310,7 @@ function getOrBuildRegistry(deps: TelegramBotServerDeps, client: TelegramClient,
         davema: deps.davema,
         executor: deps.executor,
         telegram: { client, chatId },
+        publicBaseUrl: deps.publicBaseUrl,
       })
     );
   }
