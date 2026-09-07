@@ -15,7 +15,7 @@ export interface PairGroup {
   symbols: string[];
 }
 
-interface GroupState {
+export interface GroupState {
   groups: PairGroup[];
   activeGroupId: string | null;
   fallbackGroupId: string | null;
@@ -204,6 +204,32 @@ export interface ActiveGroupInfo {
    *  is active either). Every real caller (find-setup.ts, the trading loop, etc.) should use
    *  THIS, not activeGroup.symbols directly, so the override is honored everywhere consistently. */
   effectiveSymbols: string[];
+}
+
+/**
+ * Real bug fixed (user: "the bot doesn't even know the pair to trade"): groups previously only
+ * ever got seeded/activated when the user manually opened /settings -> Pair Group and tapped
+ * Active -- a user who never did that had ZERO groups and no active group, so find_setup
+ * genuinely had nothing to scan and Dave had no pairs at all. Deliberately NOT wired into
+ * getActiveGroupInfo/readState directly (those stay pure reads -- a user genuinely building their
+ * own groups from scratch, e.g. via the admin panel or create_or_update_pair_group, must still see
+ * an honest empty list until they add one). find-setup.ts calls this specifically, right before a
+ * real scan, since that's the one real consumer where "nothing to scan" is the actual reported bug.
+ */
+export function ensureGroupsUsable(userId: string): GroupState {
+  const state = readState(userId);
+  let next = state;
+  if (next.groups.length === 0) {
+    next = { ...next, groups: [...DEFAULT_PAIR_GROUPS] };
+  }
+  if (!next.activeGroupId || !next.groups.some((g) => g.id === next.activeGroupId)) {
+    next = { ...next, activeGroupId: next.groups.some((g) => g.id === "synthetic") ? "synthetic" : (next.groups[0]?.id ?? null) };
+  }
+  if (!next.fallbackGroupId || !next.groups.some((g) => g.id === next.fallbackGroupId)) {
+    next = { ...next, fallbackGroupId: next.groups.some((g) => g.id === "fallback") ? "fallback" : null };
+  }
+  if (next !== state) saveState(userId, next);
+  return next;
 }
 
 export function getActiveGroupInfo(userId: string): ActiveGroupInfo {

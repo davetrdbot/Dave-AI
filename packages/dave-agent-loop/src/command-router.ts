@@ -1521,7 +1521,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
           } else {
             const { ticket } = await tradeExecute(deps.executor, entry.order);
             ackText = "Approved";
-            if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: buildTradePlacedMessage(entry.order, entry.confidence, ticket) });
+            if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: buildTradePlacedMessage(entry.order, ticket, entry.confidence) });
           }
         } else {
           ackText = "Declined";

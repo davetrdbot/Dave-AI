@@ -5,6 +5,7 @@ import { tradeExecute, tradeModify, partialClose, fullClose, deletePendingOrder,
 import { validateOrder, resolveEntryPrice, isPendingOrderType, type OrderRequest } from "./order-types.js";
 import { enableBreakevenTrailing, disableBreakevenTrailing } from "./breakeven-trailing.js";
 import { evaluateConfidenceGate } from "./confidence-gate.js";
+import { getRiskSettings } from "./risk-settings.js";
 
 /**
  * Agentic tool exposure. Real gap this fills: everything in this
@@ -96,6 +97,38 @@ export const TRADING_TOOLS: ToolDefinition[] = [
           };
         }
         order.price = resolution.price;
+      }
+      // Real gap fixed (user: "confirm if the bot took for trade even to set tp and set sl
+      // too") -- the user's real SL/TP mode+value in /settings (Risk / Trading) was never
+      // actually consulted here: a trade only ever got SL/TP if the model happened to pass
+      // sl/tp args itself, silently ignoring "on" mode entirely. When the model omits sl/tp,
+      // "on" mode (a real pip distance the user set) is now applied for real, off a real live
+      // quote -- same DAVEMA price lookup + offset mechanism pending-order entry resolution
+      // already uses above, just reused for SL/TP instead of left completely unused. Never
+      // invents a value for "auto" mode (that's a strategy judgment call, not this module's to
+      // make) or when no live quote is reachable -- it stays honestly unset, visible to the user
+      // in the real placement confirmation ("SL: not set") rather than silently guessed.
+      if (order.sl === undefined || order.tp === undefined) {
+        const risk = getRiskSettings(ctx.userId);
+        let referencePrice = order.price;
+        if (referencePrice === undefined) {
+          try {
+            const quote = await ctx.davema.data<{ bid?: number; ask?: number; close?: number }>("price", order.symbol);
+            referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
+          } catch {
+            // No live quote -- sl/tp stay honestly unset below, never guessed.
+          }
+        }
+        if (referencePrice !== undefined) {
+          const direction = order.type === "buy" || order.type === "buy_limit" || order.type === "buy_stop" ? 1 : -1;
+          const pip = 0.0001;
+          if (order.sl === undefined && risk.slMode === "on" && risk.slValue !== undefined) {
+            order.sl = referencePrice - direction * risk.slValue * pip;
+          }
+          if (order.tp === undefined && risk.tpMode === "on" && risk.tpValue !== undefined) {
+            order.tp = referencePrice + direction * risk.tpValue * pip;
+          }
+        }
       }
       if (typeof confidence === "number") {
         const gate = evaluateConfidenceGate(ctx.userId, order, confidence, reason as string | undefined);

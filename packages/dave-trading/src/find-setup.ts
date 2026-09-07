@@ -1,5 +1,5 @@
 import type { DavemaClient } from "@dave/davema";
-import { getActiveGroupInfo } from "./pair-groups.js";
+import { getActiveGroupInfo, ensureGroupsUsable } from "./pair-groups.js";
 import { isWithinSelectedSession } from "./trading-session-config.js";
 
 /**
@@ -35,6 +35,11 @@ interface ConfluenceData {
 }
 
 export async function findSetup(userId: string, client: DavemaClient, tf = "H1"): Promise<SetupScanResult> {
+  // Real bug fixed (user: "the bot doesn't even know the pair to trade"): a user who never
+  // manually visited /settings -> Pair Group had zero groups and no active one, so a real scan
+  // had nothing to look at. Self-heals right before the real scan (seeds the default groups +
+  // activates a sensible default) -- never touches a user's own explicit choice once one exists.
+  ensureGroupsUsable(userId);
   // Real gap fixed (user: "add active pair so incase a user doesn't want to use a group of pair
   // it can select a pair the bot can focus only"): effectiveSymbols honors a real single-pair
   // override when one is set, instead of always scanning the whole active group.

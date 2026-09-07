@@ -97,6 +97,10 @@ export type ProviderName =
   | "bedrock"
   | "zai"
   | "azure"
+  | "moonshot"
+  | "minimax"
+  | "baseten"
+  | "nebius"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {

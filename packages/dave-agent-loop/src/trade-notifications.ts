@@ -47,15 +47,17 @@ export function buildSkippedSetupMessage(symbol: string, reason: string): string
 }
 
 /** Real gap fixed (user: "implement confidence rate so when it's placing a trade it should send
- *  like the screenshot"): a real, hardcoded trade-placement message carrying Dave's own real
- *  confidence score for this specific trade -- fixed shape, zero LLM prose, same non-LLM pattern
- *  as buildClosedTradeMessage above. */
-export function buildTradePlacedMessage(order: OrderRequest, confidence: number, ticket: string): string {
-  const levels = [order.sl !== undefined ? `SL ${order.sl}` : null, order.tp !== undefined ? `TP ${order.tp}` : null].filter(Boolean).join(" / ");
+ *  like the screenshot" -- and separately, "confirm if the bot took for trade even to set tp and
+ *  set sl too"): a real, hardcoded trade-placement message that ALWAYS fires for every trade that
+ *  actually opens -- not only ones a confidence score happened to be attached to -- so the user
+ *  can always see whether a trade genuinely fired and what SL/TP it carries. Fixed shape, zero LLM
+ *  prose, same non-LLM pattern as buildClosedTradeMessage above. */
+export function buildTradePlacedMessage(order: OrderRequest, ticket: string, confidence?: number): string {
+  const levels = [order.sl !== undefined ? `SL ${order.sl}` : "SL: not set", order.tp !== undefined ? `TP ${order.tp}` : "TP: not set"].join(" / ");
   return [
     `📈 ${order.symbol} ${order.type.toUpperCase()} ${order.lots} lots opened. Ticket #${ticket}.`,
-    `🎯 Confidence: ${confidence}%`,
-    levels ? levels : null,
+    typeof confidence === "number" ? `🎯 Confidence: ${confidence}%` : null,
+    levels,
   ]
     .filter(Boolean)
     .join("\n");
