@@ -61,15 +61,32 @@ function filePath(userId: string, file: MemoryFile): string {
   return join(userDir(userId), file);
 }
 
-/** Ensures a user's runtime memory files exist, seeded (empty) from the committed templates. */
+/**
+ * Real gap fixed (user: "I remember I gave you my goal.yaml... add it to the bot file so they
+ * will be no need to paste in admin panel"): the repo's own template goal.yaml is no longer the
+ * empty placeholder -- it's the user's own real, provided trading rules -- so a fresh account now
+ * gets it seeded automatically, no admin-panel paste needed at all. This ALSO re-seeds an
+ * EXISTING live goal.yaml if it's still genuinely the old empty placeholder (the exact real bug
+ * this session found and fixed: the admin panel's writes never reached this file at all, so a
+ * live account stuck on the placeholder needs this same fix applied retroactively, without a
+ * restart or manual replay). Never touches a goal.yaml that's been genuinely customized -- only
+ * an exact match against the known-empty placeholder marker is replaced.
+ */
+const EMPTY_GOAL_PLACEHOLDER_MARKER = "# Empty placeholder. This file is never authored by Claude/Dave.";
+
 export function ensureUserMemory(userId: string): void {
   const dir = userDir(userId);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   for (const file of MEMORY_FILES) {
     const dest = filePath(userId, file);
+    const template = existsSync(templatePath(file)) ? readFileSync(templatePath(file), "utf8") : "";
     if (!existsSync(dest)) {
-      const template = existsSync(templatePath(file)) ? readFileSync(templatePath(file), "utf8") : "";
       writeFileSync(dest, template, "utf8");
+    } else if (file === "goal.yaml") {
+      const current = readFileSync(dest, "utf8");
+      if (current.trim() === "" || current.includes(EMPTY_GOAL_PLACEHOLDER_MARKER)) {
+        writeFileSync(dest, template, "utf8");
+      }
     }
   }
 }
