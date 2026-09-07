@@ -6,5 +6,5 @@
     "outDir": "lib"
   },
   "include": ["src"],
-  "references": [{ "path": "../dave-memory" }, { "path": "../dave-db" }, { "path": "../dave-core" }]
+  "references": [{ "path": "../dave-memory" }, { "path": "../dave-db" }, { "path": "../dave-core" }, { "path": "../dave-ea-bridge" }]
 }

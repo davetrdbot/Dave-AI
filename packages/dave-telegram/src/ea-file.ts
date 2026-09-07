@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getOrCreateUserWebhook } from "@dave/memory";
+import { getOrCreateEaWebhook } from "@dave/ea-bridge";
 import type { TelegramClient } from "./client.js";
 import { keyboard } from "./buttons.js";
 
@@ -11,18 +11,22 @@ const TEMPLATE_PATH = join(__dirname, "..", "..", "..", "ea", "DaveEA.mq5");
 /**
  * Step 8.5/11.1/11.4: /ea shows a button picker, then sends the
  * personalized .mq5 with webhook URL + token pre-filled -- shown again
- * in the caption. Reuses the real hidden per-user webhook built in Step
- * 4 (`getOrCreateUserWebhook`) for the URL+token generation and delivery
- * side of this, which is real and tested.
+ * in the caption.
  *
- * Corrected an overstated claim from the first pass: the webhook SERVER
- * (dave-memory's createHiddenWebhookServer) only understood
- * file/image/journal-entry/settings-change pushes -- it had never
- * actually been proven to accept the EA's own heartbeat/snapshot JSON
- * shape. Fixed by extending WebhookPush's type union and adding a real
- * test (see step8-ea-review.test.ts) that posts the EA's exact payload
- * shape and confirms it's accepted and stored, not just technically
- * passed through by TypeScript's lack of runtime enum checking.
+ * Real bug fixed (user: "connected a real EA but /account showed
+ * nothing"): this used to call `getOrCreateUserWebhook` from
+ * `@dave/memory` -- dave-memory's GENERIC hidden webhook
+ * (`/hooks/user/<token>`), which only ever appends heartbeat/snapshot
+ * payloads to an inert per-user inbox. It never touches the real EA
+ * bridge state (`saveAccountSnapshot`/`saveLastKnownState` in
+ * `@dave/ea-bridge`'s ea-webhook.ts) that `/account`, `/connection`,
+ * and the trade-command queue actually read from/write to. So a real
+ * EA, personalized with this file, was heartbeating into a dead end --
+ * connected from the EA's own point of view (HTTP 200 back), but
+ * genuinely invisible to Dave. The fix is `getOrCreateEaWebhook` from
+ * `@dave/ea-bridge` -- the EA-specific token system already mounted at
+ * `/hooks/ea/<token>` in main.ts, the one `getLastKnownAccountSnapshot`/
+ * `getEaConnectionStatus`/the command queue all actually read.
  */
 
 export function eaPickerKeyboard() {
@@ -42,7 +46,7 @@ export function eaPickerKeyboard() {
  */
 
 export function personalizeEaFile(userId: string, publicBaseUrl: string): { filename: string; content: string; webhookUrl: string; token: string } {
-  const hook = getOrCreateUserWebhook(userId);
+  const hook = getOrCreateEaWebhook(userId);
   const webhookUrl = `${publicBaseUrl}${hook.path}`;
   const template = readFileSync(TEMPLATE_PATH, "utf8");
   // replaceAll, not replace -- a single .replace() only substitutes the

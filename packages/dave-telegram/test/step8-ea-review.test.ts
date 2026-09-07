@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { personalizeEaFile } from "../src/index.js";
-import { createHiddenWebhookServer, readInbox } from "@dave/memory";
+import { createEaWebhookServer, getLastKnownAccountSnapshot, getEaConnectionStatus } from "@dave/ea-bridge";
 
 const DATA_DIR = join(process.cwd(), "data");
 rmSync(DATA_DIR, { recursive: true, force: true });
@@ -35,16 +35,33 @@ console.log("\n[1d] The StringToCharArray trailing-NUL bug is fixed...");
 assert.match(ea.content, /ArrayResize\(post, ArraySize\(post\) - 1\)/);
 console.log("    trailing null byte from StringToCharArray is trimmed before WebRequest");
 
-// --- user-webhook.ts: the EA's real payload shape actually round-trips ---
-console.log("\n[2] The EA's real heartbeat payload shape round-trips through the real webhook server...");
-const server = createHiddenWebhookServer();
+// --- Real bug fixed: the EA's real heartbeat now actually reaches the REAL EA bridge state,
+// not a generic hidden-webhook inbox that /account never reads from. This is the exact chain
+// (personalizeEaFile's webhookUrl -> the real /hooks/ea/<token> server -> saveAccountSnapshot)
+// that was broken end to end before this fix -- a real EA got a 200 back and looked "connected"
+// from its own side, but /account showed nothing because it reads getLastKnownAccountSnapshot(),
+// which this path never wrote to.
+console.log("\n[2] The EA's real heartbeat now genuinely reaches the real EA-bridge account snapshot (not a dead-end inbox)...");
+const server = createEaWebhookServer();
 await new Promise<void>((resolve) => server.listen(0, resolve));
 const address = server.address();
 if (typeof address !== "object" || !address) throw new Error("bind failed");
 const port = address.port;
 
+assert.equal(getLastKnownAccountSnapshot(USER_ID), undefined, "no snapshot before any real heartbeat");
+assert.equal(getEaConnectionStatus(USER_ID).connected, false, "not connected before any real heartbeat");
+
 // This mirrors exactly what ea/DaveEA.mq5's PushSnapshot() sends.
-const heartbeatBody = JSON.stringify({ type: "heartbeat", payload: { account: 12345678, balance: 10432.1 } });
+const heartbeatBody = JSON.stringify({
+  type: "heartbeat",
+  account: "12345678",
+  balance: 10432.1,
+  equity: 10500,
+  margin: 100,
+  freeMargin: 10400,
+  positions: [],
+  pendingOrders: [],
+});
 const res = await fetch(`http://127.0.0.1:${port}${ea.webhookUrl.replace("https://dave.example.com", "")}`, {
   method: "POST",
   headers: { "content-type": "application/json" },
@@ -53,21 +70,16 @@ const res = await fetch(`http://127.0.0.1:${port}${ea.webhookUrl.replace("https:
 const json = await res.json();
 console.log(`    POST heartbeat -> ${res.status} ${JSON.stringify(json)}`);
 assert.equal(res.status, 200);
-const inbox = readInbox(USER_ID);
-console.log(`    inbox now has ${inbox.length} item(s), type: "${inbox[0]?.type}"`);
-assert.equal(inbox.length, 1);
-assert.equal(inbox[0].type, "heartbeat");
-assert.deepEqual(inbox[0].payload, { account: 12345678, balance: 10432.1 });
+assert.deepEqual(json, { commands: [] }, "the real EA bridge's own response shape (queued commands), not a generic ack");
 
-console.log("\n[2b] An unknown push type is now rejected (previously accepted blindly)...");
-const badRes = await fetch(`http://127.0.0.1:${port}${ea.webhookUrl.replace("https://dave.example.com", "")}`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ type: "not-a-real-type", payload: {} }),
-});
-console.log(`    POST bogus type -> ${badRes.status} ${JSON.stringify(await badRes.json())}`);
-assert.equal(badRes.status, 400);
-assert.equal(readInbox(USER_ID).length, 1, "the bogus push must NOT have been stored");
+const snapshot = getLastKnownAccountSnapshot(USER_ID);
+console.log(`    /account now reads a real snapshot: ${JSON.stringify(snapshot)}`);
+assert.ok(snapshot, "the real EA bridge must have genuinely persisted this heartbeat's account data");
+assert.equal(snapshot!.balance, 10432.1);
+assert.equal(snapshot!.equity, 10500);
+
+console.log("\n[2b] /connection's real EA-connection status now genuinely reflects this heartbeat...");
+assert.equal(getEaConnectionStatus(USER_ID).connected, true, "must now show connected -- this is the exact real-world symptom that was broken");
 
 await new Promise<void>((resolve) => server.close(() => resolve()));
 
