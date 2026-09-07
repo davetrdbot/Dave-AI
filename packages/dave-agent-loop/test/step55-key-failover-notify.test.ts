@@ -133,10 +133,14 @@ try {
   await new Promise((r) => setTimeout(r, 150));
 
   console.log(`    real messages sent to Telegram: ${JSON.stringify(sentMessages)}`);
-  const switchNotice = sentMessages.find((t) => t.includes("Switched from key #1 to key #2"));
-  assert.ok(switchNotice, "the real '🔄 Switched from key #1 to key #2' notification must have been sent");
+  const switchNotice = sentMessages.find((t) => t.includes("key #1 failed, switching to key #2"));
+  assert.ok(switchNotice, "the real '🔄 ... key #1 failed, switching to key #2' notification must have been sent");
   console.log(`    real switch notice: "${switchNotice}"`);
-  assert.match(switchNotice!, /ran out of credit/);
+  // Real gap fixed (user, repeatedly: "I want to see it on my own, not you tell me my bot is not
+  // working"): Dave no longer guesses/labels the failure type ("ran out of credit") -- only the
+  // real endpoint text itself is shown, verbatim.
+  assert.match(switchNotice!, /insufficient_quota/);
+  assert.ok(!switchNotice!.includes("ran out of credit"), "must NOT editorialize with Dave's own guessed label anymore");
 
   const finalAnswer = sentMessages.find((t) => t.includes("Here is the real completed answer."));
   assert.ok(finalAnswer, "the user's original response must still genuinely complete, not be dropped when the first key died mid-request");

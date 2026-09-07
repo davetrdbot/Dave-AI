@@ -177,13 +177,25 @@ export async function checkProviderKeyHealth(db: DaveDatabase, userId: string, k
  * Item 4/6 real gap fixed: a key/provider running out of credit or hitting a hard quota error
  * used to fail silently -- the user just eventually got "something went wrong" (or nothing, if a
  * later key/provider quietly picked up the slack). Matches the real error text providers actually
- * return for genuine quota/billing exhaustion (HTTP 429/402, "insufficient_quota", "exceeded your
- * current quota", "billing"), deliberately NOT matching a generic transient failure (timeout,
- * connection reset, a one-off 500) -- those aren't "ran out of credit" and shouldn't be reported
- * as such.
+ * return for genuine quota/billing exhaustion ("insufficient_quota", "exceeded your current
+ * quota", "billing", "payment required", HTTP 402), deliberately NOT matching a generic transient
+ * failure (timeout, connection reset, a one-off 500) -- those aren't "ran out of credit" and
+ * shouldn't be reported as such.
+ *
+ * Real bug fixed (user, repeatedly and explicitly: real Mistral 429 "Rate limit exceeded" /
+ * "rate_limited" was reported to the user as "ran out of credit", directly contradicting the real
+ * error text shown right below it): a bare HTTP 429, "rate limit exceeded", and "too many
+ * requests" used to ALSO match this -- but a plain rate limit (too many requests right now,
+ * genuinely temporary) is NOT the same real condition as an exhausted quota/billing plan. Those
+ * three patterns moved to `isRateLimitedError` below, a real, separate, correctly-named category.
  */
 export function isQuotaExhaustedError(reason: string): boolean {
-  return /insufficient_quota|quota exceeded|exceeded your current quota|out of credit|billing|payment required|\b402\b|\b429\b|rate.?limit exceeded|too many requests/i.test(reason);
+  return /insufficient_quota|quota exceeded|exceeded your current quota|out of credit|billing|payment required|\b402\b/i.test(reason);
+}
+
+/** A genuine, temporary rate limit -- "too many requests right now," not a billing/quota problem. */
+export function isRateLimitedError(reason: string): boolean {
+  return /\b429\b|rate.?limit(ed)?\b|too many requests/i.test(reason);
 }
 
 export interface KeyFailoverNotifier {

@@ -26,12 +26,19 @@ import { AllConfiguredProvidersFailedError } from "./error-messages.js";
 export const NVIDIA_TIMEOUT_MS = MAX_TIMEOUT_SECONDS * 1000;
 
 /**
- * Real gap fixed (user: "should show the errors from the endpoint so I will confirm it, not you
- * saying it"): every failover/exhaustion notification below now includes the actual raw reason
- * string generateWithKeyFailover captured from the real API response (an HTTP status + body, or
- * the underlying fetch error) -- not just Dave's own paraphrase ("ran out of credit"). The
- * paraphrase stays as a quick-read label; the real endpoint text rides alongside it so the user
- * can verify it themselves instead of taking Dave's word for it.
+ * Real gap fixed AGAIN (user, explicitly, repeatedly, and angrily: "I told you that the error
+ * should be fetch from the endpoint I want to see it on my own not you tell me my bot is not
+ * working"): the previous version still put Dave's OWN guessed label ("ran out of credit") in
+ * front of the real error, decided by a regex (`isQuotaExhaustedError`) that was WRONG here --
+ * it matched bare `429`/"rate limit exceeded"/"too many requests" as "quota exhausted" even
+ * though a plain rate limit (too many requests right now, real code "rate_limited") is NOT the
+ * same real condition as a genuinely exhausted quota/billing plan ("insufficient_quota"). The
+ * user saw "ran out of credit" directly contradicted by the real error text sitting right below
+ * it ("Rate limit exceeded"), which is exactly the confusing, untrustworthy result they called
+ * out. Fix: stop guessing/labeling the failure type in the user-facing message entirely -- state
+ * only the plain fact of what's happening (a key/provider failed, what's tried next) and show
+ * ONLY the real endpoint text, verbatim, so the user reads the actual cause themselves instead of
+ * taking Dave's interpretation of it.
  */
 export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
   return {
@@ -52,17 +59,17 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
         const timeoutMs = provider === "nvidia-nim" ? NVIDIA_TIMEOUT_MS : getProviderTimeoutMs(userId, p === 0) || defaultTimeoutMs;
         try {
           return await generateWithKeyFailover(db, userId, provider, req, timeoutMs, {
-            onKeySwitch: async ({ fromIndex, toIndex, nextLabel, reason, quotaExhausted }) => {
-              await notify(`🔄 Switched from key #${fromIndex} to key #${toIndex} (${nextLabel}) on ${provider} — key #${fromIndex} ${quotaExhausted ? "ran out of credit" : "failed"}. Real error: ${reason}`);
+            onKeySwitch: async ({ fromIndex, toIndex, nextLabel, reason }) => {
+              await notify(`🔄 ${provider} key #${fromIndex} failed, switching to key #${toIndex} (${nextLabel}).\n${reason}`);
             },
-            onProviderExhausted: async ({ reason, quotaExhausted }) => {
+            onProviderExhausted: async ({ reason }) => {
               attempts.push({ provider, reason });
               const nextProvider = order[p + 1];
-              if (quotaExhausted) {
-                await notify(`⚠️ ${provider} ran out of credit${nextProvider ? ` — switching to the next available key/provider (${nextProvider})` : " — no fallback provider is configured"}. Real error: ${reason}`);
-              } else if (!nextProvider) {
-                await notify(`⚠️ ${provider} failed and no fallback provider is configured. Real error: ${reason}`);
-              }
+              // Real gap also fixed: this used to only notify when quotaExhausted was true, or
+              // when there was no fallback -- a non-quota failure WITH a real fallback configured
+              // silently notified no one at all. Every real exhaustion is worth telling the user
+              // about, regardless of how it's classified.
+              await notify(`⚠️ ${provider} failed${nextProvider ? ` — switching to ${nextProvider}` : " — no fallback provider is configured"}.\n${reason}`);
             },
           });
         } catch (err) {
