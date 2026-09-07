@@ -819,6 +819,16 @@ async function handleEa(deps: CommandRouterDeps, chatId: number): Promise<void> 
  * there is no second, divergent code path for "the same command run two ways." */
 async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, historyKey: string, command: DaveCommand, editMessageId?: number): Promise<void> {
   switch (command) {
+    case "start_trading":
+    case "stop_trading":
+    case "panic":
+      // Real logic lives in telegram-bot-server.ts's handleTradingControlCommand -- it needs
+      // the live autonomous-cycle closure (runAutonomousTradingCycle) and runAgentTurn, neither
+      // of which this module has in scope. Both the typed-text path AND the /menu button-tap
+      // path (menucmd:start_trading etc) intercept these BEFORE they ever reach this switch, so
+      // this case is unreachable in practice -- kept explicit (not a silent fallthrough) so a
+      // future reader isn't left wondering why these three are missing.
+      break;
     case "account":
       await handleAccount(deps, chatId, editMessageId);
       break;
@@ -855,6 +865,9 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
 /** Item 5: same usefulness-first order as DAVE_COMMANDS (commands.ts) -- what's happening now,
  * then how Dave is configured, then the occasional/destructive/reference ones last. */
 const MENU_BUTTONS: { command: DaveCommand; label: string }[] = [
+  { command: "start_trading", label: "▶️ Start trading" },
+  { command: "stop_trading", label: "⏸️ Stop trading" },
+  { command: "panic", label: "🚨 Panic" },
   { command: "status", label: "📊 Status" },
   { command: "account", label: "💰 Account" },
   { command: "settings", label: "⚙️ Settings" },

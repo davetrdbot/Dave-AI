@@ -16,10 +16,11 @@ console.log("=== Real proof: commands are registered in a real usefulness-first 
 console.log("[1] DAVE_COMMANDS is genuinely usefulness-ordered, not alphabetical...");
 const order = DAVE_COMMANDS.map((c) => c.command);
 console.log(`    real order: /${order.join(", /")}`);
-assert.deepEqual(order, ["menu", "status", "account", "settings", "providers", "models", "connection", "ea", "reset", "help"]);
+assert.deepEqual(order, ["start_trading", "stop_trading", "panic", "menu", "status", "account", "settings", "providers", "models", "connection", "ea", "reset", "help"]);
 const alphabetical = [...order].sort();
 assert.notDeepEqual(order, alphabetical, "must NOT be alphabetical");
-assert.equal(order[0], "menu", "the real entry point must be first");
+assert.equal(order[0], "start_trading", "the real trading on/off switch must lead, ahead of even /menu");
+assert.equal(order[1], "stop_trading", "start/stop trading must be the first two, per the user's explicit ask");
 assert.ok(order.indexOf("help") > order.indexOf("status"), "reference/occasional commands (help) must sort after what's-happening-now commands (status)");
 assert.ok(order.indexOf("reset") > order.indexOf("settings"), "the destructive command (reset) must sort after routine configuration commands");
 

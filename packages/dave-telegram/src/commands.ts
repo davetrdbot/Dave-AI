@@ -14,8 +14,18 @@
  * then what's happening right now (/status, /account), then how Dave is configured (/settings,
  * /providers, /models, /connection), then the occasional/destructive/reference ones last
  * (/ea, /reset, /help).
+ *
+ * Real gap fixed (user: "start_trading and stop_trading should be... the first two, and panic
+ * too"): these three are the actual trading on/off/kill switches, so they lead -- ahead of even
+ * /menu. Their real handling lives in telegram-bot-server.ts (handleTradingControlCommand),
+ * checked before this list's own dispatch even gets a chance to run; they're registered here so
+ * they show up for real in Telegram's native "/" command list and can be added to /menu's own
+ * button UI (see MENU_BUTTONS in command-router.ts).
  */
 export const DAVE_COMMANDS = [
+  { command: "start_trading", description: "▶️ Turn on autonomous trading (I act on real setups on my own)" },
+  { command: "stop_trading", description: "⏸️ Turn off autonomous trading" },
+  { command: "panic", description: "🚨 Instant hard kill -- halts all trading and workers immediately" },
   { command: "menu", description: "📋 Show this menu of commands" },
   { command: "status", description: "📊 Circuit breaker, workers, and system status" },
   { command: "account", description: "💰 View your connected MT5 account and balance" },

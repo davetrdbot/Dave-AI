@@ -24,7 +24,7 @@ import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandl
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
-import { friendlyErrorMessage } from "./error-messages.js";
+import { friendlyErrorMessage, AllConfiguredProvidersFailedError } from "./error-messages.js";
 
 /**
  * The real, persistent replacement for a one-off polling script: a
@@ -54,35 +54,44 @@ export interface TelegramBotServerDeps {
  * moment a key switch or a provider exhaustion genuinely happens, mid-request, without dropping
  * the in-flight response the user is waiting for.
  */
+/**
+ * Real gap fixed (user: "should show the errors from the endpoint so I will confirm it, not you
+ * saying it"): every failover/exhaustion notification below now includes the actual raw reason
+ * string generateWithKeyFailover captured from the real API response (an HTTP status + body, or
+ * the underlying fetch error) -- not just Dave's own paraphrase ("ran out of credit"). The
+ * paraphrase stays as a quick-read label; the real endpoint text rides alongside it so the user
+ * can verify it themselves instead of taking Dave's word for it.
+ */
 function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
   return {
     name: "model-config" as ProviderName,
     async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
       const config = getModelConfig(userId);
       const order = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
-      let lastError: unknown;
+      const attempts: { provider: ProviderName; reason: string }[] = [];
       for (let p = 0; p < order.length; p++) {
         const provider = order[p];
         try {
           return await generateWithKeyFailover(db, userId, provider, req, timeoutMs, {
-            onKeySwitch: async ({ fromIndex, toIndex, nextLabel, quotaExhausted }) => {
-              void nextLabel;
-              await notify(`🔄 Switched from key #${fromIndex} to key #${toIndex} on ${provider} — key #${fromIndex} ${quotaExhausted ? "ran out of credit" : "failed"}.`);
+            onKeySwitch: async ({ fromIndex, toIndex, nextLabel, reason, quotaExhausted }) => {
+              await notify(`🔄 Switched from key #${fromIndex} to key #${toIndex} (${nextLabel}) on ${provider} — key #${fromIndex} ${quotaExhausted ? "ran out of credit" : "failed"}. Real error: ${reason}`);
             },
             onProviderExhausted: async ({ reason, quotaExhausted }) => {
+              attempts.push({ provider, reason });
               const nextProvider = order[p + 1];
               if (quotaExhausted) {
-                await notify(`⚠️ ${provider} ran out of credit${nextProvider ? ` — switching to the next available key/provider (${nextProvider})` : " — no fallback provider is configured"}.`);
+                await notify(`⚠️ ${provider} ran out of credit${nextProvider ? ` — switching to the next available key/provider (${nextProvider})` : " — no fallback provider is configured"}. Real error: ${reason}`);
               } else if (!nextProvider) {
-                await notify(`⚠️ ${provider} failed and no fallback provider is configured (${reason}).`);
+                await notify(`⚠️ ${provider} failed and no fallback provider is configured. Real error: ${reason}`);
               }
             },
           });
         } catch (err) {
-          lastError = err;
+          const reason = err instanceof Error ? err.message : String(err);
+          if (!attempts.some((a) => a.provider === provider)) attempts.push({ provider, reason });
         }
       }
-      throw lastError instanceof Error ? lastError : new Error(`No configured provider (${order.join(", ")}) has a working stored key for this user.`);
+      throw new AllConfiguredProvidersFailedError(attempts);
     },
   };
 }
@@ -158,6 +167,58 @@ async function runAgentTurn(
   } finally {
     clearBusy(deps.ownerUserId);
   }
+}
+
+/**
+ * The single real handler for /stop, /panic, /start_trading, /stop_trading -- shared between the
+ * typed-text path (checked first thing, before anything else) and the /menu button-tap path
+ * (menucmd:start_trading etc in the callback_query handler below), so a tap does exactly the
+ * same real thing as typing the command, not a second divergent path. Returns true if `text`
+ * was one of these and was handled (caller should not do anything else with it).
+ */
+async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number, text: string): Promise<boolean> {
+  if (/^\/(stop|panic)\b/i.test(text)) {
+    stopOrPanic(deps.ownerUserId, text.toLowerCase().startsWith("/panic") ? "panic" : "stop");
+    stopAutonomousTradingLoop(deps.ownerUserId);
+    await client.sendMessage({ chat_id: chatId, text: "🛑 Stopped -- all trading and workers halted immediately." });
+    return true;
+  }
+
+  // Real gap fixed (user: "every 5 min -- make this settable and configurable"): an optional
+  // trailing number of minutes, e.g. "/start_trading 10", sets the real persisted cadence
+  // (trading-loop-config.ts). Works whether the loop is currently off (starts it at that
+  // cadence) or already running (re-arms it live at the new cadence, no stop/start needed).
+  const startTradingMatch = text.match(/^\/start_trading(?:\s+(\d+))?\s*$/i);
+  if (startTradingMatch) {
+    const requestedMinutes = startTradingMatch[1] ? Number(startTradingMatch[1]) : undefined;
+    if (requestedMinutes !== undefined) {
+      try {
+        setAutonomousTradingIntervalMinutes(deps.ownerUserId, requestedMinutes);
+      } catch (err) {
+        await client.sendMessage({ chat_id: chatId, text: err instanceof Error ? err.message : String(err) });
+        return true;
+      }
+    }
+    const wasAlreadyRunning = isAutonomousTradingRunning(deps.ownerUserId);
+    const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId));
+    const interval = getTradingLoopIntervalMinutes(deps.ownerUserId);
+    let replyText: string;
+    if (started) {
+      replyText = `▶️ Autonomous trading is on (cadence: every ${interval} min). I'll scan my active pair group and act on real setups on my own initiative -- I'll only message you when something actually happens (a trade, a TP/SL hit, or a real question). /stop_trading turns this off, /stop or /panic is still the instant hard kill. Change the cadence any time with /start_trading <minutes>, or from /settings.`;
+    } else if (requestedMinutes !== undefined && wasAlreadyRunning) {
+      replyText = `🔄 Autonomous trading cadence updated to every ${interval} min, applied immediately.`;
+    } else {
+      replyText = `Autonomous trading is already running (cadence: every ${interval} min).`;
+    }
+    await client.sendMessage({ chat_id: chatId, text: replyText });
+    return true;
+  }
+  if (/^\/stop_trading\b/i.test(text)) {
+    const stopped = stopAutonomousTradingLoop(deps.ownerUserId);
+    await client.sendMessage({ chat_id: chatId, text: stopped ? "⏸️ Autonomous trading is off. I'll still help directly whenever you message me." : "Autonomous trading wasn't running." });
+    return true;
+  }
+  return false;
 }
 
 /** The real per-tick body of /start_trading's autonomous loop (see trading-loop.ts for the
@@ -423,6 +484,19 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
           return;
         }
 
+        // Real gap fixed (user: "/start_trading, /stop_trading, /panic should be... added to the
+        // menu UI"): the /menu screen's buttons for these tap through as menucmd:<command> --
+        // routed to the exact same real handler the typed command uses (handleTradingControlCommand),
+        // not the generic command-router switch (which has no case for these three; the real
+        // logic lives only here, where the live autonomous-cycle closure/runAgentTurn are in scope).
+        const menuCmdData = update.callback_query.data ?? "";
+        if (/^menucmd:(start_trading|stop_trading|stop|panic)$/.test(menuCmdData) && cbChatId !== undefined) {
+          const command = menuCmdData.slice("menucmd:".length);
+          await client.answerCallbackQuery({ callback_query_id: update.callback_query.id }).catch(() => undefined);
+          await handleTradingControlCommand(deps, client, cbChatId, `/${command}`);
+          return;
+        }
+
         const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema };
         await dispatchCallback(routerDeps, update.callback_query);
         return;
@@ -445,55 +519,12 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       const historyKey = `${deps.ownerUserId}:${chatId}`;
 
       // Real gap fixed: SECURITY.md documents "/stop or /panic from the user is an instant,
-      // unconditional halt" as if these were real commands, but neither was ever registered in
-      // DAVE_COMMANDS -- typing them did nothing (previously fell through to the LLM as
-      // conversation; after this session's unknown-command fix, would have wrongly said
-      // "Unknown command" for a real safety mechanism). Checked FIRST, before command dispatch
-      // and everything else, so this can never be delayed behind any other handling.
-      if (message.text && /^\/(stop|panic)\b/i.test(message.text.trim())) {
-        stopOrPanic(deps.ownerUserId, message.text.trim().toLowerCase().startsWith("/panic") ? "panic" : "stop");
-        stopAutonomousTradingLoop(deps.ownerUserId);
-        await client.sendMessage({ chat_id: chatId, text: "🛑 Stopped -- all trading and workers halted immediately." });
-        return;
-      }
-
-      // Real gap fixed (user: "you forgot /start_trading and /stop_trading, and the loop for
-      // start_trading"): turns the real autonomous cycle (trading-loop.ts) on/off. Checked here,
-      // same as /stop and /panic above, so it's a real, always-available command rather than
-      // something the LLM has to interpret.
-      //
-      // Real gap fixed (user: "every 5 min -- make this settable and configurable"): an optional
-      // trailing number of minutes, e.g. "/start_trading 10", sets the real persisted cadence
-      // (trading-loop-config.ts). Works whether the loop is currently off (starts it at that
-      // cadence) or already running (re-arms it live at the new cadence, no stop/start needed).
-      const startTradingMatch = message.text?.trim().match(/^\/start_trading(?:\s+(\d+))?\s*$/i);
-      if (startTradingMatch) {
-        const requestedMinutes = startTradingMatch[1] ? Number(startTradingMatch[1]) : undefined;
-        if (requestedMinutes !== undefined) {
-          try {
-            setAutonomousTradingIntervalMinutes(deps.ownerUserId, requestedMinutes);
-          } catch (err) {
-            await client.sendMessage({ chat_id: chatId, text: err instanceof Error ? err.message : String(err) });
-            return;
-          }
-        }
-        const wasAlreadyRunning = isAutonomousTradingRunning(deps.ownerUserId);
-        const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId));
-        const interval = getTradingLoopIntervalMinutes(deps.ownerUserId);
-        let text: string;
-        if (started) {
-          text = `▶️ Autonomous trading is on (cadence: every ${interval} min). I'll scan my active pair group and act on real setups on my own initiative -- I'll only message you when something actually happens (a trade, a TP/SL hit, or a real question). /stop_trading turns this off, /stop or /panic is still the instant hard kill. Change the cadence any time with /start_trading <minutes>.`;
-        } else if (requestedMinutes !== undefined && wasAlreadyRunning) {
-          text = `🔄 Autonomous trading cadence updated to every ${interval} min, applied immediately.`;
-        } else {
-          text = `Autonomous trading is already running (cadence: every ${interval} min).`;
-        }
-        await client.sendMessage({ chat_id: chatId, text });
-        return;
-      }
-      if (message.text && /^\/stop_trading\b/i.test(message.text.trim())) {
-        const stopped = stopAutonomousTradingLoop(deps.ownerUserId);
-        await client.sendMessage({ chat_id: chatId, text: stopped ? "⏸️ Autonomous trading is off. I'll still help directly whenever you message me." : "Autonomous trading wasn't running." });
+      // unconditional halt" as if these were real commands. Also covers /start_trading and
+      // /stop_trading (the real autonomous-cycle on/off switch). Checked FIRST, before command
+      // dispatch and everything else, so none of these can ever be delayed behind any other
+      // handling -- and shared with the /menu button-tap path below (handleTradingControlCommand),
+      // so tapping ▶️ Start trading does exactly the same real thing as typing it.
+      if (message.text && (await handleTradingControlCommand(deps, client, chatId, message.text.trim()))) {
         return;
       }
 

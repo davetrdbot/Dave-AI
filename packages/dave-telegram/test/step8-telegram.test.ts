@@ -25,11 +25,11 @@ console.log("real button/keyboard JSON shapes, real .mq5 personalization against
 console.log("infra, and one real (unauthenticated) network round-trip to the actual Telegram API proving");
 console.log("this client genuinely talks to api.telegram.org, not a stub.\n");
 
-// --- 8.1: exactly these 9 commands ---
-console.log("[1] Exactly the 9 required commands, nothing else...");
+// --- 8.1: the 9 original screen commands, plus /menu, plus the 3 real trading on/off/kill commands ---
+console.log("[1] Exactly the required commands, nothing else...");
 const names = DAVE_COMMANDS.map((c) => c.command).sort();
 console.log(`    ${names.join(", ")}`);
-assert.deepEqual(names, ["account", "connection", "ea", "help", "menu", "models", "providers", "reset", "settings", "status"].sort());
+assert.deepEqual(names, ["account", "connection", "ea", "help", "menu", "models", "panic", "providers", "reset", "settings", "start_trading", "status", "stop_trading"].sort());
 assert.equal(isDaveCommand("/status"), true);
 assert.equal(isDaveCommand("/notacommand"), false);
 assert.equal(isDaveCommand("just chatting"), false);
