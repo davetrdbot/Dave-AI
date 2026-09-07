@@ -14,6 +14,7 @@ import {
   DAVE_COMMANDS,
   type DaveCommand,
   type TelegramCallbackQuery,
+  sendSelfDeletingMessage,
 } from "@dave/telegram";
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus } from "@dave/ea-bridge";
 import {
@@ -92,7 +93,7 @@ import {
   type StoredProviderKey,
 } from "@dave/brain";
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
-import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes } from "./trading-loop.js";
+import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes, setAutonomousTradingIntervalMinutes } from "./trading-loop.js";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
 import { friendlyErrorMessage } from "./error-messages.js";
@@ -435,7 +436,7 @@ export async function tryHandlePendingTtsKeyEntry(deps: CommandRouterDeps, chatI
   if (!provider) return false;
   setPendingTtsKeyEntry(deps.db, deps.userId, null);
   setTtsProviderKey(deps.db, deps.userId, provider, text.trim());
-  await deps.client.sendMessage({ chat_id: chatId, text: `✅ ${provider} API key saved.` });
+  await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ ${provider} API key saved.` });
   return true;
 }
 
@@ -445,7 +446,7 @@ export async function tryHandlePendingE2BKeyEntry(deps: CommandRouterDeps, chatI
   if (!getPendingE2BKeyEntry(deps.db, deps.userId)) return false;
   setPendingE2BKeyEntry(deps.db, deps.userId, false);
   const key = addE2BKey(deps.db, deps.userId, `E2B ${listE2BKeys(deps.db, deps.userId).length}`, text.trim());
-  await deps.client.sendMessage({ chat_id: chatId, text: `✅ E2B key saved (${key.label}).` });
+  await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ E2B key saved (${key.label}).` });
   return true;
 }
 
@@ -459,11 +460,15 @@ export async function tryHandlePendingKeyEntry(deps: CommandRouterDeps, chatId: 
   setPendingKeyEntry(deps.db, deps.userId, null);
   const results = addProviderKeysBulk(deps.db, deps.userId, provider, provider, text);
   const lines = results.map((r, i) => (r.ok ? `Line ${i + 1}: OK (${r.key!.label})` : `Line ${i + 1}: FAILED -- ${r.error}`));
-  await deps.client.sendMessage({
-    chat_id: chatId,
-    text: `<b>Adding key(s) for ${provider}</b>\n${lines.join("\n")}`,
-    parse_mode: "HTML",
-  });
+  const allOk = results.every((r) => r.ok);
+  // Real gap fixed (user: "Adding key(s)... Line 1: OK... just filling the place up") -- a
+  // clean, all-success report self-deletes like any other transient confirmation. A report with
+  // at least one real failure stays put -- that's actionable, not noise.
+  if (allOk) {
+    await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `<b>Adding key(s) for ${provider}</b>\n${lines.join("\n")}`, parse_mode: "HTML" });
+  } else {
+    await deps.client.sendMessage({ chat_id: chatId, text: `<b>Adding key(s) for ${provider}</b>\n${lines.join("\n")}`, parse_mode: "HTML" });
+  }
   return true;
 }
 
@@ -483,8 +488,36 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Pair Group", "blue", "settings:pairgroup"), coloredButton("Voice", "blue", "settings:voice")],
       [coloredButton("Memory", "blue", "settings:memory"), coloredButton("E2B Keys", "blue", "settings:e2b")],
       [coloredButton("Trailing / Breakeven", "blue", "settings:trailing"), coloredButton("Notifications", "blue", "settings:notifications")],
+      [coloredButton("Autonomous Trading", "blue", "settings:tradinginterval")],
     ])
   );
+}
+
+/** Real gap fixed (user: "the trading interval to scan add it to the settings ui no manual
+ * config like < >"): /start_trading <minutes> (typed) still works, but this is the real
+ * button-based picker -- no typing required. Preset choices only, tap to apply immediately (live
+ * re-arm if already running, same real setAutonomousTradingIntervalMinutes() as the typed path). */
+const TRADING_INTERVAL_PRESETS_MINUTES = [1, 3, 5, 10, 15, 30, 60] as const;
+
+function tradingIntervalKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const current = getTradingLoopIntervalMinutes(userId);
+  const running = isAutonomousTradingRunning(userId);
+  const lines = [
+    "<b>Autonomous Trading</b>",
+    `Status: ${running ? "▶️ Running" : "⏸️ Off"}`,
+    `Scan cadence: every ${current} min`,
+    "",
+    "Tap to set how often I scan for setups:",
+  ];
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  for (let i = 0; i < TRADING_INTERVAL_PRESETS_MINUTES.length; i += 2) {
+    rows.push(
+      TRADING_INTERVAL_PRESETS_MINUTES.slice(i, i + 2).map((m) =>
+        coloredButton(m === current ? `✅ ${m} min` : `${m} min`, m === current ? "green" : "neutral", `tradinginterval:${m}`)
+      )
+    );
+  }
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 /** NOTIFICATIONS section: real push toggle (genuinely gates the alert-sending tools in
@@ -537,7 +570,7 @@ export async function tryHandlePendingTrailingEntry(deps: CommandRouterDeps, cha
   const existing = getTrailingStopConfig(deps.userId) ?? { slAtTp1: 0, slAtTp2: 0, slAtTp3: 0 };
   const updated = { ...existing, [field]: value };
   setTrailingStopConfig(deps.userId, updated);
-  await deps.client.sendMessage({ chat_id: chatId, text: `✅ ${field} set to ${value}` });
+  await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ ${field} set to ${value}` });
   return true;
 }
 
@@ -927,8 +960,11 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
   // Telegram shows for a plain button tap without `show_alert`) isn't the same as a real,
   // persisted "✅ X set to Y" message showing exactly what changed. This sends that for every
   // real settings mutation below, on top of (not instead of) re-rendering the screen.
+  // Real gap fixed (user: "any messages like this that's not useful should be deleted after
+  // sending" -- citing exactly this class of toast): self-deletes a few seconds after sending,
+  // via the real Bot API, instead of piling up in the chat forever.
   const confirm = async (text: string) => {
-    if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `✅ ${text}`, parse_mode: "HTML" });
+    if (chatId) await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ ${text}`, parse_mode: "HTML" });
   };
 
   const renderInPlace = async (text: string, reply_markup: ReturnType<typeof keyboard>) => {
@@ -1060,6 +1096,17 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         await confirm(`TTS provider: ${parsed.provider}`);
       }
       const view = voiceSettingsView(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:tradinginterval") {
+      ackText = undefined;
+      const view = tradingIntervalKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("tradinginterval:")) {
+      const minutes = Number(data.slice("tradinginterval:".length));
+      setAutonomousTradingIntervalMinutes(deps.userId, minutes);
+      ackText = `Cadence: every ${minutes} min`;
+      await confirm(`Scan cadence set to every ${minutes} min`);
+      const view = tradingIntervalKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data === "settings:trailing") {
       ackText = undefined;

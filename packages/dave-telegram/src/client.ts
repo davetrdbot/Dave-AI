@@ -224,6 +224,12 @@ export class TelegramClient {
     return this.call<{ message_id: number }>("editMessageText", params);
   }
 
+  /** Real Bot API method -- deletes a message this bot sent (or, in a group where the bot is
+   * admin, any message). Used for self-cleaning up low-value confirmation toasts (self-delete.ts). */
+  deleteMessage(params: { chat_id: number | string; message_id: number }) {
+    return this.call<true>("deleteMessage", params);
+  }
+
   answerCallbackQuery(params: { callback_query_id: string; text?: string; show_alert?: boolean }) {
     return this.call<true>("answerCallbackQuery", params);
   }
