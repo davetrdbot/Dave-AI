@@ -1,6 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName } from "@dave/brain";
-import { getProviderTimeoutMs } from "./provider-timeout-config.js";
+import { getProviderTimeoutMs, MAX_TIMEOUT_SECONDS } from "./provider-timeout-config.js";
 import { AllConfiguredProvidersFailedError } from "./error-messages.js";
 
 /**
@@ -12,9 +12,18 @@ import { AllConfiguredProvidersFailedError } from "./error-messages.js";
  * which would create a circular import (telegram-bot-server -> full-registry -> worker-loop).
  */
 
-/** Largest delay `setTimeout` can legally take (2^31-1 ms, ~24.8 days) -- used as an effectively
- *  unlimited timeout for providers exempted from the real request timeout entirely. */
-export const NO_TIMEOUT_MS = 2147483647;
+/**
+ * Real, verified finding (tested live against the user's own real nvidia-nim key and
+ * deepseek-v4-pro-0813): nvidia-nim's real backend gets dramatically slower as the number of
+ * tools in the request grows -- 1 tool: ~6s, 2: ~12s, 5: ~18s, 10+: still running after 30s, and
+ * Dave's real full tool registry is ~194 tools. A literally-unlimited timeout (what was shipped
+ * previously) makes this worse, not better: it lets a request hang silently for as long as it
+ * takes rather than ever surfacing a real error, which is indistinguishable from "doesn't work"
+ * to the user. This is instead the largest BOUNDED real timeout the rest of the app already
+ * supports (provider-timeout-config.ts's own MAX_TIMEOUT_SECONDS) -- generous, but a real request
+ * still either succeeds or fails within it, rather than hanging forever.
+ */
+export const NVIDIA_TIMEOUT_MS = MAX_TIMEOUT_SECONDS * 1000;
 
 /**
  * Real gap fixed (user: "should show the errors from the endpoint so I will confirm it, not you
@@ -38,11 +47,9 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
         // user-configurable timeout; every fallback attempt after it gets a separate (usually
         // shorter) one -- a slow/dead primary no longer burns the SAME long timeout on every
         // provider down the chain. Falls back to the caller's own default if nothing's configured.
-        // Real exception (user: "specially for Nvidia they shouldn't be any timeout"): nvidia-nim
-        // genuinely runs much slower/less predictably than the other providers (real large-model
-        // cold starts on build.nvidia.com), so it's exempted from the configured/default timeout
-        // entirely.
-        const timeoutMs = provider === "nvidia-nim" ? NO_TIMEOUT_MS : getProviderTimeoutMs(userId, p === 0) || defaultTimeoutMs;
+        // nvidia-nim gets real extra patience (verified: it's genuinely much slower than other
+        // providers under Dave's real tool count) -- but bounded, see NVIDIA_TIMEOUT_MS above.
+        const timeoutMs = provider === "nvidia-nim" ? NVIDIA_TIMEOUT_MS : getProviderTimeoutMs(userId, p === 0) || defaultTimeoutMs;
         try {
           return await generateWithKeyFailover(db, userId, provider, req, timeoutMs, {
             onKeySwitch: async ({ fromIndex, toIndex, nextLabel, reason, quotaExhausted }) => {

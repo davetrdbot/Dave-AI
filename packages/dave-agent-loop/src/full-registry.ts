@@ -149,6 +149,9 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
       wireScheduledAutomations(deps.db, deps.userId, automationDispatch);
       wireWebhookAutomations(deps.db, deps.userId, automationDispatch);
     },
+    // `registry` is captured by reference and fully built by the time this is actually called
+    // (create_automation only runs at real request time, never during this synchronous build).
+    isKnownTool: (name: string) => registry.has(name),
   };
   registry.register(adaptTools(AUTOMATION_TOOLS, automationCtx));
   registry.register(adaptTools(WORKFLOW_TOOLS, workflowCtx));

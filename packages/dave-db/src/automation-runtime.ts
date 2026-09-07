@@ -1,7 +1,22 @@
 import type { DaveDatabase, EntityEvent } from "./database.js";
-import { listAutomations, type Automation } from "./automation-store.js";
+import { listAutomations, setAutomationEnabled, type Automation } from "./automation-store.js";
 import { registerScheduledTrigger, unregisterScheduledTrigger } from "./scheduled-trigger.js";
 import { registerWebhookTrigger, unregisterWebhookTrigger, type AutomationWebhook } from "./webhook-trigger.js";
+
+/**
+ * Real bug found via live Railway logs (user: "all the providers don't work again"): a stale
+ * automation whose `toolName` no longer resolves to any real registered tool (e.g. "tg_send_message"
+ * -- never a real tool name, likely mis-guessed by the model when the automation was created,
+ * before create_automation validated names) fired every single cron tick FOREVER, throwing the
+ * same UnknownToolError over and over with nothing ever stopping it. `dispatch` failures are
+ * genuinely unpredictable (a real provider outage should NOT permanently disable an automation),
+ * but "the tool this automation calls does not exist and never will resolve on its own" is a
+ * different, permanent kind of failure -- this self-heals it by auto-pausing the automation the
+ * first time that specific, structural error is seen, rather than erroring forever.
+ */
+function isUnknownToolError(err: unknown): boolean {
+  return err instanceof Error && err.name === "UnknownToolError";
+}
 
 /**
  * Part 3 (B4): "confirm this connects to real triggers actually firing,
@@ -43,7 +58,17 @@ export function wireScheduledAutomations(db: DaveDatabase, userId: string, dispa
     handlers.set(automation.id, handler);
     unregisterScheduledTrigger(automation.id); // idempotent re-wire (e.g. registry rebuilt) -- never double-register the same id
     registerScheduledTrigger(automation.id, automation.cronExpression, async () => {
-      await handler();
+      try {
+        await handler();
+      } catch (err) {
+        if (isUnknownToolError(err)) {
+          console.error(`[automation-runtime] "${automation.name}" (${automation.id}) calls tool "${automation.toolName}", which does not exist -- auto-pausing it instead of erroring on every future tick.`);
+          setAutomationEnabled(db, automation.userId, automation.id, false);
+          unregisterScheduledTrigger(automation.id);
+          return;
+        }
+        throw err;
+      }
     });
   }
   return handlers;

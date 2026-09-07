@@ -94,6 +94,7 @@ import {
 } from "@dave/brain";
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
 import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes, setAutonomousTradingIntervalMinutes } from "./trading-loop.js";
+import { DEFAULT_TRADING_LOOP_MINUTES } from "./trading-loop-config.js";
 import { getProviderTimeoutConfig, setPrimaryTimeoutSeconds, setFallbackTimeoutSeconds } from "./provider-timeout-config.js";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
@@ -252,8 +253,15 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number, editMes
  * it's self-hosted via AIRLLM_BASE_URL, no key needed) so picking one that isn't ready yet is an
  * informed choice, not a silent dead end. Tapping a provider opens its detail screen (real stored
  * keys, tap-to-activate) rather than blindly setting it primary. */
-function providersKeyboard(current: ProviderName, configuredProviders: Set<ProviderName>): ReturnType<typeof keyboard> {
+/** Real fix (user: "remove the red color in providers buttons just make them normal grey main
+ * primary should be green then fallback red"): red used to mean "no key stored" -- a purely
+ * informational state that doesn't warrant an alarming color. Red is now reserved for what it
+ * actually means to the user: "this is in my real fallback chain." Primary stays green, everything
+ * else (including a not-yet-configured provider) is plain grey; a missing key is still called out
+ * in the label text itself ("(no key)"), just without the red. */
+function providersKeyboard(current: ProviderName, configuredProviders: Set<ProviderName>, fallback: ProviderName[]): ReturnType<typeof keyboard> {
   const catalog = listProviderCatalog().filter((e) => e.id !== "custom");
+  const fallbackSet = new Set(fallback);
   const rows: ReturnType<typeof coloredButton>[][] = [];
   for (let i = 0; i < catalog.length; i += 2) {
     const pair = catalog.slice(i, i + 2);
@@ -261,8 +269,9 @@ function providersKeyboard(current: ProviderName, configuredProviders: Set<Provi
       pair.map((entry) => {
         const ready = entry.id === "airllm" || configuredProviders.has(entry.id);
         const isCurrent = current === entry.id;
-        const label = `${isCurrent ? "✅ " : ""}${entry.id}${ready ? "" : " (no key)"}`;
-        return coloredButton(label, isCurrent ? "green" : ready ? "neutral" : "red", `provider:${entry.id}`);
+        const isFallback = fallbackSet.has(entry.id);
+        const label = `${isCurrent ? "✅ " : isFallback ? "🔁 " : ""}${entry.id}${ready ? "" : " (no key)"}`;
+        return coloredButton(label, isCurrent ? "green" : isFallback ? "red" : "neutral", `provider:${entry.id}`);
       })
     );
   }
@@ -283,7 +292,7 @@ async function handleProviders(deps: CommandRouterDeps, chatId: number, editMess
   const text =
     `<b>AI Provider</b>\nPrimary: ${primaryLine}\nFallback: ${config.fallback.join(", ") || "none"}\n\n` +
     `${catalogCount} providers available. Tap a provider to see its keys:`;
-  await sendOrEditScreen(deps, chatId, text, providersKeyboard(config.primary, configuredProviders), editMessageId);
+  await sendOrEditScreen(deps, chatId, text, providersKeyboard(config.primary, configuredProviders, config.fallback), editMessageId);
 }
 
 /** Real fix (spec: "Tap a provider -> shows its stored keys (up to 20 per provider) each with
@@ -572,7 +581,12 @@ function eaTokenKeyboard(userId: string): { text: string; reply_markup: ReturnTy
 /** Real gap fixed (user: "the trading interval to scan add it to the settings ui no manual
  * config like < >"): /start_trading <minutes> (typed) still works, but this is the real
  * button-based picker -- no typing required. Preset choices only, tap to apply immediately (live
- * re-arm if already running, same real setAutonomousTradingIntervalMinutes() as the typed path). */
+ * re-arm if already running, same real setAutonomousTradingIntervalMinutes() as the typed path).
+ * Real wording fix (user: "it's not a cadence it's a loop"): autonomous trading is a real
+ * repeating scan loop, not a musical cadence -- every user-facing string below says "loop"/"scan
+ * interval" instead. "Auto" (user: "the interval to analyze it can be set to auto") resets to the
+ * real system default (DEFAULT_TRADING_LOOP_MINUTES) rather than requiring the user to remember or
+ * pick a specific number. */
 const TRADING_INTERVAL_PRESETS_MINUTES = [1, 3, 5, 10, 15, 30, 60] as const;
 
 function tradingIntervalKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
@@ -581,9 +595,9 @@ function tradingIntervalKeyboard(userId: string): { text: string; reply_markup: 
   const lines = [
     "<b>Autonomous Trading</b>",
     `Status: ${running ? "▶️ Running" : "⏸️ Off"}`,
-    `Scan cadence: every ${current} min`,
+    `Scan loop interval: every ${current} min`,
     "",
-    "Tap to set how often I scan for setups:",
+    "Tap to set how often the loop scans for setups:",
   ];
   const rows: ReturnType<typeof coloredButton>[][] = [];
   for (let i = 0; i < TRADING_INTERVAL_PRESETS_MINUTES.length; i += 2) {
@@ -593,6 +607,7 @@ function tradingIntervalKeyboard(userId: string): { text: string; reply_markup: 
       )
     );
   }
+  rows.push([coloredButton(current === DEFAULT_TRADING_LOOP_MINUTES ? `✅ Auto (${DEFAULT_TRADING_LOOP_MINUTES} min default)` : "Auto (system default)", current === DEFAULT_TRADING_LOOP_MINUTES ? "green" : "neutral", `tradinginterval:${DEFAULT_TRADING_LOOP_MINUTES}`)]);
   return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
@@ -1181,7 +1196,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const minutes = Number(data.slice("tradinginterval:".length));
       setAutonomousTradingIntervalMinutes(deps.userId, minutes);
       ackText = `Cadence: every ${minutes} min`;
-      await confirm(`Scan cadence set to every ${minutes} min`);
+      await confirm(`Scan loop interval set to every ${minutes} min`);
       const view = tradingIntervalKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data === "settings:providertimeout") {

@@ -19,6 +19,20 @@ export interface AutomationToolContext {
    * don't need to fake out a full registry.
    */
   resync?: () => void;
+  /**
+   * Real gap fixed (live Railway logs: an automation stored with `toolName: "tg_send_message"` --
+   * never a real tool -- fired and threw UnknownToolError on every single cron tick forever). When
+   * supplied, create_automation genuinely refuses a toolName that doesn't resolve to any real
+   * registered tool, instead of silently persisting a row that can never work.
+   */
+  isKnownTool?: (name: string) => boolean;
+}
+
+export class UnknownAutomationToolError extends Error {
+  constructor(toolName: string) {
+    super(`"${toolName}" is not a real registered tool -- check the exact name (e.g. via search_tools) before creating an automation against it.`);
+    this.name = "UnknownAutomationToolError";
+  }
 }
 
 export interface AutomationToolDefinition {
@@ -47,6 +61,8 @@ export const AUTOMATION_TOOLS: AutomationToolDefinition[] = [
       },
     },
     execute: async (args, ctx) => {
+      const toolName = args.toolName as string;
+      if (ctx.isKnownTool && !ctx.isKnownTool(toolName)) throw new UnknownAutomationToolError(toolName);
       const automation = createAutomation(ctx.db, ctx.userId, {
         name: args.name as string,
         triggerType: args.triggerType as AutomationTriggerType,

@@ -82,7 +82,7 @@ try {
   assert.equal(getTradingLoopIntervalMinutes(OWNER), 20, "the real config must genuinely change");
   assert.equal(isAutonomousTradingRunning(OWNER), true, "must still be running, not stopped and left off");
   console.log(`    "${lastText()}"`);
-  assert.match(lastText(), /cadence updated to every 20 min/);
+  assert.match(lastText(), /loop interval updated to every 20 min/);
 
   console.log("\n[4] An out-of-bounds value is genuinely refused, not silently clamped or accepted...");
   sentMessages.length = 0;
