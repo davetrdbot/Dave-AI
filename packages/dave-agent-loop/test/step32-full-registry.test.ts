@@ -30,6 +30,7 @@ import { FEEDBACK_TOOLS } from "@dave/feedback";
 import { TelegramClient, TELEGRAM_TOOLS, PUSH_TOOLS } from "@dave/telegram";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
+import { CORE_TOOL_NAMES, MAX_TOOLS_PER_REQUEST } from "../src/tool-selection.js";
 
 console.log("=== Update 11 real proof: EVERY package's tools, one live registry, genuinely callable end to end ===\n");
 
@@ -132,7 +133,15 @@ try {
       const parsed = JSON.parse(body);
       callCount++;
       if (callCount === 1) {
-        assert.ok(parsed.tools.length === expectedTotal, "the real model call must see EVERY registered tool, not a subset");
+        // Real bug fixed (user, with a real Grok error: "'tools': maximum number of items is
+        // 128"): sending all 205+ real registered tools on every request blew past real hard
+        // caps (xAI confirmed at 128) and was a major uncached-token cost driver. Only the
+        // curated CORE set goes out by default now -- well under both the registry's real total
+        // and the hard cap.
+        assert.ok(parsed.tools.length < expectedTotal, `the real model call must see a CURATED SUBSET, not all ${expectedTotal} registered tools`);
+        assert.ok(parsed.tools.length <= MAX_TOOLS_PER_REQUEST, `must never exceed the real ${MAX_TOOLS_PER_REQUEST}-tool provider cap`);
+        assert.ok(parsed.tools.some((t: any) => t.function.name === "get_auto_approval"), "the CORE set must include the tool this turn actually needs");
+        console.log(`    real before/after: full registry has ${expectedTotal} tools -- the real model call only received ${parsed.tools.length} (CORE set)`);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
           JSON.stringify({
@@ -156,7 +165,7 @@ try {
   assert.equal(result.status, "done");
   assert.equal((result as any).text, "Auto-approval is currently off.");
   assert.equal(callCount, 2);
-  console.log(`    real full-stack call: model saw all ${expectedTotal} real tools -> requested "get_auto_approval" (dave-workers/dave-trading) -> genuinely executed through the unified registry -> real result reached the model -> final answer: "${(result as any).text}"`);
+  console.log(`    real full-stack call: model saw the real CORE subset (of ${expectedTotal} total) -> requested "get_auto_approval" (dave-workers/dave-trading) -> genuinely executed through the unified registry -> real result reached the model -> final answer: "${(result as any).text}"`);
   await new Promise<void>((resolve) => server.close(() => resolve()));
 
   // --- [4] Subagent + memory tools, real calls through the unified registry ---

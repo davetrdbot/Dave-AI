@@ -1,6 +1,9 @@
 import type { CompletionMessage, Provider } from "@dave/brain";
 import type { ToolRegistry } from "./tool-registry.js";
 import { ASK_USER_TOOL_NAME, type PendingQuestion } from "./ask-user.js";
+import { CORE_TOOL_NAMES, MAX_TOOLS_PER_REQUEST } from "./tool-selection.js";
+
+const SEARCH_TOOLS_NAME = "search_tools";
 
 /**
  * Update 9: the actual, real, multi-turn tool-calling loop -- the
@@ -42,8 +45,20 @@ export class AgentLoop {
     const history = [...messages];
     const steps: AgentStep[] = [];
 
+    // Real bug fixed (user, with a real Grok error: "'tools': maximum number of items is 128"):
+    // every turn used to send the ENTIRE registry (205+ tools once the full build is composed).
+    // A registry that's already small enough to fit under the cap (tests, and worker-loop.ts's
+    // deliberately restricted per-worker registries) is sent whole, unchanged -- filtering only
+    // ever kicks in when it's actually needed. Once it does, only the curated CORE set goes out
+    // by default; a real search_tools call below genuinely adds whatever it finds to
+    // `activeNames` for the rest of THIS run, so every tool stays reachable, just not paid for on
+    // turns that never need it.
+    const allNames = this.registry.list().map((t) => t.name);
+    const activeNames = new Set(allNames.length <= MAX_TOOLS_PER_REQUEST ? allNames : CORE_TOOL_NAMES.filter((n) => this.registry.has(n)));
+
     for (let i = 0; i < maxSteps; i++) {
-      const result = await this.provider.generate({ messages: history, tools: this.registry.toSpecs() }, timeoutMs);
+      const tools = this.registry.toSpecsFor(activeNames).slice(0, MAX_TOOLS_PER_REQUEST);
+      const result = await this.provider.generate({ messages: history, tools }, timeoutMs);
 
       if (!result.toolCalls || result.toolCalls.length === 0) {
         return { status: "done", text: result.text, history, steps };
@@ -74,6 +89,19 @@ export class AgentLoop {
         steps.push(step);
         opts.onStep?.(step);
         history.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(output) });
+
+        // Real dynamic tool loading: whatever search_tools genuinely found becomes callable on
+        // the VERY NEXT turn, not just visible as text the model can't act on -- capped so a
+        // pathological query can't itself blow past the request limit. search_tools' own real
+        // result shape is `{ matches: [{name, description}, ...] }` (full-registry.ts).
+        if (call.name === SEARCH_TOOLS_NAME) {
+          const matches = (output as { matches?: unknown })?.matches;
+          if (Array.isArray(matches)) {
+            for (const found of matches as { name?: unknown }[]) {
+              if (typeof found?.name === "string" && activeNames.size < MAX_TOOLS_PER_REQUEST) activeNames.add(found.name);
+            }
+          }
+        }
       }
     }
     throw new MaxStepsExceededError(maxSteps);

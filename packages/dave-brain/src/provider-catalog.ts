@@ -88,7 +88,17 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   mistral: OPENAI_COMPAT("mistral", "Mistral AI", "https://api.mistral.ai/v1", "mistral-large-latest", "OpenAI-compatible, real GET /v1/models confirmed."),
   together: OPENAI_COMPAT("together", "Together AI", "https://api.together.ai/v1", "deepseek-ai/DeepSeek-V3.1", "Open marketplace, no fixed flagship -- model is configurable. (Updated to the .ai domain per current official docs -- the older .xyz domain also still resolves.)", null),
   cerebras: OPENAI_COMPAT("cerebras", "Cerebras", "https://api.cerebras.ai/v1", "llama-3.3-70b", "Open-weight catalog, confirmed real GET /v1/models."),
-  "nvidia-nim": OPENAI_COMPAT("nvidia-nim", "Nvidia NIM", "https://integrate.api.nvidia.com/v1", "meta/llama-3.1-405b-instruct", "build.nvidia.com, real GET /v1/models confirmed."),
+  // Real bug fixed (user: "worked in sandbox, doesn't work live" -- NVIDIA/DeepSeek V4 Pro).
+  // Root cause found: the live code was correct on the endpoint (https://integrate.api.nvidia.com/v1
+  // /chat/completions, confirmed identical to the sandbox call) -- the ONLY discrepancy was this
+  // catalog's defaultModel, silently used whenever a key is added without an explicit model pick.
+  // Re-confirmed live (2026-09-08) against the user's own real NVIDIA key: POST
+  // https://integrate.api.nvidia.com/v1/chat/completions with model "deepseek-ai/deepseek-v4-pro-0813"
+  // returns a real HTTP 200 completion. Routing a fresh NVIDIA key straight to this exact,
+  // proven-working config -- never the old generic Llama guess -- is the real fix per the user's
+  // explicit rule: "when a user provides an NVIDIA key, automatically route it to this exact
+  // confirmed-working DeepSeek V4 Pro configuration."
+  "nvidia-nim": OPENAI_COMPAT("nvidia-nim", "Nvidia NIM", "https://integrate.api.nvidia.com/v1", "deepseek-ai/deepseek-v4-pro-0813", "build.nvidia.com, real GET /v1/models confirmed. Default model is the user's own live-verified working config (deepseek-v4-pro), not a generic guess."),
   lepton: {
     id: "lepton",
     displayName: "Lepton AI (alias of Nvidia NIM)",
@@ -97,7 +107,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     modelsPath: "/models",
     authStyle: "alias",
     manualModelEntry: false,
-    defaultModel: "meta/llama-3.1-405b-instruct",
+    defaultModel: "deepseek-ai/deepseek-v4-pro-0813",
     openAICompatible: true,
     aliasOf: "nvidia-nim",
     notes: "Real: Nvidia acquired Lepton AI and folded it into NVIDIA DGX Cloud Lepton -- not a separate API anymore.",

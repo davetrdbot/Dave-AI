@@ -133,14 +133,15 @@ try {
   await new Promise((r) => setTimeout(r, 150));
 
   console.log(`    real messages sent to Telegram: ${JSON.stringify(sentMessages)}`);
-  // Real gap fixed A THIRD TIME (user, explicit, repeated, in caps: "I want to see the raw json
-  // error from the provider... don't add anything to that... just only the json error"): the
-  // real switch notification is now ONLY the raw JSON body -- no "🔄 switching to key #2" lead-in,
-  // no "[provider] HTTP xxx:" prefix, no "ran out of credit" label, nothing else at all.
-  const switchNotice = sentMessages.find((t) => t.includes("insufficient_quota"));
-  assert.ok(switchNotice, "the real raw JSON error must have been sent");
+  // Real bug fixed (user, with real pasted proof of raw/duplicated JSON error blobs reaching the
+  // chat): the real switch notification is now ONE clean, human-readable line naming the real
+  // provider and a real classification of what happened -- never the raw JSON body.
+  const switchNotice = sentMessages.find((t) => t.includes("openai key issue"));
+  assert.ok(switchNotice, "a real clean key-switch notice must have been sent");
   console.log(`    real switch notice: "${switchNotice}"`);
-  assert.equal(switchNotice, '{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."}}', "must be ONLY the raw JSON -- nothing added, nothing wrapped around it");
+  assert.equal(switchNotice, "⚠️ openai key issue (out of credit/quota) — trying next key");
+  assert.ok(!switchNotice!.includes("{"), "must never contain the raw JSON body");
+  assert.ok(!sentMessages.some((t) => t.includes("insufficient_quota")), "the raw error text must never reach the user at all");
 
   const finalAnswer = sentMessages.find((t) => t.includes("Here is the real completed answer."));
   assert.ok(finalAnswer, "the user's original response must still genuinely complete, not be dropped when the first key died mid-request");

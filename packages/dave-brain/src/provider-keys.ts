@@ -1,5 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
 import type { ProviderKeyConfig } from "./provider-catalog.js";
+import { PROVIDER_CATALOG } from "./provider-catalog.js";
 import { buildProvider } from "./provider-factory.js";
 import { ProviderError, type CompletionRequest, type CompletionResult, type ProviderName } from "./providers.js";
 
@@ -198,6 +199,20 @@ export function isRateLimitedError(reason: string): boolean {
   return /\b429\b|rate.?limit(ed)?\b|too many requests/i.test(reason);
 }
 
+/**
+ * Real bug fixed (user: "NVIDIA's 'rate limit exceeded' isn't a real persistent rate limit,
+ * since retrying with a different model on the same key works fine... the failover/retry logic
+ * may be treating a model-specific limit as a whole-key/whole-provider failure"). A rate limit
+ * scoped to the specific model in the request (the real error text names "model" alongside the
+ * rate-limit signal -- the actual, confirmed shape several providers, NVIDIA NIM included, use
+ * for per-model throughput caps) is a genuinely different condition from the whole key/account
+ * being throttled -- marking the whole KEY unhealthy and jumping to a different key or provider
+ * for a problem that's specific to one model wastes a perfectly good key.
+ */
+export function isModelScopedRateLimit(reason: string): boolean {
+  return isRateLimitedError(reason) && /\bmodel\b/i.test(reason);
+}
+
 export interface KeyFailoverNotifier {
   /** Fired the moment a key fails and the router is about to retry the SAME in-flight request with the next key. */
   onKeySwitch?: (info: { provider: ProviderName; fromIndex: number; toIndex: number; failedLabel: string; nextLabel: string; reason: string; quotaExhausted: boolean }) => void | Promise<void>;
@@ -252,6 +267,25 @@ export async function generateWithKeyFailover(
       return result;
     } catch (err) {
       const reason = err instanceof ProviderError ? err.message : String(err);
+
+      // Real bug fixed (user: "NVIDIA's rate limit exceeded isn't a real persistent rate limit,
+      // since retrying with a different model on the same key works fine"): a rate limit scoped
+      // to this specific model is retried on the SAME key with the catalog's own real default
+      // model FIRST, before this key is marked unhealthy and the router burns a key/provider
+      // switch over a problem that was never about the key or account at all.
+      const catalogDefault = PROVIDER_CATALOG[provider]?.defaultModel;
+      if (isModelScopedRateLimit(reason) && catalogDefault && key.config.model && key.config.model !== catalogDefault) {
+        try {
+          const altInstance = buildProvider(provider, { ...key.config, model: catalogDefault });
+          const result = await altInstance.generate(req, timeoutMs);
+          db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null });
+          return result;
+        } catch {
+          // The alternate model didn't help either -- fall through to the normal
+          // key-unhealthy/switch handling below with the ORIGINAL error.
+        }
+      }
+
       db.update(TABLE, userId, key.id, { healthy: 0, last_checked_at: Date.now(), last_error: reason });
       attempts.push({ keyId: key.id, label: key.label, reason });
       const next = ordered[i + 1];

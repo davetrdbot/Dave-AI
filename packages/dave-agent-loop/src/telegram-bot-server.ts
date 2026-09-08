@@ -26,6 +26,24 @@ import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
 import { friendlyErrorMessage } from "./error-messages.js";
+import { withLiveContext } from "./live-context.js";
+
+/** Real gap fixed (user: "the auto-trading loop is too chatty"): a cycle only ever reports back
+ *  when one of these genuinely fired -- tied to real, verifiable tool-call outcomes, not to
+ *  whatever prose the model happened to write this cycle. */
+export const NOTABLE_TRADING_TOOLS = new Set([
+  "trade_execute",
+  "trade_modify",
+  "modify_sl_tp",
+  "remove_sl_tp",
+  "partial_close",
+  "full_close",
+  "delete_pending_order",
+  "delete_all_pending_orders",
+  "enable_position_trailing",
+  "disable_position_trailing",
+  "propose_settings_change",
+]);
 
 /**
  * The real, persistent replacement for a one-off polling script: a
@@ -97,7 +115,7 @@ async function runAgentTurn(
         clearPendingQuestion(deps.ownerUserId);
         result = await loop.resume({ status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] }, messageText as string, { maxSteps: 8, onStep });
       } else {
-        history.push({ role: "user", content: userContent });
+        history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent) });
         result = await loop.run(history, { maxSteps: 8, onStep });
       }
       saveConversationHistory(deps.db, historyKey, result.history);
@@ -205,8 +223,10 @@ async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: Te
   if (history.length === 0) history = [{ role: "system", content: deps.systemPrompt }];
   history.push({
     role: "user",
-    content:
-      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Scan your active pair group for a genuine setup using your real analysis tools and goal.yaml rules, and act (open/manage a real trade) if one genuinely clears. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT",
+    content: withLiveContext(
+      deps.ownerUserId,
+      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Scan your active pair group for a genuine setup using your real analysis tools and goal.yaml rules, and act (open/manage a real trade) if one genuinely clears. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
+    ) as string,
   });
 
   setBusy(deps.ownerUserId, "autonomous trading cycle");
@@ -224,6 +244,15 @@ async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: Te
       }
       return;
     }
+    // Real bug fixed (user: "the loop should reason and check silently... only message the user
+    // when something actually happens -- not narrate every single cycle"). The exact-string
+    // "NOTHING_TO_REPORT" convention below is fragile against real model variance (a model that
+    // adds even a little commentary alongside the token never matches it, so the full narration
+    // still went out every cycle). This is the real, deterministic guarantee instead: a cycle's
+    // closing text is only ever sent if a REAL trade-affecting tool actually ran this cycle --
+    // tied to verifiable tool-call events, not trusted to the model's own self-classification.
+    const tookNotableAction = result.steps.some((s) => NOTABLE_TRADING_TOOLS.has(s.toolName) && !s.isError);
+    if (!tookNotableAction) return;
     const text = (result.text ?? "").trim();
     if (!text || text === "NOTHING_TO_REPORT") return;
     await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(text), parse_mode: "HTML" });

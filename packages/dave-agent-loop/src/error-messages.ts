@@ -7,6 +7,32 @@
  * anything unrecognized gets a generic message instead of its raw internals -- the real error
  * still goes to the server log (console.error), just never straight to the user's chat.
  */
+
+/**
+ * Real bug fixed (user, with real pasted proof: raw JSON error blobs sent directly as bot
+ * messages, sometimes duplicated). An earlier fix (per an explicit, since-superseded user
+ * instruction) made every provider-failure notice ONLY the raw JSON body, no provider name, no
+ * classification -- which (a) made a genuinely-Mistral-labeled bug report actually be a
+ * misattributed NVIDIA error (nothing named which provider a raw blob came from) and (b) still
+ * let the SAME failure be reported twice: once live via onProviderExhausted's notify(), and again
+ * via this module's own AllConfiguredProvidersFailedError message when the whole chain finally
+ * gave up. Per the user's current, explicit instruction, this returns to naming the real
+ * provider -- but as ONE short, clean, human-readable line, never the raw JSON, and provider-
+ * selection.ts (the live notifier) now only fires a live notice when there's actually a NEXT
+ * provider to switch to, so the final summary here is the only place the LAST failure is ever
+ * reported -- never both.
+ */
+export function classifyProviderError(reason: string): string {
+  if (/maximum number of items is 128|too many tools|tools.{0,20}(maximum|limit)/i.test(reason)) return "too many tools in request";
+  if (/insufficient_quota|quota exceeded|exceeded your current quota|out of credit|billing|payment required|\b402\b/i.test(reason)) return "out of credit/quota";
+  if (/\b429\b|rate.?limit(ed)?\b|too many requests/i.test(reason)) return "rate limited";
+  if (/\b401\b|invalid.{0,20}api.?key|unauthorized|incorrect api key/i.test(reason)) return "invalid API key";
+  if (/\b404\b|model.{0,20}not found|function.{0,20}not found/i.test(reason)) return "model/endpoint not found";
+  if (/timed out|timeout|ETIMEDOUT|abort/i.test(reason)) return "timed out";
+  if (/ECONNRESET|ECONNREFUSED|fetch failed|network|ENOTFOUND/i.test(reason)) return "connection issue";
+  if (/\b5\d\d\b|internal server error|service unavailable|bad gateway/i.test(reason)) return "server error";
+  return "request failed";
+}
 /**
  * Real gap fixed: the previous failover behavior threw only the LAST provider's error (e.g. "no
  * stored keys for provider claude"), which read like Claude was the one actively in use and
@@ -28,39 +54,21 @@ export class AllConfiguredProvidersFailedError extends Error {
   }
 }
 
-/**
- * Real gap fixed AGAIN (user, explicitly, in all caps, repeatedly: "I want to see the raw json
- * error from the provider... don't add anything to that... just only the json error"): every
- * previous version still wrapped the real error in Dave's own text -- a "[provider] HTTP xxx:"
- * prefix (from ProviderError's own message format), a "⚠️ ... failed" sentence, a "None of your
- * configured providers worked" header, a "Fix a key..." footer. None of that is the real endpoint
- * error; per this explicit, repeated instruction, this returns ONLY the raw JSON body a provider
- * actually sent back -- nothing else, no matter how many providers were tried. Falls back to the
- * reason verbatim (still nothing added) when there's genuinely no JSON in it (e.g. a raw fetch/
- * network error with no HTTP response body at all).
- */
-export function extractRawProviderError(reason: string): string {
-  const firstBrace = reason.indexOf("{");
-  return firstBrace === -1 ? reason : reason.slice(firstBrace);
-}
-
 export function friendlyErrorMessage(err: unknown): string {
   const name = err instanceof Error ? err.name : undefined;
   const message = err instanceof Error ? err.message : String(err);
 
   if (err instanceof AllConfiguredProvidersFailedError) {
-    if (err.attempts.length === 0) return "No provider is configured at all.";
-    // Real distinction kept: "no stored keys" is Dave's own internal state (there's no real
-    // endpoint JSON to show for a provider that was never given a key), so it still honestly
-    // names the provider so the user knows what to fix -- a REAL endpoint error (an actual raw
-    // JSON body a provider sent back) gets shown as ONLY that JSON, nothing else, per the user's
-    // explicit, repeated, all-caps instruction.
-    return err.attempts
-      .map((a) => {
-        const noStoredKeys = /no stored keys for provider "([^"]+)"/.exec(a.reason);
-        return noStoredKeys ? `${a.provider} has no working keys` : extractRawProviderError(a.reason);
-      })
-      .join("\n");
+    if (err.attempts.length === 0) return "⚠️ No provider is configured at all — add one via /providers.";
+    // Real bug fixed (user, with real pasted proof of raw/duplicated JSON error blobs): ONE
+    // clean, human-readable line naming every provider actually tried and a short classification
+    // of what went wrong with each -- never the raw JSON body, and never a repeat of what a live
+    // key-switch/provider-switch notice (provider-selection.ts) already told the user moments ago.
+    const parts = err.attempts.map((a) => {
+      const noStoredKeys = /no stored keys for provider "([^"]+)"/.exec(a.reason);
+      return `${a.provider} (${noStoredKeys ? "no working keys" : classifyProviderError(a.reason)})`;
+    });
+    return `⚠️ All configured providers failed: ${parts.join(", ")}. Check /providers.`;
   }
 
   const noStoredKeys = /no stored keys for provider "([^"]+)"/.exec(message);

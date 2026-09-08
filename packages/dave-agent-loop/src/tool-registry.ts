@@ -72,6 +72,23 @@ export class ToolRegistry {
     return this.list().map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
   }
 
+  /**
+   * Real bug fixed (user, with a real Grok error: "'tools': maximum number of items is 128"):
+   * toSpecs() sent EVERY registered tool on EVERY request -- 205+ tools once the full build was
+   * composed, well past hard caps several real providers enforce (xAI confirmed at 128; OpenAI
+   * documents the same ceiling, and most OpenAI-compatible providers inherit that shape). This
+   * returns only the tools whose name is in `names`, preserving registry order -- the real
+   * mechanism dynamic tool selection (tool-selection.ts) uses to keep every request under that
+   * cap, instead of a blind top-128 slice that could arbitrarily drop a tool the model actually
+   * needs this turn.
+   */
+  toSpecsFor(names: Iterable<string>): ToolSpec[] {
+    const wanted = new Set(names);
+    return this.list()
+      .filter((t) => wanted.has(t.name))
+      .map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
+  }
+
   /** Real substring search over name+description, case-insensitive -- lets Dave discover a tool it doesn't remember the exact name of. */
   search(query: string): { name: string; description: string }[] {
     const q = query.trim().toLowerCase();
