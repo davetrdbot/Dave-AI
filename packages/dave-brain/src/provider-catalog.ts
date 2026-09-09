@@ -84,10 +84,23 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     notes: "Step 5.2 -- existing custom implementation, native Anthropic Messages API shape.",
   },
   openai: OPENAI_COMPAT("openai", "OpenAI", "https://api.openai.com/v1", "gpt-5.6-sol", "Native OpenAI, the reference shape every generic entry copies."),
-  groq: OPENAI_COMPAT("groq", "Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "OpenAI-compatible, confirmed."),
-  mistral: OPENAI_COMPAT("mistral", "Mistral AI", "https://api.mistral.ai/v1", "mistral-large-latest", "OpenAI-compatible, real GET /v1/models confirmed."),
+  // Real bug fixed (user, with real live keys pasted for exactly this diagnosis): "llama-3.3-70b-
+  // versatile" was retired from Groq's real catalog -- confirmed live, a real request against it
+  // returned "does not exist or you do not have access to it." Re-confirmed live against a real
+  // GET /v1/models call and a real chat completion: "openai/gpt-oss-120b" is real, currently live,
+  // and genuinely supports tools (confirmed: real 200 + real completion with the full 57-tool
+  // production payload attached).
+  groq: OPENAI_COMPAT("groq", "Groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b", "OpenAI-compatible, confirmed live 2026-09-09 (default model updated off a retired Groq model id)."),
+  // Real bug fixed: "mistral-large-latest" returned a real 403 "not available in your subscription
+  // tier" against a real key -- not every Mistral account has Large-tier access. Re-confirmed live
+  // against a real GET /v1/models call: "mistral-small-latest" is on every real tier and genuinely
+  // supports function_calling (confirmed via the account's own real capabilities flag).
+  mistral: OPENAI_COMPAT("mistral", "Mistral AI", "https://api.mistral.ai/v1", "mistral-small-latest", "OpenAI-compatible, real GET /v1/models confirmed. Default model changed from mistral-large-latest (real 403: not every tier has Large access) to mistral-small-latest (real, function-calling-capable, available on every tier)."),
   together: OPENAI_COMPAT("together", "Together AI", "https://api.together.ai/v1", "deepseek-ai/DeepSeek-V3.1", "Open marketplace, no fixed flagship -- model is configurable. (Updated to the .ai domain per current official docs -- the older .xyz domain also still resolves.)", null),
-  cerebras: OPENAI_COMPAT("cerebras", "Cerebras", "https://api.cerebras.ai/v1", "llama-3.3-70b", "Open-weight catalog, confirmed real GET /v1/models."),
+  // Real bug fixed: "llama-3.3-70b" doesn't exist in Cerebras's real, current, much smaller model
+  // catalog (confirmed live via GET /v1/models: only gpt-oss-120b/qwen-3.8-27b/gemma-4-31b exist
+  // today) -- every request against the old default 404'd. "gpt-oss-120b" is real and current.
+  cerebras: OPENAI_COMPAT("cerebras", "Cerebras", "https://api.cerebras.ai/v1", "gpt-oss-120b", "Open-weight catalog, confirmed real GET /v1/models 2026-09-09 (default model updated off a model no longer in Cerebras's real catalog)."),
   // Real bug fixed (user: "worked in sandbox, doesn't work live" -- NVIDIA/DeepSeek V4 Pro).
   // Root cause found: the live code was correct on the endpoint (https://integrate.api.nvidia.com/v1
   // /chat/completions, confirmed identical to the sandbox call) -- the ONLY discrepancy was this
@@ -186,7 +199,14 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     requiresExtraConfig: ["region", "secretAccessKey"],
     notes: "Confirmed: SigV4 signing is mandatory, no Bearer/API-key path exists for the native Converse API. apiKey field carries the AWS access key id.",
   },
-  gemini: OPENAI_COMPAT("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.1-pro", "Real OpenAI-compatible endpoint confirmed (still beta per Google); native generateContent API also exists but this is simpler and uses the same generic class."),
+  // Real bug fixed: "gemini-3.1-pro" (bare, no suffix) returned a real 404 "not found... Call
+  // ModelService.ListModels" -- confirmed live it genuinely doesn't exist under that bare name
+  // (the real model is "gemini-3.1-pro-preview"). Re-confirmed live against a real GET
+  // /v1beta/models call and a real chat completion with a real non-empty response:
+  // "gemini-2.5-flash" is real, current, stable (no "-preview"/"-latest" alias risk), and
+  // returned real text where a "-latest" alias came back with an empty completion (reasoning-
+  // token budget likely consumed the whole maxTokens on the alias's default routing).
+  gemini: OPENAI_COMPAT("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", "Real OpenAI-compatible endpoint confirmed (still beta per Google); native generateContent API also exists but this is simpler and uses the same generic class. Default model updated 2026-09-09 off a bare model id that doesn't exist on the real API."),
   // Item 3 (user: "add more providers and make provision for GitHub copilot and others"):
   // GitHub Models -- the real, official product this request pointed at -- was confirmed via
   // live research to have been FULLY RETIRED July 30, 2026 (playground, catalog, inference API,

@@ -33,7 +33,9 @@ export function buildProvider(name: ProviderName, config: ProviderKeyConfig): Pr
       // localhost.
       return new AirLLMProvider(config.baseUrlOverride ?? process.env.AIRLLM_BASE_URL ?? entry.baseUrl.toString());
     case "deepseek":
-      return new DeepSeekProvider(config.apiKey, config.baseUrlOverride ?? (entry.baseUrl as string));
+      // Real bug fixed: DeepSeekProvider used to hardcode "deepseek-chat", silently ignoring
+      // whatever model the user's stored key config actually specified.
+      return new DeepSeekProvider(config.apiKey, config.baseUrlOverride ?? (entry.baseUrl as string), config.model ?? entry.defaultModel);
     case "claude":
       return new ClaudeProvider(config.apiKey, config.model ?? entry.defaultModel, config.baseUrlOverride ?? (entry.baseUrl as string));
     case "cohere":

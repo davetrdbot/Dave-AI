@@ -150,6 +150,37 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
 }
 
 /**
+ * Update 9: real OpenAI-shape tool-calling translation, shared by every real OpenAI-shaped
+ * provider (OpenAICompatibleProvider AND DeepSeekProvider -- real bug fixed: DeepSeekProvider was
+ * a "Step 5.2 existing custom implementation" that predates Update 9's tool-calling work and was
+ * never retrofitted, so it silently never sent `tools` at all and never translated tool_calls/
+ * tool-role messages, making DeepSeek unable to call any real tool no matter what the model
+ * requested). A "tool" message maps to OpenAI's real `{role:"tool", tool_call_id, content}` shape;
+ * an assistant message with `toolCalls` becomes a real `tool_calls: [{id, type:"function",
+ * function:{name, arguments}}]` array (arguments is a JSON STRING on the wire, per OpenAI's real,
+ * confirmed shape -- not an object).
+ */
+function toOpenAIToolCallMessages(messages: CompletionMessage[]): unknown[] {
+  return messages.map((m) => {
+    if (m.role === "tool") {
+      return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+    }
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      return {
+        role: "assistant",
+        content: typeof m.content === "string" && m.content.length > 0 ? m.content : null,
+        tool_calls: m.toolCalls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.arguments) } })),
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
+function toOpenAIToolSpecs(tools: CompletionRequest["tools"]): unknown[] | undefined {
+  return tools?.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+}
+
+/**
  * Step 5.1/5.5: self-hosted AirLLM/Qwen3-235B, called over HTTP from
  * `ai-brain-service` (a separate Python process -- Step 2's rationale:
  * AirLLM is Python-only and disk-heavy, doesn't belong in the Node app).
@@ -188,18 +219,33 @@ export class AirLLMProvider implements Provider {
   }
 }
 
-/** Step 5.2: DeepSeek AI as a configured, switchable fallback provider. */
+/**
+ * Step 5.2: DeepSeek AI as a configured, switchable fallback provider.
+ *
+ * Real bug fixed (user, live-diagnosed with real pasted keys against the real production tool
+ * payload): this class predated Update 9's tool-calling work and was never retrofitted -- it sent
+ * `req.messages` raw (never translating a real assistant `toolCalls` array or a real "tool" role
+ * message into DeepSeek's actual OpenAI-shaped wire format) and never sent `tools` AT ALL, no
+ * matter what the caller passed. Confirmed live: the real outgoing request body had
+ * `hasTools: false` unconditionally. DeepSeek is genuinely OpenAI-compatible in shape (real
+ * `/chat/completions`, real bearer auth, real `tool_calls` in its responses) -- it was simply
+ * never wired up to use that shape for tools, making it structurally unable to call ANY real tool
+ * regardless of what the model wanted to do. Also hardcoded `model: "deepseek-chat"`, silently
+ * ignoring whatever model the user's stored key config actually specified.
+ */
 export class DeepSeekProvider implements Provider {
   readonly name = "deepseek" as const;
 
   constructor(
     private readonly apiKey: string,
-    private readonly baseUrl = "https://api.deepseek.com"
+    private readonly baseUrl = "https://api.deepseek.com",
+    private readonly model = "deepseek-chat"
   ) {}
 
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
     if (containsImage(req.messages)) throw new ImageNotSupportedError("deepseek");
     const start = Date.now();
+    const tools = toOpenAIToolSpecs(req.tools);
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -207,7 +253,7 @@ export class DeepSeekProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: "deepseek-chat", messages: req.messages, max_tokens: req.maxTokens ?? 512 }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
         },
         timeoutMs
       );
@@ -218,16 +264,18 @@ export class DeepSeekProvider implements Provider {
       throw new ProviderError("deepseek", `HTTP ${res.status}: ${await res.text()}`);
     }
     const json = (await res.json()) as {
-      choices: { message: { content: string } }[];
+      choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
       usage?: { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number };
     };
+    const message = json.choices[0].message;
+    const toolCalls = message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
     // Real DeepSeek "context caching" -- automatic, no cache_control needed on
     // this API; a real cache hit shows up as a nonzero prompt_cache_hit_tokens
     // in the response usage. DeepSeek doesn't separately report a "creation"
     // count the way Anthropic does (caching there is automatic/implicit), so
     // that field is honestly 0 rather than guessed.
     const cacheUsage = json.usage ? { cacheCreationInputTokens: 0, cacheReadInputTokens: json.usage.prompt_cache_hit_tokens ?? 0 } : undefined;
-    return { text: json.choices[0].message.content, provider: "deepseek", latencyMs: Date.now() - start, cacheUsage };
+    return { text: message.content ?? "", provider: "deepseek", latencyMs: Date.now() - start, toolCalls, cacheUsage };
   }
 }
 
@@ -359,33 +407,9 @@ export class OpenAICompatibleProvider implements Provider {
     private readonly authHeaderStyle: "bearer" | "api-key-header" = "bearer"
   ) {}
 
-  /**
-   * Update 9: real OpenAI-shape tool-calling translation. A "tool"
-   * message maps straight to OpenAI's real `{role:"tool", tool_call_id,
-   * content}` shape; an assistant message with `toolCalls` becomes a
-   * real `tool_calls: [{id, type:"function", function:{name,
-   * arguments}}]` array (arguments is a JSON STRING on the wire, per
-   * OpenAI's real, confirmed shape -- not an object).
-   */
-  private toOpenAIMessages(messages: CompletionMessage[]): unknown[] {
-    return messages.map((m) => {
-      if (m.role === "tool") {
-        return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
-      }
-      if (m.role === "assistant" && m.toolCalls?.length) {
-        return {
-          role: "assistant",
-          content: typeof m.content === "string" && m.content.length > 0 ? m.content : null,
-          tool_calls: m.toolCalls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.arguments) } })),
-        };
-      }
-      return { role: m.role, content: m.content };
-    });
-  }
-
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
     const start = Date.now();
-    const tools = req.tools?.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+    const tools = toOpenAIToolSpecs(req.tools);
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -396,7 +420,7 @@ export class OpenAICompatibleProvider implements Provider {
             this.authHeaderStyle === "api-key-header"
               ? { "content-type": "application/json", "api-key": this.apiKey }
               : { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: this.toOpenAIMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
         },
         timeoutMs
       );
@@ -438,6 +462,15 @@ export class CohereProvider implements Provider {
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
     if (containsImage(req.messages)) throw new ImageNotSupportedError("cohere");
     const start = Date.now();
+    // Real bug fixed (provider audit, same class of bug as the DeepSeek one -- user: "I can use
+    // any provider, nothing works"): `tools` was never sent, and `req.messages` was passed
+    // through raw -- a real assistant `toolCalls` array and real "tool" role messages were never
+    // translated into anything Cohere's real API could understand. Confirmed via research
+    // (Cohere's own v2 /chat docs): the real tool-calling wire shape is IDENTICAL to OpenAI's
+    // (`type:"function"`, a `tool_calls` array with `{id, type, function:{name, arguments}}`, and
+    // a real `role:"tool"` message with `tool_call_id`) -- the same shared helpers
+    // OpenAICompatibleProvider/DeepSeekProvider use apply here too, not a bespoke translation.
+    const tools = toOpenAIToolSpecs(req.tools);
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -445,7 +478,7 @@ export class CohereProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: req.messages, max_tokens: req.maxTokens ?? 512 }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
         },
         timeoutMs
       );
@@ -455,9 +488,12 @@ export class CohereProvider implements Provider {
     if (!res.ok) {
       throw new ProviderError("cohere", `HTTP ${res.status}: ${await res.text()}`);
     }
-    const json = (await res.json()) as { message: { content: { text: string }[] } };
-    const text = json.message.content[0]?.text ?? "";
-    return { text, provider: "cohere", latencyMs: Date.now() - start };
+    const json = (await res.json()) as {
+      message: { content: { text: string }[]; tool_calls?: { id: string; function: { name: string; arguments: string } }[] };
+    };
+    const text = json.message.content?.[0]?.text ?? "";
+    const toolCalls = json.message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
+    return { text, provider: "cohere", latencyMs: Date.now() - start, toolCalls };
   }
 }
 
@@ -585,13 +621,34 @@ export class BedrockProvider implements Provider {
     const systemMessages = req.messages.filter((m) => m.role === "system");
     const conversational = req.messages.filter((m) => m.role !== "system");
     const system = systemMessages.length > 0 ? [{ text: systemMessages.map((m) => (typeof m.content === "string" ? m.content : "")).join("\n\n") }, { cachePoint: { type: "default" } }] : undefined;
-    const messages = conversational.map((m, i) => ({
-      role: m.role,
-      content: [{ text: typeof m.content === "string" ? m.content : "" }, ...(i === conversational.length - 1 ? [{ cachePoint: { type: "default" } }] : [])],
-    }));
+    // Real bug fixed (provider audit, same class of bug as the DeepSeek one -- user: "I can use
+    // any provider, nothing works"): Bedrock never sent `toolConfig` at all, and every message was
+    // sent with its RAW `m.role` -- for a real "tool" role message, `"tool"` is not a valid
+    // Converse API role (only `user`/`assistant` are) and would genuinely be rejected by the real
+    // API, and an assistant's real `toolCalls` were silently dropped entirely (only `.text` was
+    // ever read). Real, confirmed Converse API shapes (AWS's own docs/samples): a tool result goes
+    // on a `user` turn as a `toolResult` content block (`toolUseId`/`content`/`status`); an
+    // assistant's tool call is a `toolUse` content block (`toolUseId`/`name`/`input`) on an
+    // `assistant` turn; tools are declared via `toolConfig: {tools: [{toolSpec: {name,
+    // description, inputSchema: {json}}}]}`.
+    const messages = conversational.map((m, i) => {
+      const isLast = i === conversational.length - 1;
+      const cachePoint = isLast ? [{ cachePoint: { type: "default" } }] : [];
+      if (m.role === "tool") {
+        return { role: "user", content: [{ toolResult: { toolUseId: m.toolCallId, content: [{ text: typeof m.content === "string" ? m.content : "" }], status: "success" } }, ...cachePoint] };
+      }
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        const textBlock = typeof m.content === "string" && m.content.length > 0 ? [{ text: m.content }] : [];
+        const toolUseBlocks = m.toolCalls.map((c) => ({ toolUse: { toolUseId: c.id, name: c.name, input: c.arguments } }));
+        return { role: "assistant", content: [...textBlock, ...toolUseBlocks, ...cachePoint] };
+      }
+      return { role: m.role, content: [{ text: typeof m.content === "string" ? m.content : "" }, ...cachePoint] };
+    });
+    const toolConfig = req.tools && req.tools.length > 0 ? { tools: req.tools.map((t) => ({ toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.parameters } } })) } : undefined;
     const body = JSON.stringify({
       ...(system ? { system } : {}),
       messages,
+      ...(toolConfig ? { toolConfig } : {}),
       inferenceConfig: { maxTokens: req.maxTokens ?? 512 },
     });
     const now = new Date();
@@ -613,13 +670,17 @@ export class BedrockProvider implements Provider {
       throw new ProviderError("bedrock", `HTTP ${res.status}: ${await res.text()}`);
     }
     const json = (await res.json()) as {
-      output: { message: { content: { text: string }[] } };
+      output: { message: { content: { text?: string; toolUse?: { toolUseId: string; name: string; input: Record<string, unknown> } }[] } };
       usage?: { cacheReadInputTokens?: number; cacheWriteInputTokens?: number };
     };
-    const text = json.output.message.content.find((b) => b.text)?.text ?? "";
+    const blocks = json.output.message.content;
+    const text = blocks.filter((b) => b.text).map((b) => b.text).join("");
+    const toolCalls = blocks
+      .filter((b) => b.toolUse)
+      .map((b) => ({ id: b.toolUse!.toolUseId, name: b.toolUse!.name, arguments: b.toolUse!.input ?? {} }));
     const cacheUsage = json.usage && (json.usage.cacheReadInputTokens !== undefined || json.usage.cacheWriteInputTokens !== undefined)
       ? { cacheCreationInputTokens: json.usage.cacheWriteInputTokens ?? 0, cacheReadInputTokens: json.usage.cacheReadInputTokens ?? 0 }
       : undefined;
-    return { text, provider: "bedrock", latencyMs: Date.now() - start, cacheUsage };
+    return { text, provider: "bedrock", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, cacheUsage };
   }
 }
