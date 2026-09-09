@@ -1,6 +1,20 @@
 import { createHash, createHmac } from "node:crypto";
 
 /**
+ * Real bug fixed (user: "I said not only that model other model too... check for bugs in the
+ * code"). Every provider defaulted `max_tokens` to 512 whenever the caller didn't pass one --
+ * and dave-agent-loop, the only real caller, NEVER passes `maxTokens` at all, so every real
+ * production request everywhere used this 512 cap unconditionally. Confirmed live (Gemini's real
+ * OpenAI-compat endpoint, Gemini 3-family "thinking" models, which have reasoning on by default):
+ * at max_tokens=30 the model burned the ENTIRE budget on internal reasoning tokens and returned
+ * genuinely empty visible text (finish_reason "length", real usage confirms it); at 1000 it
+ * completed normally. 512 is small enough to risk the same starvation on ANY reasoning-capable
+ * model on ANY provider, and is also just genuinely tight for a real agentic turn's tool-call
+ * reasoning + final answer combined. Raised to a real, still-economical ceiling.
+ */
+const DEFAULT_MAX_TOKENS = 4096;
+
+/**
  * Step 20.1: images are handed to the model as a real content block --
  * the raw base64 bytes go straight into the request, never routed
  * through a separate OCR/description step first. Real Anthropic
@@ -204,7 +218,7 @@ export class AirLLMProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: req.messages, max_tokens: req.maxTokens ?? 512, compression: this.compression }),
+          body: JSON.stringify({ messages: req.messages, max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS, compression: this.compression }),
         },
         timeoutMs
       );
@@ -253,7 +267,7 @@ export class DeepSeekProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS, tools }),
         },
         timeoutMs
       );
@@ -350,7 +364,7 @@ export class ClaudeProvider implements Provider {
           },
           body: JSON.stringify({
             model: this.model,
-            max_tokens: req.maxTokens ?? 512,
+            max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
             system,
             messages,
             tools,
@@ -420,7 +434,7 @@ export class OpenAICompatibleProvider implements Provider {
             this.authHeaderStyle === "api-key-header"
               ? { "content-type": "application/json", "api-key": this.apiKey }
               : { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS, tools }),
         },
         timeoutMs
       );
@@ -478,7 +492,7 @@ export class CohereProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? 512, tools }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS, tools }),
         },
         timeoutMs
       );
@@ -525,7 +539,7 @@ export class ReplicateProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ version: this.model, input: { prompt, max_tokens: req.maxTokens ?? 512 } }),
+          body: JSON.stringify({ version: this.model, input: { prompt, max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS } }),
         },
         timeoutMs
       );
@@ -649,7 +663,7 @@ export class BedrockProvider implements Provider {
       ...(system ? { system } : {}),
       messages,
       ...(toolConfig ? { toolConfig } : {}),
-      inferenceConfig: { maxTokens: req.maxTokens ?? 512 },
+      inferenceConfig: { maxTokens: req.maxTokens ?? DEFAULT_MAX_TOKENS },
     });
     const now = new Date();
     const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
