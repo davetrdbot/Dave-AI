@@ -251,6 +251,9 @@ string BuildReportJson()
           // still risk. Real MT5 fields, not derived/approximated.
           "\"margin\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN), 2) + "," +
           "\"freeMargin\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2) + "," +
+          // Item 12 real gap fixed: leverage was never reported at all, so Dave had no real
+          // basis for position sizing beyond raw balance/equity. Real MT5 field, not guessed.
+          "\"leverage\":" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LEVERAGE)) + "," +
           "\"positions\":[" + positions + "]," +
           "\"pendingOrders\":[" + pendingOrders + "]," +
           "\"results\":[" + results + "]," +

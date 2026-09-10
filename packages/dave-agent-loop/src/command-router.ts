@@ -32,6 +32,9 @@ import {
   setPendingLimitEntry,
   getPendingLimitEntry,
   type ProtectedLimitField,
+  setPendingRiskEntry,
+  getPendingRiskEntry,
+  type RiskEntryField,
   getTrailingStopConfig,
   setTrailingStopConfig,
   setPendingTrailingEntry,
@@ -890,9 +893,16 @@ function riskSettingsKeyboard(userId: string) {
       [
         [
           { label: `SL: ${modeLabel(settings.slMode, settings.slValue)}`, callbackData: "cyclemode:sl", active: false },
-          { label: `TP: ${modeLabel(settings.tpMode, settings.tpValue)}`, callbackData: "cyclemode:tp", active: false },
+          { label: "Set SL (On)", callbackData: "setrisk:sl", active: false },
         ],
-        [{ label: `Lot: ${modeLabel(settings.lotMode, settings.lotValue)}`, callbackData: "cyclemode:lot", active: false }],
+        [
+          { label: `TP: ${modeLabel(settings.tpMode, settings.tpValue)}`, callbackData: "cyclemode:tp", active: false },
+          { label: "Set TP (On)", callbackData: "setrisk:tp", active: false },
+        ],
+        [
+          { label: `Lot: ${modeLabel(settings.lotMode, settings.lotValue)}`, callbackData: "cyclemode:lot", active: false },
+          { label: "Set Lot (On)", callbackData: "setrisk:lot", active: false },
+        ],
         // Real fix: max open trades / max daily loss are PROTECTED (SECURITY.md) -- tapping
         // never applies a value directly, it only primes capture of the user's own number,
         // which then goes through the real, unavoidable proposeProtectedLimitChange ->
@@ -928,6 +938,27 @@ export async function tryHandlePendingLimitEntry(deps: CommandRouterDeps, chatId
     parse_mode: "HTML",
     reply_markup: listPendingApprovalsKeyboard(change.id),
   });
+  return true;
+}
+
+/**
+ * Item 12 real gap fixed: this is the missing counterpart to tryHandlePendingLimitEntry, for
+ * sl/tp/lot "On" mode -- unlike the protected limits, sl/tp/lot are NOT protected fields, so this
+ * applies the user's own typed value immediately via setRiskMode(), the same way a direct /settings
+ * change always has (proposeSettingsChange's approval gate is only for a Dave-INITIATED change).
+ */
+export async function tryHandlePendingRiskEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const field = getPendingRiskEntry(deps.userId);
+  if (!field) return false;
+  setPendingRiskEntry(deps.userId, null);
+  const value = Number(text.trim());
+  if (!Number.isFinite(value) || value <= 0) {
+    await deps.client.sendMessage({ chat_id: chatId, text: `That doesn't look like a real number -- reply with just the value, e.g. "20" or "0.5". Tap the row in /settings to try again.` });
+    return true;
+  }
+  setRiskMode(deps.userId, field, "on", value);
+  const label = field === "sl" ? `SL -> On (${value} pips)` : field === "tp" ? `TP -> On (${value} pips)` : `Lot -> On (${value})`;
+  await deps.client.sendMessage({ chat_id: chatId, text: `✅ ${label}` });
   return true;
 }
 
@@ -1339,6 +1370,15 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
     } else if (data === "settings:risk") {
       ackText = undefined;
       await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
+    } else if (data.startsWith("setrisk:")) {
+      // Item 12 real gap fixed: cyclemode only ever toggled off<->auto -- "on" mode requires the
+      // user's own exact numeric value, and there was no real way to TYPE it for sl/tp/lot (only
+      // the protected limits below had a tap-to-type flow). Same capture pattern, applied here.
+      const field = data.slice("setrisk:".length) as RiskEntryField;
+      setPendingRiskEntry(deps.userId, field);
+      ackText = undefined;
+      const fieldLabel = field === "sl" ? "SL (in pips)" : field === "tp" ? "TP (in pips)" : "lot size";
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Reply with your exact ${fieldLabel} as your next message (a number).` });
     } else if (data.startsWith("proposelimit:")) {
       const field = data.slice("proposelimit:".length) as ProtectedLimitField;
       setPendingLimitEntry(deps.userId, field);

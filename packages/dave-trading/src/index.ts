@@ -1,6 +1,7 @@
 export * from "./order-types.js";
 export * from "./risk-settings.js";
 export * from "./pending-limit-entry.js";
+export * from "./pending-risk-entry.js";
 export * from "./pending-trailing-entry.js";
 export * from "./pair-groups.js";
 export * from "./breakeven-trailing.js";

@@ -28,6 +28,24 @@ import { getRiskSettings } from "./risk-settings.js";
  * and shaped correctly for that wiring to be a connection, not a rewrite.
  */
 
+/**
+ * Item 3 real bug fixed: the real, enforced consequence of SL/TP mode = "auto". Thrown back to
+ * the MODEL as a tool error (never surfaced to the user as a question) so it computes a real
+ * value from its own analysis (ATR/structure/support-resistance) and retries -- "auto" never
+ * silently leaves an order unprotected, and never becomes the user's problem to answer.
+ */
+export class AutoModeRequiresComputedValueError extends Error {
+  constructor(field: "sl" | "tp", symbol: string) {
+    super(
+      `${field.toUpperCase()} mode is set to "auto" for this user -- you must compute a real ${field} value yourself ` +
+        `(from ATR, market structure, or support/resistance on ${symbol}) and pass it explicitly to trade_execute. ` +
+        `Never ask the user for this value while auto mode is active, and never leave the order unprotected -- retry ` +
+        `the call with a real, calculated ${field}.`
+    );
+    this.name = "AutoModeRequiresComputedValueError";
+  }
+}
+
 export interface ToolContext {
   userId: string;
   davema: DavemaClient;
@@ -110,6 +128,21 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       // in the real placement confirmation ("SL: not set") rather than silently guessed.
       if (order.sl === undefined || order.tp === undefined) {
         const risk = getRiskSettings(ctx.userId);
+        // Item 3 real bug fixed (user: "when SL/TP mode is set to Auto, Dave must calculate and
+        // set real SL/TP values itself during analysis, every time, no exceptions -- it should
+        // NEVER ask the user for SL/TP values when Auto is active"): this block previously only
+        // ever checked slMode/tpMode === "on" -- "auto" fell through both branches below and
+        // silently left the order unprotected, which is exactly what let the model ask the user
+        // instead. "Auto" means Dave computes a real value from its own analysis (ATR/structure/
+        // S-R) -- not something this module should invent a formula for -- so the fix is a hard
+        // gate: reject the call back to the MODEL (a tool error, never a user-facing question)
+        // when auto mode is active and sl/tp is still missing, forcing it to compute and retry.
+        if (order.sl === undefined && risk.slMode === "auto") {
+          throw new AutoModeRequiresComputedValueError("sl", order.symbol);
+        }
+        if (order.tp === undefined && risk.tpMode === "auto") {
+          throw new AutoModeRequiresComputedValueError("tp", order.symbol);
+        }
         let referencePrice = order.price;
         if (referencePrice === undefined) {
           try {

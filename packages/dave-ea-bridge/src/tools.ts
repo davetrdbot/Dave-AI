@@ -38,7 +38,7 @@ export const EA_STATE_TOOLS: EaToolDefinition[] = [
     execute: async (_args, ctx) => {
       const snapshot = getLastKnownAccountSnapshot(ctx.userId);
       if (!snapshot) return { balance: undefined, note: "no EA report received yet for this user" };
-      return { balance: snapshot.balance, equity: snapshot.equity, margin: snapshot.margin, freeMargin: snapshot.freeMargin, updatedAt: snapshot.updatedAt };
+      return { balance: snapshot.balance, equity: snapshot.equity, margin: snapshot.margin, freeMargin: snapshot.freeMargin, leverage: snapshot.leverage, updatedAt: snapshot.updatedAt };
     },
   },
 ];

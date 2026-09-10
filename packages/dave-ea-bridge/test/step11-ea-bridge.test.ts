@@ -37,6 +37,7 @@ const res1 = await fetch(`${base}${hook.path}`, {
     equity: 10120,
     margin: 250,
     freeMargin: 9870,
+    leverage: 500,
     positions: [{ ticket: "T1", symbol: "EURUSD", type: "buy", lots: 0.5, openPrice: 1.085 }],
     pendingOrders: [],
   }),
@@ -55,6 +56,8 @@ assert.equal(snapshot?.balance, 10000);
 assert.equal(snapshot?.equity, 10120);
 assert.equal(snapshot?.margin, 250);
 assert.equal(snapshot?.freeMargin, 9870);
+// Item 12 real gap fixed: leverage was never reported by the EA or persisted at all -- now it is.
+assert.equal(snapshot?.leverage, 500, "leverage must genuinely be persisted from the EA's real report");
 
 // --- 11.1: the executor's openOrder() enqueues a real command, waits for a real result ---
 console.log("\n[3] EaTradeExecutor.openOrder() enqueues a real command and awaits the EA's real result...");

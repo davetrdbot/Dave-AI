@@ -84,6 +84,10 @@ export interface EaReport {
   equity?: number;
   margin?: number;
   freeMargin?: number;
+  /** Item 12 real gap fixed (user: "add account leverage to the ping payload so Dave can see and
+   * use it for position sizing"): genuinely absent from both the EA's real report payload and
+   * these server-side types until now -- AccountInfoInteger(ACCOUNT_LEVERAGE) on the EA side. */
+  leverage?: number;
   positions: EaPosition[];
   pendingOrders: EaPendingOrder[];
   results?: EaCommandResult[];
@@ -97,6 +101,7 @@ export interface AccountSnapshot {
   equity?: number;
   margin?: number;
   freeMargin?: number;
+  leverage?: number;
   updatedAt: number;
 }
 
@@ -335,6 +340,7 @@ function saveAccountSnapshot(userId: string, report: EaReport): void {
     equity: report.equity,
     margin: report.margin,
     freeMargin: report.freeMargin,
+    leverage: report.leverage,
     updatedAt: Date.now(),
   } satisfies AccountSnapshot);
 }
