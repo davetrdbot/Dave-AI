@@ -99,15 +99,30 @@ export class ThinkingIndicator {
    * text live, icon-prefixed by typed action. Every call reuses the same
    * draft_id so Telegram animates the change on the same ephemeral
    * draft, per the real sendRichMessageDraft contract.
+   *
+   * Item 13 real bug fixed (user: "the bot starts showing 'typing,' but then stalls or times
+   * out right before actually sending"): every real caller invokes this as `void
+   * indicator.update(...)` -- fire-and-forget, since a mid-task draft update must never block
+   * the real work. But this method had NO error handling at all: a genuine transient failure
+   * (a real Telegram rate limit, a draft that already expired, a network blip) threw INSIDE a
+   * promise nobody was awaiting or catching -- a real unhandled promise rejection, which
+   * Node's default behavior (unhandledRejection -> throw) turns into an uncaught exception that
+   * CRASHES THE WHOLE PROCESS. That exactly matches the reported symptom: typing shows (from
+   * start()), then the process dies mid-task on the next draft update, so finalize() never runs
+   * and nothing further is ever sent -- not a hang, a real crash. Best-effort now, matching the
+   * same swallow-and-continue pattern start() already uses: a failed draft update is cosmetic
+   * and must never take down the real task.
    */
   async update(action: ActionType, text: string): Promise<void> {
     const rendered = iconize(action, text);
     this.updates.push({ action, text });
-    await this.client.sendRichMessageDraft({
-      chat_id: this.chatId,
-      draft_id: this.draftId,
-      rich_message: { html: rendered },
-    });
+    await this.client
+      .sendRichMessageDraft({
+        chat_id: this.chatId,
+        draft_id: this.draftId,
+        rich_message: { html: rendered },
+      })
+      .catch(() => {});
   }
 
   /**

@@ -81,6 +81,38 @@ assert.notEqual(firstDraftId, secondDraftId);
 
 console.log("\n[Part A] PASSED\n");
 
+// --- Item 13 real bug fixed: a fire-and-forget `void indicator.update(...)` call that fails
+// must NEVER become an unhandled promise rejection -- that crashes the whole Node process,
+// exactly matching the reported symptom ("starts showing 'typing,' but then stalls or times out
+// right before actually sending": typing shows from start(), then the process dies on the next
+// failed draft update, so finalize() never runs and nothing further is ever sent). ---
+console.log("[Part A2] A real failing draft update must NEVER crash the process (unhandled rejection)...\n");
+let unhandledRejectionFired = false;
+const onUnhandledRejection = () => { unhandledRejectionFired = true; };
+process.on("unhandledRejection", onUnhandledRejection);
+const flakyClient = {
+  sendChatAction: async () => true,
+  sendRichMessageDraft: async () => { throw new Error("simulated real transient Telegram failure (rate limit / expired draft)"); },
+  sendRichMessage: async (body: Record<string, unknown>) => {
+    sentCalls.push({ method: "sendRichMessage", body });
+    return { message_id: 1001 };
+  },
+} as unknown as TelegramClient;
+const flakyResult = await withThinkingIndicator(flakyClient, 111222, async (indicator) => {
+  // Exactly how every real caller invokes it (agent-loop.ts's onStep): fire-and-forget, never awaited.
+  void indicator.update("api", "this draft update will genuinely fail");
+  void indicator.update("trade", "so will this one");
+  await new Promise((r) => setTimeout(r, 20)); // let the real fire-and-forget rejections genuinely settle
+  return { result: "real task completed", finalText: "Done despite the flaky drafts." };
+});
+await new Promise((r) => setTimeout(r, 20)); // real extra tick, in case Node needed to schedule the unhandledRejection event
+process.off("unhandledRejection", onUnhandledRejection);
+assert.equal(unhandledRejectionFired, false, "a failed draft update must genuinely never surface as an unhandled promise rejection");
+assert.equal(flakyResult, "real task completed", "the real task must genuinely complete despite the flaky drafts");
+console.log("    confirmed: 2 real failing draft updates, ZERO unhandled rejections, the real task still completed normally");
+
+console.log("\n=== Part A2 PASSED ===\n");
+
 // --- Part B: real network round-trip, proving genuine HTTP calls (not a stub) ---
 console.log("[Part B] Real HTTP round-trip to the real api.telegram.org (no valid token available)...\n");
 const realCalls: { method: string; body: any }[] = [];
