@@ -26,10 +26,39 @@ export interface EaBridgeEvents {
   onClosedPosition?: (userId: string, closed: EaClosedPosition) => void;
 }
 
+/**
+ * Item 14 real gap fixed (user: "close-trade notification still sends multiple times -- the
+ * earlier duplicate-message fix does not appear to hold for trade-close notifications
+ * specifically"). Root cause confirmed: `createEaWebhookServer` had no idempotency key at all --
+ * if the same report body ever reaches the server twice (a real, observable MT5 `WebRequest`
+ * network-retry pattern: the POST genuinely lands and gets processed, but the response never
+ * makes it back to the EA, so it retries), the identical `closedPositions`/manual-close entry
+ * gets processed twice, double-firing the notification. A short-TTL, per-user "already notified
+ * this ticket" guard makes the real notification fire exactly once regardless of how many times
+ * the underlying report arrives.
+ */
+const CLOSE_DEDUP_TTL_MS = 5 * 60 * 1000;
+
 export class EaBridge {
   private readonly executors = new Map<string, EaTradeExecutor>();
+  private readonly recentlyNotifiedCloses = new Map<string, number>(); // `${userId}:${ticket}` -> first-seen timestamp
 
   constructor(private readonly events: EaBridgeEvents = {}) {}
+
+  /** Returns true (and records it) the FIRST time this ticket's close is seen within the TTL
+   *  window; returns false for every subsequent duplicate within that window -- the real
+   *  idempotency check. Opportunistically prunes expired entries so this map never grows
+   *  unbounded over a long-running process. */
+  private shouldNotifyClose(userId: string, ticket: string): boolean {
+    const now = Date.now();
+    for (const [key, seenAt] of this.recentlyNotifiedCloses) {
+      if (now - seenAt >= CLOSE_DEDUP_TTL_MS) this.recentlyNotifiedCloses.delete(key);
+    }
+    const key = `${userId}:${ticket}`;
+    if (this.recentlyNotifiedCloses.has(key)) return false;
+    this.recentlyNotifiedCloses.set(key, now);
+    return true;
+  }
 
   getExecutor(userId: string): EaTradeExecutor {
     if (!this.executors.has(userId)) this.executors.set(userId, new EaTradeExecutor(userId));
@@ -66,6 +95,7 @@ export class EaBridge {
     for (const position of disappeared) {
       if (daveClosedThisCycle.has(position.ticket)) continue; // Dave's own close, not manual
       if (reportedClosedTickets.has(position.ticket)) continue; // already reported (TP/SL/etc), not manual
+      if (!this.shouldNotifyClose(userId, position.ticket)) continue; // item 14: already notified this ticket
       this.events.onManualClose?.(userId, position);
     }
 
@@ -76,6 +106,7 @@ export class EaBridge {
     }
 
     for (const closed of report.closedPositions ?? []) {
+      if (!this.shouldNotifyClose(userId, closed.ticket)) continue; // item 14: already notified this ticket
       this.events.onClosedPosition?.(userId, closed);
     }
 
