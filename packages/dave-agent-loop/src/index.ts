@@ -9,3 +9,4 @@ export * from "./feedback-loop-handler.js";
 export * from "./primary-chat.js";
 export * from "./setup-panel.js";
 export * from "./autonomous-trading-state.js";
+export * from "./worker-bot-tokens.js";

@@ -12,6 +12,15 @@ import { requestAnalysis } from "./analysis-request.js";
  */
 export interface EaToolContext {
   userId: string;
+  /**
+   * User-requested addition ("the bot just reported a timeout... give them unlimited timeout"):
+   * an optional override for the real EA analysis round-trip's timeout, per call context. Undefined
+   * uses requestAnalysis's own real default (15s). Setup Panel specialists (setup-panel.ts) pass a
+   * real, very generous timeout here -- not literally infinite (an actually-unbounded wait risks a
+   * genuinely hung agent-loop step with no way to recover), but long enough that the real analysis
+   * timeout is never what stops a worker mid-discussion.
+   */
+  timeoutMs?: number;
 }
 
 export interface EaToolDefinition {
@@ -57,7 +66,7 @@ function analysisTool(toolName: string, endpoint: string, summary: string): EaTo
     name: toolName,
     description: `Real, on-demand ${summary} computed LIVE by the connected MT5 EA for ANY symbol in its Market Watch, not just the chart it's attached to. Replaces the retired DAVEMA /${endpoint} endpoint.`,
     parameters: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["symbol"] },
-    execute: async (args, ctx) => requestAnalysis(ctx.userId, endpoint, args.symbol as string, (args.timeframe as string) ?? "M15"),
+    execute: async (args, ctx) => requestAnalysis(ctx.userId, endpoint, args.symbol as string, (args.timeframe as string) ?? "M15", ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined),
   };
 }
 

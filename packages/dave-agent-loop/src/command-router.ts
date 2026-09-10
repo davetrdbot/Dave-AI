@@ -124,6 +124,8 @@ import { getProviderTimeoutConfig, setPrimaryTimeoutSeconds, setFallbackTimeoutS
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
 import { friendlyErrorMessage } from "./error-messages.js";
+import { WORKER_BOT_SPECIALISTS, listWorkerBotStatus, setWorkerBotToken, removeWorkerBotToken, getPanelGroupChatId, setPanelGroupChatId, type WorkerBotSpecialist } from "./worker-bot-tokens.js";
+import { setPendingWorkerBotEntry, getPendingWorkerBotEntry } from "./pending-worker-bot-entry.js";
 
 /**
  * Real gap fixed (A2/A3): onUpdate had zero command router -- every
@@ -568,6 +570,19 @@ export async function tryHandlePendingE2BKeyEntry(deps: CommandRouterDeps, chatI
   return true;
 }
 
+/** The capture half of /settings -> Worker Bots -> "Add token" (see setup-panel.ts's
+ *  postToWorkerGroupChat for how this real token is actually used). */
+export async function tryHandlePendingWorkerBotEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const index = getPendingWorkerBotEntry(deps.userId);
+  if (index === null) return false;
+  setPendingWorkerBotEntry(deps.userId, null);
+  const specialist = WORKER_BOT_SPECIALISTS[index] as WorkerBotSpecialist | undefined;
+  if (!specialist) return true; // stale index (e.g. list shrank) -- nothing real to save
+  setWorkerBotToken(deps.userId, specialist, text.trim());
+  await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ Bot token saved for "${specialist}".` });
+  return true;
+}
+
 export async function tryHandlePendingFirecrawlKeyEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
   if (!getPendingFirecrawlKeyEntry(deps.db, deps.userId)) return false;
   setPendingFirecrawlKeyEntry(deps.db, deps.userId, false);
@@ -635,6 +650,7 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Trading Session", "blue", "settings:session")],
       [coloredButton("Confidence Rate", "blue", "settings:confidence")],
       [coloredButton("Firecrawl Keys", "blue", "settings:firecrawl"), coloredButton("MCP Servers", "blue", "settings:mcp")],
+      [coloredButton("Worker Bots", "blue", "settings:workerbots")],
     ])
   );
 }
@@ -878,6 +894,31 @@ function mcpServersKeyboard(deps: CommandRouterDeps): { text: string; reply_mark
 
 async function handleSettings(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   await sendOrEditScreen(deps, chatId, "<b>Settings</b>\nTrading behavior (what/when/how to trade) is built in -- see /help. This screen is for account/risk settings only.", settingsTopKeyboard(), editMessageId);
+}
+
+/**
+ * User-requested addition ("bot can now talk to each other in group... add in settings like a
+ * each worker panel have its own bot token so I can see how they are talking to each other").
+ * Each of the 8 Setup Panel specialists (setup-panel.ts) can be given its own real Telegram bot
+ * token here -- when configured (and a real panel group chat is set via /set_panel_group), that
+ * specialist's real findings are also posted to that group using its own bot identity, visibly
+ * distinct from every other specialist and from Dave's own bot.
+ */
+function workerBotsKeyboard(deps: CommandRouterDeps): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const status = listWorkerBotStatus(deps.userId);
+  const groupChatId = getPanelGroupChatId(deps.userId);
+  const lines = [
+    "<b>Worker Bots</b>",
+    "Give each Setup Panel specialist its own real Telegram bot so you can watch them discuss a candidate live in a group chat.",
+    "",
+    groupChatId !== undefined ? `Panel group: set (chat ${groupChatId})` : "Panel group: not set -- create a group, add Dave's bot + each specialist's bot, then send /set_panel_group inside it.",
+  ];
+  const rows: ReturnType<typeof coloredButton>[][] = status.map((s, i) => [
+    coloredButton(`${s.configured ? "🟢" : "⚪"} ${s.specialist}`, "neutral", `workerbot:noop:${i}`),
+    coloredButton(s.configured ? "Replace" : "Add token", "blue", `workerbot:add:${i}`),
+    ...(s.configured ? [coloredButton("Remove", "red", `workerbot:remove:${i}`)] : []),
+  ]);
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 function riskSettingsKeyboard(userId: string) {
@@ -1292,6 +1333,18 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
     case "trades":
       await handleTrades(deps, chatId, editMessageId);
       break;
+    case "set_panel_group":
+      // User-requested addition ("each worker panel have its own bot token so I can see how
+      // they are talking to each other"): captured by sending this command INSIDE a real
+      // Telegram group where the user has added Dave's own bot alongside every worker bot --
+      // Dave's already-live webhook receives it (chatId IS that group's real chat id), no
+      // separate webhook per worker bot needed.
+      setPanelGroupChatId(deps.userId, chatId);
+      await deps.client.sendMessage({
+        chat_id: chatId,
+        text: "✅ This group is now set as the Setup Panel's chat. Add each specialist's own bot token in /settings → Worker Bots, and their real findings will post here during a live panel discussion.",
+      });
+      break;
   }
 }
 
@@ -1698,6 +1751,26 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const view = firecrawlKeyboard(deps);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data.startsWith("firecrawlkey:noop:")) {
+      ackText = undefined;
+    } else if (data === "settings:workerbots") {
+      ackText = undefined;
+      const view = workerBotsKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("workerbot:add:")) {
+      const index = Number(data.slice("workerbot:add:".length));
+      const specialist = WORKER_BOT_SPECIALISTS[index];
+      setPendingWorkerBotEntry(deps.userId, index);
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Reply with the real Telegram bot token (from @BotFather) for "${specialist}" as your next message.` });
+    } else if (data.startsWith("workerbot:remove:")) {
+      const index = Number(data.slice("workerbot:remove:".length));
+      const specialist = WORKER_BOT_SPECIALISTS[index];
+      removeWorkerBotToken(deps.userId, specialist);
+      ackText = "Removed";
+      await confirm(`"${specialist}"'s bot token removed`);
+      const view = workerBotsKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("workerbot:noop:")) {
       ackText = undefined;
     } else if (data === "settings:mcp") {
       ackText = undefined;

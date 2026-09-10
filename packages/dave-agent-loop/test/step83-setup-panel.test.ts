@@ -151,17 +151,18 @@ async function main() {
     assert.equal(result.proposal?.slPips, 20);
     assert.equal(result.proposal?.tpPips, 40);
 
-    console.log("\n[3] The real transcript contains every one of the 7 specialists' real findings PLUS the synthesis verdict -- Dave can see the actual discussion, not just a compressed summary...\n");
-    assert.equal(result.transcript.length, 8, "7 specialist messages + 1 synthesis message, all real and persisted");
+    console.log("\n[3] The real transcript contains every one of the 7 analytical specialists' real findings PLUS the Goal & Risk Appetite voice PLUS the synthesis verdict -- Dave can see the actual discussion, not just a compressed summary...\n");
+    assert.equal(result.transcript.length, 9, "7 analytical specialist messages + 1 goal_risk message + 1 synthesis message, all real and persisted");
     for (const group of SETUP_PANEL_GROUPS) {
       assert.ok(result.transcript.some((m) => m.content.includes(`[${group.name}]`)), `the real transcript must contain ${group.name}'s own real finding, not a merged summary`);
     }
+    assert.ok(result.transcript.some((m) => m.content.includes("[Goal & Risk Appetite]")), "the real 8th goal_risk voice must be in the transcript too");
     assert.ok(result.transcript.some((m) => m.content.includes("CONVERGED")), "the real synthesis verdict must be in the transcript too");
     console.log(`    real transcript (${result.transcript.length} messages):`);
     for (const m of result.transcript) console.log(`      ${m.from}: ${m.content.slice(0, 90)}${m.content.length > 90 ? "…" : ""}`);
 
     console.log("\n[4] Every specialist + the synthesis step genuinely routed through the configured PRIMARY provider (openai), not a hardcoded one...\n");
-    assert.equal(openaiCalls, 16, "7 specialists x 2 real calls (1 tool call + 1 finding) + 2 synthesis calls (1 tool call + 1 closing text) = 16");
+    assert.equal(openaiCalls, 18, "7 analytical specialists + 1 goal_risk specialist, each x 2 real calls (1 tool call + 1 finding) + 2 synthesis calls (1 tool call + 1 closing text) = 18");
   } finally {
     globalThis.fetch = realFetch;
   }

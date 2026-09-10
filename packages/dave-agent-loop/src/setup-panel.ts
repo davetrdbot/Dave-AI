@@ -1,9 +1,30 @@
 import type { DaveDatabase } from "@dave/db";
-import { EA_ANALYSIS_TOOLS, type EaToolDefinition } from "@dave/ea-bridge";
+import { EA_ANALYSIS_TOOLS, EA_STATE_TOOLS, type EaToolDefinition } from "@dave/ea-bridge";
 import { createWorker, retireWorker, sendMessage as sendCommsMessage, getCommsLog, DAVE_PARTICIPANT_ID, type CommsMessage } from "@dave/workers";
+import { TelegramClient } from "@dave/telegram";
 import { AgentLoop } from "./agent-loop.js";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { modelConfigProvider } from "./provider-selection.js";
+import { getWorkerBotToken, getPanelGroupChatId } from "./worker-bot-tokens.js";
+
+/**
+ * User-requested addition ("each worker panel have its own bot token so I can see how they are
+ * talking to each other"). Best-effort, purely additional: when the user has configured a real
+ * bot token for this specialist AND a real panel group chat id (/set_panel_group, captured via
+ * Dave's own already-live webhook when that command is sent inside the group), the specialist's
+ * real finding is ALSO posted to that group using its own real Telegram bot identity -- a
+ * genuinely separate bot, visibly distinct from Dave and from every other specialist's bot, so
+ * the user can literally watch them converse. Never required: setup-panel.ts's internal comms
+ * log (getPanelTranscript) is unconditionally written regardless, so Dave's own visibility into
+ * the discussion never depends on this being configured.
+ */
+async function postToWorkerGroupChat(ownerUserId: string, specialist: string, workerName: string, text: string): Promise<void> {
+  const token = getWorkerBotToken(ownerUserId, specialist);
+  const groupChatId = getPanelGroupChatId(ownerUserId);
+  if (!token || groupChatId === undefined) return;
+  const client = new TelegramClient(token);
+  await client.sendMessage({ chat_id: groupChatId, text: `${workerName} (${specialist}): ${text}` }).catch(() => {});
+}
 
 /**
  * Item 7: the "Setup Panel" -- multiple specialized analyst workers that jointly review a
@@ -65,6 +86,15 @@ export interface SetupPanelResult {
 
 const toolByEndpoint = new Map<string, EaToolDefinition>(EA_ANALYSIS_TOOLS.map((t) => [t.name.replace(/^get_/, ""), t]));
 
+/**
+ * User-requested addition ("the bot just reported a timeout... give them unlimited timeout"):
+ * Setup Panel specialists' own real EA analysis calls get a real, very generous timeout instead
+ * of requestAnalysis's own 15s default -- not literally infinite (an actually-unbounded wait
+ * would risk a genuinely hung step with no way to recover), but long enough that the real EA
+ * round trip is never what cuts a specialist off mid-analysis.
+ */
+const WORKER_ANALYSIS_TIMEOUT_MS = 10 * 60 * 1000;
+
 async function runSpecialist(params: {
   db: DaveDatabase;
   ownerUserId: string;
@@ -79,7 +109,7 @@ async function runSpecialist(params: {
 
   const registry = new ToolRegistry();
   const groupTools = group.endpoints.map((e) => toolByEndpoint.get(e)).filter((t): t is EaToolDefinition => t !== undefined);
-  registry.register(adaptTools(groupTools, { userId: ownerUserId }));
+  registry.register(adaptTools(groupTools, { userId: ownerUserId, timeoutMs: WORKER_ANALYSIS_TIMEOUT_MS }));
 
   const rawResults: { toolName: string; result: unknown }[] = [];
   const priorDiscussion = priorFindings.map((f) => `[${f.group}]: ${f.text}`).join("\n\n");
@@ -103,8 +133,63 @@ async function runSpecialist(params: {
 
   const text = result.status === "done" ? result.text || "(no finding -- tools returned nothing usable)" : "(paused -- a Setup Panel specialist cannot ask the user a question)";
   sendCommsMessage(ownerUserId, worker.id, threadId, `[${group.name}] ${text}`);
+  await postToWorkerGroupChat(ownerUserId, group.name, worker.name, text);
   retireWorker(ownerUserId, worker.id);
   return { workerId: worker.id, workerName: worker.name, text, rawResults };
+}
+
+/**
+ * User-requested addition ("create another worker named goal_risk... a risk taker... takes
+ * privilege from any opportunity... reminds them see the account we need to find a setup... let's
+ * take the risk"). An 8th real panel participant, distinct from the 7 analytical specialists
+ * above: not tied to its own slice of the 44 EA endpoints (it doesn't need one -- its real job is
+ * account-growth-goal advocacy, not fresh technical data), so it draws on the real account
+ * snapshot (get_account_balance) and argues from trading.md's own real account-growth-milestone
+ * mandate. Its voice is deliberately aggressive/urgency-pushing (per the user's explicit ask,
+ * "naughty," "let's take the risk") -- but it is still bound to real, honest tool data (never
+ * invents a number) and its finding is just ONE more voice the synthesis step weighs; it has no
+ * special authority to force convergence, and Dave still reviews any resulting proposal against
+ * its own judgment (trading.md) before ever calling trade_execute -- this is a real persona in
+ * the discussion, not a bypass of the existing approval/risk-discipline machinery.
+ */
+const GOAL_RISK_SPECIALIST_NAME = "Goal & Risk Appetite";
+
+async function runGoalRiskSpecialist(params: {
+  db: DaveDatabase;
+  ownerUserId: string;
+  symbol: string;
+  timeframe: string;
+  priorFindings: { group: string; text: string }[];
+  threadId: string;
+}): Promise<{ workerId: string; workerName: string; text: string }> {
+  const { db, ownerUserId, symbol, timeframe, priorFindings, threadId } = params;
+  const worker = createWorker(ownerUserId, { assignment: "temporary", role: "trading", task: `Setup Panel specialist: ${GOAL_RISK_SPECIALIST_NAME} for ${symbol}` });
+
+  const registry = new ToolRegistry();
+  registry.register(adaptTools(EA_STATE_TOOLS.filter((t) => t.name === "get_account_balance"), { userId: ownerUserId }));
+
+  const priorDiscussion = priorFindings.map((f) => `[${f.group}]: ${f.text}`).join("\n\n");
+  const systemPrompt =
+    `You are ${worker.name}, Dave's real "${GOAL_RISK_SPECIALIST_NAME}" voice on his Setup Panel. Your job is different from the other specialists: you're not here to run fresh technical analysis -- you're the panel's risk-appetite advocate. Call get_account_balance for the real current account state, then weigh the rest of the panel's ACTUAL real findings below against Dave's real account-growth mandate (this account is meant to compound aggressively toward real milestones, not sit idle) -- push for taking a genuine opportunity when the real data actually supports one, and say so with real urgency ("we need a setup, this account needs to grow, let's take the real edge that's in front of us"). ` +
+    `You are still bound by the truth: you may NEVER invent a number, and if the rest of the panel's real data genuinely does NOT support a real edge, say so honestly instead of manufacturing enthusiasm -- your job is urgency in service of a REAL opportunity, not urgency instead of one. Give a SHORT (2-4 sentence) real finding, citing the real account state and referencing what the rest of the panel actually found.\n\n` +
+    (priorDiscussion ? `Here is the rest of the panel's real discussion so far:\n\n${priorDiscussion}` : "You're first to report -- unusual, but give your real read on the account state.");
+
+  const notify = () => {};
+  const provider = modelConfigProvider(db, ownerUserId, notify);
+  const loop = new AgentLoop(provider, registry);
+  const result = await loop.run(
+    [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: `Weigh in on ${symbol} (${timeframe}) now.` },
+    ],
+    { maxSteps: 4 }
+  );
+
+  const text = result.status === "done" ? result.text || "(no finding)" : "(paused -- a Setup Panel specialist cannot ask the user a question)";
+  sendCommsMessage(ownerUserId, worker.id, threadId, `[${GOAL_RISK_SPECIALIST_NAME}] ${text}`);
+  await postToWorkerGroupChat(ownerUserId, GOAL_RISK_SPECIALIST_NAME, worker.name, text);
+  retireWorker(ownerUserId, worker.id);
+  return { workerId: worker.id, workerName: worker.name, text };
 }
 
 /**
@@ -213,6 +298,12 @@ export async function runSetupPanel(params: { db: DaveDatabase; ownerUserId: str
     const specialist = await runSpecialist({ db, ownerUserId, symbol, timeframe, group, priorFindings: findings, threadId });
     findings.push({ group: group.name, text: specialist.text });
   }
+
+  // The 8th, non-analytical voice -- reports last, after every real analytical specialist, so
+  // its account-growth-goal advocacy is grounded in what the panel actually found, not argued
+  // in a vacuum ahead of the real data.
+  const goalRisk = await runGoalRiskSpecialist({ db, ownerUserId, symbol, timeframe, priorFindings: findings, threadId });
+  findings.push({ group: GOAL_RISK_SPECIALIST_NAME, text: goalRisk.text });
 
   const synthesis = await runSynthesis({ db, ownerUserId, symbol, findings, threadId });
 

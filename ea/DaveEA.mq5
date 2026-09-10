@@ -614,17 +614,33 @@ void ExecuteOneCommand(string obj)
 //| symbol in Market Watch, not just the one it's attached to.        |
 //+------------------------------------------------------------------+
 
+// Real gap fixed (user: "it should have the ability to use any tf" -- only 8 of MT5's real 21
+// timeframes were ever mapped, so any other real, legal one (M2/M3/M4/M6/M10/M12/M20/H2/H3/H6/
+// H8/H12/MN1) silently fell through to the M15 default instead of genuinely being used).
 ENUM_TIMEFRAMES TimeframeFromString(string tf)
   {
    if(tf == "M1")  return PERIOD_M1;
+   if(tf == "M2")  return PERIOD_M2;
+   if(tf == "M3")  return PERIOD_M3;
+   if(tf == "M4")  return PERIOD_M4;
    if(tf == "M5")  return PERIOD_M5;
+   if(tf == "M6")  return PERIOD_M6;
+   if(tf == "M10") return PERIOD_M10;
+   if(tf == "M12") return PERIOD_M12;
    if(tf == "M15") return PERIOD_M15;
+   if(tf == "M20") return PERIOD_M20;
    if(tf == "M30") return PERIOD_M30;
    if(tf == "H1")  return PERIOD_H1;
+   if(tf == "H2")  return PERIOD_H2;
+   if(tf == "H3")  return PERIOD_H3;
    if(tf == "H4")  return PERIOD_H4;
+   if(tf == "H6")  return PERIOD_H6;
+   if(tf == "H8")  return PERIOD_H8;
+   if(tf == "H12") return PERIOD_H12;
    if(tf == "D1")  return PERIOD_D1;
    if(tf == "W1")  return PERIOD_W1;
-   return PERIOD_M15; // real DAVEMA default, ported verbatim
+   if(tf == "MN1") return PERIOD_MN1;
+   return PERIOD_M15; // real DAVEMA default, ported verbatim -- only for a genuinely unrecognized string
   }
 
 // Real bars loaded for the REQUESTED symbol+timeframe, index 0 = most recent (series order) --
@@ -639,35 +655,124 @@ datetime g_aT[];
 int      g_aDigits = 5;
 double   g_aPoint = 0.00001, g_aPip = 0.0001;
 
+// Real gap fixed (user: "the bars shouldn't [need to] fill [before it can] start working -- it
+// can just use from the previous"). A real per-symbol+timeframe cache of the last successfully
+// loaded bar series: when a fresh CopyRates() genuinely doesn't have enough bars yet (MT5 still
+// downloading history for a symbol/timeframe combo nothing has asked for recently), this reuses
+// the last real series already loaded for that exact combo instead of blocking on a live
+// resync -- the real root cause of the reported analysis timeouts. Bounded to
+// DAVEEA_CACHE_SLOTS combos (round-robin eviction) -- a real pair group's active symbols/
+// timeframes all fit comfortably within that.
+#define DAVEEA_CACHE_SLOTS 24
+string   g_cacheKey[DAVEEA_CACHE_SLOTS];
+int      g_cacheNb[DAVEEA_CACHE_SLOTS];
+double   g_cacheO[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
+double   g_cacheH[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
+double   g_cacheL[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
+double   g_cacheC[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
+long     g_cacheV[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
+datetime g_cacheT[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
+int      g_cacheNextSlot = 0;
+
+int FindCacheSlot(string key)
+  {
+   for(int i = 0; i < DAVEEA_CACHE_SLOTS; i++)
+      if(g_cacheKey[i] == key) return i;
+   return -1;
+  }
+
+void SaveAnalysisCache(string key, int copied, MqlRates &rates[])
+  {
+   int slot = FindCacheSlot(key);
+   if(slot < 0)
+     {
+      slot = g_cacheNextSlot;
+      g_cacheNextSlot = (g_cacheNextSlot + 1) % DAVEEA_CACHE_SLOTS;
+      g_cacheKey[slot] = key;
+     }
+   int n = MathMin(copied, DAVEEA_BARS);
+   g_cacheNb[slot] = n;
+   for(int i = 0; i < n; i++)
+     {
+      g_cacheO[slot][i] = rates[i].open;  g_cacheH[slot][i] = rates[i].high;
+      g_cacheL[slot][i] = rates[i].low;   g_cacheC[slot][i] = rates[i].close;
+      g_cacheV[slot][i] = rates[i].tick_volume; g_cacheT[slot][i] = rates[i].time;
+     }
+  }
+
+bool LoadAnalysisCache(string key)
+  {
+   int slot = FindCacheSlot(key);
+   if(slot < 0 || g_cacheNb[slot] <= 0) return false;
+   int n = g_cacheNb[slot];
+   g_anb = n;
+   ArrayResize(g_aO, n); ArrayResize(g_aH, n); ArrayResize(g_aL, n); ArrayResize(g_aC, n);
+   ArrayResize(g_aV, n); ArrayResize(g_aT, n);
+   for(int i = 0; i < n; i++)
+     {
+      g_aO[i] = g_cacheO[slot][i]; g_aH[i] = g_cacheH[slot][i];
+      g_aL[i] = g_cacheL[slot][i]; g_aC[i] = g_cacheC[slot][i];
+      g_aV[i] = g_cacheV[slot][i]; g_aT[i] = g_cacheT[slot][i];
+     }
+   return true;
+  }
+
 // Real gap fixed (user report: "the bars are still entering" -- get_trend/get_momentum/
 // get_volatility failing right after the EA is attached to a fresh symbol/timeframe): MT5
 // caches price history PER symbol+timeframe and downloads it from the broker asynchronously
 // the first time anything asks for it -- CopyRates() on a symbol nothing has touched yet can
 // legitimately return 0 or a handful of bars on the FIRST call, even though the broker has
-// years of real history available. The old code treated that as "not enough real history,
-// period" and failed immediately, which meant analysis only started working once enough LIVE
-// ticks had trickled in one bar at a time -- exactly the "waiting for new ones to enter"
-// symptom reported. The real fix: explicitly ask MT5 to synchronize this series and give it a
-// bounded window to finish the download BEFORE giving up, so a fresh symbol gets its real past
-// history immediately instead of waiting on the future.
+// years of real history available.
+//
+// Real gap fixed again (user: "the bars shouldn't [need to] fill [before it can] start
+// working... it can just use from the previous"): a live, blocking Sleep-wait for a fresh
+// resync was still the real cause of reported analysis timeouts. Now the real cached series
+// from this exact symbol+timeframe's last successful load (DAVEEA_CACHE_SLOTS, above) is used
+// FIRST when a fresh CopyRates() doesn't have enough bars yet -- genuinely real, previously
+// loaded data, not fabricated -- so analysis never blocks on a live resync for a symbol/
+// timeframe it has already seen before. The bounded live wait is now a LAST resort, only for a
+// symbol+timeframe combo this EA has genuinely never loaded before (nothing cached to fall
+// back to).
 bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
   {
+   string key = sym + "|" + IntegerToString((int)tf);
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
    int copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
-   if(copied <= 20)
+   if(copied > 20)
      {
-      // Not synchronized yet -- give MT5 a real, bounded window to finish downloading this
-      // symbol/timeframe's history from the broker, then retry once more. Shortened from a
-      // 4s budget (20x200ms) to 1.5s (10x150ms): PrewarmAnalysisSymbols already kicked off
-      // background sync for every symbol in this batch before this per-command loop started,
-      // so by the time a given symbol reaches this wait it usually already has a real head
-      // start -- this is now a top-up wait, not the only chance to sync.
-      for(int attempt = 0; attempt < 10 && !SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED); attempt++)
-         Sleep(150);
-      copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
+      g_anb = copied;
+      ArrayResize(g_aO, copied); ArrayResize(g_aH, copied); ArrayResize(g_aL, copied); ArrayResize(g_aC, copied);
+      ArrayResize(g_aV, copied); ArrayResize(g_aT, copied);
+      for(int i = 0; i < copied; i++)
+        {
+         g_aO[i] = rates[i].open; g_aH[i] = rates[i].high; g_aL[i] = rates[i].low; g_aC[i] = rates[i].close;
+         g_aV[i] = rates[i].tick_volume; g_aT[i] = rates[i].time;
+        }
+      g_aDigits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      g_aPoint  = SymbolInfoDouble(sym, SYMBOL_POINT);
+      g_aPip    = (g_aDigits == 3 || g_aDigits == 5) ? g_aPoint * 10 : g_aPoint;
+      if(g_aPip <= 0) g_aPip = g_aPoint > 0 ? g_aPoint : 0.0001;
+      SaveAnalysisCache(key, copied, rates);
+      return true;
      }
-   if(copied <= 20) return false; // genuinely not enough real history even after waiting for sync
+   // Not enough freshly-copied bars -- use the real, previously loaded series for this EXACT
+   // symbol+timeframe if we have one, instead of blocking on a live resync.
+   if(LoadAnalysisCache(key))
+     {
+      g_aDigits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      g_aPoint  = SymbolInfoDouble(sym, SYMBOL_POINT);
+      g_aPip    = (g_aDigits == 3 || g_aDigits == 5) ? g_aPoint * 10 : g_aPoint;
+      if(g_aPip <= 0) g_aPip = g_aPoint > 0 ? g_aPoint : 0.0001;
+      return true;
+     }
+   // Genuinely never loaded this symbol+timeframe before -- nothing cached to fall back to. One
+   // real, bounded wait (not blocking indefinitely) since MT5 is downloading it right now;
+   // PrewarmAnalysisSymbols already gave it a real head start before this per-command loop began.
+   for(int attempt = 0; attempt < 10 && !SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED); attempt++)
+      Sleep(150);
+   copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
+   if(copied <= 20) return false; // genuinely no real history available at all, even after waiting
    g_anb = copied;
    ArrayResize(g_aO, copied); ArrayResize(g_aH, copied); ArrayResize(g_aL, copied); ArrayResize(g_aC, copied);
    ArrayResize(g_aV, copied); ArrayResize(g_aT, copied);
@@ -680,6 +785,7 @@ bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
    g_aPoint  = SymbolInfoDouble(sym, SYMBOL_POINT);
    g_aPip    = (g_aDigits == 3 || g_aDigits == 5) ? g_aPoint * 10 : g_aPoint;
    if(g_aPip <= 0) g_aPip = g_aPoint > 0 ? g_aPoint : 0.0001;
+   SaveAnalysisCache(key, copied, rates);
    return true;
   }
 
