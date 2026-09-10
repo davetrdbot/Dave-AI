@@ -223,7 +223,7 @@ async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: Te
     role: "user",
     content: withLiveContext(
       deps.ownerUserId,
-      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Scan your active pair group for a genuine setup using your real analysis tools and goal.yaml rules, and act (open/manage a real trade) if one genuinely clears. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
+      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Scan your active pair group for a genuine setup using your real analysis tools and your own trading behavior, and act (open/manage a real trade) if one genuinely clears. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
     ) as string,
   });
 

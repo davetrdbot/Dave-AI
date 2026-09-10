@@ -862,7 +862,7 @@ function mcpServersKeyboard(deps: CommandRouterDeps): { text: string; reply_mark
 }
 
 async function handleSettings(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
-  await sendOrEditScreen(deps, chatId, "<b>Settings</b>\nTrading-rule content (what/when/how to trade) lives in your uploaded rules file, never here.", settingsTopKeyboard(), editMessageId);
+  await sendOrEditScreen(deps, chatId, "<b>Settings</b>\nTrading behavior (what/when/how to trade) is built in -- see /help. This screen is for account/risk settings only.", settingsTopKeyboard(), editMessageId);
 }
 
 function riskSettingsKeyboard(userId: string) {
@@ -1085,7 +1085,7 @@ async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<voi
       "• Memory (MEMORY.md, USER.md, ADAPTABILITY.md)\n" +
       "• Trading settings (risk/trading mode/pair group selection/trailing config/write-approval)\n" +
       "• Voice and notification preferences\n\n" +
-      "Your uploaded rules file (goal.yaml) and stored provider/E2B API keys are NOT touched.\n\n" +
+      "Your trading behavior (built in, not something you upload) and stored provider/E2B API keys are NOT touched.\n\n" +
       "This cannot be undone. Continue?",
     parse_mode: "HTML",
     reply_markup: keyboard([[coloredButton("✅ Yes, wipe everything", "green", "resetconfirm:yes"), coloredButton("❌ Cancel", "red", "resetconfirm:no")]]),
@@ -1094,9 +1094,10 @@ async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<voi
 
 /**
  * The actual real wipe -- only ever reached after the user explicitly taps "Yes" above.
- * Deliberately does NOT touch goal.yaml (the user's real, authored trading rules -- same
- * reasoning BOOTSTRAP.md already uses) or any stored provider/E2B API key (credentials, not
- * "settings" -- losing those would be a real, costly surprise, not a helpful fresh start).
+ * Deliberately does NOT touch goal.yaml (an optional, real user-authored override some users
+ * may still have set -- same reasoning BOOTSTRAP.md used to use for the rules-file era) or any
+ * stored provider/E2B API key (credentials, not "settings" -- losing those would be a real,
+ * costly surprise, not a helpful fresh start).
  *
  * Telegram limitation, honestly reported rather than faked: bots can only delete their OWN
  * messages (and only within 48h) -- there is no real Bot API method to delete a user's own
@@ -1353,7 +1354,7 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       }
     } else if (data === "settings:top") {
       ackText = undefined;
-      await renderInPlace("<b>Settings</b>\nTrading-rule content (what/when/how to trade) lives in your uploaded rules file, never here.", settingsTopKeyboard());
+      await renderInPlace("<b>Settings</b>\nTrading behavior (what/when/how to trade) is built in -- see /help. This screen is for account/risk settings only.", settingsTopKeyboard());
     } else if (data === "settings:risk") {
       ackText = undefined;
       await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));

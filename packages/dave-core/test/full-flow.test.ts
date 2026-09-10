@@ -55,24 +55,21 @@ console.log(`    User: "David"`);
 console.log(`    Dave: "${sentMessages[2].text}"`);
 assert.match(sentMessages[2].text, /terse|detail/i);
 
-console.log("\n[5] User answers Q2 (communication style)...");
+console.log("\n[5] User answers Q2 (communication style) -- onboarding completes immediately, no rules-file wait...");
 const consumed2 = await flow.handleMessage(USER_ID, "Terse, only check in when it matters");
 assert.equal(consumed2, true);
 console.log(`    User: "Terse, only check in when it matters"`);
 console.log(`    Dave: "${sentMessages[3].text}"`);
-assert.match(sentMessages[3].text, /rules file/i);
-
-console.log("\n[6] User acknowledges the rules-file note...");
-const consumed3 = await flow.handleMessage(USER_ID, "sounds good");
-assert.equal(consumed3, true);
-console.log(`    User: "sounds good"`);
-console.log(`    Dave: "${sentMessages[4].text}"`);
-assert.match(sentMessages[4].text, /David/);
-assert.match(sentMessages[4].text, /Terse, only check in when it matters/);
+assert.match(sentMessages[3].text, /David/);
+assert.match(sentMessages[3].text, /Terse, only check in when it matters/);
+// Item 9 real gap fixed: onboarding must never make trading wait on the user uploading a rules
+// file -- Dave's real trading behavior is built in (prompts/trading.md), not user-supplied.
+assert.doesNotMatch(sentMessages[3].text, /upload/i, "must genuinely never ask the user to upload anything");
+assert.doesNotMatch(sentMessages[3].text, /won't touch a trade/i);
 
 const finalProgress = flow.getProgress(USER_ID);
 assert.equal(finalProgress.state, "complete");
-console.log(`\n[7] Bootstrap state machine now: "${finalProgress.state}"`);
+console.log(`\n[7] Bootstrap state machine now: "${finalProgress.state}" -- reached after just 2 real questions`);
 
 // --- Memory file population: 3.6/3.4 real proof ---
 console.log("\n[8] Real memory file contents on disk after the flow:");

@@ -6,7 +6,6 @@ export type BootstrapState =
   | "not-started"
   | "awaiting-name"
   | "awaiting-style"
-  | "awaiting-rules-ack"
   | "complete";
 
 export interface BootstrapProgress {
@@ -25,8 +24,6 @@ const OPENING_MESSAGE =
 const Q1_NAME = "What should I call you?";
 const Q2_STYLE =
   "Terse and to the point, or more detail? And should I check in often, or only when it matters?";
-const Q3_RULES_ACK =
-  "Last thing — I won't touch a trade until you upload your rules file. Send it whenever you're ready.";
 
 function progressPath(userId: string): string {
   return join(process.cwd(), "data", "bootstrap", `${userId}.json`);
@@ -114,19 +111,17 @@ export class BootstrapFlow {
         const style = message.trim();
         appendAdaptability(userId, `Communication style preference: ${style}`);
         progress.styleNote = style;
-        progress.state = "awaiting-rules-ack";
-        saveProgress(progress);
-        await this.transport.send(userId, Q3_RULES_ACK);
-        return true;
-      }
-      case "awaiting-rules-ack": {
         progress.state = "complete";
         saveProgress(progress);
         const name = progress.name ?? "there";
+        // Item 9 real gap fixed (user: "remove any 'please upload your goal.yaml' flow or
+        // mention from onboarding entirely"): this used to make onboarding wait on the user
+        // uploading a rules file before Dave would trade at all. Dave's real trading behavior
+        // (prompts/trading.md) is now built in, not something the user has to hand over first.
         await this.transport.send(
           userId,
-          `Got it, ${name}. I'll keep "${progress.styleNote}" in mind. Talk to me normally from ` +
-            `here — send your rules file whenever you're ready.`
+          `Got it, ${name}. I'll keep "${style}" in mind. I already know how to trade -- talk to ` +
+            `me normally from here, or just tell me to go hunt for a setup.`
         );
         return true;
       }

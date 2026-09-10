@@ -93,9 +93,10 @@ export function ensureUserMemory(userId: string): void {
 
 /**
  * Item 8 (/reset "Delete all memory files (MEMORY.md, USER.md, ADAPTABILITY.md) back to
- * empty"). Deliberately excludes goal.yaml -- that's the user's uploaded trading rules file,
- * real authored content the user would have to redo from scratch, not conversational memory;
- * same reasoning BOOTSTRAP.md already uses for why the rules file survives a fresh cold start.
+ * empty"). Deliberately excludes goal.yaml -- item 9 made Dave's real trading behavior built in
+ * (prompts/trading.md), but a user may still have an optional goal.yaml override set through the
+ * admin panel; that's real authored content they'd have to redo from scratch, not conversational
+ * memory, so a chat-level /reset leaves it alone.
  */
 export function resetUserMemory(userId: string): void {
   const dir = userDir(userId);

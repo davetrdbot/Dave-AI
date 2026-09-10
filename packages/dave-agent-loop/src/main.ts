@@ -62,10 +62,10 @@ function resolvePublicBaseUrl(): string | undefined {
  * were actually loaded into the real booted agent. SYSTEM_PROMPT can
  * still override this wholesale for a genuinely different deployment.
  */
-function loadSystemPrompt(): string {
+export function loadSystemPrompt(): string {
   if (process.env.SYSTEM_PROMPT) return process.env.SYSTEM_PROMPT;
   const promptsDir = join(process.cwd(), "prompts");
-  const files = ["SOUL.md", "IDENTITY.md", "SECURITY.md", "BOOTSTRAP.md"];
+  const files = ["SOUL.md", "IDENTITY.md", "SECURITY.md", "trading.md", "BOOTSTRAP.md"];
   const sections = files.flatMap((file) => {
     try {
       return [readFileSync(join(promptsDir, file), "utf8")];
