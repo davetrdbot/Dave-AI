@@ -23,7 +23,8 @@ import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
-import { recordActiveChat } from "./primary-chat.js";
+import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
+import { isAutonomousTradingEnabled, setAutonomousTradingEnabled } from "./autonomous-trading-state.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
 import { friendlyErrorMessage } from "./error-messages.js";
@@ -179,6 +180,10 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
   if (/^\/(stop|panic)\b/i.test(text)) {
     stopOrPanic(deps.ownerUserId, text.toLowerCase().startsWith("/panic") ? "panic" : "stop");
     stopAutonomousTradingLoop(deps.ownerUserId);
+    // Real gap fixed: an emergency stop must never silently come back on its own after the next
+    // deploy/restart -- the user explicitly killed it, so the persisted intent goes off too,
+    // same as /stop_trading below.
+    setAutonomousTradingEnabled(deps.ownerUserId, false);
     await client.sendMessage({ chat_id: chatId, text: "🛑 Stopped -- all trading and workers halted immediately." });
     return true;
   }
@@ -200,6 +205,12 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
     }
     const wasAlreadyRunning = isAutonomousTradingRunning(deps.ownerUserId);
     const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId));
+    // Real bug fixed (user, live: autonomous trading silently stops on every deploy/restart --
+    // startAutonomousTradingLoop's setInterval is purely in-memory, no persistence, no resume).
+    // Persists the user's real standing intent so a boot-time resume (see the bottom of
+    // startTelegramBotServer below) can genuinely re-arm this after a restart, not leave the
+    // user to notice the silence and manually retype /start_trading every time.
+    setAutonomousTradingEnabled(deps.ownerUserId, true);
     const interval = getTradingLoopIntervalMinutes(deps.ownerUserId);
     let replyText: string;
     if (started) {
@@ -214,6 +225,7 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
   }
   if (/^\/stop_trading\b/i.test(text)) {
     const stopped = stopAutonomousTradingLoop(deps.ownerUserId);
+    setAutonomousTradingEnabled(deps.ownerUserId, false);
     await client.sendMessage({ chat_id: chatId, text: stopped ? "⏸️ Autonomous trading is off. I'll still help directly whenever you message me." : "Autonomous trading wasn't running." });
     return true;
   }
@@ -656,6 +668,25 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       await runAgentTurn(deps, client, chatId, historyKey, userContent, message.text);
     },
   });
+
+  // Real bug fixed (user, live: "it's not analyzing any [expletive] thing" -- reported right
+  // after a routine deploy). Root cause confirmed: startAutonomousTradingLoop's setInterval is
+  // purely in-memory -- every deploy/restart is a fresh process, so a real, live autonomous
+  // trading run silently dies with every single deploy, with no resume and no notification. If
+  // the user's real, persisted intent (autonomous-trading-state.ts) says trading should be on,
+  // genuinely re-arm it here, at boot, against the last chat we know they actually messaged from
+  // (primary-chat.ts) -- and tell them it happened, so a restart is never silently invisible.
+  if (isAutonomousTradingEnabled(deps.ownerUserId)) {
+    const resumeChatId = getPrimaryChatId(deps.db, deps.ownerUserId);
+    if (resumeChatId !== undefined) {
+      const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, resumeChatId));
+      if (started) {
+        void client.sendMessage({ chat_id: resumeChatId, text: "🔄 Resumed autonomous trading after a restart -- I'm back to actively scanning." }).catch(() => undefined);
+      }
+    } else {
+      console.error(`[trading-loop] autonomous trading was enabled for ${deps.ownerUserId} but no primary chat is known yet -- cannot resume until the user messages Dave at least once`);
+    }
+  }
 
   return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}`, client };
 }

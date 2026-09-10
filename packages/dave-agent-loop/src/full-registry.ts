@@ -1,6 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
-import { TRADING_TOOLS } from "@dave/trading";
+import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE } from "@dave/trading";
 import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, createEaAnalysisSource } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
@@ -121,7 +121,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
       return {
         ...tool,
         execute: async (args: Record<string, unknown>) => {
-          const result = (await tool.execute(args)) as { huntModeActivated?: boolean; groupName?: string | null; rows?: unknown[] };
+          const result = (await tool.execute(args)) as { huntModeActivated?: boolean; groupName?: string | null; rows?: unknown[]; bestSetup?: { symbol: string; score: number; direction: string } | null };
           // Item 2/6 real gap fixed (user's reference pattern: "Sends a real message: '🔍 Hunt
           // Mode Active — No setup on [pair]. Scanning [N] pairs…'"): fires the real notification
           // the moment hunt_for_setup genuinely had to broaden beyond a single-pair focus --
@@ -131,6 +131,37 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
             void deps.telegram.client
               .sendMessage({ chat_id: deps.telegram.chatId, text: `🔍 Hunt Mode Active — no clean setup on the focused pair. Scanning ${n} pair(s) in ${result.groupName ?? "the active group"}…` })
               .catch(() => undefined);
+          }
+          // Item 7 real gap fixed (user, re-pasting the original spec: "running automatically as
+          // part of the continuous hunt loop, not on-demand" -- the panel was only reachable via
+          // an OPTIONAL run_setup_panel tool call the model might never make, not genuinely
+          // automatic). Every real hunt_for_setup call that surfaces a candidate clearing the same
+          // real HUNT_MODE_MIN_SCORE bar hunt mode itself uses now deterministically convenes the
+          // real Setup Panel on it, in code -- never left to the model's discretion. Its verdict
+          // (converged/proposal/declineReason + the real discussion transcript) rides back on
+          // hunt_for_setup's own result, so Dave sees it on every hunt call, automatically.
+          if (result.bestSetup && result.bestSetup.score >= HUNT_MODE_MIN_SCORE) {
+            try {
+              const panel = await runSetupPanel({ db: deps.db, ownerUserId: deps.userId, symbol: result.bestSetup.symbol });
+              if (deps.telegram && !panel.converged) {
+                void deps.telegram.client
+                  .sendMessage({ chat_id: deps.telegram.chatId, text: `🧑‍🤝‍🧑 Panel reviewed ${panel.symbol}, no agreement — skipping.` })
+                  .catch(() => undefined);
+              }
+              return {
+                ...result,
+                setupPanel: {
+                  symbol: panel.symbol,
+                  converged: panel.converged,
+                  proposal: panel.proposal,
+                  declineReason: panel.declineReason,
+                  discussion: panel.transcript.map((m) => `${m.from}: ${m.content}`),
+                },
+              };
+            } catch (err) {
+              console.error(`[setup-panel] real panel run failed for ${result.bestSetup.symbol}:`, err);
+              return result; // a real panel failure must never block hunt_for_setup's own real result from reaching Dave
+            }
           }
           return result;
         },
