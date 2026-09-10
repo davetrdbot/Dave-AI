@@ -268,9 +268,31 @@ function writeSuffix(userId: string, suffix: string): void {
   chmodSync(suffixesPath(), 0o600);
 }
 
+/**
+ * Real, explicit user ask: "DAVE-default-C41983E2 ... Hardcoded this token as default so it
+ * doesn't keep changing every update or Changes." The real production owner userId defaults to
+ * "default" (main.ts: `process.env.OWNER_USER_ID ?? "default"`) whenever OWNER_USER_ID isn't
+ * set, which is the common case -- this is a deliberate, permanent, human-chosen suffix for that
+ * specific real deployment, not a randomly generated one. Only the "default" userId gets this
+ * fixed suffix; every other userId still gets a real random one.
+ */
+const DEFAULT_OWNER_FIXED_SUFFIX = "C41983E2";
+
+/** Guards the one-time forced migration below so it fires exactly once, even if this instance
+ *  already had a different, randomly-generated suffix persisted from before this fix shipped --
+ *  and, critically, so it never fights a genuine FUTURE revokeEaToken("default") call. Revoking
+ *  must keep working normally for the default user after this one-time convergence. */
+function defaultSuffixMigratedMarkerPath(): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", "default-suffix-migrated.json");
+}
+
 export function getOrCreateEaWebhook(userId: string): EaWebhook {
   let suffix = readSuffix(userId);
-  if (!suffix) {
+  if (userId === "default" && !existsSync(defaultSuffixMigratedMarkerPath())) {
+    suffix = DEFAULT_OWNER_FIXED_SUFFIX;
+    writeSuffix(userId, suffix);
+    writeFileSync(defaultSuffixMigratedMarkerPath(), "1", "utf8");
+  } else if (!suffix) {
     suffix = generateEaTokenSuffix();
     writeSuffix(userId, suffix);
   }

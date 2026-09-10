@@ -111,6 +111,7 @@ export type ProviderName =
   | "minimax"
   | "baseten"
   | "nebius"
+  | "tokenharbor"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {

@@ -218,6 +218,14 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   minimax: OPENAI_COMPAT("minimax", "MiniMax", "https://api.minimax.io/v1", "MiniMax-M3", "OpenAI-compatible, confirmed live. Mainland China accounts use a separate api.minimaxi.com host -- not handled here (international endpoint only)."),
   baseten: OPENAI_COMPAT("baseten", "Baseten Model APIs", "https://inference.baseten.co/v1", "deepseek-ai/DeepSeek-V3.2", "Public open-weight model catalog (Kimi, DeepSeek, GLM, Nemotron, ...), OpenAI-compatible, confirmed live real GET /v1/models."),
   nebius: OPENAI_COMPAT("nebius", "Nebius Token Factory", "https://api.tokenfactory.nebius.com/v1", "deepseek-ai/DeepSeek-R1-0528", "Confirmed live -- the successor product to the retired \"Nebius AI Studio\" brand (that name's own API keys stopped working Jan 31, 2026). OpenAI-compatible."),
+  // User-requested addition (tokenharbor.ai/models). Confirmed via the real docs: OpenAI-compatible
+  // (POST https://tokenharbor.ai/v1/chat/completions, Bearer thk_live_... key), real GET /v1/models
+  // endpoint documented ("returns the same data as JSON for SDKs that pre-fetch the catalog"). A
+  // multi-vendor router exposing Claude/GPT/GLM/Grok/Kimi/Qwen models under tokenharbor/<model>
+  // ids. Default set to th-orchestra -- their own real routing model, explicitly documented as
+  // "built for tool-using agent clients" / "agentic coding", the best fit for Dave's own
+  // tool-calling architecture rather than guessing at one specific upstream vendor's id.
+  tokenharbor: OPENAI_COMPAT("tokenharbor", "Token Harbor", "https://tokenharbor.ai/v1", "th-orchestra", "OpenAI-compatible per real docs (drop-in /v1/chat/completions + documented /v1/models). Also exposes vendor models directly as tokenharbor/<model> (e.g. tokenharbor/qwen3-max) if a specific upstream model is preferred over the router."),
   custom: {
     id: "custom",
     displayName: "Custom provider",
