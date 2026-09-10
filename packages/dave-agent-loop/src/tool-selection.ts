@@ -33,6 +33,7 @@ export const CORE_TOOL_NAMES: string[] = [
   // Trading actions -- the real reason this bot exists, never gated behind discovery.
   "find_setup",
   "hunt_for_setup",
+  "run_setup_panel",
   "trade_execute",
   "trade_modify",
   "modify_sl_tp",

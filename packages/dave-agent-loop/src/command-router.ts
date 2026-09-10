@@ -16,7 +16,7 @@ import {
   sendSelfDeletingMessage,
   escapeHtml,
 } from "@dave/telegram";
-import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource } from "@dave/ea-bridge";
+import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource, setEaPushInterval, getEaPushIntervalPreference, setPendingPushIntervalEntry, getPendingPushIntervalEntry } from "@dave/ea-bridge";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
 import { formatPnl, buildTradePlacedMessage } from "./trade-notifications.js";
@@ -316,10 +316,17 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number, editMes
     dbLine = `🔴 Database: ${err instanceof Error ? err.message : String(err)}`;
   }
 
+  // Item 5 real gap fixed (user: "add a real settings button letting the user configure what
+  // the EA pushes in its heartbeat/state payload and at what interval"). Shows the user's last
+  // REQUESTED interval (not just the EA's compiled default), since the EA only actually applies
+  // it live on its next poll -- honest about that real MT5 round-trip delay, not instant.
+  const requestedInterval = getEaPushIntervalPreference(deps.userId);
+  const pushIntervalLine = requestedInterval !== undefined ? `Push interval: ${requestedInterval}s (applies on the EA's next poll)` : "Push interval: EA default (not yet customized)";
+
   const text =
     `<b>Connection</b>\n${brainLine}\n${eaLine}\n${sandboxLine}\n${dbLine}\n\n` +
-    `Open positions: ${state.positions.length}\nPending orders: ${state.pendingOrders.length}`;
-  await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
+    `Open positions: ${state.positions.length}\nPending orders: ${state.pendingOrders.length}\n${pushIntervalLine}`;
+  await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([[coloredButton("⚙️ Set push interval", "neutral", "ea_push_interval")]])), editMessageId);
 }
 
 /** Real fix (user report: "providers is missing? it's only airllm and deepseek and Claude") --
@@ -954,6 +961,25 @@ export async function tryHandlePendingRiskEntry(deps: CommandRouterDeps, chatId:
   setRiskMode(deps.userId, field, "on", value);
   const label = field === "sl" ? `SL -> On (${value} pips)` : field === "tp" ? `TP -> On (${value} pips)` : `Lot -> On (${value})`;
   await deps.client.sendMessage({ chat_id: chatId, text: `✅ ${label}` });
+  return true;
+}
+
+/**
+ * Item 5 real gap fixed: the capture half of the /connection "Set push interval" button --
+ * parses the user's typed seconds value, enqueues a real "set_push_interval" EA command (applied
+ * live on the EA's next poll), and confirms honestly (not "done", since it hasn't actually
+ * reached the EA yet -- see setEaPushInterval's real round-trip note).
+ */
+export async function tryHandlePendingPushIntervalEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  if (!getPendingPushIntervalEntry(deps.userId)) return false;
+  setPendingPushIntervalEntry(deps.userId, false);
+  const value = Number(text.trim());
+  if (!Number.isFinite(value) || value < 3 || value > 300) {
+    await deps.client.sendMessage({ chat_id: chatId, text: `That doesn't look like a real interval -- reply with a whole number of seconds between 3 and 300. Tap the row in /connection to try again.` });
+    return true;
+  }
+  setEaPushInterval(deps.userId, Math.round(value));
+  await deps.client.sendMessage({ chat_id: chatId, text: `✅ Push interval set to ${Math.round(value)}s -- applies live the next time the EA polls (no restart needed).` });
   return true;
 }
 
@@ -1603,6 +1629,12 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       await confirm("EA token revoked -- run /ea to get a freshly personalized file with the new one.");
       const view = eaTokenKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "ea_push_interval") {
+      // Item 5 real gap fixed: primes the same next-message-IS-the-value capture pattern used
+      // for every other numeric setting -- the user's next message is read as the new interval.
+      setPendingPushIntervalEntry(deps.userId, true);
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Reply with the EA's new push interval in seconds (e.g. \"10\") -- takes effect live on its next poll, no restart needed." });
     } else if (data === "settings:trailing") {
       ackText = undefined;
       const view = trailingKeyboard(deps.userId);

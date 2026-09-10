@@ -70,6 +70,14 @@ export interface CompletionResult {
   toolCalls?: ToolCall[];
   /** Real prompt-caching usage, when the provider's own API reports it (Claude, DeepSeek, and any OpenAI-compatible provider that mirrors OpenAI's cached_tokens field -- confirmed: Fireworks) -- cacheReadInputTokens>0 is a real, provable cache hit. Undefined, not zero, on a provider that doesn't report it at all. */
   cacheUsage?: { cacheCreationInputTokens: number; cacheReadInputTokens: number };
+  /**
+   * User-requested addition ("show a small follow-up message/edit indicating token usage for
+   * that exchange"): the real per-call token usage every provider's own API already reports
+   * (OpenAI-shaped `usage.prompt_tokens/completion_tokens/total_tokens`, Anthropic's own
+   * `usage.input_tokens/output_tokens`) -- not an estimate. Undefined on a provider response that
+   * genuinely didn't include a usage block, never fabricated.
+   */
+  tokenUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
 /**
@@ -378,7 +386,7 @@ export class ClaudeProvider implements Provider {
     }
     const json = (await res.json()) as {
       content: { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[];
-      usage?: { cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+      usage?: { cache_creation_input_tokens?: number; cache_read_input_tokens?: number; input_tokens?: number; output_tokens?: number };
     };
     const text = json.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
     const toolCalls = json.content
@@ -387,7 +395,11 @@ export class ClaudeProvider implements Provider {
     const cacheUsage = json.usage
       ? { cacheCreationInputTokens: json.usage.cache_creation_input_tokens ?? 0, cacheReadInputTokens: json.usage.cache_read_input_tokens ?? 0 }
       : undefined;
-    return { text, provider: "claude", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, cacheUsage };
+    const tokenUsage =
+      json.usage?.input_tokens !== undefined && json.usage?.output_tokens !== undefined
+        ? { promptTokens: json.usage.input_tokens, completionTokens: json.usage.output_tokens, totalTokens: json.usage.input_tokens + json.usage.output_tokens }
+        : undefined;
+    return { text, provider: "claude", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, cacheUsage, tokenUsage };
   }
 }
 
@@ -444,7 +456,7 @@ export class OpenAICompatibleProvider implements Provider {
     }
     const json = (await res.json()) as {
       choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
-      usage?: { prompt_tokens_details?: { cached_tokens?: number } };
+      usage?: { prompt_tokens_details?: { cached_tokens?: number }; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
     const message = json.choices[0].message;
     const toolCalls = message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
@@ -457,7 +469,14 @@ export class OpenAICompatibleProvider implements Provider {
     // that simply doesn't send it, so this never fabricates a cache signal.
     const cachedTokens = json.usage?.prompt_tokens_details?.cached_tokens;
     const cacheUsage = cachedTokens !== undefined ? { cacheCreationInputTokens: 0, cacheReadInputTokens: cachedTokens } : undefined;
-    return { text: message.content ?? "", provider: this.name, latencyMs: Date.now() - start, toolCalls, cacheUsage };
+    // Real, standard OpenAI-shaped usage block -- every provider through this shared class
+    // reports it (it's the same field name across virtually every OpenAI-compatible API).
+    // Undefined, not zero-filled, when a provider genuinely omits it.
+    const tokenUsage =
+      json.usage?.prompt_tokens !== undefined && json.usage?.completion_tokens !== undefined
+        ? { promptTokens: json.usage.prompt_tokens, completionTokens: json.usage.completion_tokens, totalTokens: json.usage.total_tokens ?? json.usage.prompt_tokens + json.usage.completion_tokens }
+        : undefined;
+    return { text: message.content ?? "", provider: this.name, latencyMs: Date.now() - start, toolCalls, cacheUsage, tokenUsage };
   }
 }
 

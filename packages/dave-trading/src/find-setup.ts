@@ -58,19 +58,44 @@ export async function findSetup(userId: string, analysis: AnalysisSource, tf = "
   return { scannedAt: Date.now(), groupName, rows, bestSetup: ranked[0] ?? null };
 }
 
+/**
+ * Real bug fixed (user, live: "scanning the full active pair group fails on every symbol with
+ * 'no response from EA within 15000ms', while individual per-symbol calls work fine"). Root
+ * cause confirmed: this used to fire every symbol's request at once via a bare Promise.all --
+ * the EA is single-threaded and processes a whole drained batch serially in one blocking tick,
+ * so N concurrent requests all missed the same 15s deadline together, even though most would
+ * have succeeded fine on their own. Two real fixes, both needed:
+ *   1. Here: a genuine staggered queue -- at most SCAN_CONCURRENCY requests in flight at once,
+ *      matching the EA bridge's own per-poll "analyze" cap (ea-webhook.ts), so the EA is never
+ *      handed more than it can realistically process in one tick.
+ *   2. A longer per-request timeout for a GROUP scan specifically (still short for a genuine
+ *      single ad-hoc call) -- even with staggering, a symbol whose history isn't yet
+ *      synchronized in the terminal can legitimately take a couple of EA ticks to resolve.
+ */
+const SCAN_CONCURRENCY = 6;
+const GROUP_SCAN_TIMEOUT_MS = 45000;
+
 async function scanSymbols(analysis: AnalysisSource, symbols: string[], tf: string, exclude: Set<string> = new Set()): Promise<SetupScanRow[]> {
-  return Promise.all(
-    symbols
-      .filter((s) => !exclude.has(s))
-      .map(async (symbol): Promise<SetupScanRow> => {
-        try {
-          const data = await analysis.get<ConfluenceData>("confluence", symbol, tf);
-          return { symbol, score: data.score, direction: data.direction };
-        } catch (err) {
-          return { symbol, score: -1, direction: "unknown", error: err instanceof Error ? err.message : String(err) };
-        }
-      })
-  );
+  const targets = symbols.filter((s) => !exclude.has(s));
+  const results: SetupScanRow[] = new Array(targets.length);
+  let cursor = 0;
+
+  async function worker(): Promise<void> {
+    while (cursor < targets.length) {
+      const index = cursor++;
+      const symbol = targets[index];
+      try {
+        const data = await analysis.get<ConfluenceData>("confluence", symbol, tf, { timeoutMs: GROUP_SCAN_TIMEOUT_MS });
+        results[index] = { symbol, score: data.score, direction: data.direction };
+      } catch (err) {
+        results[index] = { symbol, score: -1, direction: "unknown", error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+  }
+
+  const workerCount = Math.min(SCAN_CONCURRENCY, targets.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
 }
 
 export interface HuntResult extends SetupScanResult {

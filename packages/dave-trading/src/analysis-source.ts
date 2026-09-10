@@ -8,5 +8,5 @@
  * real implementation, backed by the connected MT5 EA's own on-demand analysis (requestAnalysis).
  */
 export interface AnalysisSource {
-  get<T = unknown>(endpoint: string, symbol: string, timeframe?: string): Promise<T>;
+  get<T = unknown>(endpoint: string, symbol: string, timeframe?: string, opts?: { timeoutMs?: number }): Promise<T>;
 }

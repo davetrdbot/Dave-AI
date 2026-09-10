@@ -1,6 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor, AnalysisSource } from "@dave/trading";
-import type { TelegramClient } from "@dave/telegram";
+import { markdownToTelegramHtml, type TelegramClient } from "@dave/telegram";
 import { type Worker, toolsForWorker, JOURNAL_TOOLS, WORKER_TOOL_REQUEST_TOOLS, reportToUser, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID, getGrantedToolNames, retireWorker } from "@dave/workers";
 import { logTrade } from "@dave/feedback";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
@@ -70,7 +70,10 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
       execute: async (args) => {
         const content = args.content as string;
         await reportToUser(worker, content, publicBaseUrl);
-        await client.sendMessage({ chat_id: chatId, text: `${tag}: ${content}` });
+        // Real gap fixed (item 2, same class as the "<b>" bug): worker reports never routed
+        // through the real markdown/HTML converter at all -- a worker's own markdown or literal
+        // HTML tags would have leaked to the user completely raw, unconverted.
+        await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(`${tag}: ${content}`), parse_mode: "HTML" });
         return { ok: true };
       },
     };
@@ -94,7 +97,7 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
     };
 
     const provider = modelConfigProvider(db, ownerUserId, async (text) => {
-      await client.sendMessage({ chat_id: chatId, text: `${tag} (provider): ${text}` });
+      await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(`${tag} (provider): ${text}`), parse_mode: "HTML" });
     });
     const loop = new AgentLoop(provider, liveRegistry);
 
@@ -115,7 +118,7 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
     }
 
     if (resultText.trim().length > 0) {
-      await client.sendMessage({ chat_id: chatId, text: `${tag}: ${resultText}` });
+      await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(`${tag}: ${resultText}`), parse_mode: "HTML" });
     }
 
     if (worker.assignment === "temporary") retireWorker(ownerUserId, worker.id);

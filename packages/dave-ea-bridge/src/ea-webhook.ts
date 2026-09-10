@@ -117,7 +117,17 @@ export type EaCommand =
    * every trade command already uses, not a new push/stream. `symbol` can be ANY symbol in the
    * terminal's Market Watch, not just the chart the EA is attached to (item 13).
    */
-  | { id: string; action: "analyze"; endpoint: string; symbol: string; timeframe: string };
+  | { id: string; action: "analyze"; endpoint: string; symbol: string; timeframe: string }
+  /**
+   * Item 5 real gap fixed (user: "add a real settings button letting the user configure...
+   * at what interval" the EA pushes its heartbeat/state). The EA's push cadence
+   * (PushSeconds) is a compiled-in `input`, so this is a REAL runtime override -- the EA
+   * applies it live (EventKillTimer + EventSetTimer at the new interval) the next time it
+   * polls and sees this command, same command-queue/report round trip every other command
+   * uses. Reverts to the EA's own compiled default if the terminal restarts (a real, honest
+   * MT5 limitation -- there is no way to persist this INTO the compiled EA remotely).
+   */
+  | { id: string; action: "set_push_interval"; seconds: number };
 
 /**
  * Real gap fixed (user: "the ea token should have only one token which is revokable e.g
@@ -160,6 +170,26 @@ function accountSnapshotPath(userId: string): string {
 
 function lastSeenPath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", userId, "last-seen.json");
+}
+
+function pushIntervalPreferencePath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "ea-bridge", userId, "push-interval-preference.json");
+}
+
+/**
+ * Item 5 real gap fixed: a real /connection settings control for the EA's push/heartbeat
+ * cadence. Enqueues a real "set_push_interval" command (the EA applies it live on its next
+ * poll -- EventKillTimer + EventSetTimer, see ea/DaveEA.mq5) AND persists the user's requested
+ * value so /connection can honestly show what was last asked for, even before the EA's next
+ * poll actually applies it.
+ */
+export function setEaPushInterval(userId: string, seconds: number): void {
+  enqueueCommand(userId, { id: randomBytes(6).toString("hex"), action: "set_push_interval", seconds });
+  writeJson(pushIntervalPreferencePath(userId), seconds);
+}
+
+export function getEaPushIntervalPreference(userId: string): number | undefined {
+  return readJson<number | undefined>(pushIntervalPreferencePath(userId), undefined);
 }
 
 function analysisResultsPath(userId: string): string {
@@ -330,11 +360,39 @@ export function peekQueue(userId: string): EaCommand[] {
   return readJson<EaCommand[]>(queuePath(userId), []);
 }
 
+/**
+ * Real batch-scan timeout fix (user, live: a full pair-group scan timed out on EVERY symbol
+ * while single-symbol calls worked fine). Root cause confirmed: the EA is single-threaded and
+ * processes a whole drained command batch strictly serially, in one blocking tick -- handing it
+ * every "analyze" command from a large group scan at once meant it fell behind on all of them
+ * together. Trade commands (open/modify/close/delete_pending) are NEVER capped here -- those are
+ * rare, latency-sensitive, and must never wait behind a scan. Only "analyze" commands are capped
+ * per poll; anything past the cap stays queued for the EA's next poll (a few seconds later, per
+ * its own PushSeconds heartbeat), so a big group scan spreads itself across a couple of ticks
+ * instead of demanding the EA process the whole thing serially in one.
+ */
+const MAX_ANALYZE_COMMANDS_PER_POLL = 6;
+
 /** Real fact of the EA<->Dave contract: commands are drained (removed) the moment they're handed back in a response, not left for double-delivery. */
 function drainQueue(userId: string): EaCommand[] {
   const queue = readJson<EaCommand[]>(queuePath(userId), []);
-  writeJson(queuePath(userId), []);
-  return queue;
+  const toSend: EaCommand[] = [];
+  const remaining: EaCommand[] = [];
+  let analyzeSent = 0;
+  for (const cmd of queue) {
+    if (cmd.action === "analyze") {
+      if (analyzeSent < MAX_ANALYZE_COMMANDS_PER_POLL) {
+        toSend.push(cmd);
+        analyzeSent++;
+      } else {
+        remaining.push(cmd);
+      }
+    } else {
+      toSend.push(cmd);
+    }
+  }
+  writeJson(queuePath(userId), remaining);
+  return toSend;
 }
 
 export function getLastKnownState(userId: string): { positions: EaPosition[]; pendingOrders: EaPendingOrder[] } {

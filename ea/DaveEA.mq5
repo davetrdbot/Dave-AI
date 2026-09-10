@@ -39,6 +39,11 @@ input double EqTolerancePips= 1.5;   // ported from the reference DAVEMA EA -- e
 
 CTrade trade;
 
+// Item 5 real gap fixed: PushSeconds is a compiled-in `input` (read-only at runtime) -- this
+// mirrors it into a real mutable global so a "set_push_interval" command can change the EA's
+// actual push/heartbeat cadence live, without requiring a recompile or restart.
+int g_pushIntervalSeconds = 6;
+
 //+------------------------------------------------------------------+
 //| Broker symbol resolver -- ported from the reference DAVE.mq5.     |
 //| Dave's tools speak in base symbols ("EURUSD"); brokers often list |
@@ -130,7 +135,8 @@ int OnInit()
    trade.SetDeviationInPoints(SlippagePoints);
 
    Print("Dave EA starting. Webhook: ", WebhookURL, ", magic=", MagicNumber);
-   EventSetTimer(PushSeconds);
+   g_pushIntervalSeconds = PushSeconds;
+   EventSetTimer(g_pushIntervalSeconds);
    return(INIT_SUCCEEDED);
   }
 
@@ -378,6 +384,41 @@ void AppendResultData(string commandId, string dataJson)
 //| in); this only needs to understand the exact contract this EA     |
 //| and dave-ea-bridge's webhook both implement.                      |
 //+------------------------------------------------------------------+
+/**
+ * Real batch-scan timeout fix (user, live: a full pair-group scan timed out on EVERY symbol
+ * while single-symbol calls worked fine). Root cause confirmed: this EA processes a whole
+ * drained command batch strictly serially in one blocking OnTimer tick, and LoadAnalysisSeries
+ * blocked up to ~4s per NOT-YET-SYNCHRONIZED symbol (Sleep(200) x20) -- for a batch of N
+ * "analyze" commands landing in the same tick, that's up to N*4s of serial stalling before any
+ * of them finish, on top of results only shipping on the NEXT report. This kicks off MT5's
+ * background history sync for every "analyze" command's symbol/timeframe UP FRONT, in one quick
+ * pass, before the real (still serial) per-command execution loop below -- so by the time
+ * LoadAnalysisSeries gets to the 3rd, 4th, 5th... symbol in the batch, MT5 has already been
+ * downloading its history in the background for the time the earlier symbols took to process,
+ * shrinking (often eliminating) the per-symbol Sleep-wait instead of paying it N times over.
+ */
+void PrewarmAnalysisSymbols(string arrBody)
+  {
+   int pos = 0;
+   while(pos < StringLen(arrBody))
+     {
+      int objStart = StringFind(arrBody, "{", pos);
+      if(objStart < 0) break;
+      int objEnd = StringFind(arrBody, "}", objStart);
+      if(objEnd < 0) break;
+      string obj = StringSubstr(arrBody, objStart, objEnd - objStart + 1);
+      if(JsonGetString(obj, "action") == "analyze")
+        {
+         string symbol = ResolveBrokerSymbol(JsonGetString(obj, "symbol"));
+         ENUM_TIMEFRAMES tf = TimeframeFromString(JsonGetString(obj, "timeframe"));
+         SymbolSelect(symbol, true);
+         MqlRates warm[];
+         CopyRates(symbol, tf, 0, DAVEEA_BARS, warm); // non-blocking kickoff -- return value/result unused here
+        }
+      pos = objEnd + 1;
+     }
+  }
+
 void ExecuteCommandsFromResponse(string response)
   {
    int arrStart = StringFind(response, "\"commands\":[");
@@ -387,6 +428,8 @@ void ExecuteCommandsFromResponse(string response)
    if(arrEnd < 0) return;
    string arrBody = StringSubstr(response, arrStart, arrEnd - arrStart);
    if(StringLen(arrBody) == 0) return; // no commands this cycle
+
+   PrewarmAnalysisSymbols(arrBody);
 
    int pos = 0;
    while(pos < StringLen(arrBody))
@@ -530,6 +573,19 @@ void ExecuteOneCommand(string obj)
       string endpoint = JsonGetString(obj, "endpoint");
       RunAnalysis(id, endpoint, symbol, tfStr);
      }
+   else if(action == "set_push_interval")
+     {
+      // Item 5 real gap fixed: a real, live-applied override of the EA's push/heartbeat cadence,
+      // requested from Dave's /connection settings screen. Clamped to a sane real range so a bad
+      // value can never make the EA hammer the webhook or effectively stop reporting.
+      int seconds = (int)JsonGetNumber(obj, "seconds", g_pushIntervalSeconds);
+      if(seconds < 3) seconds = 3;
+      if(seconds > 300) seconds = 300;
+      EventKillTimer();
+      g_pushIntervalSeconds = seconds;
+      EventSetTimer(g_pushIntervalSeconds);
+      AppendResult(id, true, "push interval set to " + IntegerToString(g_pushIntervalSeconds) + "s", "");
+     }
    else
      {
       AppendResult(id, false, "unknown action \"" + action + "\"", "");
@@ -595,10 +651,14 @@ bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
    int copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
    if(copied <= 20)
      {
-      // Not synchronized yet -- give MT5 a real, bounded window (up to ~4s) to finish
-      // downloading this symbol/timeframe's history from the broker, then retry once more.
-      for(int attempt = 0; attempt < 20 && !SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED); attempt++)
-         Sleep(200);
+      // Not synchronized yet -- give MT5 a real, bounded window to finish downloading this
+      // symbol/timeframe's history from the broker, then retry once more. Shortened from a
+      // 4s budget (20x200ms) to 1.5s (10x150ms): PrewarmAnalysisSymbols already kicked off
+      // background sync for every symbol in this batch before this per-command loop started,
+      // so by the time a given symbol reaches this wait it usually already has a real head
+      // start -- this is now a top-up wait, not the only chance to sync.
+      for(int attempt = 0; attempt < 10 && !SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED); attempt++)
+         Sleep(150);
       copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
      }
    if(copied <= 20) return false; // genuinely not enough real history even after waiting for sync

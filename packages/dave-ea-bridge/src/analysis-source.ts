@@ -10,7 +10,7 @@ import { requestAnalysis } from "./analysis-request.js";
  */
 export function createEaAnalysisSource(userId: string): AnalysisSource {
   return {
-    get: <T = unknown>(endpoint: string, symbol: string, timeframe = "M15") =>
-      requestAnalysis(userId, endpoint, symbol, timeframe) as Promise<T>,
+    get: <T = unknown>(endpoint: string, symbol: string, timeframe = "M15", opts?: { timeoutMs?: number }) =>
+      requestAnalysis(userId, endpoint, symbol, timeframe, opts) as Promise<T>,
   };
 }

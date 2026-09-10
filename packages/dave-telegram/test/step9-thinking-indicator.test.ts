@@ -19,6 +19,18 @@ const fakeClient = {
     sentCalls.push({ method: "sendRichMessageDraft", body });
     return true; // real return type -- not a message
   },
+  sendMessage: async (body: Record<string, unknown>) => {
+    sentCalls.push({ method: "sendMessage", body });
+    return { message_id: 4242 };
+  },
+  editMessageText: async (body: Record<string, unknown>) => {
+    sentCalls.push({ method: "editMessageText", body });
+    return { message_id: 4242 };
+  },
+  deleteMessage: async (body: Record<string, unknown>) => {
+    sentCalls.push({ method: "deleteMessage", body });
+    return true;
+  },
   sendRichMessage: async (body: Record<string, unknown>) => {
     sentCalls.push({ method: "sendRichMessage", body });
     return { message_id: 999 };
@@ -34,31 +46,44 @@ await withThinkingIndicator(fakeClient, 847213, async (indicator) => {
 
 console.log(`    calls, in order: ${sentCalls.map((c) => c.method).join(" -> ")}`);
 assert.equal(sentCalls[0].method, "sendChatAction", "9.1: fires automatically first, zero AI decision");
-assert.equal(sentCalls[1].method, "sendRichMessageDraft");
-assert.equal(sentCalls[2].method, "sendRichMessageDraft");
-assert.equal(sentCalls[3].method, "sendRichMessageDraft");
-assert.equal(sentCalls[4].method, "sendRichMessage", "9.4: finalize uses sendRichMessage, NOT editMessageText");
+const draftCalls = sentCalls.filter((c) => c.method === "sendRichMessageDraft");
+assert.equal(draftCalls.length, 3, "every update still fires the (best-effort) draft call too -- harmless on clients that support it");
+// Item 6 real gap fixed: the FIRST update must genuinely send a real, guaranteed-visible
+// progress message (sendMessage) -- this doesn't depend on a client rendering the newer draft
+// feature at all, so it's visible on every real Telegram client, no exceptions.
+assert.ok(sentCalls.some((c) => c.method === "sendMessage"), "a real guaranteed-visible progress message must be sent");
+// Rapid-fire updates within the same test tick are correctly throttled -- editMessageText is
+// real Bot API rate-limited, so hammering it on every single tool call would risk real 429s.
+const editCallsDuringRapidUpdates = sentCalls.filter((c) => c.method === "editMessageText").length;
+assert.ok(editCallsDuringRapidUpdates <= 1, "rapid-fire updates must be throttled, not hammer editMessageText");
+// The guaranteed progress message is genuinely cleaned up once the real final answer is sent --
+// never left cluttering the chat alongside the real final message.
+assert.ok(sentCalls.some((c) => c.method === "deleteMessage"), "the guaranteed progress message must genuinely be deleted before/at finalize");
+assert.equal(sentCalls[sentCalls.length - 1].method, "sendRichMessage", "9.4: finalize still ends with sendRichMessage for the real final answer");
 
 console.log("\n[A2] Every draft update reuses the SAME draft_id -- required for Telegram to animate it as one draft, not three separate ones...");
-const draftIds = [sentCalls[1], sentCalls[2], sentCalls[3]].map((c) => c.body.draft_id);
+const draftIds = draftCalls.map((c) => c.body.draft_id);
 console.log(`    draft_id per update: ${draftIds.join(", ")}`);
 assert.equal(draftIds[0], draftIds[1]);
 assert.equal(draftIds[1], draftIds[2]);
 assert.ok(typeof draftIds[0] === "number" && draftIds[0] !== 0, "draft_id must be a non-zero integer");
 
-console.log("\n[A3] Icon-prefixed content sent as rich_message.html for each update...");
-console.log(`      memory: "${(sentCalls[1].body.rich_message as any).html}"`);
-console.log(`      api:    "${(sentCalls[2].body.rich_message as any).html}"`);
-console.log(`      trade:  "${(sentCalls[3].body.rich_message as any).html}"`);
-console.log(`      final:  "${(sentCalls[4].body.rich_message as any).html}"`);
-assert.equal((sentCalls[1].body.rich_message as any).html, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`);
-assert.equal((sentCalls[2].body.rich_message as any).html, `${ACTION_ICONS.api}Calling EA analysis /correlation + /strength`);
-assert.equal((sentCalls[3].body.rich_message as any).html, `${ACTION_ICONS.trade}Scoring EURUSD setup against confluence`);
-assert.equal((sentCalls[4].body.rich_message as any).html, "Setup scored -- confluence 78, LONG bias.");
+console.log("\n[A3] Icon-prefixed content sent as rich_message.html for each draft update, and the real guaranteed progress message carries the same content...");
+console.log(`      memory: "${(draftCalls[0].body.rich_message as any).html}"`);
+console.log(`      api:    "${(draftCalls[1].body.rich_message as any).html}"`);
+console.log(`      trade:  "${(draftCalls[2].body.rich_message as any).html}"`);
+const finalCall = sentCalls[sentCalls.length - 1];
+console.log(`      final:  "${(finalCall.body.rich_message as any).html}"`);
+assert.equal((draftCalls[0].body.rich_message as any).html, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`);
+assert.equal((draftCalls[1].body.rich_message as any).html, `${ACTION_ICONS.api}Calling EA analysis /correlation + /strength`);
+assert.equal((draftCalls[2].body.rich_message as any).html, `${ACTION_ICONS.trade}Scoring EURUSD setup against confluence`);
+assert.equal((finalCall.body.rich_message as any).html, "Setup scored -- confluence 78, LONG bias.");
 assert.ok(
-  !String((sentCalls[4].body.rich_message as any).html).startsWith(ACTION_ICONS.trade),
+  !String((finalCall.body.rich_message as any).html).startsWith(ACTION_ICONS.trade),
   "9.4: the final message must be clean, no leftover action icon"
 );
+const guaranteedMsgCall = sentCalls.find((c) => c.method === "sendMessage");
+assert.equal(guaranteedMsgCall?.body.text, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`, "the guaranteed fallback message carries the same real content as the draft");
 
 console.log("\n[A4] Two concurrent indicators get DIFFERENT draft_ids -- must not animate over each other's draft...");
 const secondCalls: { method: string; body: Record<string, unknown> }[] = [];
@@ -68,13 +93,16 @@ const fakeClient2 = {
     secondCalls.push({ method: "sendRichMessageDraft", body });
     return true;
   },
+  sendMessage: async () => ({ message_id: 4343 }),
+  editMessageText: async () => ({ message_id: 4343 }),
+  deleteMessage: async () => true,
   sendRichMessage: async () => ({ message_id: 1000 }),
 } as unknown as TelegramClient;
 await withThinkingIndicator(fakeClient2, 555, async (indicator) => {
   await indicator.update("code", "second task's own draft");
   return { result: undefined, finalText: "done" };
 });
-const firstDraftId = sentCalls[1].body.draft_id;
+const firstDraftId = draftCalls[0].body.draft_id;
 const secondDraftId = secondCalls[0].body.draft_id;
 console.log(`    first indicator's draft_id: ${firstDraftId}, second indicator's draft_id: ${secondDraftId}`);
 assert.notEqual(firstDraftId, secondDraftId);

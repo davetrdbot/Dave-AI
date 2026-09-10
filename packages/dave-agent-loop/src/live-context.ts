@@ -1,6 +1,6 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, type RiskMode } from "@dave/trading";
 import { getConfidenceSettings } from "@dave/trading";
-import { getEaConnectionStatus } from "@dave/ea-bridge";
+import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import type { ContentBlock } from "@dave/brain";
 
 /**
@@ -32,10 +32,20 @@ export function buildLiveSettingsBlock(userId: string): string {
   const confidence = getConfidenceSettings(userId);
   const autoApproval = getAutoApprovalEnabled(userId);
   const ea = getEaConnectionStatus(userId);
+  const account = getLastKnownAccountSnapshot(userId);
 
   const pairLine = group.activePairSymbol
     ? `Single-pair focus: ${group.activePairSymbol}`
     : `Active pair group: ${group.activeGroup?.name ?? "none set"}${group.fallbackGroup ? ` (fallback: ${group.fallbackGroup.name})` : ""}`;
+
+  // Real gap fixed (item 5, user: "leverage is STILL not appearing in what the bot receives from
+  // the EA"): the EA genuinely sends it and the bridge genuinely persists it (ea-webhook.ts), and
+  // it was already reachable via the get_account_balance tool -- but that's tool-gated, so it
+  // only shows up on a turn where the model happens to call it. Surfaced here instead, proactively
+  // on EVERY turn (same pattern as every other setting in this block), so it's never missed.
+  const accountLine = account
+    ? `Account: balance ${account.balance} | equity ${account.equity} | margin ${account.margin} | free margin ${account.freeMargin}${account.leverage !== undefined ? ` | leverage 1:${account.leverage}` : " | leverage: not reported by the EA yet"}`
+    : "Account: no EA report received yet";
 
   const lines = [
     "<current_settings>",
@@ -46,6 +56,7 @@ export function buildLiveSettingsBlock(userId: string): string {
     `Confidence threshold: ${confidence.threshold}% (auto-approve below threshold: ${confidence.autoApproveBelowThreshold ? "on" : "off"})`,
     `Auto-approval of your own proposed changes: ${autoApproval ? "on" : "off"}`,
     `EA connection: ${ea.connected ? "connected" : "not connected"}`,
+    accountLine,
     "</current_settings>",
     "",
     "These are the user's REAL, currently-saved settings, read fresh this turn -- never ask the user to re-confirm a value shown above, and never claim one isn't set when it's listed here.",

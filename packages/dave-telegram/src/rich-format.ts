@@ -93,6 +93,24 @@ function convertBlockquoteLines(working: string): string {
   return out.join("\n");
 }
 
+/**
+ * Real bug fixed (user, live: a message literally showed "<b>every single symbol</b>" as
+ * visible text instead of rendering bold). Root cause confirmed: the model itself sometimes
+ * writes genuine Telegram HTML tags directly in its response text (not markdown ** syntax) --
+ * IDENTITY.md's own "use rich Telegram formatting" instruction doesn't specify markdown-only
+ * syntax, and the model has broad knowledge of Telegram's real Bot API HTML mode. The old
+ * pipeline only ever converted MARKDOWN syntax and blindly HTML-escaped everything else
+ * (correct for safety against a stray "<" or ">", but it also escaped the model's own genuine,
+ * already-valid "<b>"/"<i>"/etc into "&lt;b&gt;" -- which Telegram then displays as literal
+ * visible text, exactly matching the report. Fixed by recognizing the real Telegram HTML-subset
+ * tag allowlist (same one Token Harbor's bug was fixed against, see command-router.ts) BEFORE
+ * escaping: a genuine supported tag the model already wrote is preserved verbatim; anything
+ * that merely LOOKS like a tag but isn't on the allowlist still gets safely escaped, so this
+ * doesn't reopen the class of bug that broke Token Harbor's detail view.
+ */
+const TELEGRAM_HTML_TAG_ALLOWLIST = "b|strong|i|em|u|ins|s|strike|del|span|tg-spoiler|a|code|pre|blockquote|tg-emoji";
+const REAL_TELEGRAM_TAG_PATTERN = new RegExp(`</?(?:${TELEGRAM_HTML_TAG_ALLOWLIST})(?:\\s+[a-zA-Z-]+="[^"]*")*\\s*>`, "gi");
+
 export function markdownToTelegramHtml(text: string): string {
   const placeholders: string[] = [];
   const stash = (html: string): string => {
@@ -122,6 +140,14 @@ export function markdownToTelegramHtml(text: string): string {
   // Inline code spans: `code` -- extracted before bold/italic so markdown chars inside a code
   // span (e.g. a literal "*" in an example) are never misread as formatting.
   working = working.replace(/`([^`\n]+?)`/g, (_m, code: string) => stash(fmt.code(code)));
+
+  // A genuine, already-valid Telegram HTML tag the model wrote directly (not markdown) -- stash
+  // it verbatim so it survives the escaping pass below intact, instead of being turned into
+  // visible "&lt;b&gt;" entity text. Anything NOT on the real allowlist is left alone here and
+  // gets safely escaped by escapeHtml() just below, same as any other stray "<". Runs AFTER code
+  // block/span extraction so a literal "<b>" written as a CODE EXAMPLE (inside backticks/fences)
+  // is correctly treated as literal text, not live-rendered.
+  working = working.replace(REAL_TELEGRAM_TAG_PATTERN, (tag) => stash(tag));
 
   // Now safe to escape the remaining plain prose.
   working = escapeHtml(working);

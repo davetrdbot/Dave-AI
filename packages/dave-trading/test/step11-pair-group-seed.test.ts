@@ -26,8 +26,11 @@ try {
   console.log(`    seeded: ${groups.map((g) => g.name).join(", ")}`);
 
   console.log("\n[3] Real seeded symbol lists match the user's own lists exactly...\n");
+  // User-corrected: this project only uses Headway broker synthetics -- exactly these 10 real
+  // symbols, zero Deriv-style "_INDEX" symbols anywhere.
   const synthetic = groups.find((g) => g.id === "synthetic")!;
-  assert.ok(synthetic.symbols.includes("BOOM_100") && synthetic.symbols.includes("RANGE_BREAK_200_INDEX"));
+  assert.deepEqual(synthetic.symbols, ["VOL_10", "VOL_20", "VOL_80", "BOOM_100", "BOOM_200", "STORM_200", "STORM_500", "CRASH_100", "CRASH_200", "FLAME"]);
+  assert.ok(!synthetic.symbols.some((s) => s.includes("_INDEX")), "must contain zero Deriv-style _INDEX symbols");
   const forex = groups.find((g) => g.id === "forex")!;
   assert.equal(forex.symbols.length, 28);
   assert.ok(forex.symbols.includes("EURUSD") && forex.symbols.includes("NZDCHF"));

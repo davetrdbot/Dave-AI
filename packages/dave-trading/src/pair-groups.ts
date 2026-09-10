@@ -34,11 +34,34 @@ function statePath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "pair-groups.json");
 }
 
+/**
+ * User-corrected (real, explicit): this project only uses Headway broker synthetics, never Deriv,
+ * but the old default seed list included Deriv-style "_INDEX"-suffixed symbols (VOLATILITY_*_INDEX,
+ * BOOM_*_INDEX, STEP_INDEX, etc.) that may already be persisted in a real user's saved "synthetic"
+ * group from before this fix. Strips them out of any already-saved synthetic group on every read --
+ * targeted at the "_INDEX" suffix specifically (not a full overwrite), so it never touches symbols a
+ * user genuinely added themselves to any OTHER group.
+ */
+function stripDerivSyntheticSymbols(state: GroupState): GroupState {
+  let changed = false;
+  const groups = state.groups.map((g) => {
+    if (g.id !== "synthetic") return g;
+    const cleaned = g.symbols.filter((s) => !s.includes("_INDEX"));
+    if (cleaned.length === g.symbols.length) return g;
+    changed = true;
+    return { ...g, symbols: cleaned };
+  });
+  return changed ? { ...state, groups } : state;
+}
+
 function readState(userId: string): GroupState {
   const path = statePath(userId);
   if (!existsSync(path)) return { ...EMPTY_STATE, groups: [] };
   // activePairSymbol defaults to null for state files persisted before this field existed.
-  return { activePairSymbol: null, ...JSON.parse(readFileSync(path, "utf8")) };
+  const raw: GroupState = { activePairSymbol: null, ...JSON.parse(readFileSync(path, "utf8")) };
+  const cleaned = stripDerivSyntheticSymbols(raw);
+  if (cleaned !== raw) saveState(userId, cleaned);
+  return cleaned;
 }
 
 function saveState(userId: string, state: GroupState): void {
@@ -136,16 +159,11 @@ export function resetPairGroupSelectionForUser(userId: string): void {
  */
 export const DEFAULT_PAIR_GROUPS: PairGroup[] = [
   {
+    // User-corrected (real, explicit): this project only uses Headway broker synthetics, not
+    // Deriv -- every "_INDEX"-suffixed Deriv-style symbol previously seeded here has been removed.
     id: "synthetic",
     name: "Synthetic",
-    symbols: [
-      "BOOM_100", "BOOM_200", "CRASH_100", "CRASH_200", "VOL_10", "VOL_20", "VOL_80", "STORM_200", "STORM_500",
-      "VOLATILITY_10_INDEX", "VOLATILITY_25_INDEX", "VOLATILITY_50_INDEX", "VOLATILITY_75_INDEX", "VOLATILITY_100_INDEX",
-      "VOLATILITY_10_1S_INDEX", "VOLATILITY_25_1S_INDEX", "VOLATILITY_50_1S_INDEX", "VOLATILITY_75_1S_INDEX", "VOLATILITY_100_1S_INDEX",
-      "BOOM_300_INDEX", "BOOM_500_INDEX", "BOOM_1000_INDEX", "CRASH_300_INDEX", "CRASH_500_INDEX", "CRASH_1000_INDEX",
-      "STEP_INDEX", "JUMP_10_INDEX", "JUMP_25_INDEX", "JUMP_50_INDEX", "JUMP_75_INDEX", "JUMP_100_INDEX",
-      "RANGE_BREAK_100_INDEX", "RANGE_BREAK_200_INDEX",
-    ],
+    symbols: ["VOL_10", "VOL_20", "VOL_80", "BOOM_100", "BOOM_200", "STORM_200", "STORM_500", "CRASH_100", "CRASH_200", "FLAME"],
   },
   {
     id: "forex",

@@ -22,9 +22,21 @@ export interface AgentStep {
   isError: boolean;
 }
 
+/**
+ * User-requested addition ("show a small follow-up message/edit indicating token usage for that
+ * exchange"): the real, summed token usage across every provider.generate() call this run made
+ * (a single user turn can involve several calls when tools are used in between) -- not a single
+ * call's usage in isolation. Undefined when no provider response in this run reported usage.
+ */
+export interface RunTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export type AgentRunResult =
-  | { status: "done"; text: string; history: CompletionMessage[]; steps: AgentStep[] }
-  | { status: "awaiting_user"; question: PendingQuestion; toolCallId: string; history: CompletionMessage[]; steps: AgentStep[] };
+  | { status: "done"; text: string; history: CompletionMessage[]; steps: AgentStep[]; tokenUsage?: RunTokenUsage }
+  | { status: "awaiting_user"; question: PendingQuestion; toolCallId: string; history: CompletionMessage[]; steps: AgentStep[]; tokenUsage?: RunTokenUsage };
 
 export class MaxStepsExceededError extends Error {
   constructor(public readonly maxSteps: number) {
@@ -56,12 +68,21 @@ export class AgentLoop {
     const allNames = this.registry.list().map((t) => t.name);
     const activeNames = new Set(allNames.length <= MAX_TOOLS_PER_REQUEST ? allNames : CORE_TOOL_NAMES.filter((n) => this.registry.has(n)));
 
+    let tokenUsage: RunTokenUsage | undefined;
+    const accumulateUsage = (u?: RunTokenUsage) => {
+      if (!u) return;
+      tokenUsage = tokenUsage
+        ? { promptTokens: tokenUsage.promptTokens + u.promptTokens, completionTokens: tokenUsage.completionTokens + u.completionTokens, totalTokens: tokenUsage.totalTokens + u.totalTokens }
+        : { ...u };
+    };
+
     for (let i = 0; i < maxSteps; i++) {
       const tools = this.registry.toSpecsFor(activeNames).slice(0, MAX_TOOLS_PER_REQUEST);
       const result = await this.provider.generate({ messages: history, tools }, timeoutMs);
+      accumulateUsage(result.tokenUsage);
 
       if (!result.toolCalls || result.toolCalls.length === 0) {
-        return { status: "done", text: result.text, history, steps };
+        return { status: "done", text: result.text, history, steps, tokenUsage };
       }
 
       history.push({ role: "assistant", content: result.text, toolCalls: result.toolCalls });
@@ -74,7 +95,7 @@ export class AgentLoop {
           opts.onStep?.(step);
           // Genuinely pause -- no tool_result exists yet for this call, so the
           // conversation cannot continue until resume() supplies the real answer.
-          return { status: "awaiting_user", question, toolCallId: call.id, history, steps };
+          return { status: "awaiting_user", question, toolCallId: call.id, history, steps, tokenUsage };
         }
 
         let output: unknown;

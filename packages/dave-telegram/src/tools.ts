@@ -1,5 +1,6 @@
 import type { TelegramClient } from "./client.js";
 import { ThinkingIndicator, type ActionType } from "./thinking-indicator.js";
+import { markdownToTelegramHtml } from "./rich-format.js";
 import { getOrCreateUserWebhook } from "@dave/memory";
 import { personalizeEaFile } from "./ea-file.js";
 import { updateBotDisplayInfo } from "./profile.js";
@@ -59,7 +60,10 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
     execute: async (args, ctx) => {
       const indicator = activeIndicators.get(ctx.chatId);
       if (!indicator) throw new Error("no active thinking indicator for this chat -- call tg_thinking first");
-      await indicator.finalize(args.text as string);
+      // Real gap fixed (item 2, "raw HTML tags visible to the user"): finalize() sends real HTML
+      // via sendRichMessage -- text reaching it must already be real converted HTML, same as every
+      // other real final-answer path (telegram-bot-server.ts), not raw markdown/model-written tags.
+      await indicator.finalize(markdownToTelegramHtml(args.text as string));
       activeIndicators.delete(ctx.chatId);
       return { ok: true };
     },
@@ -68,7 +72,7 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
     name: "send_telegram",
     description: "Send a plain real Telegram message.",
     parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-    execute: async (args, ctx) => ctx.client.sendMessage({ chat_id: ctx.chatId, text: args.text as string }),
+    execute: async (args, ctx) => ctx.client.sendMessage({ chat_id: ctx.chatId, text: markdownToTelegramHtml(args.text as string), parse_mode: "HTML" }),
   },
   {
     name: "tg_rich_message",

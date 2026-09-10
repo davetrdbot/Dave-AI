@@ -71,6 +71,19 @@ export class ThinkingIndicator {
   private readonly draftId = nextDraftId();
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private readonly updates: { action: ActionType; text: string }[] = [];
+  // Real bug fixed (item 6, user: "the thinking-draft streaming indicator isn't visibly
+  // happening in real use"). sendRichMessageDraft is a real, documented Bot API method, but it's
+  // genuinely very new (added within weeks of this fix, per the Bot API changelog) -- real client
+  // support for rendering a streamed draft may not be universally rolled out yet, which would
+  // explain updates genuinely never appearing on-screen even though the calls themselves succeed.
+  // Fixed with a guaranteed-visible fallback that doesn't depend on a brand-new feature: a real,
+  // persisted message via the decades-stable sendMessage/editMessageText pair, edited in place as
+  // updates come in (throttled so rapid tool calls don't hit Telegram's real edit rate limit),
+  // deleted again once finalize() sends the real final answer. The draft call stays too (harmless,
+  // free upgrade on clients that DO support it) -- this is belt-and-suspenders, not a replacement.
+  private progressMessageId: number | undefined;
+  private lastEditAt = 0;
+  private static readonly EDIT_THROTTLE_MS = 1200;
 
   constructor(
     private readonly client: TelegramClient,
@@ -123,6 +136,26 @@ export class ThinkingIndicator {
         rich_message: { html: rendered },
       })
       .catch(() => {});
+    await this.updateGuaranteedProgressMessage(rendered);
+  }
+
+  /** The guaranteed-visible fallback -- see the class-level comment. Best-effort: a failure here
+   *  must never block the real task, same as the draft call above. */
+  private async updateGuaranteedProgressMessage(rendered: string): Promise<void> {
+    if (this.progressMessageId === undefined) {
+      try {
+        const sent = await this.client.sendMessage({ chat_id: this.chatId, text: rendered });
+        this.progressMessageId = sent.message_id;
+        this.lastEditAt = Date.now();
+      } catch {
+        // best-effort -- the chat action + draft above are still live even if this fails
+      }
+      return;
+    }
+    const now = Date.now();
+    if (now - this.lastEditAt < ThinkingIndicator.EDIT_THROTTLE_MS) return; // throttled -- avoid a real Telegram edit rate limit on rapid tool calls
+    this.lastEditAt = now;
+    await this.client.editMessageText({ chat_id: this.chatId, message_id: this.progressMessageId, text: rendered }).catch(() => {});
   }
 
   /**
@@ -142,6 +175,10 @@ export class ThinkingIndicator {
    */
   async finalize(finalText: string): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.progressMessageId !== undefined) {
+      await this.client.deleteMessage({ chat_id: this.chatId, message_id: this.progressMessageId }).catch(() => {});
+      this.progressMessageId = undefined;
+    }
     const chunks = chunkForTelegram(finalText);
     for (const chunk of chunks) {
       await this.client.sendRichMessage({ chat_id: this.chatId, rich_message: { html: chunk } });

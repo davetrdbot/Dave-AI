@@ -22,7 +22,7 @@ import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } fr
 import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat } from "./primary-chat.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
@@ -73,6 +73,25 @@ export interface TelegramBotServer {
    *  fast, consistent, non-LLM-generated notification straight to the user's chat -- without
    *  waiting on (or paying for) an agent-loop turn just to narrate a trade closing. */
   client: TelegramClient;
+}
+
+/**
+ * User-requested addition ("after Dave sends a response, show a small follow-up message/edit
+ * indicating token usage for that exchange... then automatically edit that same message to
+ * remove/clear it after about 4 seconds -- a transient indicator, not a permanent extra
+ * message"). Fire-and-forget: never awaited by the real turn, and any failure (rate limit, chat
+ * gone) is swallowed -- this is cosmetic, must never affect the real conversation.
+ */
+function sendTransientTokenUsage(client: TelegramClient, chatId: number, usage: { totalTokens: number } | undefined): void {
+  if (!usage) return;
+  void client
+    .sendMessage({ chat_id: chatId, text: `🔢 ${usage.totalTokens.toLocaleString()} tokens` })
+    .then((sent) => {
+      setTimeout(() => {
+        void client.deleteMessage({ chat_id: chatId, message_id: sent.message_id }).catch(() => {});
+      }, 4000);
+    })
+    .catch(() => {});
 }
 
 /** The real, shared agent-turn path -- both a normal incoming message AND the "Pause and do it
@@ -141,6 +160,7 @@ async function runAgentTurn(
       const rows = options.map((opt, i) => [{ text: opt, callback_data: `askuser:${toolCallId}:${i}` }]);
       await client.sendMessage({ chat_id: chatId, text: "Tap an option:", reply_markup: { inline_keyboard: rows } });
     }
+    sendTransientTokenUsage(client, chatId, finalResult?.tokenUsage);
   } catch (err) {
     await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) });
   } finally {
@@ -249,7 +269,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
     role: "user",
     content: withLiveContext(
       deps.ownerUserId,
-      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Use hunt_for_setup to actively hunt your active pair group for a genuine setup RIGHT NOW -- never ask which pair to trade while a group is configured; hunt_for_setup itself broadens beyond a single-pair focus if it has nothing good. Act (open/manage a real trade) if one genuinely clears using your own trading behavior. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
+      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Use hunt_for_setup to actively hunt your active pair group for a genuine setup RIGHT NOW -- never ask which pair to trade while a group is configured; hunt_for_setup itself broadens beyond a single-pair focus if it has nothing good. When hunt_for_setup surfaces a real candidate worth a closer look, consider convening run_setup_panel on it for a deeper multi-specialist second opinion before committing. Act (open/manage a real trade) if one genuinely clears using your own trading behavior. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
     ) as string,
   });
 
@@ -573,6 +593,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         if (await tryHandlePendingConfidenceEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingFirecrawlKeyEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingMcpServerEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingPushIntervalEntry(routerDeps, chatId, message.text)) return;
         // Item 11: a typed "yes"/"no" answering a real pending settings-change approval is
         // handled here, BEFORE the agent loop ever sees it -- otherwise the model has no way
         // to know an approval is already pending and could re-propose the same change, sending
