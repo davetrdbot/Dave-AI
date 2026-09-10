@@ -135,6 +135,11 @@ export function appendUserFact(userId: string, fact: string): void {
   appendToBudgetedFile(userId, "USER.md", fact);
 }
 
+/** Appends a lasting general observation/fact to MEMORY.md immediately (budget-enforced, same as appendUserFact). */
+export function appendMemoryNote(userId: string, note: string): void {
+  appendToBudgetedFile(userId, "MEMORY.md", note);
+}
+
 /** Appends a communication-style/tone preference to ADAPTABILITY.md immediately. */
 export function appendAdaptability(userId: string, note: string): void {
   ensureUserMemory(userId);

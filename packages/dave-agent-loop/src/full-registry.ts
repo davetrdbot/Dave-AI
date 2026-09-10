@@ -14,7 +14,7 @@ import { PAIR_GROUP_TOOLS } from "@dave/trading";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
-import { MEMORY_TOOLS, MEMORY_EXTRA_TOOLS } from "@dave/memory";
+import { MEMORY_TOOLS, MEMORY_EXTRA_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
 import { PUSH_TOOLS, TELEGRAM_TOOLS, type TelegramClient } from "@dave/telegram";
 import { NOTIFICATION_TOOLS } from "@dave/notifications";
 import { SAFETY_TOOLS } from "@dave/safety";
@@ -184,6 +184,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(subagentTools);
   registry.register(adaptTools(MEMORY_TOOLS, { actorId: deps.userId }));
   registry.register(adaptTools(MEMORY_EXTRA_TOOLS, { actorId: deps.userId }));
+  registry.register(adaptTools(MEMORY_WRITE_TOOLS, { actorId: deps.userId }));
   // Real fix (Step 18 re-verification): a single journal_trade call now
   // feeds BOTH the file-backed narrative store (Step 12) AND Step 18's
   // DB-backed trade log -- the latter is what actually drives

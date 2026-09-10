@@ -16,7 +16,7 @@ import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
-import { MEMORY_TOOLS } from "@dave/memory";
+import { MEMORY_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
 import { VOICE_SETTINGS_TOOLS, NOTIFICATION_TOOLS } from "@dave/notifications";
 import { PAIR_GROUP_TOOLS, TRAILING_TOOLS, MT5_ACCOUNT_TOOLS, DAVEMA_TOOLS } from "@dave/trading";
 import { JOURNAL_TOOLS } from "@dave/workers";
@@ -66,6 +66,7 @@ try {
     SUBAGENT_TOOLS.length +
     MEMORY_TOOLS.length +
     MEMORY_EXTRA_TOOLS.length +
+    MEMORY_WRITE_TOOLS.length +
     JOURNAL_TOOLS.length +
     SAFETY_TOOLS.length +
     SELF_IMPROVE_TOOLS.length +
@@ -98,6 +99,7 @@ try {
     "create_e2b_sandbox", // dave-e2b
     "create_subagent", "retire_subagent", // dave-workers subagent tools
     "recall_memory", // dave-memory
+    "remember_user_fact", "remember_note", "remember_adaptability_note", // dave-memory write-tools (item 11)
     "get_lovable_mcp_settings", "set_lovable_mcp_settings", // dave-lovable-mcp settings
     "get_voice_settings", "set_voice_enabled", // dave-notifications TTS settings
     "list_pair_groups", "create_or_update_pair_group", "delete_pair_group", "get_active_pair_group", // dave-trading pair groups
