@@ -13,7 +13,9 @@ import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
-import { stopOrPanic, isTradingHalted } from "@dave/safety";
+import { stopOrPanic, isTradingHalted, assertNotTripped, CircuitBreakerTrippedError } from "@dave/safety";
+import { getEaConnectionStatus } from "@dave/ea-bridge";
+import { enforceDrawdownLimit } from "./drawdown-guard.js";
 import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes } from "./trading-loop.js";
 import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
@@ -206,9 +208,27 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
  * included). Per IDENTITY.md's "trade quietly" rule, this sends NOTHING to the user unless the
  * model's own final text is real content -- a bare "NOTHING_TO_REPORT" sentinel (or empty text)
  * means a normal, quiet cycle where nothing needed saying, and is swallowed here, never sent. */
-async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
+export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
   if (isTradingHalted(deps.ownerUserId)) return;
   if (getBusyState(deps.ownerUserId)) return; // a real user turn is already in flight -- don't collide with it, just wait for the next tick
+
+  // Items 2/6 real gating gap fixed (user's reference pattern: "real gating checks before any
+  // analysis: kill switch, auto_trading flag, pending user question, EA heartbeat freshness,
+  // drawdown cap"). isTradingHalted/getBusyState above already covered the kill-switch/busy
+  // case; these are the real gates that were genuinely missing:
+  if (getPendingQuestion(deps.ownerUserId)) return; // mid-question -- don't pile a fresh cycle on top of an unanswered one
+  const eaStatus = getEaConnectionStatus(deps.ownerUserId);
+  if (!eaStatus.connected) return; // no real live EA data to analyze -- a stale/no-op cycle would just burn a turn
+  try {
+    assertNotTripped(deps.db, deps.ownerUserId);
+  } catch (err) {
+    if (err instanceof CircuitBreakerTrippedError) return; // already real, already reported via its own mechanism
+    throw err;
+  }
+  const drawdownPaused = await enforceDrawdownLimit(deps.db, deps.ownerUserId, async (text) => {
+    await client.sendMessage({ chat_id: chatId, text });
+  });
+  if (drawdownPaused) return;
 
   const historyKey = `${deps.ownerUserId}:autonomous:${chatId}`;
   const registry = getOrBuildRegistry(deps, client, chatId);
@@ -219,11 +239,17 @@ async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: Te
 
   let history = loadConversationHistory(deps.db, historyKey);
   if (history.length === 0) history = [{ role: "system", content: deps.systemPrompt }];
+  // Item 2/6 real gap fixed (user: "'hunt for a setup and place it' should mean Dave actively
+  // scans the ACTIVE PAIR GROUP... RIGHT NOW, without asking the user which pair to trade"):
+  // this instruction now explicitly directs the model at hunt_for_setup (which genuinely
+  // broadens beyond a single-pair focus when it has nothing good -- find-setup.ts) instead of
+  // the narrower find_setup, and is explicit that asking the user which pair is never the answer
+  // while an active pair group exists.
   history.push({
     role: "user",
     content: withLiveContext(
       deps.ownerUserId,
-      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Scan your active pair group for a genuine setup using your real analysis tools and your own trading behavior, and act (open/manage a real trade) if one genuinely clears. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
+      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Use hunt_for_setup to actively hunt your active pair group for a genuine setup RIGHT NOW -- never ask which pair to trade while a group is configured; hunt_for_setup itself broadens beyond a single-pair focus if it has nothing good. Act (open/manage a real trade) if one genuinely clears using your own trading behavior. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
     ) as string,
   });
 

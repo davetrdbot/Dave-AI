@@ -52,18 +52,77 @@ export async function findSetup(userId: string, analysis: AnalysisSource, tf = "
     return { scannedAt: Date.now(), groupName, rows: [], bestSetup: null, skippedOutsideSession: true };
   }
 
-  const rows: SetupScanRow[] = await Promise.all(
-    effectiveSymbols.map(async (symbol): Promise<SetupScanRow> => {
-      try {
-        const data = await analysis.get<ConfluenceData>("confluence", symbol, tf);
-        return { symbol, score: data.score, direction: data.direction };
-      } catch (err) {
-        return { symbol, score: -1, direction: "unknown", error: err instanceof Error ? err.message : String(err) };
-      }
-    })
-  );
-
+  const rows = await scanSymbols(analysis, effectiveSymbols, tf);
   const ranked = rows.filter((r) => !r.error).sort((a, b) => b.score - a.score);
   const groupName = activePairSymbol ? `${activePairSymbol} (single pair)` : (activeGroup?.name ?? null);
   return { scannedAt: Date.now(), groupName, rows, bestSetup: ranked[0] ?? null };
+}
+
+async function scanSymbols(analysis: AnalysisSource, symbols: string[], tf: string, exclude: Set<string> = new Set()): Promise<SetupScanRow[]> {
+  return Promise.all(
+    symbols
+      .filter((s) => !exclude.has(s))
+      .map(async (symbol): Promise<SetupScanRow> => {
+        try {
+          const data = await analysis.get<ConfluenceData>("confluence", symbol, tf);
+          return { symbol, score: data.score, direction: data.direction };
+        } catch (err) {
+          return { symbol, score: -1, direction: "unknown", error: err instanceof Error ? err.message : String(err) };
+        }
+      })
+  );
+}
+
+export interface HuntResult extends SetupScanResult {
+  /** True when this result came from broadening beyond the primary scan (a single-pair focus
+   *  that had nothing good, or an explicit exclusion like "Find Another" forcing a re-scan). */
+  huntModeActivated: boolean;
+}
+
+/** Real, minimum confluence score item 2/6 treats as "worth taking" before hunt mode gives up on
+ *  the primary scan and broadens -- matches the same floor confidence-gate.ts's default threshold
+ *  implies (70), kept slightly below it since this is "worth a look," not "worth auto-firing." */
+export const HUNT_MODE_MIN_SCORE = 60;
+
+/**
+ * Item 2/6 real gap fixed (user: "'hunt for a setup and place it' should mean Dave actively
+ * scans the ACTIVE PAIR GROUP... and looks for a real setup across it, RIGHT NOW... if no clean
+ * setup exists on the currently configured/active pair, Dave does NOT just stop -- it activates
+ * 'Hunt Mode'... actively scanning OTHER available pairs in the same group"). findSetup() already
+ * scans the whole group by default -- the real gap was specifically when a single-pair FOCUS
+ * (setActivePairSymbol) is active: findSetup only ever looked at that one pair, so a weak/no
+ * setup on it just... stopped, with nothing broader tried. This broadens to the rest of the
+ * active group when the primary scan doesn't clear HUNT_MODE_MIN_SCORE, and (for a real "Find
+ * Another" re-hunt) can also exclude specific symbols already declined.
+ */
+export async function huntForSetup(userId: string, analysis: AnalysisSource, tf = "H1", opts: { excludeSymbols?: string[] } = {}): Promise<HuntResult> {
+  const exclude = new Set(opts.excludeSymbols ?? []);
+  const primary = await findSetup(userId, analysis, tf);
+  if (primary.skippedOutsideSession || primary.groupName === null) {
+    return { ...primary, huntModeActivated: false };
+  }
+
+  const primaryRanked = primary.rows.filter((r) => !r.error && !exclude.has(r.symbol)).sort((a, b) => b.score - a.score);
+  const primaryBest = primaryRanked[0] ?? null;
+  const info = getActiveGroupInfo(userId);
+  const singleFocus = info.activePairSymbol !== null;
+
+  if (!singleFocus) {
+    // Already a real whole-group scan -- re-ranking after exclusions is enough, no second real
+    // network scan needed. Only counts as "hunt mode" if an exclusion actually changed the pick.
+    const huntModeActivated = exclude.size > 0 && primary.bestSetup?.symbol !== primaryBest?.symbol;
+    return { ...primary, bestSetup: primaryBest, huntModeActivated };
+  }
+
+  if (primaryBest && primaryBest.score >= HUNT_MODE_MIN_SCORE) {
+    return { ...primary, bestSetup: primaryBest, huntModeActivated: false };
+  }
+
+  // A real single-pair focus with nothing good (or the only good pick excluded) -- broaden to
+  // the REST of the real active group, per the user's explicit ask.
+  const group = info.activeGroup;
+  if (!group || group.symbols.length === 0) return { ...primary, bestSetup: primaryBest, huntModeActivated: false };
+  const rows = await scanSymbols(analysis, group.symbols, tf, exclude);
+  const ranked = rows.filter((r) => !r.error).sort((a, b) => b.score - a.score);
+  return { scannedAt: Date.now(), groupName: group.name, rows, bestSetup: ranked[0] ?? null, huntModeActivated: true };
 }

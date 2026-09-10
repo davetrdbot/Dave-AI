@@ -100,6 +100,10 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
                     inline_keyboard: [[
                       { text: "✅ Approve", callback_data: `tradeapprove:${result.pendingId as string}`, style: "success" },
                       { text: "❌ Decline", callback_data: `tradedecline:${result.pendingId as string}`, style: "danger" },
+                      // Item 2/6 real gap fixed (user's reference pattern: "an Approve / Decline /
+                      // Find Another inline button prompt"): a real 3rd option, wired to re-hunt
+                      // excluding this declined symbol, not just a plain decline.
+                      { text: "🔍 Find Another", callback_data: `tradefindanother:${result.pendingId as string}` },
                     ]],
                   },
                 })
@@ -107,6 +111,25 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
             } else if (result.ticket) {
               void deps.telegram.client.sendMessage({ chat_id: deps.telegram.chatId, text: buildTradePlacedMessage(order, result.ticket as string, confidence) }).catch(() => undefined);
             }
+          }
+          return result;
+        },
+      };
+    }
+    if (tool.name === "hunt_for_setup") {
+      return {
+        ...tool,
+        execute: async (args: Record<string, unknown>) => {
+          const result = (await tool.execute(args)) as { huntModeActivated?: boolean; groupName?: string | null; rows?: unknown[] };
+          // Item 2/6 real gap fixed (user's reference pattern: "Sends a real message: '🔍 Hunt
+          // Mode Active — No setup on [pair]. Scanning [N] pairs…'"): fires the real notification
+          // the moment hunt_for_setup genuinely had to broaden beyond a single-pair focus --
+          // never a fabricated status update, tied to the real huntModeActivated flag.
+          if (deps.telegram && result.huntModeActivated) {
+            const n = result.rows?.length ?? 0;
+            void deps.telegram.client
+              .sendMessage({ chat_id: deps.telegram.chatId, text: `🔍 Hunt Mode Active — no clean setup on the focused pair. Scanning ${n} pair(s) in ${result.groupName ?? "the active group"}…` })
+              .catch(() => undefined);
           }
           return result;
         },

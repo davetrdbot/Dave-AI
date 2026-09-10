@@ -1,6 +1,6 @@
 import type { AnalysisSource } from "./analysis-source.js";
 import type { TradeExecutor } from "./trade-executor.js";
-import { findSetup } from "./find-setup.js";
+import { findSetup, huntForSetup } from "./find-setup.js";
 import { tradeExecute, tradeModify, partialClose, fullClose, deletePendingOrder, deleteAllPendingOrders } from "./trade-execute.js";
 import { validateOrder, resolveEntryPrice, isPendingOrderType, type OrderRequest } from "./order-types.js";
 import { enableBreakevenTrailing, disableBreakevenTrailing } from "./breakeven-trailing.js";
@@ -70,6 +70,22 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       properties: { timeframe: { type: "string", description: "e.g. M15, H1, H4", default: "H1" } },
     },
     execute: async (args, ctx) => findSetup(ctx.userId, ctx.analysis, (args.timeframe as string) ?? "H1"),
+  },
+  {
+    name: "hunt_for_setup",
+    description:
+      "Aggressively hunt for a real trade setup RIGHT NOW -- this is what 'go hunt for a setup' means. Scans your active " +
+      "pair group; if a single-pair focus is set and it has nothing good, this automatically broadens to the rest of " +
+      "the group instead of just giving up (huntModeActivated:true in the result tells you when that happened). Pass " +
+      "excludeSymbols to re-hunt after a candidate was declined -- never re-propose the same symbol the user just said no to.",
+    parameters: {
+      type: "object",
+      properties: {
+        timeframe: { type: "string", description: "e.g. M15, H1, H4", default: "H1" },
+        excludeSymbols: { type: "array", items: { type: "string" }, description: "symbols to skip -- e.g. a candidate just declined" },
+      },
+    },
+    execute: async (args, ctx) => huntForSetup(ctx.userId, ctx.analysis, (args.timeframe as string) ?? "H1", { excludeSymbols: args.excludeSymbols as string[] | undefined }),
   },
   {
     name: "trade_execute",

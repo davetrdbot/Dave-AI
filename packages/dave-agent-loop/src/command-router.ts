@@ -15,7 +15,7 @@ import {
   type TelegramCallbackQuery,
   sendSelfDeletingMessage,
 } from "@dave/telegram";
-import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError } from "@dave/ea-bridge";
+import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource } from "@dave/ea-bridge";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
 import { formatPnl, buildTradePlacedMessage } from "./trade-notifications.js";
@@ -66,6 +66,7 @@ import {
   TradeApprovalNotFoundError,
   resetConfidenceSettingsForUser,
   tradeExecute,
+  huntForSetup,
 } from "@dave/trading";
 import { listSkills } from "@dave/skills";
 import {
@@ -1554,6 +1555,32 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         } else {
           ackText = "Declined";
           if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Declined -- ${entry.order.symbol} ${entry.order.type.toUpperCase()} was not placed.` });
+        }
+      } catch (err) {
+        ackText = err instanceof TradeApprovalNotFoundError ? "Already handled" : `Error: ${err instanceof Error ? err.message : String(err)}`;
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
+      }
+    } else if (data.startsWith("tradefindanother:")) {
+      // Item 2/6 real gap fixed: the 3rd "Find Another" option on a trade approval prompt --
+      // declines the current candidate (same real effect as tradedecline) and genuinely re-hunts
+      // the active pair group excluding it, rather than just discarding the prompt. Never
+      // fabricates a new confidence/SL/TP -- this reports the real next candidate found and lets
+      // the user (or a fresh agent turn) decide, since only the model computes those for real.
+      const pendingId = data.slice("tradefindanother:".length);
+      try {
+        const entry = takePendingTradeApproval(deps.userId, pendingId);
+        ackText = "Finding another";
+        const analysis = createEaAnalysisSource(deps.userId);
+        const hunt = await huntForSetup(deps.userId, analysis, "H1", { excludeSymbols: [entry.order.symbol] });
+        if (chatId) {
+          if (hunt.bestSetup) {
+            await deps.client.sendMessage({
+              chat_id: chatId,
+              text: `🔍 Next candidate (excluding ${entry.order.symbol}): ${hunt.bestSetup.symbol} — confluence ${hunt.bestSetup.score}, ${hunt.bestSetup.direction}. Ask me to analyze and take it if you want.`,
+            });
+          } else {
+            await deps.client.sendMessage({ chat_id: chatId, text: `Declined ${entry.order.symbol} -- scanned the rest of the group, nothing else real cleared right now.` });
+          }
         }
       } catch (err) {
         ackText = err instanceof TradeApprovalNotFoundError ? "Already handled" : `Error: ${err instanceof Error ? err.message : String(err)}`;
