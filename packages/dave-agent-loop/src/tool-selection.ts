@@ -11,7 +11,7 @@
  *
  * The fix: only a curated CORE set -- covering the trading actions, settings, status, journal,
  * and safety tools Dave genuinely needs in nearly every real turn -- is sent by default. Anything
- * else (the ~40 specialized DAVEMA analysis tools, skills/knowledge management, provider/E2B/
+ * else (the ~40 specialized EA analysis tools, skills/knowledge management, provider/E2B/
  * Firecrawl/MCP key management, self-improvement, sandbox, workers, automations, ...) is real and
  * still fully callable, just DISCOVERABLE: the model calls the already-real `search_tools` tool,
  * and whatever it finds gets added to the active set for the rest of that run (agent-loop.ts) --

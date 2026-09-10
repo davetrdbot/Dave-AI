@@ -2,7 +2,6 @@ import type { Server } from "node:http";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
-import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
 import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, markdownToTelegramHtml, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
@@ -58,7 +57,6 @@ export interface TelegramBotServerDeps {
   /** The single Dave account this bot serves -- all chats it talks in share this one account's credentials/settings/tools, per-chat state is only the conversation history. */
   ownerUserId: string;
   db: DaveDatabase;
-  davema: DavemaClient;
   executor: TradeExecutor;
   botToken: string;
   publicBaseUrl: string;
@@ -346,7 +344,6 @@ export function getOrBuildRegistry(deps: TelegramBotServerDeps, client: Telegram
       buildFullToolRegistry({
         userId: deps.ownerUserId,
         db: deps.db,
-        davema: deps.davema,
         executor: deps.executor,
         telegram: { client, chatId },
         publicBaseUrl: deps.publicBaseUrl,
@@ -488,7 +485,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
           return;
         }
 
-        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema, executor: deps.executor };
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, executor: deps.executor };
         await dispatchCallback(routerDeps, update.callback_query);
         return;
       }
@@ -526,7 +523,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // returns true when it did, so a recognized command never
       // reaches the agent loop below.
       if (message.text && isDaveCommand(message.text)) {
-        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema, executor: deps.executor };
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, executor: deps.executor };
         const handled = await dispatchCommand(routerDeps, chatId, historyKey, message.text);
         if (handled) return;
       }
@@ -536,7 +533,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // the model ID as their next message -- this is that capture, checked before anything
       // free-text falls through to the LLM.
       if (message.text) {
-        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, davema: deps.davema, executor: deps.executor };
+        const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, executor: deps.executor };
         if (await tryHandlePendingModelEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingVoiceEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingKeyEntry(routerDeps, chatId, message.text)) return;

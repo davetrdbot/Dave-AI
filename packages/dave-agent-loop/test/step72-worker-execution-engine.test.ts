@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
-import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor } from "@dave/ea-bridge";
 import { addProviderKey, setModelConfig } from "@dave/brain";
 import { TelegramClient } from "@dave/telegram";
@@ -112,14 +111,12 @@ try {
   addProviderKey(db, OWNER, "openai", "worker key", { apiKey: "sk-openai-fake", model: "gpt-worker-model" });
   setModelConfig(OWNER, { primary: "openai", fallback: [] });
 
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
   const client = new TelegramClient("000000:fake-token-for-transport-mock");
 
   const fullRegistry = buildFullToolRegistry({
     userId: OWNER,
     db,
-    davema,
     executor,
     telegram: { client, chatId: CHAT_ID },
     publicBaseUrl: PUBLIC_BASE_URL,
@@ -129,7 +126,6 @@ try {
   await runWorkerTask({
     db,
     ownerUserId: OWNER,
-    davema,
     executor,
     publicBaseUrl: PUBLIC_BASE_URL,
     client,

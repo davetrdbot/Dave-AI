@@ -890,15 +890,16 @@ function SimpleKeysCard({ api, title, apiPath }: { userId: string; api: ReturnTy
   );
 }
 
-// --- Settings: real DAVEMA + sandbox status checks (14.1) ---
+// --- Settings: real EA + sandbox status checks (14.1; item 5: DAVEMA retirement -- the EA
+// connection is the real market-data dependency now, not the retired external DAVEMA API) ---
 function SettingsPanel() {
-  const [davema, setDavema] = useState<any>(null);
+  const [ea, setEa] = useState<any>(null);
   const [sandbox, setSandbox] = useState<any>(null);
 
   useEffect(() => {
-    fetch("/api/status/davema")
+    fetch("/api/status/ea")
       .then((r) => r.json())
-      .then(setDavema);
+      .then(setEa);
     fetch("/api/status/sandbox")
       .then((r) => r.json())
       .then(setSandbox);
@@ -909,9 +910,9 @@ function SettingsPanel() {
       <h2>System Status</h2>
       <div className="row" style={{ gap: 24 }}>
         <div>
-          DAVEMA:{" "}
-          <span className={`badge ${davema ? (davema.reachable ? "ok" : "bad") : "warn"}`}>
-            {davema ? (davema.reachable ? "reachable" : "unreachable") : "checking"}
+          MT5/EA bridge:{" "}
+          <span className={`badge ${ea ? (ea.connected ? "ok" : "bad") : "warn"}`}>
+            {ea ? (ea.connected ? "connected" : ea.lastSeenAt === null ? "never connected" : "disconnected") : "checking"}
           </span>
         </div>
         <div>

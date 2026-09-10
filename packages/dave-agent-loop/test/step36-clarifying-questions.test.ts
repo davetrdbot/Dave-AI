@@ -6,7 +6,6 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DaveDatabase } from "@dave/db";
-import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor } from "@dave/ea-bridge";
 import { OpenAICompatibleProvider } from "@dave/brain";
 import { buildFullToolRegistry, AgentLoop } from "../src/index.js";
@@ -32,12 +31,10 @@ try {
   // --- [2] Real end-to-end: an ambiguous trade request drives a real model to call ask_user, through the FULL real registry ---
   console.log("\n[2] Real end-to-end: given an ambiguous request, the model calls ask_user through the SAME full registry Dave actually uses...\n");
   const db = new DaveDatabase(join(workDir, "dave.db"));
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
   const registry = buildFullToolRegistry({
     userId: OWNER,
     db,
-    davema,
     executor,
   });
 

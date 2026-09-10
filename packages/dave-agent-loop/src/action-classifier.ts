@@ -22,7 +22,7 @@ const RULES: [RegExp, ActionType][] = [
   // not a bare substring) so it can't shadow unrelated tools that merely
   // contain these letters (e.g. "journal_close" is real journal input,
   // not a trade close -- caught by the "journal" rule above first).
-  [/trade|\border\b|position|\bclose\b|modify|correlation|trailing|pair_group|risk|^sl_|^tp_|davema|lot/i, "trade"],
+  [/trade|\border\b|position|\bclose\b|modify|correlation|trailing|pair_group|risk|^sl_|^tp_|lot/i, "trade"],
 ];
 
 export function classifyToolAction(toolName: string): ActionType {

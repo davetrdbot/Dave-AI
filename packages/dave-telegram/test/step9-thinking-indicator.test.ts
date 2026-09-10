@@ -27,7 +27,7 @@ const fakeClient = {
 
 await withThinkingIndicator(fakeClient, 847213, async (indicator) => {
   await indicator.update("memory", "Recalling frozen snapshot + L0-L2 tiers");
-  await indicator.update("api", "Calling DAVEMA /correlation + /strength");
+  await indicator.update("api", "Calling EA analysis /correlation + /strength");
   await indicator.update("trade", "Scoring EURUSD setup against confluence");
   return { result: undefined, finalText: "Setup scored -- confluence 78, LONG bias." };
 });
@@ -52,7 +52,7 @@ console.log(`      api:    "${(sentCalls[2].body.rich_message as any).html}"`);
 console.log(`      trade:  "${(sentCalls[3].body.rich_message as any).html}"`);
 console.log(`      final:  "${(sentCalls[4].body.rich_message as any).html}"`);
 assert.equal((sentCalls[1].body.rich_message as any).html, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`);
-assert.equal((sentCalls[2].body.rich_message as any).html, `${ACTION_ICONS.api}Calling DAVEMA /correlation + /strength`);
+assert.equal((sentCalls[2].body.rich_message as any).html, `${ACTION_ICONS.api}Calling EA analysis /correlation + /strength`);
 assert.equal((sentCalls[3].body.rich_message as any).html, `${ACTION_ICONS.trade}Scoring EURUSD setup against confluence`);
 assert.equal((sentCalls[4].body.rich_message as any).html, "Setup scored -- confluence 78, LONG bias.");
 assert.ok(

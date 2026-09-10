@@ -3,9 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setRiskMode, getRiskSettings } from "../src/risk-settings.js";
-import { TRADING_TOOLS, type ToolContext, type TradeExecutor } from "../src/index.js";
+import { TRADING_TOOLS, type ToolContext, type TradeExecutor, type AnalysisSource } from "../src/index.js";
 import { AutoModeRequiresComputedValueError } from "../src/tools.js";
-import { DavemaClient } from "@dave/davema";
 
 /**
  * Real proof for item 3 (user: "when SL/TP mode is set to Auto, Dave must calculate and set real
@@ -28,7 +27,7 @@ const workDir = mkdtempSync(join(tmpdir(), "dave-auto-gate-"));
 process.chdir(workDir);
 
 async function main() {
-  const davemaWithPrice = { data: async () => ({ bid: 1.1, ask: 1.1002, close: 1.1001 }) } as unknown as DavemaClient;
+  const analysisWithPrice: AnalysisSource = { get: async () => ({ bid: 1.1, ask: 1.1002, close: 1.1001 }) };
   const executor: TradeExecutor = {
     openOrder: async (order) => ({ ticket: "T-1", ...order } as any),
     modifyOrder: async () => {},
@@ -42,7 +41,7 @@ async function main() {
   console.log("[1] SL mode = 'auto', model omits sl -- trade_execute genuinely REJECTS the call back to the model...\n");
   const AUTO_USER = "user-auto-1";
   setRiskMode(AUTO_USER, "sl", "auto");
-  const ctx: ToolContext = { userId: AUTO_USER, davema: davemaWithPrice, executor };
+  const ctx: ToolContext = { userId: AUTO_USER, analysis: analysisWithPrice, executor };
   await assert.rejects(
     () => tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1 }, ctx),
     (err: unknown) => {
@@ -56,7 +55,7 @@ async function main() {
   console.log("\n[2] Same, for TP mode = 'auto'...\n");
   const AUTO_TP_USER = "user-auto-tp-1";
   setRiskMode(AUTO_TP_USER, "tp", "auto");
-  const ctxTp: ToolContext = { userId: AUTO_TP_USER, davema: davemaWithPrice, executor };
+  const ctxTp: ToolContext = { userId: AUTO_TP_USER, analysis: analysisWithPrice, executor };
   await assert.rejects(
     () => tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, sl: 1.095 }, ctxTp),
     AutoModeRequiresComputedValueError
@@ -71,7 +70,7 @@ async function main() {
   console.log("\n[4] 'auto' mode is NEVER confused with 'on' -- a real 'on' user is unaffected by this gate...\n");
   const ON_USER = "user-on-1";
   setRiskMode(ON_USER, "sl", "on", 20);
-  const ctxOn: ToolContext = { userId: ON_USER, davema: davemaWithPrice, executor };
+  const ctxOn: ToolContext = { userId: ON_USER, analysis: analysisWithPrice, executor };
   const onResult = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1 }, ctxOn)) as { ticket: string };
   assert.equal(onResult.ticket, "T-1");
   console.log("    real 'on' mode still auto-applies its pip-distance value exactly as before -- no regression");

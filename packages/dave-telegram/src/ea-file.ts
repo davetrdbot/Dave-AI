@@ -59,7 +59,7 @@ export async function sendPersonalizedEaFile(
   const caption =
     `Your personalized EA -- webhook URL and token are already filled in.\n\n` +
     `Webhook: ${webhookUrl}\nToken: ${token}\n\n` +
-    `Drop it in MQL5/Experts/DAVEMA/, compile with F7, attach to a chart.`;
+    `Drop it in MQL5/Experts/Dave/, compile with F7, attach to a chart.`;
   await client.sendDocument({ chat_id: chatId, document: fileRef, caption, parse_mode: "HTML" });
   return { webhookUrl, token };
 }

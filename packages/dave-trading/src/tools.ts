@@ -1,4 +1,4 @@
-import type { DavemaClient } from "@dave/davema";
+import type { AnalysisSource } from "./analysis-source.js";
 import type { TradeExecutor } from "./trade-executor.js";
 import { findSetup } from "./find-setup.js";
 import { tradeExecute, tradeModify, partialClose, fullClose, deletePendingOrder, deleteAllPendingOrders } from "./trade-execute.js";
@@ -48,7 +48,7 @@ export class AutoModeRequiresComputedValueError extends Error {
 
 export interface ToolContext {
   userId: string;
-  davema: DavemaClient;
+  analysis: AnalysisSource;
   executor: TradeExecutor;
 }
 
@@ -69,14 +69,14 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       type: "object",
       properties: { timeframe: { type: "string", description: "e.g. M15, H1, H4", default: "H1" } },
     },
-    execute: async (args, ctx) => findSetup(ctx.userId, ctx.davema, (args.timeframe as string) ?? "H1"),
+    execute: async (args, ctx) => findSetup(ctx.userId, ctx.analysis, (args.timeframe as string) ?? "H1"),
   },
   {
     name: "trade_execute",
     description:
       "Place a real order. For buy_limit/sell_limit/buy_stop/sell_stop, price is optional: if omitted, a real current " +
-      "market quote is pulled from DAVEMA and a sensible entry is calculated a few pips off it. If DAVEMA is " +
-      "unreachable, this returns needsUserInput=true with a question to ask the user instead of failing silently or " +
+      "market quote is pulled from the connected MT5 EA and a sensible entry is calculated a few pips off it. If the " +
+      "EA is unreachable, this returns needsUserInput=true with a question to ask the user instead of failing silently or " +
       "rejecting the order -- never guess a strategy-significant entry price out of thin air. Pass your own real " +
       "confidence (0-100) for this specific setup: below the user's confidence threshold (see " +
       "get_confidence_settings), the order is queued for the user's explicit approval instead of firing immediately, " +
@@ -102,10 +102,10 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       if (isPendingOrderType(order.type) && order.price === undefined) {
         let referencePrice: number | undefined;
         try {
-          const quote = await ctx.davema.data<{ bid?: number; ask?: number; close?: number }>("price", order.symbol);
+          const quote = await ctx.analysis.get<{ bid?: number; ask?: number; close?: number }>("price", order.symbol);
           referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
         } catch {
-          // DAVEMA unreachable -- fall through, resolveEntryPrice below will ask instead of failing silently.
+          // EA unreachable -- fall through, resolveEntryPrice below will ask instead of failing silently.
         }
         const resolution = resolveEntryPrice(order, referencePrice !== undefined ? { referencePrice, offsetPips: 10 } : {});
         if (!resolution.resolved) {
@@ -146,7 +146,7 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         let referencePrice = order.price;
         if (referencePrice === undefined) {
           try {
-            const quote = await ctx.davema.data<{ bid?: number; ask?: number; close?: number }>("price", order.symbol);
+            const quote = await ctx.analysis.get<{ bid?: number; ask?: number; close?: number }>("price", order.symbol);
             referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
           } catch {
             // No live quote -- sl/tp stay honestly unset below, never guessed.

@@ -1,4 +1,4 @@
-import type { DavemaClient } from "@dave/davema";
+import type { AnalysisSource } from "./analysis-source.js";
 import { processPriceTick, type Position } from "./breakeven-trailing.js";
 import { getTrailingStopConfig, setTrailingStopConfig } from "./trailing-config.js";
 import { registerTrailingPosition, unregisterTrailingPosition, listTrailingPositions } from "./trailing-runtime.js";
@@ -6,12 +6,12 @@ import { storeOwnMt5Credentials, getMaskedOwnMt5Credentials, deleteOwnMt5Credent
 
 /**
  * Update 18 (bulk tool-coverage expansion): trailing-stop config,
- * MT5 account selection, and a generic real DAVEMA query -- all had
+ * MT5 account selection, and a generic real market-data query -- all had
  * real underlying functions but no agent-tool surface.
  */
 export interface ExtraToolContext {
   userId: string;
-  davema: DavemaClient;
+  analysis: AnalysisSource;
 }
 
 export interface ExtraToolDefinition {
@@ -119,22 +119,19 @@ export const MT5_ACCOUNT_TOOLS: ExtraToolDefinition[] = [
 ];
 
 /**
- * Item 5 real gap fixed: DAVEMA (the external market-data HTTP API) is retired -- these two
- * tools used to make a live HTTP call to it. `correlation_check`'s underlying /correlation
- * endpoint isn't ported to the new EA-based path yet (tracked as remaining work, honestly
- * reported rather than left silently calling a retired API), so it now fails loudly with a
- * clear message instead of a confusing network error against a dead endpoint. The real
- * replacement analysis tools (get_trend/get_momentum/get_volatility) live in
- * @dave/ea-bridge's tools.ts, not here -- that package already depends on this one, so putting
- * them here would create a circular package dependency.
+ * Item 5 real gap fixed (DAVEMA retirement, fully followed through this time): `correlation_check`
+ * used to make a live HTTP call to the retired external DAVEMA API. The real replacement now
+ * exists (get_correlation in @dave/ea-bridge's on-demand EA analysis suite -- that package
+ * already depends on this one, so it can't be called directly here without a circular package
+ * dependency), so this routes through the same `AnalysisSource` abstraction find_setup/
+ * trade_execute use, injected by whoever builds the real registry (dave-agent-loop's
+ * full-registry.ts) with the real EA-backed implementation.
  */
 export const DAVEMA_TOOLS: ExtraToolDefinition[] = [
   {
     name: "correlation_check",
-    description: "NOT YET AVAILABLE -- correlation analysis is being re-ported from the retired DAVEMA API to the new on-demand EA analysis tools (get_trend/get_momentum/get_volatility and more to come). Do not call this.",
+    description: "Real cross-market correlation check for a symbol (vs EURUSD/DXY proxy, risk-on/off, safe-haven status) -- don't stack secretly-correlated positions.",
     parameters: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["symbol"] },
-    execute: async () => {
-      throw new Error("correlation_check is not available yet -- DAVEMA (the old external API) is retired, and this specific check hasn't been re-ported to the new EA-based analysis tools yet.");
-    },
+    execute: async (args, ctx) => ctx.analysis.get("correlation", args.symbol as string, args.timeframe as string | undefined),
   },
 ];

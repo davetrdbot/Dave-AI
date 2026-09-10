@@ -3,7 +3,6 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
-import { DavemaClient, getDavemaKey } from "@dave/davema";
 import { EaBridge, DynamicTradeExecutor } from "@dave/ea-bridge";
 import { createHiddenWebhookServer } from "@dave/memory";
 import { startWatchdog, startHeartbeatLoop } from "@dave/safety";
@@ -163,7 +162,6 @@ export async function main(): Promise<void> {
   const port = Number(process.env.PORT ?? "3000");
 
   const db = new DaveDatabase(dbPath);
-  const davema = new DavemaClient(getDavemaKey(ownerUserId));
 
   // Real gap this file also fixes for Part A item 6/7: the heartbeat
   // loop and the watchdog it feeds are both real (Step 19.4), but
@@ -252,7 +250,6 @@ export async function main(): Promise<void> {
       const bot = await startTelegramBotServer({
         ownerUserId,
         db,
-        davema,
         // Real gap fixed (user: "so incase they don't want to use the ea I can provide my mcp
         // for the placing of trade"): routes every real trade call through whichever backend
         // (the MT5 EA, or a real configured MCP trading server) the user has actually chosen

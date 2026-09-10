@@ -1,5 +1,4 @@
 import type { DaveDatabase } from "@dave/db";
-import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import { checkSandboxHealth } from "@dave/sandbox";
 import {
@@ -140,8 +139,6 @@ export interface CommandRouterDeps {
   client: TelegramClient;
   userId: string; // the one Dave account these commands operate on
   publicBaseUrl: string;
-  /** Optional -- only needed for /connection's real DAVEMA ping. Every other command works fine without it. */
-  davema?: DavemaClient;
   /** Optional -- only needed for the real /trades close/close-all/close-losers buttons. */
   executor?: TradeExecutor;
 }
@@ -221,12 +218,14 @@ async function handleAccount(deps: CommandRouterDeps, chatId: number, editMessag
 /** Real fix (spec: per-service 🟢/🔴/🟡 status): the EA/MT5 bridge's real connection state
  * (getEaConnectionStatus, backed by the real lastSeen heartbeat every EA report already writes)
  * is now honestly shown here instead of just raw position counts with no connectivity signal. */
-/** Real fix (spec: "status button per service... DAVEMA, the AI provider/brain, MT5/EA
- * bridge, the sandbox, the database") -- this used to only ever show EA/position counts, with
- * zero real signal on the other 4 real subsystems. Each check below calls the actual real
- * function that subsystem's own health-check already uses elsewhere (DavemaClient.ping(),
- * checkSandboxHealth(), getEaConnectionStatus()) rather than inventing a second, parallel
- * check that could drift from what's actually true. */
+/** Real fix (spec: "status button per service... the AI provider/brain, MT5/EA bridge, the
+ * sandbox, the database") -- this used to only ever show EA/position counts, with zero real
+ * signal on the other real subsystems. Each check below calls the actual real function that
+ * subsystem's own health-check already uses elsewhere (checkSandboxHealth(),
+ * getEaConnectionStatus()) rather than inventing a second, parallel check that could drift from
+ * what's actually true. Item 5 real gap fixed: the DAVEMA row used to make a real live HTTP ping
+ * to the retired external DAVEMA API and show its raw error to the user -- removed; the EA/MT5
+ * bridge row above is the real market-data dependency now. */
 /**
  * Real gap fixed (user, with real screenshots of the exact desired UI: "in the menu ui add a
  * button called trades... refreshes every 2 sec like edit to the new one there you can close
@@ -294,18 +293,6 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number, editMes
     ? "🟢 MT5/EA bridge: connected"
     : `🔴 MT5/EA bridge: ${eaStatus.lastSeenAt === null ? "never connected" : `disconnected (last seen ${eaStatus.secondsSinceLastSeen}s ago)`}`;
 
-  let davemaLine: string;
-  if (!deps.davema) {
-    davemaLine = "🟡 DAVEMA: not checkable in this context";
-  } else {
-    try {
-      await deps.davema.ping();
-      davemaLine = "🟢 DAVEMA: connected";
-    } catch (err) {
-      davemaLine = `🔴 DAVEMA: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-
   const config = getModelConfig(deps.userId);
   const configuredProviders = new Set(listProviderKeys(deps.db, deps.userId).map((k) => k.provider));
   const brainReady = config.primary === "airllm" || configuredProviders.has(config.primary);
@@ -328,7 +315,7 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number, editMes
   }
 
   const text =
-    `<b>Connection</b>\n${davemaLine}\n${brainLine}\n${eaLine}\n${sandboxLine}\n${dbLine}\n\n` +
+    `<b>Connection</b>\n${brainLine}\n${eaLine}\n${sandboxLine}\n${dbLine}\n\n` +
     `Open positions: ${state.positions.length}\nPending orders: ${state.pendingOrders.length}`;
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }

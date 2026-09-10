@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { upsertGroup, setActiveGroup, setActivePairSymbol, clearActivePairSymbol, getActiveGroupInfo } from "../src/pair-groups.js";
 import { findSetup } from "../src/find-setup.js";
-import { DavemaClient } from "@dave/davema";
+import type { AnalysisSource } from "../src/analysis-source.js";
+
+// Item 5 (DAVEMA retirement): a minimal stand-in for the real EA-backed AnalysisSource
+// dave-ea-bridge provides in production -- this test only cares about which symbols get
+// scanned, not the real confluence data.
+const stubAnalysis: AnalysisSource = { get: async () => ({ score: 0, direction: "neutral" }) };
 
 /**
  * Real proof for the user's ask: "add active pair so incase a user doesn't want to use a group of
@@ -36,8 +41,7 @@ try {
   console.log(`    real effectiveSymbols (focused on XAUUSD): ${JSON.stringify(info.effectiveSymbols)}`);
 
   console.log("\n[3] find_setup genuinely scans ONLY the focused pair, not the whole group...\n");
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
-  const result = await findSetup(USER_ID, davema, "H1");
+  const result = await findSetup(USER_ID, stubAnalysis, "H1");
   assert.deepEqual(result.rows.map((r) => r.symbol), ["XAUUSD"], "find_setup must genuinely honor the real single-pair override");
   assert.equal(result.groupName, "XAUUSD (single pair)");
   console.log(`    real find_setup scanned: ${JSON.stringify(result.rows.map((r) => r.symbol))}, groupName: "${result.groupName}"`);

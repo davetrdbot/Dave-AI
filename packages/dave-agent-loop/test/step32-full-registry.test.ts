@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { DaveDatabase } from "@dave/db";
-import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor, EA_STATE_TOOLS, EA_ANALYSIS_TOOLS } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
@@ -40,13 +39,11 @@ const OWNER = "user-1";
 try {
   process.chdir(workDir);
   const db = new DaveDatabase(join(workDir, "dave.db"));
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
 
   const registry = buildFullToolRegistry({
     userId: OWNER,
     db,
-    davema,
     executor,
   });
 
@@ -209,7 +206,6 @@ try {
   const registryWithPush = buildFullToolRegistry({
     userId: OWNER,
     db,
-    davema,
     executor,
     telegram: { client: telegramClient, chatId: 847213 },
   });

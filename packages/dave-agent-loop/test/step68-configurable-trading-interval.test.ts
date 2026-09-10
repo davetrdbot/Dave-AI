@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
 import { DaveDatabase } from "@dave/db";
-import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor } from "@dave/ea-bridge";
 import { startTelegramBotServer } from "../src/telegram-bot-server.js";
 import { getTradingLoopIntervalMinutes, isAutonomousTradingRunning, stopAutonomousTradingLoop, DEFAULT_TRADING_LOOP_MINUTES } from "../src/trading-loop.js";
@@ -38,10 +37,9 @@ globalThis.fetch = (async (url: string, init?: RequestInit) => {
 let server: Awaited<ReturnType<typeof startTelegramBotServer>> | undefined;
 try {
   const db = new DaveDatabase(join(workDir, "dave.db"));
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
 
-  server = await startTelegramBotServer({ ownerUserId: OWNER, db, davema, executor, botToken: "000000:fake-bot-token", publicBaseUrl: "https://dave.example.com", systemPrompt: "You are Dave." });
+  server = await startTelegramBotServer({ ownerUserId: OWNER, db, executor, botToken: "000000:fake-bot-token", publicBaseUrl: "https://dave.example.com", systemPrompt: "You are Dave." });
 
   const webhookPath = new URL(server.webhookUrl).pathname;
   const secretToken = sentMessages.find((m) => m.method === "setWebhook")?.body as { secret_token: string };

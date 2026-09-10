@@ -1,6 +1,5 @@
 import type { DaveDatabase } from "@dave/db";
-import type { DavemaClient } from "@dave/davema";
-import type { TradeExecutor } from "@dave/trading";
+import type { TradeExecutor, AnalysisSource } from "@dave/trading";
 import type { TelegramClient } from "@dave/telegram";
 import { type Worker, toolsForWorker, JOURNAL_TOOLS, WORKER_TOOL_REQUEST_TOOLS, reportToUser, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID, getGrantedToolNames, retireWorker } from "@dave/workers";
 import { logTrade } from "@dave/feedback";
@@ -33,7 +32,7 @@ import { modelConfigProvider } from "./provider-selection.js";
 export interface RunWorkerTaskParams {
   db: DaveDatabase;
   ownerUserId: string;
-  davema: DavemaClient;
+  analysis: AnalysisSource;
   executor: TradeExecutor;
   publicBaseUrl: string;
   client: TelegramClient;
@@ -41,7 +40,7 @@ export interface RunWorkerTaskParams {
   worker: Worker;
   task: string;
   /** The owner's own full tool registry -- the source of truth a granted tool name is resolved
-   *  against, already bound with the owner's real ctx (db/davema/executor/telegram). */
+   *  against, already bound with the owner's real ctx (db/analysis/executor/telegram). */
   fullRegistry: ToolRegistry;
 }
 
@@ -50,13 +49,13 @@ export interface RunWorkerTaskParams {
 const activeRuns = new Set<string>();
 
 export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> {
-  const { db, ownerUserId, davema, executor, publicBaseUrl, client, chatId, worker, task, fullRegistry } = params;
+  const { db, ownerUserId, analysis, executor, publicBaseUrl, client, chatId, worker, task, fullRegistry } = params;
   if (activeRuns.has(worker.id)) return;
   activeRuns.add(worker.id);
   const tag = `#${worker.name.toLowerCase()}`;
 
   try {
-    const tradingCtx = { userId: ownerUserId, davema, executor };
+    const tradingCtx = { userId: ownerUserId, analysis, executor };
     const liveRegistry = new ToolRegistry();
     liveRegistry.register(adaptTools(toolsForWorker(worker), tradingCtx));
     if (worker.role === "journal") {

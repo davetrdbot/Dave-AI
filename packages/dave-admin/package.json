@@ -12,7 +12,6 @@
     "@dave/trading": "workspace:*",
     "@dave/workers": "workspace:*",
     "@dave/brain": "workspace:*",
-    "@dave/davema": "workspace:*",
     "@dave/sandbox": "workspace:*",
     "@dave/db": "workspace:*",
     "@dave/lovable-mcp": "workspace:*",

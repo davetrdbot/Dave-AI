@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { request } from "node:http";
 import { DaveDatabase } from "@dave/db";
-import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor } from "@dave/ea-bridge";
 import { createEaWebhookServer, getOrCreateEaWebhook, type EaCommand } from "@dave/ea-bridge";
 import { OpenAICompatibleProvider } from "@dave/brain";
@@ -35,9 +34,8 @@ async function main() {
   assert.ok(CORE_TOOL_NAMES.includes("get_all_analysis"), "get_all_analysis must genuinely be core -- not discovery-only");
 
   const db = new DaveDatabase(join(workDir, "dave.db"));
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
-  const registry = buildFullToolRegistry({ userId: OWNER, db, davema, executor });
+  const registry = buildFullToolRegistry({ userId: OWNER, db, executor });
 
   // A real EA webhook server -- the same round trip requestAnalysis() drives in production.
   const webhook = getOrCreateEaWebhook(OWNER);

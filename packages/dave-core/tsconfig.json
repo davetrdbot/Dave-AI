@@ -6,5 +6,5 @@
     "outDir": "lib"
   },
   "include": ["src"],
-  "references": [{ "path": "../dave-memory" }, { "path": "../dave-sandbox" }, { "path": "../dave-davema" }]
+  "references": [{ "path": "../dave-memory" }, { "path": "../dave-sandbox" }, { "path": "../dave-ea-bridge" }]
 }

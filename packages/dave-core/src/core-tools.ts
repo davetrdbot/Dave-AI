@@ -1,4 +1,3 @@
-import type { DavemaClient } from "@dave/davema";
 import { readLive } from "@dave/memory";
 import { runSelfTest } from "./selftest.js";
 import { getPairingStatus } from "./pairing.js";
@@ -11,7 +10,6 @@ import { BootstrapFlow, type Transport } from "./bootstrap.js";
  */
 export interface CoreToolContext {
   userId: string;
-  davema: DavemaClient;
   workspaceRoot: string;
 }
 
@@ -33,9 +31,9 @@ export const CORE_TOOLS: CoreToolDefinition[] = [
   },
   {
     name: "run_selftest",
-    description: "Run a real diagnostic pass -- DAVEMA reachability, memory files present, sandbox health, pairing status. Use this if something feels off before blaming the user's setup.",
+    description: "Run a real diagnostic pass -- EA connection, memory files present, sandbox health, pairing status. Use this if something feels off before blaming the user's setup.",
     parameters: { type: "object", properties: {} },
-    execute: async (_args, ctx) => runSelfTest(ctx.userId, ctx.davema, ctx.workspaceRoot),
+    execute: async (_args, ctx) => runSelfTest(ctx.userId, ctx.workspaceRoot),
   },
   {
     name: "get_onboarding_status",

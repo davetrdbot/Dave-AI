@@ -15,8 +15,8 @@ import {
   TRADING_TOOLS,
   type ToolContext,
   type TradeExecutor,
+  type AnalysisSource,
 } from "../src/index.js";
-import { DavemaClient } from "@dave/davema";
 
 /**
  * Real proof for the user's ask, with a real screenshot as the reference: "implement confidence
@@ -45,7 +45,8 @@ const executor: TradeExecutor = {
   listOpenPositions: async () => [],
   listPendingOrders: async () => [],
 };
-const ctx: ToolContext = { userId: USER_ID, davema: new DavemaClient(undefined, "http://127.0.0.1:1"), executor };
+const stubAnalysis: AnalysisSource = { get: async () => ({ bid: 1.1, ask: 1.1002, close: 1.1001 }) };
+const ctx: ToolContext = { userId: USER_ID, analysis: stubAnalysis, executor };
 const tradeExecuteTool = TRADING_TOOLS.find((t) => t.name === "trade_execute")!;
 
 try {

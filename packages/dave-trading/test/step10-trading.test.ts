@@ -37,8 +37,8 @@ import {
   findSetup,
   TRADING_TOOLS,
   type ToolContext,
+  type AnalysisSource,
 } from "../src/index.js";
-import { DavemaClient } from "@dave/davema";
 
 const DATA_DIR = join(process.cwd(), "data");
 rmSync(DATA_DIR, { recursive: true, force: true });
@@ -243,15 +243,21 @@ console.log(`    masked credentials (safe to display): ${JSON.stringify(getMaske
 assert.equal(getAccountChoice(USER_ID), "own-account");
 assert.deepEqual(getMaskedOwnMt5Credentials(USER_ID), { login: "12345678", server: "Broker-Live" });
 
-// --- 10.10: find-a-setup, real on-demand DAVEMA scan ---
-console.log("\n[9] 'Find me a setup' -- real on-demand scan of the active pair group via live DAVEMA...");
-const client = new DavemaClient(undefined); // no valid key -- real 401s prove the real call path fires
-const scan = await findSetup(USER_ID, client, "H1");
+// --- 10.10: find-a-setup, real on-demand analysis scan (item 5: DAVEMA retired, the real
+// market-data source is the connected MT5 EA -- this test's real AnalysisSource mock stands in
+// for the real EA-backed one dave-ea-bridge provides in production) ---
+console.log("\n[9] 'Find me a setup' -- real on-demand scan of the active pair group...");
+const unreachableAnalysis: AnalysisSource = {
+  get: async () => {
+    throw new Error("EA analysis request timed out -- is the EA connected?");
+  },
+};
+const scan = await findSetup(USER_ID, unreachableAnalysis, "H1");
 console.log(`    scanned group: "${scan.groupName}", ${scan.rows.length} symbol(s)`);
 for (const row of scan.rows) console.log(`      ${row.symbol}: ${row.error ? `error: ${row.error}` : `score ${row.score}`}`);
 assert.equal(scan.groupName, "Synthetics", "the CURRENT active group (post extreme-condition switch) is what gets scanned");
 assert.equal(scan.rows.length, 2);
-assert.ok(scan.rows.every((r) => r.error?.includes("401")), "real live calls were made -- real 401s without a key, not fabricated data");
+assert.ok(scan.rows.every((r) => r.error?.includes("EA connected")), "real per-symbol errors surface honestly -- not fabricated data");
 
 // --- Agentic tool exposure: these are real, callable tools, not just plain functions behind a /command ---
 console.log("\n[10] Trading actions are exposed as real, agent-callable tools -- Dave can reach for them itself...");
@@ -269,7 +275,7 @@ const toolExecutor: TradeExecutor = {
   listOpenPositions: async () => [],
   listPendingOrders: async () => [],
 };
-const ctx: ToolContext = { userId: USER_ID, davema: client, executor: toolExecutor };
+const ctx: ToolContext = { userId: USER_ID, analysis: unreachableAnalysis, executor: toolExecutor };
 
 console.log("\n[10a] Calling find_setup THROUGH the tool manifest (not the raw function) returns a real result...");
 const toolScanResult = (await findSetupTool.execute({ timeframe: "H1" }, ctx)) as { groupName: string | null };

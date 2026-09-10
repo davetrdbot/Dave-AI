@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CompletionMessage, CompletionRequest, CompletionResult, Provider } from "@dave/brain";
 import { DaveDatabase } from "@dave/db";
-import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor } from "@dave/ea-bridge";
 import { AgentLoop } from "../src/agent-loop.js";
 import { buildFullToolRegistry } from "../src/full-registry.js";
@@ -33,13 +32,11 @@ const OWNER = "user-ask-resume-1";
 clearPendingQuestion(OWNER);
 
 const db = new DaveDatabase(join(workDir, "dave.db"));
-const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
 const executor = new EaTradeExecutor(OWNER);
 
 const registry = buildFullToolRegistry({
   userId: OWNER,
   db,
-  davema,
   executor,
 });
 

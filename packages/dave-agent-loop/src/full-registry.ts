@@ -1,8 +1,7 @@
 import type { DaveDatabase } from "@dave/db";
-import type { DavemaClient } from "@dave/davema";
 import type { TradeExecutor } from "@dave/trading";
 import { TRADING_TOOLS } from "@dave/trading";
-import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS } from "@dave/ea-bridge";
+import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, createEaAnalysisSource } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
@@ -45,7 +44,6 @@ import { buildTradePlacedMessage, buildTradeApprovalRequestMessage } from "./tra
 export interface FullRegistryDeps {
   userId: string;
   db: DaveDatabase;
-  davema: DavemaClient;
   executor: TradeExecutor;
   /** Optional -- push_message_to_user is only registered when a real Telegram client + chat are supplied. */
   telegram?: { client: TelegramClient; chatId: number };
@@ -65,7 +63,11 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   // parallel execution path.
   const automationDispatch = (userId: string, toolName: string, toolArgs: Record<string, unknown>) => registry.execute(toolName, toolArgs);
 
-  const tradingCtx = { userId: deps.userId, davema: deps.davema, executor: deps.executor };
+  // Item 5 real gap fixed (DAVEMA retirement): the real market-data source injected into every
+  // trading tool that used to depend on `DavemaClient` directly -- backed by the connected MT5
+  // EA's own on-demand analysis, not the retired external DAVEMA HTTP API.
+  const analysisSource = createEaAnalysisSource(deps.userId);
+  const tradingCtx = { userId: deps.userId, analysis: analysisSource, executor: deps.executor };
   const dbOnlyCtx = { userId: deps.userId, db: deps.db };
   const ownerCtx = { ownerUserId: deps.userId };
   const skillCtx = { userId: deps.userId };
@@ -132,7 +134,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(wrappedTradingTools);
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(EA_ANALYSIS_TOOLS, { userId: deps.userId }));
-  registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, davema: deps.davema, workspaceRoot: process.cwd() }));
+  registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, workspaceRoot: process.cwd() }));
   registry.register(adaptTools(KNOWLEDGE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(MCP_MANAGER_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(FIRECRAWL_TOOLS, dbOnlyCtx));
@@ -165,7 +167,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
           void runWorkerTask({
             db: deps.db,
             ownerUserId: deps.userId,
-            davema: deps.davema,
+            analysis: analysisSource,
             executor: deps.executor,
             publicBaseUrl: deps.publicBaseUrl,
             client: deps.telegram.client,

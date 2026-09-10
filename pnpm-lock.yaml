@@ -36,9 +36,6 @@ importers:
       '@dave/brain':
         specifier: workspace:*
         version: link:../dave-brain
-      '@dave/davema':
-        specifier: workspace:*
-        version: link:../dave-davema
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db
@@ -103,9 +100,6 @@ importers:
       '@dave/core':
         specifier: workspace:*
         version: link:../dave-core
-      '@dave/davema':
-        specifier: workspace:*
-        version: link:../dave-davema
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db
@@ -169,9 +163,9 @@ importers:
 
   packages/dave-core:
     dependencies:
-      '@dave/davema':
+      '@dave/ea-bridge':
         specifier: workspace:*
-        version: link:../dave-davema
+        version: link:../dave-ea-bridge
       '@dave/memory':
         specifier: workspace:*
         version: link:../dave-memory
@@ -367,9 +361,6 @@ importers:
       '@dave/crypto':
         specifier: workspace:*
         version: link:../dave-crypto
-      '@dave/davema':
-        specifier: workspace:*
-        version: link:../dave-davema
 
   packages/dave-vision:
     dependencies:

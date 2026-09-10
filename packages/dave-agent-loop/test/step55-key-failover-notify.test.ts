@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
 import { DaveDatabase } from "@dave/db";
-import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor } from "@dave/ea-bridge";
 import { addProviderKey, setModelConfig, isQuotaExhaustedError, generateWithKeyFailover } from "@dave/brain";
 import { startTelegramBotServer } from "../src/telegram-bot-server.js";
@@ -100,13 +99,11 @@ try {
   addProviderKey(db, OWNER, "openai", "backup key", { apiKey: "sk-e2e-alive" });
   setModelConfig(OWNER, { primary: "openai", fallback: [] });
 
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
 
   server = await startTelegramBotServer({
     ownerUserId: OWNER,
     db,
-    davema,
     executor,
     botToken: "000000:fake-bot-token",
     publicBaseUrl: "https://dave.example.com",

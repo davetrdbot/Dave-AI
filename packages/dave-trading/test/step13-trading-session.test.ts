@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { getTradingSession, setTradingSession, isWithinSelectedSession } from "../src/trading-session-config.js";
 import { upsertGroup, setActiveGroup } from "../src/pair-groups.js";
 import { findSetup } from "../src/find-setup.js";
-import { DavemaClient } from "@dave/davema";
+import type { AnalysisSource } from "../src/analysis-source.js";
+
+const stubAnalysis: AnalysisSource = { get: async () => ({ score: 0, direction: "neutral" }) };
 
 /**
  * Real proof for the user's ask: "in settings to select the session you want it to trade and
@@ -44,8 +46,7 @@ try {
   upsertGroup(USER_ID, { id: "forex", name: "Forex", symbols: ["EURUSD"] });
   setActiveGroup(USER_ID, "forex");
   setTradingSession(USER_ID, "new_york"); // 12:00-21:00 UTC
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
-  const result = await findSetup(USER_ID, davema, "H1");
+  const result = await findSetup(USER_ID, stubAnalysis, "H1");
   // Real time-of-test-run dependent: only assert the honest-skip mechanism exists and reports
   // itself correctly when it does trigger, by directly re-checking the same real function used
   // internally rather than depending on the actual wall-clock hour this test happens to run at.

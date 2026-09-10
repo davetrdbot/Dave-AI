@@ -5,8 +5,7 @@ import { join } from "node:path";
 import { getActiveGroupInfo, listGroups } from "../src/pair-groups.js";
 import { findSetup } from "../src/find-setup.js";
 import { setRiskMode } from "../src/risk-settings.js";
-import { TRADING_TOOLS, type ToolContext, type TradeExecutor } from "../src/index.js";
-import { DavemaClient } from "@dave/davema";
+import { TRADING_TOOLS, type ToolContext, type TradeExecutor, type AnalysisSource } from "../src/index.js";
 
 /**
  * Real proof for two bugs the user hit live: "the bot doesn't even know the pair to trade" and
@@ -29,8 +28,8 @@ async function main() {
   assert.equal(getActiveGroupInfo(FRESH_USER).activeGroup, null, "getActiveGroupInfo itself must stay a pure read -- no side effects");
 
   console.log("[2] find_setup (the real consumer where 'nothing to scan' was the reported bug) self-heals right before scanning...\n");
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
-  const scan = await findSetup(FRESH_USER, davema, "H1");
+  const stubAnalysis: AnalysisSource = { get: async () => ({ score: 0, direction: "neutral" }) };
+  const scan = await findSetup(FRESH_USER, stubAnalysis, "H1");
   assert.notEqual(scan.groupName, null, "the bot must genuinely know a pair group to scan now, not silently have none");
   const info = getActiveGroupInfo(FRESH_USER);
   assert.equal(info.activeGroup?.id, "synthetic", "self-heal activates a real, sensible default -- Synthetic");
@@ -42,7 +41,7 @@ async function main() {
   const { upsertGroup, setActiveGroup } = await import("../src/pair-groups.js");
   upsertGroup(CUSTOM_USER, { id: "my-own", name: "My Own Group", symbols: ["EURUSD"] });
   setActiveGroup(CUSTOM_USER, "my-own");
-  await findSetup(CUSTOM_USER, davema, "H1");
+  await findSetup(CUSTOM_USER, stubAnalysis, "H1");
   const customInfo = getActiveGroupInfo(CUSTOM_USER);
   assert.equal(customInfo.activeGroup?.id, "my-own", "self-heal must NEVER override a real, already-made user choice");
   assert.equal(listGroups(CUSTOM_USER).length, 1, "self-heal must never inject the 8 default groups on top of a user's own real ones");
@@ -64,8 +63,8 @@ async function main() {
     listOpenPositions: async () => [],
     listPendingOrders: async () => [],
   };
-  const davemaWithPrice = { data: async () => ({ bid: 1.1, ask: 1.1002, close: 1.1001 }) } as unknown as DavemaClient;
-  const ctx: ToolContext = { userId: TRADER, davema: davemaWithPrice, executor };
+  const analysisWithPrice: AnalysisSource = { get: async () => ({ bid: 1.1, ask: 1.1002, close: 1.1001 }) };
+  const ctx: ToolContext = { userId: TRADER, analysis: analysisWithPrice, executor };
   const tradeExecuteTool = TRADING_TOOLS.find((t) => t.name === "trade_execute")!;
   const result = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1 }, ctx)) as { ticket: string };
   assert.equal(result.ticket, "T-1");
@@ -84,7 +83,7 @@ async function main() {
 
   console.log("\n[6] 'off' mode (the real default) genuinely leaves SL/TP unset -- never invents one...\n");
   const OFF_USER = "user-off-1";
-  const ctxOff: ToolContext = { userId: OFF_USER, davema: davemaWithPrice, executor };
+  const ctxOff: ToolContext = { userId: OFF_USER, analysis: analysisWithPrice, executor };
   const offResult = (await tradeExecuteTool.execute({ symbol: "USDJPY", type: "buy", lots: 0.1 }, ctxOff)) as { ticket: string };
   assert.equal(offResult.ticket, "T-1");
   assert.equal(openedOrder!.sl, undefined, "'off' mode must never fabricate an SL");

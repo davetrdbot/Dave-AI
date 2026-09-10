@@ -5,7 +5,7 @@ import type { ToolSpec } from "@dave/brain";
  * package's tools funnel into so a real LLM call can actually see and
  * invoke them, instead of each package's `TOOLS` array sitting unused.
  * Each source package's own `ToolDefinition` shape differs slightly in
- * its `ctx` type (dave-trading's is `{userId, davema, executor}`,
+ * its `ctx` type (dave-trading's is `{userId, analysis, executor}`,
  * dave-rfeed's is `{userId, db, executor, historyManager}`, etc.) --
  * `adaptTools()` binds a package's own real context once at registry-
  * build time via closure, so every entry ends up the same shape here:

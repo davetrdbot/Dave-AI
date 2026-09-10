@@ -1,14 +1,14 @@
-import type { DavemaClient } from "@dave/davema";
+import type { AnalysisSource } from "./analysis-source.js";
 import { getActiveGroupInfo, ensureGroupsUsable } from "./pair-groups.js";
 import { isWithinSelectedSession } from "./trading-session-config.js";
 
 /**
  * Step 10.10: explicit "find me a setup" tool -- scans the current
  * active pair group RIGHT NOW for a trade setup, on demand, separate
- * from normal continuous background analysis. Uses DAVEMA's own
- * /confluence endpoint (0-100 agreement score) per its documented
- * recipe -- this module doesn't invent a scoring method, it calls the
- * real one DAVEMA already provides.
+ * from normal continuous background analysis. Uses a real confluence
+ * score (0-100 agreement) computed by the connected MT5 EA itself (item
+ * 5, DAVEMA retirement) -- this module doesn't invent a scoring method,
+ * it calls the real one the EA already provides.
  */
 
 export interface SetupScanRow {
@@ -34,7 +34,7 @@ interface ConfluenceData {
   direction: string;
 }
 
-export async function findSetup(userId: string, client: DavemaClient, tf = "H1"): Promise<SetupScanResult> {
+export async function findSetup(userId: string, analysis: AnalysisSource, tf = "H1"): Promise<SetupScanResult> {
   // Real bug fixed (user: "the bot doesn't even know the pair to trade"): a user who never
   // manually visited /settings -> Pair Group had zero groups and no active one, so a real scan
   // had nothing to look at. Self-heals right before the real scan (seeds the default groups +
@@ -55,7 +55,7 @@ export async function findSetup(userId: string, client: DavemaClient, tf = "H1")
   const rows: SetupScanRow[] = await Promise.all(
     effectiveSymbols.map(async (symbol): Promise<SetupScanRow> => {
       try {
-        const data = await client.data<ConfluenceData>("confluence", symbol, tf);
+        const data = await analysis.get<ConfluenceData>("confluence", symbol, tf);
         return { symbol, score: data.score, direction: data.direction };
       } catch (err) {
         return { symbol, score: -1, direction: "unknown", error: err instanceof Error ? err.message : String(err) };

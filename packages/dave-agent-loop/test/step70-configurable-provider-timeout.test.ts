@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
 import { DaveDatabase } from "@dave/db";
-import { DavemaClient } from "@dave/davema";
 import { EaTradeExecutor } from "@dave/ea-bridge";
 import { addProviderKey, setModelConfig } from "@dave/brain";
 import { getOrCreateTelegramWebhookRoute } from "@dave/telegram";
@@ -95,9 +94,8 @@ try {
   addProviderKey(db, OWNER, "groq", "fallback key", { apiKey: "sk-groq-fake", model: "groq-x" });
   setModelConfig(OWNER, { primary: "openai", fallback: ["groq"] });
 
-  const davema = new DavemaClient(undefined, "http://127.0.0.1:1");
   const executor = new EaTradeExecutor(OWNER);
-  server = await startTelegramBotServer({ ownerUserId: OWNER, db, davema, executor, botToken: "000000:fake-bot-token", publicBaseUrl: "https://dave.example.com", systemPrompt: "You are Dave." });
+  server = await startTelegramBotServer({ ownerUserId: OWNER, db, executor, botToken: "000000:fake-bot-token", publicBaseUrl: "https://dave.example.com", systemPrompt: "You are Dave." });
   await new Promise<void>((resolve) => server!.server.listen(0, "127.0.0.1", resolve));
   const port = (server.server.address() as { port: number }).port;
   const webhookPath = new URL(server.webhookUrl).pathname;

@@ -48,7 +48,7 @@ console.log(`    code:                  ${fmt.code("BUY 0.5 lots")}`);
 console.log(`    pre:                   ${fmt.pre("multi\\nline")}`);
 console.log(`    blockquote:            ${fmt.blockquote("reasoning here")}`);
 console.log(`    expandable blockquote: ${fmt.expandableBlockquote("long reasoning here")}`);
-console.log(`    link:                  ${fmt.link("DAVEMA", "https://example.com")}`);
+console.log(`    link:                  ${fmt.link("Dave", "https://example.com")}`);
 console.log(`    mention:               ${fmt.mention("David", 847213)}`);
 console.log(`    customEmoji:           ${fmt.customEmoji("📈", "5368324170671202286")}`);
 console.log(`    heading:               ${fmt.heading("Trade Summary")}`);

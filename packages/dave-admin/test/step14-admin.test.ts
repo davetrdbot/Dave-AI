@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url";
  * exactly what Step 10's own storage functions read back -- and that the
  * page/API source contains no emoji anywhere.
  */
+// Item 5 real gap fixed (DAVEMA retirement): the admin dashboard used to ping the retired
+// external DAVEMA API on every load -- /api/status/davema replaced with /api/status/ea, the
+// real market-data dependency (the connected MT5 EA) Dave actually relies on now.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const adminRoot = dirname(here);
@@ -127,9 +130,9 @@ async function main() {
     console.log("    deleted -- both API and direct call agree: 0 groups left");
 
     console.log("\n[6] Status endpoints make real calls, not fabricated data...");
-    const davemaStatus = await (await fetch(`${base}/api/status/davema`)).json();
-    assert.equal(typeof davemaStatus.reachable, "boolean");
-    console.log("    /api/status/davema ->", JSON.stringify(davemaStatus));
+    const eaStatus = await (await fetch(`${base}/api/status/ea`)).json();
+    assert.equal(typeof eaStatus.connected, "boolean");
+    console.log("    /api/status/ea ->", JSON.stringify(eaStatus));
 
     const sandboxStatus = await (await fetch(`${base}/api/status/sandbox`)).json();
     console.log("    /api/status/sandbox ->", JSON.stringify(sandboxStatus));

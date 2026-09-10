@@ -8,7 +8,7 @@
   "dependencies": {
     "@dave/memory": "workspace:*",
     "@dave/sandbox": "workspace:*",
-    "@dave/davema": "workspace:*"
+    "@dave/ea-bridge": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"
