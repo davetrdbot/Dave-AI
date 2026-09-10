@@ -112,6 +112,7 @@ export type ProviderName =
   | "baseten"
   | "nebius"
   | "tokenharbor"
+  | "kiraai"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {

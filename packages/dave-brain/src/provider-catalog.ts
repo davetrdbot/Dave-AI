@@ -221,11 +221,21 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   // User-requested addition (tokenharbor.ai/models). Confirmed via the real docs: OpenAI-compatible
   // (POST https://tokenharbor.ai/v1/chat/completions, Bearer thk_live_... key), real GET /v1/models
   // endpoint documented ("returns the same data as JSON for SDKs that pre-fetch the catalog"). A
-  // multi-vendor router exposing Claude/GPT/GLM/Grok/Kimi/Qwen models under tokenharbor/<model>
+  // multi-vendor router exposing Claude/GPT/GLM/Grok/Kimi/Qwen models under tokenharbor/MODEL_ID
   // ids. Default set to th-orchestra -- their own real routing model, explicitly documented as
   // "built for tool-using agent clients" / "agentic coding", the best fit for Dave's own
   // tool-calling architecture rather than guessing at one specific upstream vendor's id.
-  tokenharbor: OPENAI_COMPAT("tokenharbor", "Token Harbor", "https://tokenharbor.ai/v1", "th-orchestra", "OpenAI-compatible per real docs (drop-in /v1/chat/completions + documented /v1/models). Also exposes vendor models directly as tokenharbor/<model> (e.g. tokenharbor/qwen3-max) if a specific upstream model is preferred over the router."),
+  // Real bug fixed: this note originally wrote "tokenharbor/<model>" -- a literal, unescaped
+  // "<model>" sent straight into a real parse_mode:"HTML" Telegram message (providerDetailView)
+  // reads as an invalid HTML start tag, which the real Bot API rejects with a 400 "can't parse
+  // entities" error -- exactly what surfaced to the user as "Something went wrong on my end."
+  tokenharbor: OPENAI_COMPAT("tokenharbor", "Token Harbor", "https://tokenharbor.ai/v1", "th-orchestra", "OpenAI-compatible per real docs (drop-in /v1/chat/completions + documented /v1/models). Also exposes vendor models directly as tokenharbor/MODEL_ID (e.g. tokenharbor/qwen3-max) if a specific upstream model is preferred over the router."),
+  // User-requested addition (kiraai.vn/models). Confirmed via the real docs (kiraai.vn/documents):
+  // OpenAI-SDK-compatible base https://kiraai.vn/api/v1 (their own real Node.js sample constructs
+  // `new OpenAI({ baseURL: "https://kiraai.vn/api/v1", apiKey: "YOUR_KIRA_API_KEY" })`), Bearer auth.
+  // Default set to kira-3.5-flash -- their own docs explicitly call this their default chat model.
+  // Other real chat models: kira-3.5-pro, kira-2.5-pro, kira-mini-1.0 (free tier).
+  kiraai: OPENAI_COMPAT("kiraai", "Kira AI", "https://kiraai.vn/api/v1", "kira-3.5-flash", "OpenAI-SDK-compatible per real docs (drop-in /v1/chat/completions). Other real chat models: kira-3.5-pro, kira-2.5-pro, kira-mini-1.0 (free tier)."),
   custom: {
     id: "custom",
     displayName: "Custom provider",

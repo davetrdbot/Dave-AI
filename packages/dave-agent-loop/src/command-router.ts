@@ -14,6 +14,7 @@ import {
   type DaveCommand,
   type TelegramCallbackQuery,
   sendSelfDeletingMessage,
+  escapeHtml,
 } from "@dave/telegram";
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource } from "@dave/ea-bridge";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
@@ -376,7 +377,13 @@ function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { 
   const entry = listProviderCatalog().find((e) => e.id === provider)!;
   const keys = listProviderKeys(deps.db, deps.userId, provider);
   const config = getModelConfig(deps.userId);
-  const lines = [`<b>${entry.displayName}</b>`, entry.notes, ""];
+  // Real bug fixed (user, live: tapping Token Harbor always failed with "Something went wrong on
+  // my end"): entry.notes was sent RAW into a real parse_mode:"HTML" message. Token Harbor's own
+  // notes had a genuinely unescaped "<model>" in it (since fixed at the source too), which reads
+  // as an invalid HTML start tag -- the real Bot API rejects that with a 400 "can't parse
+  // entities" error, an unrecognized exception type that fell through to the generic error
+  // message. Escaped here defensively so no future catalog note (any provider) can do this again.
+  const lines = [`<b>${entry.displayName}</b>`, escapeHtml(entry.notes), ""];
   if (provider === "airllm") {
     lines.push("Self-hosted via AIRLLM_BASE_URL -- no stored key needed.");
   } else if (keys.length === 0) {
