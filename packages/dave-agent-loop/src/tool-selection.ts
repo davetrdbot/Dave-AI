@@ -107,6 +107,18 @@ export const CORE_TOOL_NAMES: string[] = [
   "list_skills",
   "knowledge_view",
 
+  // Item 7 real gap fixed (user: "a worker gets created with a name but never executes its
+  // assigned task... no working delete-worker tool despite this being reported as done
+  // previously"): re-verified end to end -- create_subagent/retire_subagent were ALWAYS real and
+  // working (step72/step73/step32's own tests prove a real multi-turn run, real reporting, real
+  // grant/revoke, real retire), but none of them were core -- the exact same Cause A pattern as
+  // items 1/4/11. The model had no reliable reason to reach for retire_subagent specifically
+  // (nothing prompts "delete a worker" the way trading tools are prompted), so a real user asking
+  // Dave to delete a worker could easily hit a model that never discovered the tool existed.
+  "create_subagent",
+  "list_subagents",
+  "retire_subagent",
+
   // Item 4/11 real gap fixed (user: "pin message, memory-write tools appear to have vanished"):
   // both are real, registered tools -- just not core, so a model would only ever reach them if it
   // happened to call search_tools first. Small, cheap, frequently relevant -- promoted to core so
