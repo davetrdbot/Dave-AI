@@ -87,7 +87,7 @@ export interface TelegramDocument {
 export interface TelegramMessage {
   message_id: number;
   chat: { id: number; type: string };
-  from?: { id: number; username?: string; first_name?: string };
+  from?: { id: number; username?: string; first_name?: string; is_bot?: boolean };
   text?: string;
   caption?: string;
   date: number;

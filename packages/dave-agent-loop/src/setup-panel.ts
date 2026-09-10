@@ -1,11 +1,20 @@
 import type { DaveDatabase } from "@dave/db";
 import { EA_ANALYSIS_TOOLS, EA_STATE_TOOLS, type EaToolDefinition } from "@dave/ea-bridge";
 import { createWorker, retireWorker, sendMessage as sendCommsMessage, getCommsLog, DAVE_PARTICIPANT_ID, type CommsMessage } from "@dave/workers";
-import { TelegramClient } from "@dave/telegram";
+import { TelegramClient, type TelegramUpdate } from "@dave/telegram";
 import { AgentLoop } from "./agent-loop.js";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { modelConfigProvider } from "./provider-selection.js";
-import { getWorkerBotToken, getPanelGroupChatId } from "./worker-bot-tokens.js";
+import {
+  getWorkerBotToken,
+  getPanelGroupChatId,
+  getWorkerBotId,
+  findSpecialistByBotId,
+  startPanelDiscussionSession,
+  getActiveDiscussionThreadId,
+  isPanelDiscussionSessionActive,
+  incrementReactiveReplyCount,
+} from "./worker-bot-tokens.js";
 
 /**
  * User-requested addition ("each worker panel have its own bot token so I can see how they are
@@ -292,6 +301,10 @@ export async function runSetupPanel(params: { db: DaveDatabase; ownerUserId: str
   const { db, ownerUserId, symbol } = params;
   const timeframe = params.timeframe ?? "H1";
   const threadId = `panel:${symbol}:${Date.now()}`;
+  // Opens the real, bounded live-discussion window (worker-bot-webhook.ts) -- reactive replies
+  // between worker bots' own webhooks only ever fire for THIS thread id, only while this window
+  // is open, and only up to a real cap. See MAX_REACTIVE_REPLIES_PER_SESSION.
+  startPanelDiscussionSession(ownerUserId, threadId);
 
   const findings: { group: string; text: string }[] = [];
   for (const group of SETUP_PANEL_GROUPS) {
@@ -322,4 +335,72 @@ export async function runSetupPanel(params: { db: DaveDatabase; ownerUserId: str
  *  panel run's real thread id. */
 export function getPanelTranscript(ownerUserId: string, threadId: string): CommsMessage[] {
   return getCommsLog(ownerUserId).filter((m) => m.to === threadId);
+}
+
+/**
+ * The real receiving half of "each worker panel have its own bot token so I can see how they are
+ * talking to each other... it can respond to it." Called by worker-bot-webhook.ts whenever a
+ * message lands on ONE specialist's own real webhook. Genuinely reacts ONLY when all of these
+ * are real and true -- never a blind auto-reply to anything:
+ *   - the message is in the real configured panel group chat
+ *   - it's genuinely from ANOTHER one of this user's own configured worker bots (not a human, not
+ *     an unrecognized bot, not itself)
+ *   - a real Setup Panel discussion window is genuinely still open for a real thread id
+ *     (worker-bot-tokens.ts's bounded session + reply cap -- see MAX_REACTIVE_REPLIES_PER_SESSION)
+ * The real reply is generated the same way every other specialist turn is (its own real tools,
+ * its own real persona, routed through modelConfigProvider), then posted with ITS OWN bot token
+ * and logged into the same real internal comms log the rest of the panel uses.
+ */
+export async function handleWorkerBotReactiveUpdate(params: { db: DaveDatabase; ownerUserId: string; specialist: string; update: TelegramUpdate }): Promise<void> {
+  const { db, ownerUserId, specialist, update } = params;
+  const message = update.message;
+  if (!message?.text) return;
+
+  const groupChatId = getPanelGroupChatId(ownerUserId);
+  if (groupChatId === undefined || message.chat.id !== groupChatId) return;
+
+  if (!message.from?.is_bot) return; // per the user's explicit ask: reacts to OTHER BOTS, not humans
+  const fromId = message.from.id;
+  const myBotId = getWorkerBotId(ownerUserId, specialist);
+  if (myBotId !== undefined && fromId === myBotId) return; // never react to its own echo
+  const fromSpecialist = findSpecialistByBotId(ownerUserId, fromId);
+  if (!fromSpecialist || fromSpecialist === specialist) return; // only a DIFFERENT known specialist bot, never an unrecognized one
+
+  const threadId = getActiveDiscussionThreadId(ownerUserId);
+  if (!threadId || !isPanelDiscussionSessionActive(ownerUserId, threadId)) return; // no real open discussion window -- stay silent
+
+  const myToken = getWorkerBotToken(ownerUserId, specialist);
+  if (!myToken) return;
+
+  const group = SETUP_PANEL_GROUPS.find((g) => g.name === specialist);
+  const registry = new ToolRegistry();
+  if (group) {
+    const groupTools = group.endpoints.map((e) => toolByEndpoint.get(e)).filter((t): t is EaToolDefinition => t !== undefined);
+    registry.register(adaptTools(groupTools, { userId: ownerUserId, timeoutMs: WORKER_ANALYSIS_TIMEOUT_MS }));
+  } else if (specialist === GOAL_RISK_SPECIALIST_NAME) {
+    registry.register(adaptTools(EA_STATE_TOOLS.filter((t) => t.name === "get_account_balance"), { userId: ownerUserId }));
+  }
+
+  const systemPrompt =
+    `You are Dave's real "${specialist}" specialist on his Setup Panel, live in a real Telegram group alongside the rest of the panel. "${fromSpecialist}" just said: "${message.text}". ` +
+    `Give a SHORT (1-2 sentence) real reaction from your own real perspective -- agree, disagree, or add one real detail your own tools can confirm. Cite a real number if you use a tool; never invent one, and never just repeat what was already said.`;
+
+  const notify = () => {};
+  const provider = modelConfigProvider(db, ownerUserId, notify);
+  const loop = new AgentLoop(provider, registry);
+  const result = await loop.run(
+    [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: "Reply now." },
+    ],
+    { maxSteps: 3 }
+  );
+
+  const replyText = result.status === "done" ? (result.text ?? "").trim() : "";
+  if (!replyText) return;
+
+  incrementReactiveReplyCount(ownerUserId, threadId);
+  sendCommsMessage(ownerUserId, `workerbot:${specialist}`, threadId, `[${specialist} -> ${fromSpecialist}] ${replyText}`);
+  const client = new TelegramClient(myToken);
+  await client.sendMessage({ chat_id: groupChatId, text: replyText }).catch(() => {});
 }

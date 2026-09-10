@@ -260,6 +260,7 @@ export async function main(): Promise<void> {
         systemPrompt: loadSystemPrompt(),
       });
       routes.push(["/hooks/telegram/", subServerHandler(bot.server)]);
+      routes.push(["/hooks/workerbot/", subServerHandler(bot.workerBotServer)]);
       telegramClient = bot.client;
       telegramWired = true;
       console.log(`[telegram] webhook registered: ${bot.webhookUrl}`);

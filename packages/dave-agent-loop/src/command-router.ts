@@ -909,9 +909,11 @@ function workerBotsKeyboard(deps: CommandRouterDeps): { text: string; reply_mark
   const groupChatId = getPanelGroupChatId(deps.userId);
   const lines = [
     "<b>Worker Bots</b>",
-    "Give each Setup Panel specialist its own real Telegram bot so you can watch them discuss a candidate live in a group chat.",
+    "Give each Setup Panel specialist its own real Telegram bot so you can watch them discuss a candidate live in a group chat -- and react to each other, not just post one-way.",
     "",
-    groupChatId !== undefined ? `Panel group: set (chat ${groupChatId})` : "Panel group: not set -- create a group, add Dave's bot + each specialist's bot, then send /set_panel_group inside it.",
+    "Per the real Telegram Bot API docs: for one bot to see another bot's messages, EACH bot needs (1) admin status in the group (disables Privacy Mode) AND (2) \"Bot-to-Bot Communication Mode\" enabled via @BotFather. Both are required, per bot -- admin alone isn't enough.",
+    "",
+    groupChatId !== undefined ? `Panel group: set (chat ${groupChatId})` : "Panel group: not set -- create a group, add Dave's bot + each specialist's bot as admin, enable Bot-to-Bot Communication Mode for each via BotFather, then send /set_panel_group inside it.",
   ];
   const rows: ReturnType<typeof coloredButton>[][] = status.map((s, i) => [
     coloredButton(`${s.configured ? "🟢" : "⚪"} ${s.specialist}`, "neutral", `workerbot:noop:${i}`),
@@ -1342,7 +1344,7 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
       setPanelGroupChatId(deps.userId, chatId);
       await deps.client.sendMessage({
         chat_id: chatId,
-        text: "✅ This group is now set as the Setup Panel's chat. Add each specialist's own bot token in /settings → Worker Bots, and their real findings will post here during a live panel discussion.",
+        text: "✅ This group is now set as the Setup Panel's chat. Add each specialist's own bot token in /settings → Worker Bots. For them to genuinely see and reply to EACH OTHER (not just post one-way), each worker bot also needs: admin status in this group, AND \"Bot-to-Bot Communication Mode\" enabled via @BotFather -- both required per bot, per Telegram's real docs.",
       });
       break;
   }

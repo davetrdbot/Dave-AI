@@ -25,6 +25,8 @@ import { loadConversationHistory, saveConversationHistory } from "./conversation
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, tryHandlePendingWorkerBotEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
 import { isAutonomousTradingEnabled, setAutonomousTradingEnabled } from "./autonomous-trading-state.js";
+import { createWorkerBotWebhookServer, syncWorkerBotWebhooks } from "./worker-bot-webhook.js";
+import { handleWorkerBotReactiveUpdate } from "./setup-panel.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
 import { friendlyErrorMessage } from "./error-messages.js";
@@ -74,6 +76,11 @@ export interface TelegramBotServer {
    *  fast, consistent, non-LLM-generated notification straight to the user's chat -- without
    *  waiting on (or paying for) an agent-loop turn just to narrate a trade closing. */
   client: TelegramClient;
+  /** User-requested addition ("each worker panel have its own bot token... can respond to it"):
+   *  the real HTTP server receiving each configured Setup Panel specialist's own webhook updates
+   *  (worker-bot-webhook.ts) -- main.ts mounts this under its own route prefix, same pattern as
+   *  every other real sub-server this process runs. */
+  workerBotServer: Server;
 }
 
 /**
@@ -689,5 +696,18 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     }
   }
 
-  return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}`, client };
+  // User-requested addition ("each worker panel have its own bot token... can respond to it").
+  // A real, dedicated webhook server for the Setup Panel's own specialist bots -- separate from
+  // Dave's own bot server above, since each specialist bot needs completely different update
+  // handling (a bounded, reactive turn, not the full agent loop). Registers/refreshes real
+  // webhooks for whichever worker bot tokens are ALREADY configured right now, then keeps
+  // checking every 20s so a token added later via /settings comes online with no restart --
+  // same real retry-until-configured pattern main.ts already uses for Dave's own bot token.
+  const workerBotServer = createWorkerBotWebhookServer({
+    onUpdate: (ownerUserId, specialist, update) => handleWorkerBotReactiveUpdate({ db: deps.db, ownerUserId, specialist, update }),
+  });
+  void syncWorkerBotWebhooks(deps.ownerUserId, deps.publicBaseUrl);
+  setInterval(() => void syncWorkerBotWebhooks(deps.ownerUserId, deps.publicBaseUrl), 20_000);
+
+  return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}`, client, workerBotServer };
 }
