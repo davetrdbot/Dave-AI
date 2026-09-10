@@ -104,6 +104,18 @@ const toolByEndpoint = new Map<string, EaToolDefinition>(EA_ANALYSIS_TOOLS.map((
  */
 const WORKER_ANALYSIS_TIMEOUT_MS = 10 * 60 * 1000;
 
+/**
+ * User-requested addition ("add to the workers prompt that they are risk taker there is nothing
+ * like perfect setup... when a opportunity comes take it"). Shared framing injected into every
+ * real panel voice (specialists, goal_risk, synthesis, and the live reactive replies) -- they're
+ * real risk takers, not perfection-hunters who talk themselves out of a genuinely good real
+ * opportunity waiting for a flawless read that doesn't exist. This never means ignoring real,
+ * contradicting data -- it means not manufacturing extra doubt about a setup the real data
+ * actually supports just to sound careful.
+ */
+const RISK_TAKER_FRAMING =
+  "You're a real risk taker, not a perfectionist -- there is no such thing as a perfect setup, and waiting for one is how a real opportunity gets missed. When the real data genuinely supports an opportunity, back it, even if it isn't flawless. This never means ignoring real, contradicting data or inventing confidence that isn't there -- it means not manufacturing extra hesitation about a setup the real data actually supports just to sound cautious.";
+
 async function runSpecialist(params: {
   db: DaveDatabase;
   ownerUserId: string;
@@ -123,7 +135,7 @@ async function runSpecialist(params: {
   const rawResults: { toolName: string; result: unknown }[] = [];
   const priorDiscussion = priorFindings.map((f) => `[${f.group}]: ${f.text}`).join("\n\n");
   const systemPrompt =
-    `You are ${worker.name}, Dave's real "${group.name}" specialist on his Setup Panel -- a team of analysts that jointly reviews a candidate symbol before Dave considers trading it. ` +
+    `You are ${worker.name}, Dave's real "${group.name}" specialist on his Setup Panel -- a team of analysts that jointly reviews a candidate symbol before Dave considers trading it. ${RISK_TAKER_FRAMING} ` +
     `Call your own real analysis tools (only ${group.endpoints.map((e) => `get_${e}`).join(", ")}) for ${symbol} on timeframe ${timeframe}, then give a SHORT (2-4 sentence) real finding: your read on direction (bullish/bearish/neutral) and why, citing real numbers your tools actually returned -- never invent a number. ` +
     (priorDiscussion
       ? `This is a genuine discussion, not an isolated report -- here is what the rest of the panel has already said. Read it, and if your own real data agrees or conflicts with theirs, say so explicitly:\n\n${priorDiscussion}`
@@ -179,7 +191,7 @@ async function runGoalRiskSpecialist(params: {
 
   const priorDiscussion = priorFindings.map((f) => `[${f.group}]: ${f.text}`).join("\n\n");
   const systemPrompt =
-    `You are ${worker.name}, Dave's real "${GOAL_RISK_SPECIALIST_NAME}" voice on his Setup Panel. Your job is different from the other specialists: you're not here to run fresh technical analysis -- you're the panel's risk-appetite advocate. Call get_account_balance for the real current account state, then weigh the rest of the panel's ACTUAL real findings below against Dave's real account-growth mandate (this account is meant to compound aggressively toward real milestones, not sit idle) -- push for taking a genuine opportunity when the real data actually supports one, and say so with real urgency ("we need a setup, this account needs to grow, let's take the real edge that's in front of us"). ` +
+    `You are ${worker.name}, Dave's real "${GOAL_RISK_SPECIALIST_NAME}" voice on his Setup Panel. Your job is different from the other specialists: you're not here to run fresh technical analysis -- you're the panel's risk-appetite advocate. ${RISK_TAKER_FRAMING} There is nothing like a perfect setup -- don't let the rest of the panel talk itself out of a genuine real opportunity chasing one. Call get_account_balance for the real current account state, then weigh the rest of the panel's ACTUAL real findings below against Dave's real account-growth mandate (this account is meant to compound aggressively toward real milestones, not sit idle) -- push for taking a genuine opportunity when the real data actually supports one, and say so with real urgency ("we need a setup, this account needs to grow, let's take the real edge that's in front of us"). ` +
     `You are still bound by the truth: you may NEVER invent a number, and if the rest of the panel's real data genuinely does NOT support a real edge, say so honestly instead of manufacturing enthusiasm -- your job is urgency in service of a REAL opportunity, not urgency instead of one. Give a SHORT (2-4 sentence) real finding, citing the real account state and referencing what the rest of the panel actually found.\n\n` +
     (priorDiscussion ? `Here is the rest of the panel's real discussion so far:\n\n${priorDiscussion}` : "You're first to report -- unusual, but give your real read on the account state.");
 
@@ -267,8 +279,8 @@ async function runSynthesis(params: {
 
   const fullDiscussion = findings.map((f) => `[${f.group}]: ${f.text}`).join("\n\n");
   const systemPrompt =
-    `You are ${worker.name}, Dave's real Setup Panel synthesizer. Read the full real discussion below from all ${findings.length} specialists on ${symbol} and decide: does the panel genuinely CONVERGE on one clear direction, or does it genuinely disagree / lack a clear edge? ` +
-    `Converge only on real, substantive agreement across multiple specialists -- a single bullish comment among mostly neutral/bearish ones is NOT convergence. You MUST call exactly one of propose_setup or no_setup -- never answer in plain text.\n\n${fullDiscussion}`;
+    `You are ${worker.name}, Dave's real Setup Panel synthesizer. Read the full real discussion below from all ${findings.length} specialists on ${symbol} and decide: does the panel genuinely CONVERGE on one clear direction, or does it genuinely disagree / lack a clear edge? ${RISK_TAKER_FRAMING} There is nothing like a perfect setup with every single specialist in full agreement -- don't demand unanimous perfection before converging. ` +
+    `Converge on real, substantive agreement across multiple specialists (it doesn't need to be unanimous) -- but a single bullish comment among mostly neutral/bearish ones is still NOT genuine convergence, that's manufacturing consensus that isn't real. You MUST call exactly one of propose_setup or no_setup -- never answer in plain text.\n\n${fullDiscussion}`;
 
   const notify = () => {};
   const provider = modelConfigProvider(db, ownerUserId, notify);
@@ -382,7 +394,7 @@ export async function handleWorkerBotReactiveUpdate(params: { db: DaveDatabase; 
   }
 
   const systemPrompt =
-    `You are Dave's real "${specialist}" specialist on his Setup Panel, live in a real Telegram group alongside the rest of the panel. "${fromSpecialist}" just said: "${message.text}". ` +
+    `You are Dave's real "${specialist}" specialist on his Setup Panel, live in a real Telegram group alongside the rest of the panel. "${fromSpecialist}" just said: "${message.text}". ${RISK_TAKER_FRAMING} ` +
     `Give a SHORT (1-2 sentence) real reaction from your own real perspective -- agree, disagree, or add one real detail your own tools can confirm. Cite a real number if you use a tool; never invent one, and never just repeat what was already said.`;
 
   const notify = () => {};
