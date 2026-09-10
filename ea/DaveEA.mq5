@@ -26,6 +26,13 @@
 #property strict
 #include <Trade\Trade.mqh>
 
+// Real compile error fixed (MetaEditor: "undeclared identifier 'DAVEEA_BARS'" at
+// PrewarmAnalysisSymbols) -- MQL5's preprocessor requires a #define to appear before its first
+// use in the file, same as C. This was originally defined further down (right before
+// TimeframeFromString), after PrewarmAnalysisSymbols/ExecuteCommandsFromResponse already used
+// it -- moved here, to the top, so every real use compiles regardless of where it appears below.
+#define DAVEEA_BARS 220
+
 input string WebhookURL     = "{{WEBHOOK_URL}}";
 input string EaToken        = "{{TOKEN}}"; // embedded in WebhookURL's path -- kept here for logging/diagnostics only
 input int    PushSeconds    = 6;     // periodic state-push cadence (Part 1 item 10 -- default 6s)
@@ -606,7 +613,6 @@ void ExecuteOneCommand(string obj)
 //| chart's own symbol/period -- one EA instance can analyze any      |
 //| symbol in Market Watch, not just the one it's attached to.        |
 //+------------------------------------------------------------------+
-#define DAVEEA_BARS 220
 
 ENUM_TIMEFRAMES TimeframeFromString(string tf)
   {
