@@ -19,7 +19,7 @@ import { enforceDrawdownLimit } from "./drawdown-guard.js";
 import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes } from "./trading-loop.js";
 import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
-import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
+import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
@@ -243,6 +243,7 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
 export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
   if (isTradingHalted(deps.ownerUserId)) return;
   if (getBusyState(deps.ownerUserId)) return; // a real user turn is already in flight -- don't collide with it, just wait for the next tick
+  if (getAutonomousBusyState(deps.ownerUserId)) return; // a previous cycle is still running -- never overlap two autonomous cycles
 
   // Items 2/6 real gating gap fixed (user's reference pattern: "real gating checks before any
   // analysis: kill switch, auto_trading flag, pending user question, EA heartbeat freshness,
@@ -285,7 +286,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
     ) as string,
   });
 
-  setBusy(deps.ownerUserId, "autonomous trading cycle");
+  setAutonomousBusy(deps.ownerUserId, "autonomous trading cycle");
   try {
     const result = await loop.run(history);
     saveConversationHistory(deps.db, historyKey, result.history);
@@ -315,7 +316,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
   } finally {
-    clearBusy(deps.ownerUserId);
+    clearAutonomousBusy(deps.ownerUserId);
   }
 }
 

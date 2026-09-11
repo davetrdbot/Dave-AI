@@ -1136,6 +1136,14 @@ async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<voi
  */
 async function performFullReset(deps: CommandRouterDeps, chatId: number, historyKey: string): Promise<void> {
   clearConversationHistory(deps.db, historyKey);
+  // Real bug fixed (user: "the bot keeps instructing me... his my agent, I changed it" -- the
+  // autonomous trading cycle runs on its own SEPARATE conversation history, `<owner>:autonomous:
+  // <chatId>`, never cleared by a plain /reset before this. If the model's own past reasoning in
+  // THAT history spiraled into repeatedly re-raising a false "unauthorized change" alarm, /reset
+  // looked like it did nothing -- the autonomous loop kept re-reading its own poisoned history on
+  // every cycle regardless. Cleared alongside the real chat history now so a full reset genuinely
+  // wipes every conversation thread this account has, not just the one the user is typing in.
+  clearConversationHistory(deps.db, `${deps.userId}:autonomous:${chatId}`);
   resetUserMemory(deps.userId);
   resetRiskSettingsForUser(deps.userId);
   resetTradingModeForUser(deps.userId);
@@ -1307,10 +1315,17 @@ const MENU_BUTTONS: { command: DaveCommand; label: string }[] = [
   { command: "help", label: "❓ Help" },
 ];
 
+// Real gap fixed (user: "add the reset button to delete everything"): the button already existed
+// and was already fully wired to the real confirm-then-wipe flow (handleReset), but it was the
+// same blue as every harmless navigation button, easy to miss in a 12-button grid. Destructive
+// actions (Reset, Panic) now render red so they're genuinely distinct at a glance, not just
+// discoverable by reading every label.
+const DESTRUCTIVE_MENU_COMMANDS = new Set<DaveCommand>(["reset", "panic"]);
+
 function menuKeyboard(): ReturnType<typeof keyboard> {
   const rows: ReturnType<typeof coloredButton>[][] = [];
   for (let i = 0; i < MENU_BUTTONS.length; i += 2) {
-    rows.push(MENU_BUTTONS.slice(i, i + 2).map((b) => coloredButton(b.label, "blue", `menucmd:${b.command}`)));
+    rows.push(MENU_BUTTONS.slice(i, i + 2).map((b) => coloredButton(b.label, DESTRUCTIVE_MENU_COMMANDS.has(b.command) ? "red" : "blue", `menucmd:${b.command}`)));
   }
   return keyboard(rows);
 }

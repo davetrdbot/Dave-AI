@@ -13,20 +13,36 @@ export interface BusyState {
   startedAt: number;
 }
 
-function busyPath(userId: string): string {
-  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, "busy.json");
+// Real bug fixed (user: "busy disturbing me if I change the settings -- I didn't change the
+// settings did you, bro fix that"). Root cause: this module used ONE shared busy record per
+// user for both a real live user turn AND the autonomous trading cycle. The autonomous loop
+// now runs every 1 minute (compulsory) with no step cap and up to 5-minute EA round trips per
+// tool call, so it can legitimately stay "busy" for long, overlapping stretches -- during which
+// the user's own genuine attempt to talk to Dave (e.g. "set my lot size to 0.5") hit the SAME
+// busy flag and got redirected into the mid-task delegation prompt ("I'm busy, queue this?"),
+// even though the user never started anything and the autonomous cycle runs on its own separate
+// conversation history. Split into two independent busy records -- "kind" picks the file -- so
+// an in-flight autonomous scan can never block, delay, or delegate-prompt the user's own live
+// conversation. The reverse still holds: the autonomous cycle itself still checks the real
+// user-turn busy state (see telegram-bot-server.ts) before starting, so it never collides with
+// a trade the user is actively placing by hand.
+type BusyKind = "user" | "autonomous";
+
+function busyPath(userId: string, kind: BusyKind): string {
+  const file = kind === "autonomous" ? "busy-autonomous.json" : "busy.json";
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, file);
 }
 
-export function setBusy(userId: string, taskDescription: string): void {
-  const path = busyPath(userId);
+function setBusyState(userId: string, kind: BusyKind, taskDescription: string): void {
+  const path = busyPath(userId, kind);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const state: BusyState = { taskDescription, startedAt: Date.now() };
   writeFileSync(path, JSON.stringify(state), "utf8");
 }
 
-export function clearBusy(userId: string): void {
-  const path = busyPath(userId);
+function clearBusyState(userId: string, kind: BusyKind): void {
+  const path = busyPath(userId, kind);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(path, JSON.stringify(null), "utf8");
@@ -43,10 +59,39 @@ export function clearBusy(userId: string): void {
 // takes this long), so it's treated as cleared rather than trusted forever.
 const MAX_BUSY_AGE_MS = 5 * 60_000;
 
-export function getBusyState(userId: string): BusyState | null {
-  const path = busyPath(userId);
+function getBusyStateFor(userId: string, kind: BusyKind): BusyState | null {
+  const path = busyPath(userId, kind);
   if (!existsSync(path)) return null;
   const state = JSON.parse(readFileSync(path, "utf8")) as BusyState | null;
   if (state && Date.now() - state.startedAt > MAX_BUSY_AGE_MS) return null;
   return state;
+}
+
+/** The real, live user conversation's busy state -- set around a real agent-loop turn started by
+ *  something the user actually sent (a message, a resumed question). Never set by the autonomous
+ *  trading cycle -- see setAutonomousBusy. */
+export function setBusy(userId: string, taskDescription: string): void {
+  setBusyState(userId, "user", taskDescription);
+}
+
+export function clearBusy(userId: string): void {
+  clearBusyState(userId, "user");
+}
+
+export function getBusyState(userId: string): BusyState | null {
+  return getBusyStateFor(userId, "user");
+}
+
+/** The autonomous trading cycle's OWN busy state -- completely separate from the real user's
+ *  conversation, so an in-flight scan never blocks or delegate-prompts a real user message. */
+export function setAutonomousBusy(userId: string, taskDescription: string): void {
+  setBusyState(userId, "autonomous", taskDescription);
+}
+
+export function clearAutonomousBusy(userId: string): void {
+  clearBusyState(userId, "autonomous");
+}
+
+export function getAutonomousBusyState(userId: string): BusyState | null {
+  return getBusyStateFor(userId, "autonomous");
 }
