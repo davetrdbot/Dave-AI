@@ -40,9 +40,11 @@ import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCu
 
 /** Real multi-timeframe set requested per symbol, per tick -- see the real reason at this
  *  constant's one call site below: the EA's "all" endpoint computes against a single timeframe
- *  only, so genuine multi-timeframe alignment means genuinely asking more than once. M15 for the
- *  scalper read, H1 as the primary/reference price, H4 for the sniper's higher-timeframe context. */
-const ANALYSIS_TIMEFRAMES = ["M15", "H1", "H4"] as const;
+ *  only, so genuine multi-timeframe alignment means genuinely asking more than once. User's
+ *  explicit spec: M1/M3/M5 for the scalper's short-term read, M15/H1 for the mid-term picture,
+ *  H4 for the sniper's higher-timeframe context -- all six genuinely confirmed supported by the
+ *  EA's own TimeframeFromString (ea/DaveEA.mq5). */
+const ANALYSIS_TIMEFRAMES = ["M1", "M3", "M5", "M15", "H1", "H4"] as const;
 
 const TRADE_ACTIONS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
 type TradeAction = (typeof TRADE_ACTIONS)[number];

@@ -17,8 +17,8 @@ import { runAutonomousTick } from "../src/autonomous-tick.js";
  * there is no EA-side "give me every timeframe in one call" capability. A single
  * analysis.get("all", symbol, "H1") call was never actually multi-timeframe, no matter what the
  * context block sent to the model claimed. Proves the real fix: one real "all" request per real
- * timeframe (M15, H1, H4), each genuinely reaching the EA as its own distinct command, merged
- * into what the model actually receives.
+ * timeframe (the user's explicit spec: M1, M3, M5, M15, H1, H4), each genuinely reaching the EA
+ * as its own distinct command, merged into what the model actually receives.
  */
 
 console.log("=== Real proof: the autonomous tick genuinely requests multiple real timeframes per symbol ===\n");
@@ -89,16 +89,17 @@ try {
   try {
     await runAutonomousTick({ userId: OWNER, db, executor, provider });
 
-    console.log(`[1] The EA genuinely received a separate real "analyze" command for each timeframe...\n`);
+    const EXPECTED_TIMEFRAMES = ["M1", "M3", "M5", "M15", "H1", "H4"];
+    console.log(`[1] The EA genuinely received a separate real "analyze" command for each of the user's specified timeframes...\n`);
     console.log(`    real timeframes requested from the EA: ${JSON.stringify(ea.requestedTimeframes)}`);
-    assert.deepEqual([...ea.requestedTimeframes].sort(), ["H1", "H4", "M15"], "must genuinely request M15, H1, and H4 as three separate real EA commands, not one H1-only call");
+    assert.deepEqual([...ea.requestedTimeframes].sort(), [...EXPECTED_TIMEFRAMES].sort(), "must genuinely request M1/M3/M5/M15/H1/H4 as six separate real EA commands, not one H1-only call");
 
-    console.log(`\n[2] The model's own context genuinely contains all three real timeframes' data, not just one...\n`);
+    console.log(`\n[2] The model's own context genuinely contains all six real timeframes' data, not just one...\n`);
     const userMessage = calls[0].messages.find((m) => m.role === "user")!.content as string;
-    for (const tf of ["M15", "H1", "H4"]) {
+    for (const tf of EXPECTED_TIMEFRAMES) {
       assert.ok(userMessage.includes(`"${tf}"`), `the real merged context sent to the model must genuinely include real "${tf}" data`);
     }
-    console.log(`    confirmed: the real context the model receives genuinely carries M15, H1, and H4 data, not a single-timeframe read mislabeled "all timeframes"`);
+    console.log(`    confirmed: the real context the model receives genuinely carries all six real timeframes, not a single-timeframe read mislabeled "all timeframes"`);
   } finally {
     await ea.stop();
   }
