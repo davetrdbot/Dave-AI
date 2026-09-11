@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 /** Same next-message-IS-the-value capture pattern as pending-trailing-entry.ts, for the
  *  confidence-threshold number typed after tapping "Set threshold" in /settings. */
 function pendingPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "pending-confidence-entry.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "pending-confidence-entry.json");
 }
 
 export function setPendingConfidenceEntry(userId: string, active: boolean): void {

@@ -16,7 +16,7 @@ import type { TelegramClient, TelegramUpdate } from "./client.js";
 const TG_HOOK_PREFIX = "/hooks/telegram";
 
 function tokensPath(): string {
-  return join(process.cwd(), "data", "telegram-webhook", "tokens.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "telegram-webhook", "tokens.json");
 }
 
 function readTokens(): Record<string, { userId: string; secretToken: string }> {

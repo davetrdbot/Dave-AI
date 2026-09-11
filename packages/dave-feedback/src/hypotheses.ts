@@ -42,7 +42,7 @@ export const MIN_CYCLES_BEFORE_VERDICT = 5;
 const CONFIRM_THRESHOLD = 0.7; // >=70% of observations agreeing settles the verdict
 
 function logPath(userId: string): string {
-  return join(process.cwd(), "data", "feedback", userId, "hypotheses.jsonl");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "feedback", userId, "hypotheses.jsonl");
 }
 
 function appendEvent(userId: string, event: HypothesisEvent): void {

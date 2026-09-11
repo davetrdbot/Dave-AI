@@ -328,7 +328,7 @@ function findPendingAskUserToolCallId(history: CompletionMessage[]): string | un
 }
 
 function inboxDir(ownerUserId: string): string {
-  const dir = join(process.cwd(), "data", "telegram-inbox", ownerUserId);
+  const dir = join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "telegram-inbox", ownerUserId);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return dir;
 }

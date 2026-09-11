@@ -19,7 +19,7 @@ import { isValidDavemaKeyFormat, maskDavemaKey } from "./endpoints.js";
  */
 
 function credentialPath(userId: string): string {
-  return join(process.cwd(), "data", "credentials", userId, "davema.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "credentials", userId, "davema.json");
 }
 
 function credentialsKey(): string {

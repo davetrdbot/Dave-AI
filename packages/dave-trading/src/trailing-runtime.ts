@@ -17,7 +17,7 @@ import type { TradeExecutor } from "./trade-executor.js";
  * when a stage fires.
  */
 function registryPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "trailing-registry.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "trailing-registry.json");
 }
 
 function readRegistry(userId: string): Record<string, Position> {

@@ -9,7 +9,7 @@ import type { BreakevenTrailingConfig } from "./breakeven-trailing.js";
  * persists so the same numbers don't need re-supplying on every tick.
  */
 function configPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "trailing-config.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "trailing-config.json");
 }
 
 export function getTrailingStopConfig(userId: string): BreakevenTrailingConfig | undefined {

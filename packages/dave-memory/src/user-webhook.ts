@@ -15,11 +15,11 @@ const USER_HOOK_PREFIX = "/hooks/user";
 const WORKER_HOOK_PREFIX = "/hooks/worker"; // reserved, implemented for real in Step 12
 
 function tokensPath(): string {
-  return join(process.cwd(), "data", "webhooks", "user-tokens.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "webhooks", "user-tokens.json");
 }
 
 function inboxPath(userId: string): string {
-  return join(process.cwd(), "data", "webhooks", "inbox", `${userId}.jsonl`);
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "webhooks", "inbox", `${userId}.jsonl`);
 }
 
 function readTokens(): Record<string, string> {
@@ -79,7 +79,7 @@ interface WorkerTokenRecord {
 }
 
 function workerTokensPath(): string {
-  return join(process.cwd(), "data", "webhooks", "worker-tokens.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "webhooks", "worker-tokens.json");
 }
 
 function readWorkerTokens(): Record<string, WorkerTokenRecord> {

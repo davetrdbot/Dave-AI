@@ -20,7 +20,7 @@ export interface TradingSkill {
 }
 
 function skillsDir(userId: string): string {
-  const dir = join(process.cwd(), "data", "trading", userId, "skills");
+  const dir = join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "skills");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return dir;
 }

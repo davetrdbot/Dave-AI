@@ -115,7 +115,7 @@ function spawnAdminPanel(dataDir: string): ChildProcess | undefined {
     // DIFFERENT file than the one this bot process uses. DATA_DIR already fixed this for the
     // database specifically (db-path.ts); DAVE_DATA_ROOT is the same real fix, generalized, for
     // every other real file-based store admin routes touch.
-    env: { ...process.env, PORT: String(ADMIN_INTERNAL_PORT), DATA_DIR: dataDir, DAVE_DATA_ROOT: process.cwd() },
+    env: { ...process.env, PORT: String(ADMIN_INTERNAL_PORT), DATA_DIR: dataDir, DAVE_DATA_ROOT: process.env.DAVE_DATA_ROOT ?? process.cwd() },
     stdio: ["ignore", "inherit", "inherit"],
   });
   child.on("exit", (code, signal) => {
@@ -147,7 +147,28 @@ function subServerHandler(server: Server): (req: IncomingMessage, res: ServerRes
   return listeners[0];
 }
 
+/**
+ * Real bug fixed (user: "it doesn't trade... check anything limiting it"). DAVE_DATA_ROOT was
+ * never actually set as a real Railway environment variable -- confirmed by querying the live
+ * service's variables directly. Every per-user file-based store that falls back to
+ * `DAVE_DATA_ROOT ?? process.cwd()` (pair groups, active pair symbol, confidence/auto-approve
+ * settings, the autonomous-trading-enabled flag, EA push-interval preference, and dozens more)
+ * was therefore silently writing to this process's own working directory -- NOT the real
+ * persistent volume (RAILWAY_VOLUME_MOUNT_PATH) DATABASE_PATH/HEARTBEAT_PATH were separately,
+ * explicitly pointed at. Every real redeploy (this repo has shipped many today) wiped every one
+ * of those settings back to defaults, silently -- a real, live "why do I have to keep reminding
+ * you" bug, distinct from anything in the agent's own decision logic. Exported as a pure function
+ * (rather than inlined in main()) so this exact resolution logic is genuinely testable.
+ */
+export function resolveDataRoot(env: NodeJS.ProcessEnv, cwd: string): string {
+  return env.DAVE_DATA_ROOT ?? env.RAILWAY_VOLUME_MOUNT_PATH ?? cwd;
+}
+
 export async function main(): Promise<void> {
+  // Resolved once, here, before any store is ever read, so it's never dependent on a manually-
+  // configured env var again -- falls all the way back to process.cwd() (the pre-fix behavior)
+  // only when Railway's own volume-mount env var genuinely isn't present either (e.g. local dev).
+  process.env.DAVE_DATA_ROOT = resolveDataRoot(process.env, process.cwd());
   const ownerUserId = process.env.OWNER_USER_ID ?? "default";
   // Real gap fixed: every admin-panel API route (telegram-otp,
   // e2b-keys, database-automation, provider-keys, ...) consistently
@@ -157,7 +178,7 @@ export async function main(): Promise<void> {
   // token) was silently invisible to this process even after a
   // restart. Matches that same convention so both processes genuinely
   // share state when pointed at the same volume.
-  const dbPath = process.env.DATABASE_PATH ?? join(process.cwd(), "data", "db", `${ownerUserId}.db`);
+  const dbPath = process.env.DATABASE_PATH ?? join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "db", `${ownerUserId}.db`);
   const publicBaseUrl = resolvePublicBaseUrl(); // e.g. Railway's own public domain, https://<service>.up.railway.app
   const port = Number(process.env.PORT ?? "3000");
 
@@ -172,7 +193,7 @@ export async function main(): Promise<void> {
   // second Railway service -- it shares this container and dies with
   // it, which is the correct lifecycle for a per-instance liveness
   // check) that alerts back over the real IPC channel fork() provides.
-  const heartbeatPath = process.env.HEARTBEAT_PATH ?? join(process.cwd(), "data", "heartbeat.json");
+  const heartbeatPath = process.env.HEARTBEAT_PATH ?? join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "heartbeat.json");
   const heartbeat = startHeartbeatLoop(heartbeatPath, 5000);
   const watchdog = startWatchdog({ heartbeatPath, timeoutMs: 30_000, pollIntervalMs: 5000 });
   watchdog.onEvent((event) => {

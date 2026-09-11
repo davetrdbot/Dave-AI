@@ -26,7 +26,7 @@ const Q2_STYLE =
   "Terse and to the point, or more detail? And should I check in often, or only when it matters?";
 
 function progressPath(userId: string): string {
-  return join(process.cwd(), "data", "bootstrap", `${userId}.json`);
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "bootstrap", `${userId}.json`);
 }
 
 function loadProgress(userId: string): BootstrapProgress {

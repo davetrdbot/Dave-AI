@@ -25,7 +25,7 @@ export class InvalidTradingLoopIntervalError extends Error {
 }
 
 function configPath(userId: string): string {
-  return join(process.cwd(), "data", "trading-loop", userId, "config.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading-loop", userId, "config.json");
 }
 
 interface TradingLoopConfig {

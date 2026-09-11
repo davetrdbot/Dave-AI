@@ -32,11 +32,11 @@ export interface Mt5Credentials {
 }
 
 function credentialPath(userId: string): string {
-  return join(process.cwd(), "data", "credentials", userId, "mt5-own-account.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "credentials", userId, "mt5-own-account.json");
 }
 
 function choicePath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "account-choice.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "account-choice.json");
 }
 
 export function storeOwnMt5Credentials(userId: string, creds: Mt5Credentials): void {

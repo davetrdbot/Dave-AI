@@ -18,7 +18,7 @@ export interface SkipEntry {
 }
 
 function skipLogPath(userId: string): string {
-  return join(process.cwd(), "data", "feedback", userId, "skip-log.jsonl");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "feedback", userId, "skip-log.jsonl");
 }
 
 export function recordSkip(userId: string, symbol: string, reason: string): void {

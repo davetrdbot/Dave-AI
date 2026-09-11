@@ -29,11 +29,11 @@ export interface KnowledgeDraft {
 }
 
 function entriesPath(userId: string): string {
-  return join(process.cwd(), "data", "knowledge", userId, "entries.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "knowledge", userId, "entries.json");
 }
 
 function draftsPath(userId: string): string {
-  return join(process.cwd(), "data", "knowledge", userId, "drafts.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "knowledge", userId, "drafts.json");
 }
 
 function readJson<T>(path: string, fallback: T): T {

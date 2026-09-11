@@ -17,7 +17,7 @@ export interface PendingDelegation {
 }
 
 function delegationPath(userId: string): string {
-  return join(process.cwd(), "data", "agent-loop", userId, "pending-delegation.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, "pending-delegation.json");
 }
 
 export function setPendingDelegation(userId: string, delegation: PendingDelegation | null): void {

@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 export type ProtectedLimitField = "maxOpenTrades" | "maxDailyLossPct";
 
 function pendingPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "pending-limit-entry.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "pending-limit-entry.json");
 }
 
 export function setPendingLimitEntry(userId: string, field: ProtectedLimitField | null): void {

@@ -33,7 +33,7 @@ export interface Scenario {
 }
 
 function tierDir(userId: string): string {
-  const dir = join(process.cwd(), "data", "memory", userId, "tiers");
+  const dir = join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "memory", userId, "tiers");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return dir;
 }

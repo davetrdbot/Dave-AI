@@ -13,7 +13,7 @@ export interface TradingModeState {
 }
 
 function path(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "trading-mode.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "trading-mode.json");
 }
 
 export function getTradingMode(userId: string): TradingModeState {

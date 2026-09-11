@@ -29,7 +29,7 @@ export interface PendingQuestion {
 }
 
 function pendingQuestionPath(ownerUserId: string): string {
-  return join(process.cwd(), "data", "agent-loop", ownerUserId, "pending-question.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", ownerUserId, "pending-question.json");
 }
 
 export function getPendingQuestion(ownerUserId: string): PendingQuestion | undefined {

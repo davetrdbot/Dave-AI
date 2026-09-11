@@ -14,7 +14,7 @@ export interface BusyState {
 }
 
 function busyPath(userId: string): string {
-  return join(process.cwd(), "data", "agent-loop", userId, "busy.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, "busy.json");
 }
 
 export function setBusy(userId: string, taskDescription: string): void {

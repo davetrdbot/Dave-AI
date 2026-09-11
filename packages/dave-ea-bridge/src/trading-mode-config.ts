@@ -18,7 +18,7 @@ export interface TradingModeConfig {
 }
 
 function configPath(userId: string): string {
-  return join(process.cwd(), "data", "trading-mode", userId, "config.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading-mode", userId, "config.json");
 }
 
 export function getTradingModeConfig(userId: string): TradingModeConfig {

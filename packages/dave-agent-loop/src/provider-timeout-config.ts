@@ -25,7 +25,7 @@ export class InvalidProviderTimeoutError extends Error {
 }
 
 function configPath(userId: string): string {
-  return join(process.cwd(), "data", "provider-timeout", userId, "config.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "provider-timeout", userId, "config.json");
 }
 
 interface ProviderTimeoutConfig {

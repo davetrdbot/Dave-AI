@@ -28,7 +28,7 @@ export interface Skill {
 }
 
 function registryPath(userId: string): string {
-  return join(process.cwd(), "data", "skills", userId, "registry.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "skills", userId, "registry.json");
 }
 
 function readRegistry(userId: string): Skill[] {

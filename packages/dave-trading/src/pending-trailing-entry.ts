@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 export type TrailingField = "slAtTp1" | "slAtTp2" | "slAtTp3";
 
 function pendingPath(userId: string): string {
-  return join(process.cwd(), "data", "trading", userId, "pending-trailing-entry.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "pending-trailing-entry.json");
 }
 
 export function setPendingTrailingEntry(userId: string, field: TrailingField | null): void {

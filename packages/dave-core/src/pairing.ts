@@ -13,7 +13,7 @@ export interface PairingRecord {
 }
 
 function storePath(): string {
-  return join(process.cwd(), "data", "pairing.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "pairing.json");
 }
 
 function loadAll(): Record<string, PairingRecord> {

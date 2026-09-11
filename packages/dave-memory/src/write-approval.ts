@@ -20,11 +20,11 @@ interface PendingWrite {
 }
 
 function settingsPath(userId: string): string {
-  return join(process.cwd(), "data", "memory", userId, "settings.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "memory", userId, "settings.json");
 }
 
 function pendingPath(userId: string): string {
-  return join(process.cwd(), "data", "memory", userId, "pending-writes.json");
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "memory", userId, "pending-writes.json");
 }
 
 function readJson<T>(path: string, fallback: T): T {
