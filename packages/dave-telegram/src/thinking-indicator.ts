@@ -11,9 +11,12 @@ import type { TelegramClient } from "./client.js";
  *     SAME bot-chosen `draft_id` -- Telegram animates the change. There
  *     is no message to editMessageText; the draft is an ephemeral
  *     ~30-second preview, never a real persisted message.
- *   - Finalizing means calling the real sendRichMessage method (not
- *     editMessageText) with the complete content -- that's the method
- *     that actually returns a real Message and persists it in the chat.
+ *   - Finalizing means calling sendMessage with parse_mode: "HTML" (not
+ *     editMessageText) with the complete content -- that's the real,
+ *     documented method that actually returns a real Message, persists
+ *     it in the chat, AND (unlike sendRichMessage's HTML-document-style
+ *     `rich_message.html` field) preserves literal "\n\n" as a real
+ *     visible blank line between paragraphs instead of collapsing it.
  */
 
 // 9.3: typed enum, not free-form -- an agent can only pick one of these.
@@ -159,9 +162,29 @@ export class ThinkingIndicator {
   }
 
   /**
-   * 9.4: finalizes cleanly into a real, persisted message -- via the
-   * real sendRichMessage method (not editMessageText: the draft was
-   * never a real message to edit).
+   * 9.4: finalizes cleanly into a real, persisted message -- via
+   * editMessageText was never right (the draft was never a real message
+   * to edit).
+   *
+   * Real bug fixed (root cause of the live "Dave's messages are one jam-packed
+   * wall of text" report): this used to finalize via sendRichMessage's
+   * `rich_message.html` field. That field is genuine HTML *document* content --
+   * a real HTML renderer collapses runs of whitespace, including "\n\n", into a
+   * single space (that's ordinary HTML semantics: you need a literal `<br>` or a
+   * block element for a visible break). So even though markdownToTelegramHtml()
+   * upstream correctly preserved every blank line between paragraphs, and
+   * IDENTITY.md correctly told the model to write them, this specific send path
+   * threw every paragraph break away at the transport layer, on every single
+   * ordinary reply (this is the finalize() call every runAgentTurn/tg_finalize
+   * response goes through) -- a prompt-level fix could never have reached this.
+   * Telegram's real, documented Bot API has no HTML-document rendering mode at
+   * all; its ONLY real HTML support is sendMessage's `parse_mode: "HTML"`, whose
+   * small allowlisted-tag parser treats the text as literal text outside of
+   * those tags -- "\n" is passed straight through as a real line break, so
+   * "\n\n" renders as an actual blank line, exactly like every other real send
+   * path in this codebase (push-tools.ts, worker-loop.ts, the autonomous-cycle
+   * sends and send_telegram in tools.ts) that already uses it successfully.
+   * Switched to that same real, proven mechanism instead.
    *
    * Real bug fixed: Telegram's real, hard 4096-character-per-message limit
    * was never respected here -- a genuinely long final answer (a full trade
@@ -181,7 +204,7 @@ export class ThinkingIndicator {
     }
     const chunks = chunkForTelegram(finalText);
     for (const chunk of chunks) {
-      await this.client.sendRichMessage({ chat_id: this.chatId, rich_message: { html: chunk } });
+      await this.client.sendMessage({ chat_id: this.chatId, text: chunk, parse_mode: "HTML" });
     }
   }
 

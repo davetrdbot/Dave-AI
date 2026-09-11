@@ -61,8 +61,9 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
       const indicator = activeIndicators.get(ctx.chatId);
       if (!indicator) throw new Error("no active thinking indicator for this chat -- call tg_thinking first");
       // Real gap fixed (item 2, "raw HTML tags visible to the user"): finalize() sends real HTML
-      // via sendRichMessage -- text reaching it must already be real converted HTML, same as every
-      // other real final-answer path (telegram-bot-server.ts), not raw markdown/model-written tags.
+      // via sendMessage's parse_mode: "HTML" -- text reaching it must already be real converted
+      // HTML, same as every other real final-answer path (telegram-bot-server.ts), not raw
+      // markdown/model-written tags.
       await indicator.finalize(markdownToTelegramHtml(args.text as string));
       activeIndicators.delete(ctx.chatId);
       return { ok: true };

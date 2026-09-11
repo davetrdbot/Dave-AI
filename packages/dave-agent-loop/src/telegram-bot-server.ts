@@ -214,7 +214,7 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
     const interval = getTradingLoopIntervalMinutes(deps.ownerUserId);
     let replyText: string;
     if (started) {
-      replyText = `▶️ Autonomous trading is on (scan loop: every ${interval} min). I'll scan my active pair group and act on real setups on my own initiative -- I'll only message you when something actually happens (a trade, a TP/SL hit, or a real question). /stop_trading turns this off, /stop or /panic is still the instant hard kill. Change the loop interval any time with /start_trading followed by a number of minutes, or from /settings.`;
+      replyText = `▶️ Autonomous trading is on (scan loop: every ${interval} min). I'll scan every pair in my active pair group and act on real setups on my own initiative -- I'll only message you when something actually happens (a trade, a TP/SL hit, or a real question). /stop_trading turns this off, /stop or /panic is still the instant hard kill.`;
     } else if (requestedMinutes !== undefined && wasAlreadyRunning) {
       replyText = `🔄 Autonomous trading loop interval updated to every ${interval} min, applied immediately.`;
     } else {

@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { DaveDatabase } from "@dave/db";
 import { TelegramClient } from "@dave/telegram";
 import { EaTradeExecutor, createEaWebhookServer, getOrCreateEaWebhook, type EaCommand } from "@dave/ea-bridge";
-import { upsertGroup, setActiveGroup, setConfidenceThreshold, listPendingTradeApprovals } from "@dave/trading";
+import { upsertGroup, setActiveGroup, setConfidenceThreshold, setAutoApproveBelowThreshold, listPendingTradeApprovals } from "@dave/trading";
 import { buildFullToolRegistry } from "../src/full-registry.js";
 import { dispatchCallback, type CommandRouterDeps } from "../src/command-router.js";
 
@@ -41,6 +41,11 @@ try {
   upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD", "GBPUSD"] });
   setActiveGroup(OWNER, "majors");
   setConfidenceThreshold(OWNER, 80);
+  // Real gap fixed (user, in live distress: "it doesn't trade... remove the safety layout"):
+  // auto-approve-below-threshold now defaults to ON so a real setup actually fires instead of
+  // silently queuing -- this test specifically exercises the queued-approval path (the 3-button
+  // Approve/Decline/Find Another prompt), so it explicitly opts back into manual approval.
+  setAutoApproveBelowThreshold(OWNER, false);
 
   const registry = buildFullToolRegistry({ userId: OWNER, db, executor, telegram: { client, chatId: CHAT_ID } });
 

@@ -4,8 +4,10 @@ import { TelegramClient, withThinkingIndicator, ACTION_ICONS } from "../src/inde
 console.log("=== Step 9 real proof: thinking indicator with live action-type icons ===\n");
 console.log("Corrected after checking the REAL sendRichMessageDraft parameter table (not just the");
 console.log("changelog blurb): it returns `true`, not a message; updates reuse the same bot-chosen");
-console.log("draft_id (Telegram animates same-id changes); finalizing calls the real sendRichMessage");
-console.log("method, not editMessageText, since the draft was never a persisted message to edit.\n");
+console.log("draft_id (Telegram animates same-id changes); finalizing calls the real sendMessage");
+console.log("method with parse_mode: \"HTML\" (not editMessageText, since the draft was never a");
+console.log("persisted message to edit; not sendRichMessage's rich_message.html either -- that field");
+console.log("collapses \"\\n\\n\" like real HTML-document whitespace instead of rendering a paragraph break).\n");
 
 // --- Part A: state-machine correctness against a real, successful transport ---
 console.log("[Part A] State machine against a working transport...\n");
@@ -59,7 +61,8 @@ assert.ok(editCallsDuringRapidUpdates <= 1, "rapid-fire updates must be throttle
 // The guaranteed progress message is genuinely cleaned up once the real final answer is sent --
 // never left cluttering the chat alongside the real final message.
 assert.ok(sentCalls.some((c) => c.method === "deleteMessage"), "the guaranteed progress message must genuinely be deleted before/at finalize");
-assert.equal(sentCalls[sentCalls.length - 1].method, "sendRichMessage", "9.4: finalize still ends with sendRichMessage for the real final answer");
+assert.equal(sentCalls[sentCalls.length - 1].method, "sendMessage", "9.4: finalize ends with a real sendMessage(parse_mode: HTML) call for the real final answer -- NOT sendRichMessage, which collapses paragraph breaks");
+assert.equal(sentCalls[sentCalls.length - 1].body.parse_mode, "HTML", "9.4: the final send must set parse_mode: HTML so the converted markup actually renders");
 
 console.log("\n[A2] Every draft update reuses the SAME draft_id -- required for Telegram to animate it as one draft, not three separate ones...");
 const draftIds = draftCalls.map((c) => c.body.draft_id);
@@ -73,13 +76,13 @@ console.log(`      memory: "${(draftCalls[0].body.rich_message as any).html}"`);
 console.log(`      api:    "${(draftCalls[1].body.rich_message as any).html}"`);
 console.log(`      trade:  "${(draftCalls[2].body.rich_message as any).html}"`);
 const finalCall = sentCalls[sentCalls.length - 1];
-console.log(`      final:  "${(finalCall.body.rich_message as any).html}"`);
+console.log(`      final:  "${finalCall.body.text}"`);
 assert.equal((draftCalls[0].body.rich_message as any).html, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`);
 assert.equal((draftCalls[1].body.rich_message as any).html, `${ACTION_ICONS.api}Calling EA analysis /correlation + /strength`);
 assert.equal((draftCalls[2].body.rich_message as any).html, `${ACTION_ICONS.trade}Scoring EURUSD setup against confluence`);
-assert.equal((finalCall.body.rich_message as any).html, "Setup scored -- confluence 78, LONG bias.");
+assert.equal(finalCall.body.text, "Setup scored -- confluence 78, LONG bias.");
 assert.ok(
-  !String((finalCall.body.rich_message as any).html).startsWith(ACTION_ICONS.trade),
+  !String(finalCall.body.text).startsWith(ACTION_ICONS.trade),
   "9.4: the final message must be clean, no leftover action icon"
 );
 const guaranteedMsgCall = sentCalls.find((c) => c.method === "sendMessage");
@@ -121,10 +124,11 @@ process.on("unhandledRejection", onUnhandledRejection);
 const flakyClient = {
   sendChatAction: async () => true,
   sendRichMessageDraft: async () => { throw new Error("simulated real transient Telegram failure (rate limit / expired draft)"); },
-  sendRichMessage: async (body: Record<string, unknown>) => {
-    sentCalls.push({ method: "sendRichMessage", body });
+  sendMessage: async (body: Record<string, unknown>) => {
+    sentCalls.push({ method: "sendMessage", body });
     return { message_id: 1001 };
   },
+  deleteMessage: async () => true,
 } as unknown as TelegramClient;
 const flakyResult = await withThinkingIndicator(flakyClient, 111222, async (indicator) => {
   // Exactly how every real caller invokes it (agent-loop.ts's onStep): fire-and-forget, never awaited.
@@ -157,7 +161,7 @@ try {
     return { result: undefined, finalText: "Done." };
   });
 } catch {
-  // Expected: no real token, so sendRichMessage genuinely fails against the real API.
+  // Expected: no real token, so the real finalize() sendMessage call genuinely fails against the real API.
 }
 console.log(`    real methods actually invoked against api.telegram.org: ${realCalls.map((c) => c.method).join(", ")}`);
 assert.ok(realCalls.some((c) => c.method === "sendChatAction"));
