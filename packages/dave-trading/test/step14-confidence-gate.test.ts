@@ -50,8 +50,8 @@ const ctx: ToolContext = { userId: USER_ID, analysis: stubAnalysis, executor };
 const tradeExecuteTool = TRADING_TOOLS.find((t) => t.name === "trade_execute")!;
 
 try {
-  console.log("[1] Real default: threshold 70%, auto-approve-below-threshold ON (user, in live distress: 'it doesn't trade... remove the safety layout' -- a real setup must fire, not silently queue on a manual Telegram tap that may never come)...\n");
-  assert.deepEqual(getConfidenceSettings(USER_ID), { threshold: 70, autoApproveBelowThreshold: true });
+  console.log("[1] Real default: threshold 70%, auto-approve-below-threshold off...\n");
+  assert.deepEqual(getConfidenceSettings(USER_ID), { threshold: 70, autoApproveBelowThreshold: false });
 
   console.log("[2] Confidence AT/ABOVE threshold -> trade fires immediately, no gate...\n");
   const highConfResult = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, confidence: 82 }, ctx)) as { ticket: string; confidence: number };
@@ -60,8 +60,7 @@ try {
   assert.deepEqual(executedOrders, [{ symbol: "EURUSD", type: "buy" }]);
   console.log(`    real result: ${JSON.stringify(highConfResult)}`);
 
-  console.log("\n[3] A user who explicitly turns auto-approve back OFF still gets real queuing below threshold, NOT executed...\n");
-  setAutoApproveBelowThreshold(USER_ID, false);
+  console.log("\n[3] Confidence BELOW threshold, auto-approve off -> genuinely queued, NOT executed...\n");
   const lowConfResult = (await tradeExecuteTool.execute({ symbol: "GBPUSD", type: "sell", lots: 0.2, confidence: 55, reason: "Weak momentum, counter-trend." }, ctx)) as {
     needsApproval: boolean;
     pendingId: string;
@@ -115,9 +114,9 @@ try {
   assert.equal(noConfResult.ticket, "T-NZDUSD");
   assert.equal(noConfResult.confidence, undefined, "no confidence field should appear when none was passed");
 
-  console.log("\n[10] /reset genuinely clears confidence settings + pending approvals back to the real (auto-approve-on) defaults...\n");
+  console.log("\n[10] /reset genuinely clears confidence settings + pending approvals back to defaults...\n");
   resetConfidenceSettingsForUser(USER_ID);
-  assert.deepEqual(getConfidenceSettings(USER_ID), { threshold: 70, autoApproveBelowThreshold: true });
+  assert.deepEqual(getConfidenceSettings(USER_ID), { threshold: 70, autoApproveBelowThreshold: false });
   assert.equal(listPendingTradeApprovals(USER_ID).length, 0);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
