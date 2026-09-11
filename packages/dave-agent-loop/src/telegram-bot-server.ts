@@ -249,6 +249,9 @@ function logCycle(userId: string, reason: string): void {
   console.log(`[autonomous-tick] ${userId}: ${reason}`);
 }
 
+/** See the real bug this fixes at its one call site below (getPendingQuestion gate). */
+const MAX_PENDING_QUESTION_AGE_MS = 15 * 60_000;
+
 export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
   if (isTradingHalted(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- trading halted (/stop, /panic, or a tripped safety gate)");
   if (getBusyState(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- a real user turn is already in flight");
@@ -258,7 +261,22 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   // analysis: kill switch, auto_trading flag, pending user question, EA heartbeat freshness,
   // drawdown cap"). isTradingHalted/getBusyState above already covered the kill-switch/busy
   // case; these are the real gates that were genuinely missing:
-  if (getPendingQuestion(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- an unanswered question is still pending");
+  //
+  // Real bug fixed (user, live: confirmed via the new logging this session added -- "skipped --
+  // an unanswered question is still pending" fired on EVERY cycle for 10+ minutes straight,
+  // permanently blocking all trading). getPendingQuestion (ask-user.ts) has no expiry -- a
+  // question the main chat asked once, that the user never got to (or already effectively moved
+  // past without it ever being cleared), gates autonomous trading forever with nothing to ever
+  // clear it. Same class of bug busy-state.ts already self-heals (a stale record with no live
+  // process left to clear it) -- past this age, autonomous trading proceeds anyway; the pending
+  // question record itself is left untouched, so the main chat can still resume it normally the
+  // moment the user does reply.
+  const pendingQuestion = getPendingQuestion(deps.ownerUserId);
+  if (pendingQuestion) {
+    const ageMs = Date.now() - pendingQuestion.askedAt;
+    if (ageMs < MAX_PENDING_QUESTION_AGE_MS) return logCycle(deps.ownerUserId, `skipped -- an unanswered question is still pending (asked ${Math.round(ageMs / 60_000)}m ago)`);
+    logCycle(deps.ownerUserId, `pending question is stale (asked ${Math.round(ageMs / 60_000)}m ago, never answered) -- proceeding with autonomous trading anyway`);
+  }
   const eaStatus = getEaConnectionStatus(deps.ownerUserId);
   if (!eaStatus.connected) return logCycle(deps.ownerUserId, "skipped -- EA is not connected, no live data to analyze");
   try {

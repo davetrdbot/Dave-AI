@@ -38,6 +38,12 @@ import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCu
  * once those have already passed.
  */
 
+/** Real multi-timeframe set requested per symbol, per tick -- see the real reason at this
+ *  constant's one call site below: the EA's "all" endpoint computes against a single timeframe
+ *  only, so genuine multi-timeframe alignment means genuinely asking more than once. M15 for the
+ *  scalper read, H1 as the primary/reference price, H4 for the sniper's higher-timeframe context. */
+const ANALYSIS_TIMEFRAMES = ["M15", "H1", "H4"] as const;
+
 const TRADE_ACTIONS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
 type TradeAction = (typeof TRADE_ACTIONS)[number];
 const DECISION_ACTIONS = [...TRADE_ACTIONS, "SKIP", "ASK"] as const;
@@ -240,15 +246,32 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     return { action: "NONE", notable: false };
   }
   const { symbol } = picked;
-  logTick(userId, `picked ${symbol}${picked.usingFallback ? " (fallback group)" : ""} -- requesting full analysis...`);
+  logTick(userId, `picked ${symbol}${picked.usingFallback ? " (fallback group)" : ""} -- requesting full analysis across ${ANALYSIS_TIMEFRAMES.join("/")}...`);
 
-  const suite = await analysis
-    .get<Record<string, unknown>>("all", symbol, "H1", { timeoutMs: 300_000 })
-    .catch((err) => {
-      logTick(userId, `analysis for ${symbol} failed/timed out: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
-    });
-  const priceInfo = (suite as { price?: { bid?: number; ask?: number; close?: number } } | null)?.price;
+  // Real gap fixed (user, live: doubted "all timeframes" was genuinely happening -- it wasn't.
+  // The EA's own "all" endpoint (DaveEA.mq5's RunAnalysis/A_All) computes every sub-indicator
+  // against ONLY the single timeframe it's given -- "get all timeframes in one call" isn't a
+  // real capability on the EA side, so a single analysis.get("all", symbol, "H1") call was never
+  // actually multi-timeframe, no matter what the context block claimed. This genuinely requests
+  // "all" once per real timeframe and merges them, so multi-timeframe alignment (the sniper/
+  // scalper mandate in trading.md) is real data the model actually receives, not a label on a
+  // single H1 read.
+  const suiteByTimeframe = await Promise.all(
+    ANALYSIS_TIMEFRAMES.map((tf) =>
+      analysis
+        .get<Record<string, unknown>>("all", symbol, tf, { timeoutMs: 300_000 })
+        .then((data) => ({ tf, data }))
+        .catch((err) => {
+          logTick(userId, `analysis for ${symbol} (${tf}) failed/timed out: ${err instanceof Error ? err.message : String(err)}`);
+          return { tf, data: null };
+        })
+    )
+  );
+  const suite: Record<string, unknown> = {};
+  for (const { tf, data } of suiteByTimeframe) suite[tf] = data ?? { error: "unavailable this cycle" };
+
+  const primaryTfResult = suiteByTimeframe.find((r) => r.tf === "H1")?.data ?? suiteByTimeframe.find((r) => r.data)?.data;
+  const priceInfo = (primaryTfResult as { price?: { bid?: number; ask?: number; close?: number } } | null)?.price;
   const referencePrice = priceInfo?.bid ?? priceInfo?.ask ?? priceInfo?.close ?? 0;
 
   const contextLines = [
@@ -258,7 +281,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     `SL_MODE: ${risk.slMode}${risk.slMode === "on" ? ` (fixed ${risk.slValue} pips)` : ""} | TP_MODE: ${risk.tpMode}${risk.tpMode === "on" ? ` (fixed ${risk.tpValue} pips)` : ""} | LOT_MODE: ${risk.lotMode}${risk.lotMode === "on" ? ` (fixed ${risk.lotValue})` : ""}`,
     `CONFIDENCE THRESHOLD: ${confidenceSettings.threshold}%`,
     buildTradeAdviceBlock(confidenceSettings),
-    `FULL ANALYSIS SUITE (all timeframes): ${JSON.stringify(suite ?? { error: "analysis unavailable this cycle" }).slice(0, 4000)}`,
+    `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${ANALYSIS_TIMEFRAMES.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${JSON.stringify(suite).slice(0, 6000)}`,
     formatRecentDecisions(userId),
   ];
 
