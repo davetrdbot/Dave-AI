@@ -137,6 +137,11 @@ try {
       assert.equal(calls[0].tools?.length, 1, "a real single decision tool must be attached");
       const schema = calls[0].tools![0].parameters as { required: string[] };
       assert.ok(schema.required.includes("sl") && schema.required.includes("tp"), "sl/tp must be REQUIRED in the schema when risk mode is auto");
+      // Real bug fixed (confirmed LIVE: a genuinely good BUY decision got silently thrown away
+      // as "no valid lot size" because lots was never required in the schema -- lot mode here is
+      // "off", the exact mode that bug hit, since the order-building logic only ever uses a fixed
+      // lot value when mode is "on"; every other mode needs the model to supply one.
+      assert.ok(schema.required.includes("lots"), "lots must be REQUIRED in the schema whenever lot mode isn't 'on' -- otherwise a real decision can silently have no size to trade with");
 
       const journal = listTradesSince(db, OWNER, Date.now() - 60_000);
       assert.equal(journal.length, 1, "the trade must genuinely be auto-logged");

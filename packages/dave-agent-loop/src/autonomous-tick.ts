@@ -89,19 +89,27 @@ const DECISION_TOOL_NAME = "submit_trading_decision";
  *  in the schema when their mode is genuinely "auto"; omitted from the schema entirely when
  *  "off" (nothing to ask for); present but optional when "on" (the server applies the fixed
  *  value regardless of what's passed). This is the real mechanism behind "ask for TP/SL if set
- *  to auto, but off it won't ask." */
+ *  to auto, but off it won't ask."
+ *
+ *  Real bug fixed (confirmed live: a genuinely good BUY decision -- "Aligned multi-TF bull... "
+ *  62% confidence -- got silently thrown away as "no valid lot size" because `lots` was in
+ *  `properties` but never added to `required`, unlike sl/tp above. Unlike sl/tp, lots has no real
+ *  "off" state -- a trade always needs a size, and the order-building logic below only ever uses
+ *  the fixed `risk.lotValue` when mode is "on"; every other mode falls through to whatever the
+ *  model supplied, so it must be required whenever mode isn't "on". */
 function buildDecisionTool(risk: RiskSettings): ToolSpec {
   const properties: Record<string, unknown> = {
     action: { type: "string", enum: DECISION_ACTIONS, description: "BUY/SELL are market orders. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders -- include entry. SKIP if there's genuinely nothing. ASK only for real, specific ambiguity." },
     symbol: { type: "string" },
     entry: { type: "number", description: "Required for a pending order type (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP). Omit for market BUY/SELL." },
-    lots: { type: "number" },
+    lots: { type: "number", description: "Required unless the account has a fixed lot size configured -- size your own real lots against the live account balance." },
     confidence: { type: "number", description: "your own honest 0-100 confidence in this specific setup" },
     reason: { type: "string" },
     question: { type: "string", description: "only when action is ASK" },
     options: { type: "array", items: { type: "string" }, description: "only when action is ASK" },
   };
   const required = ["action", "reason"];
+  if (risk.lotMode !== "on") required.push("lots");
   if (risk.slMode !== "off") properties.sl = { type: "number" };
   if (risk.slMode === "auto") required.push("sl");
   if (risk.tpMode !== "off") properties.tp = { type: "number" };
