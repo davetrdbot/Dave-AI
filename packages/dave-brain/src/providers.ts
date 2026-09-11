@@ -61,6 +61,15 @@ export interface CompletionRequest {
   messages: CompletionMessage[];
   maxTokens?: number;
   tools?: ToolSpec[];
+  /** Real gap fixed (user, live: doubted the trading-decision tool was "implemented well" --
+   *  it wasn't, fully, without this): with `tools` alone, nothing stops a model from just
+   *  answering in plain text instead of calling the one tool it was offered. For a caller with
+   *  exactly one tool that MUST be called every time (autonomous-tick.ts's single trading
+   *  decision), this forces that specific tool rather than leaving it optional. Every provider
+   *  that supports real tool calling translates this to its own forced-tool-choice shape;
+   *  ignored (silently, same as an unsupported provider seeing `tools` alone) by a provider that
+   *  doesn't support it at all. */
+  toolChoice?: { name: string };
 }
 
 export interface CompletionResult {
@@ -200,6 +209,12 @@ function toOpenAIToolSpecs(tools: CompletionRequest["tools"]): unknown[] | undef
   return tools?.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
 }
 
+/** Real, standard OpenAI-shaped forced tool choice -- shared by every OpenAI-compatible wire
+ *  format in this file (OpenAICompatibleProvider, DeepSeek, Cohere all use this exact shape). */
+function toOpenAIToolChoice(toolChoice: CompletionRequest["toolChoice"]): unknown | undefined {
+  return toolChoice ? { type: "function", function: { name: toolChoice.name } } : undefined;
+}
+
 /**
  * Step 5.1/5.5: self-hosted AirLLM/Qwen3-235B, called over HTTP from
  * `ai-brain-service` (a separate Python process -- Step 2's rationale:
@@ -266,6 +281,7 @@ export class DeepSeekProvider implements Provider {
     if (containsImage(req.messages)) throw new ImageNotSupportedError("deepseek");
     const start = Date.now();
     const tools = toOpenAIToolSpecs(req.tools);
+    const tool_choice = toOpenAIToolChoice(req.toolChoice);
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -273,7 +289,7 @@ export class DeepSeekProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools, tool_choice }),
         },
         timeoutMs
       );
@@ -357,6 +373,7 @@ export class ClaudeProvider implements Provider {
       input_schema: t.parameters,
       ...(i === arr.length - 1 ? { cache_control: { type: "ephemeral" } } : {}),
     }));
+    const tool_choice = req.toolChoice ? { type: "tool", name: req.toolChoice.name } : undefined;
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -374,6 +391,7 @@ export class ClaudeProvider implements Provider {
             system,
             messages,
             tools,
+            tool_choice,
           }),
         },
         timeoutMs
@@ -434,6 +452,7 @@ export class OpenAICompatibleProvider implements Provider {
   async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
     const start = Date.now();
     const tools = toOpenAIToolSpecs(req.tools);
+    const tool_choice = toOpenAIToolChoice(req.toolChoice);
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -444,7 +463,7 @@ export class OpenAICompatibleProvider implements Provider {
             this.authHeaderStyle === "api-key-header"
               ? { "content-type": "application/json", "api-key": this.apiKey }
               : { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools, tool_choice }),
         },
         timeoutMs
       );
@@ -502,6 +521,7 @@ export class CohereProvider implements Provider {
     // a real `role:"tool"` message with `tool_call_id`) -- the same shared helpers
     // OpenAICompatibleProvider/DeepSeekProvider use apply here too, not a bespoke translation.
     const tools = toOpenAIToolSpecs(req.tools);
+    const tool_choice = toOpenAIToolChoice(req.toolChoice);
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -509,7 +529,7 @@ export class CohereProvider implements Provider {
         {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools }),
+          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools, tool_choice }),
         },
         timeoutMs
       );
@@ -675,7 +695,13 @@ export class BedrockProvider implements Provider {
       }
       return { role: m.role, content: [{ text: typeof m.content === "string" ? m.content : "" }, ...cachePoint] };
     });
-    const toolConfig = req.tools && req.tools.length > 0 ? { tools: req.tools.map((t) => ({ toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.parameters } } })) } : undefined;
+    const toolConfig =
+      req.tools && req.tools.length > 0
+        ? {
+            tools: req.tools.map((t) => ({ toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.parameters } } })),
+            ...(req.toolChoice ? { toolChoice: { tool: { name: req.toolChoice.name } } } : {}),
+          }
+        : undefined;
     const body = JSON.stringify({
       ...(system ? { system } : {}),
       messages,

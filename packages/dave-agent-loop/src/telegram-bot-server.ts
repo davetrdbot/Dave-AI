@@ -241,28 +241,36 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
  * included). Per IDENTITY.md's "trade quietly" rule, this sends NOTHING to the user unless the
  * model's own final text is real content -- a bare "NOTHING_TO_REPORT" sentinel (or empty text)
  * means a normal, quiet cycle where nothing needed saying, and is swallowed here, never sent. */
+/** Real, plain visibility into every cycle -- the user has no other way to see why the bot
+ *  isn't placing trades than this stdout trace (Railway's own log tail). Every gate that used
+ *  to return silently now says so, and every real decision from autonomous-tick.ts gets logged
+ *  too (see runAutonomousTick's own log call at the bottom of this function). */
+function logCycle(userId: string, reason: string): void {
+  console.log(`[autonomous-tick] ${userId}: ${reason}`);
+}
+
 export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
-  if (isTradingHalted(deps.ownerUserId)) return;
-  if (getBusyState(deps.ownerUserId)) return; // a real user turn is already in flight -- don't collide with it, just wait for the next tick
-  if (getAutonomousBusyState(deps.ownerUserId)) return; // a previous cycle is still running -- never overlap two autonomous cycles
+  if (isTradingHalted(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- trading halted (/stop, /panic, or a tripped safety gate)");
+  if (getBusyState(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- a real user turn is already in flight");
+  if (getAutonomousBusyState(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- the previous autonomous cycle is still running");
 
   // Items 2/6 real gating gap fixed (user's reference pattern: "real gating checks before any
   // analysis: kill switch, auto_trading flag, pending user question, EA heartbeat freshness,
   // drawdown cap"). isTradingHalted/getBusyState above already covered the kill-switch/busy
   // case; these are the real gates that were genuinely missing:
-  if (getPendingQuestion(deps.ownerUserId)) return; // mid-question -- don't pile a fresh cycle on top of an unanswered one
+  if (getPendingQuestion(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- an unanswered question is still pending");
   const eaStatus = getEaConnectionStatus(deps.ownerUserId);
-  if (!eaStatus.connected) return; // no real live EA data to analyze -- a stale/no-op cycle would just burn a turn
+  if (!eaStatus.connected) return logCycle(deps.ownerUserId, "skipped -- EA is not connected, no live data to analyze");
   try {
     assertNotTripped(deps.db, deps.ownerUserId);
   } catch (err) {
-    if (err instanceof CircuitBreakerTrippedError) return; // already real, already reported via its own mechanism
+    if (err instanceof CircuitBreakerTrippedError) return logCycle(deps.ownerUserId, "skipped -- circuit breaker tripped");
     throw err;
   }
   const drawdownPaused = await enforceDrawdownLimit(deps.db, deps.ownerUserId, async (text) => {
     await client.sendMessage({ chat_id: chatId, text });
   });
-  if (drawdownPaused) return;
+  if (drawdownPaused) return logCycle(deps.ownerUserId, "skipped -- drawdown limit paused trading");
 
   // Real gap fixed: this used to build a full AgentLoop with the entire tool registry and a
   // long-persisted conversation thread -- an open-ended agentic loop with no boundary between
@@ -275,7 +283,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   // model to narrate its way out of. The main chat (runAgentTurn above) keeps the full agentic
   // tool loop unchanged -- only this unattended background loop, running with real money with
   // nobody watching each cycle, gets the tighter mechanism.
-  if (deps.executor === undefined) return; // no real trade executor configured -- nothing to run
+  if (deps.executor === undefined) return logCycle(deps.ownerUserId, "skipped -- no trade executor configured");
   const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text) => {
     await client.sendMessage({ chat_id: chatId, text });
   });
@@ -283,6 +291,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   setAutonomousBusy(deps.ownerUserId, "autonomous trading cycle");
   try {
     const outcome = await runAutonomousTick({ userId: deps.ownerUserId, db: deps.db, executor: deps.executor, provider });
+    logCycle(deps.ownerUserId, `decision: ${outcome.action}${outcome.symbol ? ` ${outcome.symbol}` : ""}${outcome.notable ? " (notable)" : ""}${outcome.message ? ` -- ${outcome.message.replace(/\n/g, " | ")}` : ""}`);
     if (outcome.message) await client.sendMessage({ chat_id: chatId, text: outcome.message });
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);

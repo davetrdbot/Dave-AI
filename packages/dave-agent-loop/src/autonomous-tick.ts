@@ -202,15 +202,29 @@ export interface RunTickDeps {
   provider: Provider;
 }
 
+/** Real, plain trace of every tick -- there is no other way to see what the bot is actually
+ *  doing between real trades than this stdout log (Railway's own log tail). Every early return
+ *  used to be silent; now each one says exactly why, and the real chosen symbol/decision/reason
+ *  gets logged too, right where it's decided. */
+function logTick(userId: string, line: string): void {
+  console.log(`[autonomous-tick] ${userId}: ${line}`);
+}
+
 export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome> {
   const { userId, db, executor, provider } = deps;
 
   ensureGroupsUsable(userId);
-  if (!isWithinSelectedSession(userId)) return { action: "NONE", notable: false };
+  if (!isWithinSelectedSession(userId)) {
+    logTick(userId, "no trade -- outside the selected trading session window");
+    return { action: "NONE", notable: false };
+  }
 
   const info = getActiveGroupInfo(userId);
   const primarySymbols = info.effectiveSymbols;
-  if (primarySymbols.length === 0) return { action: "NONE", notable: false };
+  if (primarySymbols.length === 0) {
+    logTick(userId, "no trade -- no active pair group or pair configured");
+    return { action: "NONE", notable: false };
+  }
   const fallbackSymbols = !info.activePairSymbol ? (info.fallbackGroup?.symbols ?? []) : [];
 
   const account = getLastKnownAccountSnapshot(userId);
@@ -221,10 +235,19 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
 
   const openSymbols = new Set(positions.map((p) => p.symbol.toUpperCase()));
   const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols);
-  if (!picked) return { action: "NONE", notable: false };
+  if (!picked) {
+    logTick(userId, `no trade -- every symbol in the active group already has an open position (${[...openSymbols].join(", ") || "none tracked"})`);
+    return { action: "NONE", notable: false };
+  }
   const { symbol } = picked;
+  logTick(userId, `picked ${symbol}${picked.usingFallback ? " (fallback group)" : ""} -- requesting full analysis...`);
 
-  const suite = await analysis.get<Record<string, unknown>>("all", symbol, "H1", { timeoutMs: 300_000 }).catch(() => null);
+  const suite = await analysis
+    .get<Record<string, unknown>>("all", symbol, "H1", { timeoutMs: 300_000 })
+    .catch((err) => {
+      logTick(userId, `analysis for ${symbol} failed/timed out: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
   const priceInfo = (suite as { price?: { bid?: number; ask?: number; close?: number } } | null)?.price;
   const referencePrice = priceInfo?.bid ?? priceInfo?.ask ?? priceInfo?.close ?? 0;
 
@@ -240,17 +263,29 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   ];
 
   const tool = buildDecisionTool(risk);
-  const result = await provider.generate({ messages: [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: contextLines.join("\n") }], tools: [tool] }, 60_000);
+  let result;
+  try {
+    result = await provider.generate(
+      { messages: [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: contextLines.join("\n") }], tools: [tool], toolChoice: { name: DECISION_TOOL_NAME } },
+      60_000
+    );
+  } catch (err) {
+    logTick(userId, `model call for ${symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
+  }
 
   let decision: TickDecision;
   try {
     const toolCall = result.toolCalls?.find((c) => c.name === DECISION_TOOL_NAME);
     decision = toolCall ? coerceDecision(toolCall.arguments) : parseDecisionFromText(result.text);
   } catch {
+    logTick(userId, `${symbol}: unparseable model response -- raw text: ${result.text.slice(0, 300)}`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "unparseable model response" });
     advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
     return { action: "NONE", notable: false };
   }
+
+  logTick(userId, `${symbol}: model decided ${decision.action}${decision.confidence !== undefined ? ` (confidence ${decision.confidence}%)` : ""} -- ${decision.reason ?? decision.question ?? "no reason given"}`);
 
   // The cursor always advances after a real decision, regardless of outcome -- this is what
   // keeps the loop moving through the whole group instead of getting stuck on one symbol.
@@ -295,6 +330,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const orderType = ACTION_TO_ORDER_TYPE[action];
   const isPending = orderType !== "buy" && orderType !== "sell";
   if (isPending && decision.entry === undefined) {
+    logTick(userId, `${symbol}: ${action} rejected -- needs an entry price and none was given`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `${action} needs an entry price and none was given` });
     return { action: "NONE", notable: false };
   }
@@ -306,6 +342,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     price: decision.entry,
   };
   if (order.lots <= 0) {
+    logTick(userId, `${symbol}: ${action} rejected -- no valid lot size (lot mode=${risk.lotMode}, model gave lots=${decision.lots ?? "none"})`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no valid lot size" });
     return { action: "NONE", notable: false };
   }
@@ -316,12 +353,14 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   if (decision.sl !== undefined) order.sl = decision.sl;
   else if (risk.slMode === "on" && risk.slValue !== undefined && referencePrice > 0) order.sl = referencePrice - direction * risk.slValue * pip;
   else if (risk.slMode === "auto") {
+    logTick(userId, `${symbol}: ${action} rejected -- SL mode is auto but the model didn't compute one`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "SL mode is auto but the model didn't compute one" });
     return { action: "NONE", notable: false };
   }
   if (decision.tp !== undefined) order.tp = decision.tp;
   else if (risk.tpMode === "on" && risk.tpValue !== undefined && referencePrice > 0) order.tp = referencePrice + direction * risk.tpValue * pip;
   else if (risk.tpMode === "auto") {
+    logTick(userId, `${symbol}: ${action} rejected -- TP mode is auto but the model didn't compute one`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "TP mode is auto but the model didn't compute one" });
     return { action: "NONE", notable: false };
   }
