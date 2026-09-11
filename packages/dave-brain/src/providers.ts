@@ -305,7 +305,7 @@ export class ClaudeProvider implements Provider {
 
   constructor(
     private readonly apiKey: string,
-    private readonly model = "claude-sonnet-5",
+    private readonly model = "claude-sonnet-4-6",
     private readonly baseUrl = "https://api.anthropic.com"
   ) {}
 

@@ -79,7 +79,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     modelsPath: null,
     authStyle: "bearer",
     manualModelEntry: false,
-    defaultModel: "claude-sonnet-5",
+    defaultModel: "claude-sonnet-4-6",
     openAICompatible: false,
     notes: "Step 5.2 -- existing custom implementation, native Anthropic Messages API shape.",
   },

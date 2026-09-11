@@ -13,12 +13,8 @@ import { requestAnalysis } from "./analysis-request.js";
 export interface EaToolContext {
   userId: string;
   /**
-   * User-requested addition ("the bot just reported a timeout... give them unlimited timeout"):
-   * an optional override for the real EA analysis round-trip's timeout, per call context. Undefined
-   * uses requestAnalysis's own real default (15s). Setup Panel specialists (setup-panel.ts) pass a
-   * real, very generous timeout here -- not literally infinite (an actually-unbounded wait risks a
-   * genuinely hung agent-loop step with no way to recover), but long enough that the real analysis
-   * timeout is never what stops a worker mid-discussion.
+   * Optional override for the real EA analysis round-trip's timeout, per call context. Undefined
+   * uses requestAnalysis's own real default (300s, sized for the EA's 2-minute push interval).
    */
   timeoutMs?: number;
 }
