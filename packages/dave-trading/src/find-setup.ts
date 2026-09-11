@@ -73,7 +73,15 @@ export async function findSetup(userId: string, analysis: AnalysisSource, tf = "
  *      synchronized in the terminal can legitimately take a couple of EA ticks to resolve.
  */
 const SCAN_CONCURRENCY = 6;
-const GROUP_SCAN_TIMEOUT_MS = 45000;
+// Real bug fixed (user: "check again what's holding it to trade" / "increase the fucking
+// timeout"). This was still 45s, calibrated for the EA's old ~6s push interval -- with the EA's
+// push interval now defaulting to 2 minutes, the real worst-case round trip for a single
+// "confluence" request is close to 4 minutes (same reasoning as ea-trade-executor.ts's and
+// analysis-request.ts's timeouts, fixed alongside this). At the old 45s value, EVERY symbol in a
+// real hunt scan would fail as a timeout at the new cadence -- bestSetup would come back null on
+// every single cycle, meaning hunt_for_setup could never find anything to trade, ever, not just
+// slowly. Matches the same real 5-minute margin used everywhere else in this exact chain.
+const GROUP_SCAN_TIMEOUT_MS = 300_000;
 
 async function scanSymbols(analysis: AnalysisSource, symbols: string[], tf: string, exclude: Set<string> = new Set()): Promise<SetupScanRow[]> {
   const targets = symbols.filter((s) => !exclude.has(s));

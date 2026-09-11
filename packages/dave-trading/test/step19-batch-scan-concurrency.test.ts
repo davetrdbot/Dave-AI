@@ -60,8 +60,11 @@ async function main() {
       const mySlot = concurrentNow;
       try {
         if (mySlot > 6) {
-          // Simulates the real EA genuinely never answering a request beyond what it can handle per tick.
-          await new Promise((resolve) => setTimeout(resolve, (opts?.timeoutMs ?? 15000) + 50));
+          // Simulates the real EA genuinely never answering a request beyond what it can handle
+          // per tick -- a short real wait here stands in for "eventually times out"; it must NOT
+          // literally wait out the real production timeoutMs (now 300_000ms, sized for the EA's
+          // real 2-minute push interval), or this test would hang for 5 real minutes per slot.
+          await new Promise((resolve) => setTimeout(resolve, 50));
           throw new Error(`No response from the EA for confluence(${symbol}) within ${opts?.timeoutMs}ms -- is the EA connected and polling?`);
         }
         await new Promise((resolve) => setTimeout(resolve, 20));
