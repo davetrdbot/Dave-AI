@@ -1,6 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
-import type { Provider } from "@dave/brain";
-import type { TradeExecutor, OrderRequest, OrderType } from "@dave/trading";
+import type { Provider, ToolSpec } from "@dave/brain";
+import type { TradeExecutor, OrderRequest, OrderType, RiskSettings } from "@dave/trading";
 import {
   getRiskSettings,
   getActiveGroupInfo,
@@ -13,18 +13,24 @@ import {
 } from "@dave/trading";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
 import { logTrade } from "@dave/feedback";
-import { recordTickDecision, formatRecentDecisions, isOnCooldown, setCooldown, recordSkipForHunt, clearHuntState, HUNT_THRESHOLD } from "./autonomous-tick-state.js";
+import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCursor, recordSkipForHunt, clearHuntState, HUNT_THRESHOLD } from "./autonomous-tick-state.js";
 
 /**
  * Real replacement for the autonomous cycle's open-ended agentic tool-calling loop, modeled
  * directly on the user's own former bot's proven `tickOne()` (auto-trade-tick/index.ts): one
  * structured decision per cycle, not a multi-turn conversation the model can narrate a halt or a
- * hedge into. Root cause this fixes (confirmed by reading both codebases side by side): an
- * open-ended chat loop with dozens of tools and a long persisted transcript is exactly the
- * structure that let Dave invent its own authority to halt trading, forget trades it had just
- * placed, and hedge on real setups -- there was no hard boundary between "reasoning out loud" and
- * "making a real control-flow decision." A single request/response with no tools attached removes
- * that entire failure class by construction: the model answers the one question it was asked.
+ * hedge into. A single request with exactly one tool the model MUST call (not an open-ended
+ * toolbox) removes the failure class that let Dave invent its own authority to halt trading,
+ * forget trades it had just placed, and hedge on real setups.
+ *
+ * Real upgrade this session (user, live, explicit spec): the system now pushes ONE symbol's full
+ * analysis at a time, round-robin through the whole active group (not "whichever symbol happens
+ * to be first and eligible") -- see autonomous-tick-state.ts's cursor. The decision itself is a
+ * real tool call (not free-text-JSON parsing) whose schema is built fresh each tick from the
+ * user's actual SL/TP mode -- sl/tp become REQUIRED fields in the schema when mode is "auto",
+ * omitted entirely when "off" -- so "ask for TP/SL only when auto" is a real JSON-schema
+ * constraint, not a prose request the model can ignore. Falls back to text-JSON parsing for a
+ * provider that doesn't return a tool call.
  *
  * This module owns the DECISION only. Scheduling (trading-loop.ts, compulsory 1-minute cadence)
  * and the top-level safety gates (isTradingHalted, EA connection, pending question, circuit
@@ -32,13 +38,27 @@ import { recordTickDecision, formatRecentDecisions, isOnCooldown, setCooldown, r
  * once those have already passed.
  */
 
+const TRADE_ACTIONS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
+type TradeAction = (typeof TRADE_ACTIONS)[number];
+const DECISION_ACTIONS = [...TRADE_ACTIONS, "SKIP", "ASK"] as const;
+type DecisionAction = (typeof DECISION_ACTIONS)[number];
+
+const ACTION_TO_ORDER_TYPE: Record<TradeAction, OrderType> = {
+  BUY: "buy",
+  SELL: "sell",
+  BUY_LIMIT: "buy_limit",
+  SELL_LIMIT: "sell_limit",
+  BUY_STOP: "buy_stop",
+  SELL_STOP: "sell_stop",
+};
+
 export interface TickDecision {
-  action: "BUY" | "SELL" | "SKIP" | "ASK";
+  action: DecisionAction;
   symbol?: string;
-  /** Entry price for a pending order; omitted/null means market order. */
-  entry?: number | null;
-  sl?: number | null;
-  tp?: number | null;
+  /** Required for BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP; unused for market BUY/SELL. */
+  entry?: number;
+  sl?: number;
+  tp?: number;
   lots?: number;
   confidence?: number;
   reason?: string;
@@ -47,12 +67,42 @@ export interface TickDecision {
 }
 
 export interface TickOutcome {
-  action: "BUY" | "SELL" | "SKIP" | "ASK" | "NONE";
+  action: DecisionAction | "NONE";
   symbol?: string;
   /** Set when a real trade-affecting event happened this tick -- the caller uses this to decide whether to message the user. */
   notable: boolean;
   message?: string;
   huntModeActivated?: boolean;
+}
+
+const DECISION_TOOL_NAME = "submit_trading_decision";
+
+/** Built fresh every tick from the real current risk settings -- sl/tp are only ever REQUIRED
+ *  in the schema when their mode is genuinely "auto"; omitted from the schema entirely when
+ *  "off" (nothing to ask for); present but optional when "on" (the server applies the fixed
+ *  value regardless of what's passed). This is the real mechanism behind "ask for TP/SL if set
+ *  to auto, but off it won't ask." */
+function buildDecisionTool(risk: RiskSettings): ToolSpec {
+  const properties: Record<string, unknown> = {
+    action: { type: "string", enum: DECISION_ACTIONS, description: "BUY/SELL are market orders. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders -- include entry. SKIP if there's genuinely nothing. ASK only for real, specific ambiguity." },
+    symbol: { type: "string" },
+    entry: { type: "number", description: "Required for a pending order type (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP). Omit for market BUY/SELL." },
+    lots: { type: "number" },
+    confidence: { type: "number", description: "your own honest 0-100 confidence in this specific setup" },
+    reason: { type: "string" },
+    question: { type: "string", description: "only when action is ASK" },
+    options: { type: "array", items: { type: "string" }, description: "only when action is ASK" },
+  };
+  const required = ["action", "reason"];
+  if (risk.slMode !== "off") properties.sl = { type: "number" };
+  if (risk.slMode === "auto") required.push("sl");
+  if (risk.tpMode !== "off") properties.tp = { type: "number" };
+  if (risk.tpMode === "auto") required.push("tp");
+  return {
+    name: DECISION_TOOL_NAME,
+    description: "Submit your real trading decision for this one symbol, right now.",
+    parameters: { type: "object", properties, required },
+  };
 }
 
 export class InvalidTickDecisionError extends Error {
@@ -62,26 +112,15 @@ export class InvalidTickDecisionError extends Error {
   }
 }
 
-function parseDecision(text: string): TickDecision {
-  const match = text.match(/\{[\s\S]*\}/);
-  const raw = match ? match[0] : text;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new InvalidTickDecisionError(text);
-  }
-  const obj = parsed as Record<string, unknown>;
+function coerceDecision(obj: Record<string, unknown>): TickDecision {
   const action = String(obj.action ?? "SKIP").toUpperCase();
-  if (action !== "BUY" && action !== "SELL" && action !== "SKIP" && action !== "ASK") {
-    throw new InvalidTickDecisionError(text);
-  }
+  if (!(DECISION_ACTIONS as readonly string[]).includes(action)) throw new InvalidTickDecisionError(JSON.stringify(obj));
   return {
-    action,
+    action: action as DecisionAction,
     symbol: typeof obj.symbol === "string" ? obj.symbol : undefined,
-    entry: typeof obj.entry === "number" ? obj.entry : null,
-    sl: typeof obj.sl === "number" ? obj.sl : null,
-    tp: typeof obj.tp === "number" ? obj.tp : null,
+    entry: typeof obj.entry === "number" ? obj.entry : undefined,
+    sl: typeof obj.sl === "number" ? obj.sl : undefined,
+    tp: typeof obj.tp === "number" ? obj.tp : undefined,
     lots: typeof obj.lots === "number" ? obj.lots : undefined,
     confidence: typeof obj.confidence === "number" ? obj.confidence : undefined,
     reason: typeof obj.reason === "string" ? obj.reason : undefined,
@@ -90,33 +129,70 @@ function parseDecision(text: string): TickDecision {
   };
 }
 
-function buildSystemPrompt(): string {
-  return `You are Dave, an autonomous MT5 trading AI running one real decision cycle right now. You receive real live market/account context below and must decide: BUY, SELL, SKIP, or ASK.
-
-Use the full real analysis given to you: trend, momentum, volatility, structure, order blocks, RSI/MACD, ATR/Bollinger, volume, patterns, Ichimoku, Fibonacci, correlation, session/news context -- look for real confluence across multiple signals, not a single number.
-
-You may ASK the user a single genuine question only when there is real, specific ambiguity you cannot resolve yourself (e.g. SL disabled on an unusually risky setup, a genuine conflict between timeframes). Prefer SKIP over ASK when in doubt -- most cycles need neither a trade nor a question.
-
-If SL/TP mode is "on", the fixed value shown below is applied automatically -- you don't need to compute it. If SL/TP mode is "auto", you must compute a real sl/tp yourself from the analysis (structure, ATR, support/resistance) and include it in your JSON -- omitting it while auto is active means this cycle is skipped, so always include it. If a mode is "off", omit that field.
-
-If lot mode is "on", the fixed value shown below is applied automatically regardless of what you put in "lots". Otherwise include your own real "lots" sized sensibly against the real account balance shown.
-
-Reply with EXACTLY one JSON object on a single line, no markdown, no other text:
-{"action":"BUY","symbol":"EURUSD","entry":null,"sl":1.0820,"tp":1.0900,"lots":0.01,"confidence":72,"reason":"BOS confirmed H1, order block retest, RSI turning up"}
-or
-{"action":"SELL","symbol":"XAUUSD","entry":4397.42,"sl":4437.87,"tp":4347.56,"lots":0.01,"confidence":58,"reason":"CHoCH M15 sell at FVG, premium zone"}
-or
-{"action":"SKIP","reason":"no real confluence, choppy structure"}
-or
-{"action":"ASK","question":"H4 says buy but M15 just printed a CHoCH sell -- which do you want me to weight?","options":["Follow H4 (buy)","Follow M15 (sell)","Skip until aligned"],"reason":"genuinely conflicting timeframes"}
-
-Rules: entry null means a market order; a price means a pending order at that level. If unsure, SKIP -- quality over quantity, but a real, clean setup with real confluence should be taken, not talked out of.`;
+/** Text-JSON fallback for a provider that doesn't return a real tool call. */
+function parseDecisionFromText(text: string): TickDecision {
+  const match = text.match(/\{[\s\S]*\}/);
+  const raw = match ? match[0] : text;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new InvalidTickDecisionError(text);
+  }
+  return coerceDecision(parsed as Record<string, unknown>);
 }
 
-function resolveOrderType(action: "BUY" | "SELL", entry: number | null, referencePrice: number): OrderType {
-  if (entry === null) return action === "BUY" ? "buy" : "sell";
-  if (action === "BUY") return entry < referencePrice ? "buy_limit" : "buy_stop";
-  return entry > referencePrice ? "sell_limit" : "sell_stop";
+/**
+ * Real risk-taker framing, the user's explicit words: there is no such thing as a perfect setup,
+ * take any real opportunity that can bring profit, and when auto-approve is on a real decision
+ * fires without hesitation. No correlation-check-before-sizing mandate, no candle/price staleness
+ * gate, no multi-step checklist -- those are exactly the kind of secondary criteria that hand a
+ * model an excuse to pass on a real setup, and this is a single decisive call, not a place for
+ * a rule to hide behind.
+ */
+function buildSystemPrompt(): string {
+  return `You are Dave, an autonomous MT5 trading AI. You are a scalper and a sniper, a real risk taker -- you don't sit on real opportunities waiting for textbook perfection. There is nothing like a perfect setup or a perfect entry -- nothing like that exists, nothing. If a real opportunity can bring profit, you take it. When auto-approve is on for this account, that means your decision fires the moment you make it -- no hesitation, no second-guessing yourself after the fact.
+
+You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
+
+BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set -- if you genuinely don't see an immediate scalp or sniper entry, a well-placed limit order waiting for price to come to you is still finding the opportunity, not giving up on it. Prefer SKIP only when there is truly nothing real here, not as a default.
+
+You may ASK a single genuine question only for real, specific ambiguity you cannot resolve yourself. Prefer deciding over asking.
+
+sl/tp: apply automatically when the mode shown below is "on" -- you don't need to compute them, and the field won't even be offered to you. When "auto," you must compute a real sl/tp yourself from the analysis (structure, ATR, support/resistance) and the tool call requires it. When "off," don't include it.
+
+lots: applied automatically when mode is "on." Otherwise include your own real sizing against the real account balance shown -- size to win, not timidly.`;
+}
+
+function buildTradeAdviceBlock(confidence: ReturnType<typeof getConfidenceSettings>): string {
+  const autoNote = confidence.autoApproveBelowThreshold
+    ? "Auto-approve is ON for below-threshold setups -- a real decision you make fires immediately, it does not wait on anyone. Take the opportunity."
+    : `Auto-approve is OFF -- a decision below ${confidence.threshold}% confidence queues for the user's approval instead of firing immediately. That's expected, not a reason to hold back on a real read.`;
+  return `You are a risk taker. Find a setup and take the opportunity -- a scalp or a sniper entry, or a well-placed limit order if you don't see an immediate one. ${autoNote}`;
+}
+
+interface CursorSymbolResult {
+  symbol: string;
+  usingFallback: boolean;
+}
+
+/** Resolves the real symbol for THIS tick from the round-robin cursor, skipping past any symbol
+ *  that already carries an open position (advancing without spending a decision call on it) --
+ *  bounded so an all-positions-open list can't spin forever. */
+function resolveCursorSymbol(userId: string, primary: string[], fallback: string[], openSymbols: Set<string>): CursorSymbolResult | null {
+  const maxAttempts = primary.length + fallback.length;
+  for (let i = 0; i < Math.max(1, maxAttempts); i++) {
+    const { symbolCursor, scanningFallback } = getCursorPosition(userId);
+    const active = scanningFallback ? fallback : primary;
+    if (active.length === 0) {
+      advanceCursor(userId, primary.length, fallback.length);
+      continue;
+    }
+    const symbol = active[symbolCursor % active.length];
+    if (!openSymbols.has(symbol.toUpperCase())) return { symbol, usingFallback: scanningFallback };
+    advanceCursor(userId, primary.length, fallback.length); // already open -- move past it, no decision spent
+  }
+  return null;
 }
 
 export interface RunTickDeps {
@@ -124,7 +200,6 @@ export interface RunTickDeps {
   db: DaveDatabase;
   executor: TradeExecutor;
   provider: Provider;
-  /** excludeSymbols is used when a hunt broadens past a declined/skipped primary symbol. */
 }
 
 export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome> {
@@ -136,6 +211,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const info = getActiveGroupInfo(userId);
   const primarySymbols = info.effectiveSymbols;
   if (primarySymbols.length === 0) return { action: "NONE", notable: false };
+  const fallbackSymbols = !info.activePairSymbol ? (info.fallbackGroup?.symbols ?? []) : [];
 
   const account = getLastKnownAccountSnapshot(userId);
   const { positions } = getLastKnownState(userId);
@@ -143,13 +219,11 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const confidenceSettings = getConfidenceSettings(userId);
   const analysis = createEaAnalysisSource(userId);
 
-  // Real gate ported directly from the reference bot: never signal a symbol already carrying an
-  // open position, never re-signal the same symbol inside its real cooldown window.
   const openSymbols = new Set(positions.map((p) => p.symbol.toUpperCase()));
-  let candidates = primarySymbols.filter((s) => !openSymbols.has(s.toUpperCase()) && !isOnCooldown(userId, s));
-  if (candidates.length === 0) return { action: "NONE", notable: false };
+  const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols);
+  if (!picked) return { action: "NONE", notable: false };
+  const { symbol } = picked;
 
-  const symbol = candidates[0];
   const suite = await analysis.get<Record<string, unknown>>("all", symbol, "H1", { timeoutMs: 300_000 }).catch(() => null);
   const priceInfo = (suite as { price?: { bid?: number; ask?: number; close?: number } } | null)?.price;
   const referencePrice = priceInfo?.bid ?? priceInfo?.ask ?? priceInfo?.close ?? 0;
@@ -159,20 +233,28 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
     `ACCOUNT: balance=${account?.balance ?? "unknown"} equity=${account?.equity ?? "unknown"} freeMargin=${account?.freeMargin ?? "unknown"} leverage=${account?.leverage ?? "unknown"}`,
     `SL_MODE: ${risk.slMode}${risk.slMode === "on" ? ` (fixed ${risk.slValue} pips)` : ""} | TP_MODE: ${risk.tpMode}${risk.tpMode === "on" ? ` (fixed ${risk.tpValue} pips)` : ""} | LOT_MODE: ${risk.lotMode}${risk.lotMode === "on" ? ` (fixed ${risk.lotValue})` : ""}`,
-    `CONFIDENCE THRESHOLD: ${confidenceSettings.threshold}% (auto-approve below: ${confidenceSettings.autoApproveBelowThreshold})`,
-    `FULL ANALYSIS SUITE: ${JSON.stringify(suite ?? { error: "analysis unavailable this cycle" }).slice(0, 4000)}`,
+    `CONFIDENCE THRESHOLD: ${confidenceSettings.threshold}%`,
+    buildTradeAdviceBlock(confidenceSettings),
+    `FULL ANALYSIS SUITE (all timeframes): ${JSON.stringify(suite ?? { error: "analysis unavailable this cycle" }).slice(0, 4000)}`,
     formatRecentDecisions(userId),
   ];
 
-  const result = await provider.generate({ messages: [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: contextLines.join("\n") }] }, 60_000);
+  const tool = buildDecisionTool(risk);
+  const result = await provider.generate({ messages: [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: contextLines.join("\n") }], tools: [tool] }, 60_000);
 
   let decision: TickDecision;
   try {
-    decision = parseDecision(result.text);
+    const toolCall = result.toolCalls?.find((c) => c.name === DECISION_TOOL_NAME);
+    decision = toolCall ? coerceDecision(toolCall.arguments) : parseDecisionFromText(result.text);
   } catch {
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "unparseable model response" });
+    advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
     return { action: "NONE", notable: false };
   }
+
+  // The cursor always advances after a real decision, regardless of outcome -- this is what
+  // keeps the loop moving through the whole group instead of getting stuck on one symbol.
+  advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
 
   if (decision.action === "ASK") {
     if (!decision.question) return { action: "NONE", notable: false };
@@ -194,8 +276,9 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason });
     const skipCount = recordSkipForHunt(userId, symbol);
     if (skipCount < HUNT_THRESHOLD || info.activePairSymbol === null) return { action: "NONE", notable: false };
-    // Real hunt-mode broaden, ported from the reference bot's threshold-gated hunt: only after
-    // several consecutive skips on a single-pair focus, not every cycle regardless.
+    // Real hunt-mode broaden, ported from the reference bot's threshold-gated hunt: only fires
+    // when a real single-pair focus is set and keeps skipping -- with no focus set, round-robin
+    // already covers the whole group over time, nothing further to broaden into.
     const hunt = await huntForSetup(userId, analysis, "H1", { excludeSymbols: [symbol] });
     if (!hunt.bestSetup) return { action: "NONE", notable: false };
     clearHuntState(userId);
@@ -203,16 +286,24 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       action: "NONE",
       notable: true,
       huntModeActivated: true,
-      message: `🔍 Hunt Mode Active — no clean setup on ${symbol} after ${skipCount} cycles. Best candidate found scanning the group: ${hunt.bestSetup.symbol} — confluence ${hunt.bestSetup.score}, ${hunt.bestSetup.direction}.`,
+      message: `🔍 Hunt Mode Active — your focused pair (${symbol}) had nothing clean after ${skipCount} cycles. Best candidate found scanning the group: ${hunt.bestSetup.symbol} — confluence ${hunt.bestSetup.score}, ${hunt.bestSetup.direction}.`,
     };
   }
 
-  // BUY or SELL from here.
+  // A real trade action from here.
+  const action = decision.action as TradeAction;
+  const orderType = ACTION_TO_ORDER_TYPE[action];
+  const isPending = orderType !== "buy" && orderType !== "sell";
+  if (isPending && decision.entry === undefined) {
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `${action} needs an entry price and none was given` });
+    return { action: "NONE", notable: false };
+  }
+
   const order: OrderRequest = {
     symbol,
-    type: resolveOrderType(decision.action, decision.entry ?? null, referencePrice),
+    type: orderType,
     lots: risk.lotMode === "on" && risk.lotValue !== undefined ? risk.lotValue : (decision.lots ?? 0),
-    price: decision.entry ?? undefined,
+    price: decision.entry,
   };
   if (order.lots <= 0) {
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no valid lot size" });
@@ -220,14 +311,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   }
 
   const pip = 0.0001;
-  const direction = decision.action === "BUY" ? 1 : -1;
-  if (decision.sl !== null) order.sl = decision.sl;
+  const direction = action === "BUY" || action === "BUY_LIMIT" || action === "BUY_STOP" ? 1 : -1;
+  const decisionAction = action === "BUY" || action === "BUY_LIMIT" || action === "BUY_STOP" ? "BUY" : "SELL";
+  if (decision.sl !== undefined) order.sl = decision.sl;
   else if (risk.slMode === "on" && risk.slValue !== undefined && referencePrice > 0) order.sl = referencePrice - direction * risk.slValue * pip;
   else if (risk.slMode === "auto") {
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "SL mode is auto but the model didn't compute one" });
     return { action: "NONE", notable: false };
   }
-  if (decision.tp !== null) order.tp = decision.tp;
+  if (decision.tp !== undefined) order.tp = decision.tp;
   else if (risk.tpMode === "on" && risk.tpValue !== undefined && referencePrice > 0) order.tp = referencePrice + direction * risk.tpValue * pip;
   else if (risk.tpMode === "auto") {
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "TP mode is auto but the model didn't compute one" });
@@ -237,16 +329,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const confidence = decision.confidence ?? 0;
   const reason = decision.reason ?? "";
   const gate = evaluateConfidenceGate(userId, order, confidence, reason);
-  setCooldown(userId, symbol);
   clearHuntState(userId);
 
   if (gate.needsApproval) {
-    recordTickDecision(userId, { ts: Date.now(), symbol, action: decision.action, reason: `queued for approval: ${reason}` });
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: decisionAction, reason: `queued for approval: ${reason}` });
     return {
-      action: decision.action,
+      action,
       symbol,
       notable: true,
-      message: `📋 A real ${decision.action} setup on ${symbol} (confidence ${confidence}%, below your ${gate.threshold}% threshold) is queued for your approval.`,
+      message: `📋 A real ${action} setup on ${symbol} (confidence ${confidence}%, below your ${gate.threshold}% threshold) is queued for your approval.`,
     };
   }
 
@@ -254,7 +345,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   try {
     logTrade(db, userId, {
       symbol: order.symbol,
-      direction: decision.action === "BUY" ? "buy" : "sell",
+      direction: decisionAction === "BUY" ? "buy" : "sell",
       entryPrice: order.price ?? referencePrice,
       sl: order.sl,
       tp: order.tp,
@@ -264,12 +355,12 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   } catch {
     // Logging must never block or fail a real trade that already succeeded.
   }
-  recordTickDecision(userId, { ts: Date.now(), symbol, action: decision.action, reason });
+  recordTickDecision(userId, { ts: Date.now(), symbol, action: decisionAction, reason });
 
   return {
-    action: decision.action,
+    action,
     symbol,
     notable: true,
-    message: `🤖 ${symbol} ${order.type.toUpperCase()} ${order.price ? `@ ${order.price}` : "(market)"}\nLot ${order.lots}${order.sl ? ` | SL ${order.sl}` : ""}${order.tp ? ` | TP ${order.tp}` : ""}\nConfidence ${confidence}%\n💡 ${reason}\nTicket #${placed.ticket}`,
+    message: `🤖 ${symbol} ${orderType.toUpperCase()} ${order.price ? `@ ${order.price}` : "(market)"}\nLot ${order.lots}${order.sl ? ` | SL ${order.sl}` : ""}${order.tp ? ` | TP ${order.tp}` : ""}\nConfidence ${confidence}%\n💡 ${reason}\nTicket #${placed.ticket}`,
   };
 }

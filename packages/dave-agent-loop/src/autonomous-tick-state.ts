@@ -18,13 +18,20 @@ export interface TickDecisionRecord {
 
 export interface TickState {
   recentDecisions: TickDecisionRecord[];
-  /** symbol -> timestamp of the last real trade-affecting decision on it */
-  cooldownUntil: Record<string, number>;
   huntSkipCount: number;
   huntLastSymbol: string | null;
+  /** Real round-robin cursor (user's explicit spec: "it should send the pairs one by one... when
+   *  it has scanned like 3 times in a row it should check fallback and scan a row then move back
+   *  to the synthetic"). Index into whichever list is currently active. Real bug this also fixed:
+   *  the old ad-hoc per-symbol cooldown (skip re-signaling within 90s) never advanced past a SKIP
+   *  decision, so the exact same first-eligible symbol got re-picked every tick -- superseded by
+   *  this cursor, which always advances regardless of decision. */
+  symbolCursor: number;
+  scanningFallback: boolean;
+  primaryLapsCompleted: number;
 }
 
-const DEFAULT_STATE: TickState = { recentDecisions: [], cooldownUntil: {}, huntSkipCount: 0, huntLastSymbol: null };
+const DEFAULT_STATE: TickState = { recentDecisions: [], huntSkipCount: 0, huntLastSymbol: null, symbolCursor: 0, scanningFallback: false, primaryLapsCompleted: 0 };
 const MAX_RECENT = 3;
 
 function statePath(userId: string): string {
@@ -33,7 +40,7 @@ function statePath(userId: string): string {
 
 export function getTickState(userId: string): TickState {
   const path = statePath(userId);
-  if (!existsSync(path)) return { ...DEFAULT_STATE, cooldownUntil: {} };
+  if (!existsSync(path)) return { ...DEFAULT_STATE };
   return { ...DEFAULT_STATE, ...JSON.parse(readFileSync(path, "utf8")) };
 }
 
@@ -60,20 +67,6 @@ export function formatRecentDecisions(userId: string): string {
   return `\nRECENT DECISIONS (last ${recentDecisions.length}):\n${lines.join("\n")}`;
 }
 
-const COOLDOWN_MS = 90_000; // 90s, same real cooldown the reference bot uses to avoid re-signaling the same symbol too fast
-
-export function isOnCooldown(userId: string, symbol: string, now = Date.now()): boolean {
-  const state = getTickState(userId);
-  const until = state.cooldownUntil[symbol];
-  return typeof until === "number" && now < until;
-}
-
-export function setCooldown(userId: string, symbol: string, now = Date.now()): void {
-  const state = getTickState(userId);
-  state.cooldownUntil = { ...state.cooldownUntil, [symbol]: now + COOLDOWN_MS };
-  saveTickState(userId, state);
-}
-
 /** Real hunt-mode gating: only broadens beyond the primary scan after HUNT_THRESHOLD consecutive
  *  skips on the same symbol -- not every single cycle regardless. Returns the new count. */
 export const HUNT_THRESHOLD = 3;
@@ -91,5 +84,59 @@ export function clearHuntState(userId: string): void {
   const state = getTickState(userId);
   state.huntSkipCount = 0;
   state.huntLastSymbol = null;
+  saveTickState(userId, state);
+}
+
+/**
+ * Real round-robin symbol cycling, user's explicit spec: "it should send the pairs one by one...
+ * for example VOL_10 firstly get all analysis... then when the bot decide... it should move to
+ * the next which is VOL_20... continue like that and cover the full pair, when it has scanned
+ * like 3 times in a row it should check fallback and scan a row then move back to the synthetic."
+ *
+ * Real bug this also fixes: before this cursor existed, a SKIP decision set no cooldown, so the
+ * exact same first-eligible symbol in the group's array order got re-picked every single tick --
+ * the autonomous loop never actually advanced through the rest of a normal active group over
+ * time. The cursor advances on EVERY real decision (BUY/SELL/SKIP/ASK alike), so the loop always
+ * visits its next symbol next time, never gets stuck re-asking about the one it just decided on.
+ */
+export const PRIMARY_LAPS_BEFORE_FALLBACK = 3;
+
+/** Which list is active right now, and the index within it -- caller resolves this against the
+ *  real current primary/fallback symbol arrays (group membership can change between ticks). */
+export function getCursorPosition(userId: string): { symbolCursor: number; scanningFallback: boolean } {
+  const { symbolCursor, scanningFallback } = getTickState(userId);
+  return { symbolCursor, scanningFallback };
+}
+
+/** Advances the cursor by one for next tick, wrapping and switching between primary/fallback per
+ *  the real spec above. Call once per real decision, after the symbol for THIS tick was already
+ *  resolved from getCursorPosition. `fallbackLength` of 0 (no fallback group configured) means
+ *  the cursor only ever wraps within the primary list, exactly as before. */
+export function advanceCursor(userId: string, primaryLength: number, fallbackLength: number): void {
+  const state = getTickState(userId);
+  const activeLength = state.scanningFallback ? fallbackLength : primaryLength;
+  if (activeLength <= 0) {
+    state.symbolCursor = 0;
+    state.scanningFallback = false;
+    saveTickState(userId, state);
+    return;
+  }
+  const next = state.symbolCursor + 1;
+  if (next < activeLength) {
+    state.symbolCursor = next;
+    saveTickState(userId, state);
+    return;
+  }
+  // A full lap just completed.
+  if (state.scanningFallback) {
+    state.scanningFallback = false;
+    state.primaryLapsCompleted = 0;
+  } else {
+    state.primaryLapsCompleted += 1;
+    if (state.primaryLapsCompleted >= PRIMARY_LAPS_BEFORE_FALLBACK && fallbackLength > 0) {
+      state.scanningFallback = true;
+    }
+  }
+  state.symbolCursor = 0;
   saveTickState(userId, state);
 }

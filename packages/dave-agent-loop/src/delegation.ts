@@ -42,7 +42,7 @@ export function describeBusyDuration(busy: BusyState, now = Date.now()): string 
 }
 
 export function buildDelegationPrompt(busy: BusyState): { text: string; reply_markup: InlineKeyboardMarkup } {
-  const text = `I'm currently busy: ${busy.taskDescription} (${describeBusyDuration(busy)}). You sent something new -- want me to pause and do it myself, hand it to a worker, or skip it?`;
+  const text = `Still finishing your last message: ${busy.taskDescription} (${describeBusyDuration(busy)}). You sent something new -- want me to pause and do it myself, hand it to a worker, or skip it?`;
   const reply_markup = keyboard([
     [coloredButton("Pause and do it myself", "blue", "delegate:pause"), coloredButton("Hand it to a worker", "green", "delegate:worker")],
     [coloredButton("Skip it", "red", "delegate:skip")],

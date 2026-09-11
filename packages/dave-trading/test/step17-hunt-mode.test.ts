@@ -35,12 +35,16 @@ async function main() {
   upsertGroup(USER, { id: "majors", name: "Majors", symbols: ["EURUSD", "GBPUSD", "USDJPY"] });
   setActiveGroup(USER, "majors");
 
-  console.log("[1] No single-pair focus -- hunt mode scans the whole real active group...\n");
+  console.log("[1] No single-pair focus -- hunt mode scans the whole real active group, but huntModeActivated stays false (there was never a focus to broaden past -- this is just how a normal group scan works)...\n");
   const weakGroup = scoredAnalysis({ EURUSD: 20, GBPUSD: 15, USDJPY: 10 });
   const noFocusResult = await huntForSetup(USER, weakGroup, "H1");
-  assert.equal(noFocusResult.huntModeActivated, true, "scanning a multi-symbol group is real hunt-mode coverage");
-  assert.equal(noFocusResult.rows.length, 3);
-  console.log(`    real result: huntModeActivated=${noFocusResult.huntModeActivated}, bestSetup=${JSON.stringify(noFocusResult.bestSetup)}`);
+  // Real bug fixed (user, live: told to scan the active GROUP "Synthetic," no single-pair focus
+  // ever set, got "Hunt Mode Active -- no clean setup on the focused pair" every single cycle).
+  // huntModeActivated used to be `symbols.length > 1` -- true for almost any normal group scan --
+  // which is exactly why that message fired constantly with no real focus to have broadened past.
+  assert.equal(noFocusResult.huntModeActivated, false, "no single-pair focus was ever set -- this is a plain group scan, not a real 'broadened past a focus' event");
+  assert.equal(noFocusResult.rows.length, 3, "the whole group is still genuinely scanned regardless of the flag");
+  console.log(`    real result: huntModeActivated=${noFocusResult.huntModeActivated} (correct -- no focus existed), rows scanned=${noFocusResult.rows.length}, bestSetup=${JSON.stringify(noFocusResult.bestSetup)}`);
 
   console.log("\n[2] Single-pair focus on a WEAK pair -- hunt mode still scans the WHOLE real active group, not just the focused pair...\n");
   setActivePairSymbol(USER, "eurusd");

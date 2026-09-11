@@ -157,6 +157,13 @@ export async function huntForSetup(userId: string, analysis: AnalysisSource, tf 
     groupName: group?.name ?? info.activePairSymbol,
     rows,
     bestSetup: ranked[0] ?? null,
-    huntModeActivated: symbols.length > 1,
+    // Real bug fixed (user, live: told to scan the ACTIVE GROUP "Synthetic" -- no single-pair
+    // focus ever set -- and got "no clean setup on the focused pair" back). This used to be
+    // `symbols.length > 1`, true for nearly any normal group scan, which is why the message
+    // fired constantly even though no focus ever existed to "broaden past." huntModeActivated
+    // now genuinely means what its name says: a real single-pair focus was set AND this scan
+    // broadened past it -- a plain group-wide scan with no focus set is not "hunt mode," it's
+    // just how hunting always works.
+    huntModeActivated: Boolean(info.activePairSymbol) && symbols.length > 1,
   };
 }

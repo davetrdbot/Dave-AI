@@ -148,10 +148,16 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
           // Mode Active — No setup on [pair]. Scanning [N] pairs…'"): fires the real notification
           // the moment hunt_for_setup genuinely had to broaden beyond a single-pair focus --
           // never a fabricated status update, tied to the real huntModeActivated flag.
+          // Real bug fixed (user, live: scanned the whole active GROUP "Synthetic" -- no
+          // single-pair focus ever set -- and got "no clean setup on the focused pair" back,
+          // every single scan). huntModeActivated now only ever fires when a real single-pair
+          // focus genuinely existed and this scan broadened past it (find-setup.ts), so this
+          // message only reaches here in that real case -- worded accordingly instead of
+          // assuming a focus existed.
           if (deps.telegram && result.huntModeActivated) {
             const n = result.rows?.length ?? 0;
             void deps.telegram.client
-              .sendMessage({ chat_id: deps.telegram.chatId, text: `🔍 Hunt Mode Active — no clean setup on the focused pair. Scanning ${n} pair(s) in ${result.groupName ?? "the active group"}…` })
+              .sendMessage({ chat_id: deps.telegram.chatId, text: `🔍 Hunt Mode Active — your focused pair had nothing clean. Broadened to scan ${n} pair(s) in ${result.groupName ?? "the active group"}…` })
               .catch(() => undefined);
           }
           return result;
