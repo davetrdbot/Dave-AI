@@ -31,7 +31,13 @@ export async function requestAnalysis(
   timeframe: string,
   opts: { timeoutMs?: number; pollIntervalMs?: number } = {}
 ): Promise<unknown> {
-  const timeoutMs = opts.timeoutMs ?? 15000;
+  // Real bug fixed (user: "increase the timeout... make sure they is nothing stopping the agent
+  // to trade"). Same real round-trip as ea-trade-executor.ts -- an "analyze" command's result
+  // also only ships on the EA's NEXT scheduled report after the one that picked it up, and the
+  // EA's push interval now defaults to 2 minutes, not the old 6 seconds this 15s default was
+  // calibrated for. A pre-trade get_all_analysis call timing out here would silently abort the
+  // whole decision before trade_execute is ever reached.
+  const timeoutMs = opts.timeoutMs ?? 300_000;
   const pollIntervalMs = opts.pollIntervalMs ?? 300;
   const id = randomBytes(6).toString("hex");
   enqueueCommand(userId, { id, action: "analyze", endpoint, symbol, timeframe });

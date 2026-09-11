@@ -17,9 +17,20 @@ import { enqueueCommand, getLastKnownState, type EaCommand, type EaCommandResult
 export class EaTradeExecutor implements TradeExecutor {
   private readonly pending = new Map<string, { command: EaCommand; resolve: (r: EaCommandResult) => void; reject: (err: Error) => void }>();
 
+  // Real bug fixed (user: "increase the timeout... make sure they is nothing stopping the agent
+  // to trade"). The EA only picks up a queued command on its next scheduled tick (PushSeconds
+  // apart), executes it, and ships the RESULT on its NEXT report after that -- confirmed directly
+  // in ea/DaveEA.mq5 (ExecuteCommandsFromResponse's own comment: "results only shipping on the
+  // NEXT report"; PushReportAndExecuteCommands only ever runs from OnTimer, no immediate
+  // follow-up POST after executing). With the EA's push interval now defaulting to 2 minutes
+  // (user: "the ea tick should be sending every 2min"), the real worst-case round trip for a
+  // single trade command is close to 2x that -- up to ~4 minutes -- while this timeout was still
+  // the old 30 seconds. Every real trade attempt would time out before the EA got a genuine
+  // chance to respond, which is exactly "it doesn't trade" with zero indication why. 5 minutes
+  // gives real margin above that true worst case, not just a token bump.
   constructor(
     private readonly userId: string,
-    private readonly timeoutMs = 30_000
+    private readonly timeoutMs = 300_000
   ) {}
 
   /**
