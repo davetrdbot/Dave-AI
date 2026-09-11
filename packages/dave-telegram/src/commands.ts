@@ -35,7 +35,6 @@ export const DAVE_COMMANDS = [
   { command: "models", description: "🧠 Pick which model each provider uses" },
   { command: "connection", description: "🔌 Check EA/MT5 connection status" },
   { command: "ea", description: "📄 Get your personalized MT5 Expert Advisor file" },
-  { command: "set_panel_group", description: "🤖 Send inside a group with your worker bots to set it as the Setup Panel's chat" },
   { command: "reset", description: "🔄 Reset this conversation" },
   { command: "help", description: "❓ What Dave can do" },
 ] as const;

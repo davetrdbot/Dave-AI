@@ -35,7 +35,7 @@
 
 input string WebhookURL     = "{{WEBHOOK_URL}}";
 input string EaToken        = "{{TOKEN}}"; // embedded in WebhookURL's path -- kept here for logging/diagnostics only
-input int    PushSeconds    = 6;     // periodic state-push cadence (Part 1 item 10 -- default 6s)
+input int    PushSeconds    = 120;   // periodic state-push cadence (user: "the ea tick should be sending every 2min" -- default 120s)
 input bool   EnablePush     = true;  // Step 11.2: MT5 push notification on open/close/error
 input bool   EnableEmail    = true;  // Step 11.2: email on open/close/error
 input int    MagicNumber    = 88001; // ported from the reference DAVE.mq5 -- tags every order this EA places
@@ -49,7 +49,7 @@ CTrade trade;
 // Item 5 real gap fixed: PushSeconds is a compiled-in `input` (read-only at runtime) -- this
 // mirrors it into a real mutable global so a "set_push_interval" command can change the EA's
 // actual push/heartbeat cadence live, without requiring a recompile or restart.
-int g_pushIntervalSeconds = 6;
+int g_pushIntervalSeconds = 120;
 
 //+------------------------------------------------------------------+
 //| Broker symbol resolver -- ported from the reference DAVE.mq5.     |

@@ -22,11 +22,9 @@ import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } fr
 import { setBusy, clearBusy, getBusyState } from "./busy-state.js";
 import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, tryHandlePendingWorkerBotEntry, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
 import { isAutonomousTradingEnabled, setAutonomousTradingEnabled } from "./autonomous-trading-state.js";
-import { createWorkerBotWebhookServer, syncWorkerBotWebhooks } from "./worker-bot-webhook.js";
-import { handleWorkerBotReactiveUpdate } from "./setup-panel.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
 import { friendlyErrorMessage } from "./error-messages.js";
@@ -76,11 +74,6 @@ export interface TelegramBotServer {
    *  fast, consistent, non-LLM-generated notification straight to the user's chat -- without
    *  waiting on (or paying for) an agent-loop turn just to narrate a trade closing. */
   client: TelegramClient;
-  /** User-requested addition ("each worker panel have its own bot token... can respond to it"):
-   *  the real HTTP server receiving each configured Setup Panel specialist's own webhook updates
-   *  (worker-bot-webhook.ts) -- main.ts mounts this under its own route prefix, same pattern as
-   *  every other real sub-server this process runs. */
-  workerBotServer: Server;
 }
 
 /**
@@ -288,7 +281,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
     role: "user",
     content: withLiveContext(
       deps.ownerUserId,
-      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] Use hunt_for_setup to actively hunt your active pair group for a genuine setup RIGHT NOW -- never ask which pair to trade while a group is configured; hunt_for_setup itself broadens beyond a single-pair focus if it has nothing good. When hunt_for_setup surfaces a real candidate worth a closer look, consider convening run_setup_panel on it for a deeper multi-specialist second opinion before committing. Act (open/manage a real trade) if one genuinely clears using your own trading behavior. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
+      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] You are a scalper and a sniper: any real opportunity your analysis genuinely supports, you take it -- this is not optional and not a suggestion. Call hunt_for_setup NOW to scan every symbol in your active pair group (never just the one focused pair, and never ask the user which pair to trade while a group is configured -- hunt_for_setup itself broadens across the whole group). For analysis, call get_all_analysis -- it already returns the full analysis suite (price, candles, structure, momentum, volatility, correlation, everything) in one call; you do not need get_price, get_candles, or a separate correlation check on top of it. If a candidate clears your setup bar, finding it and placing it is mandatory this cycle -- do not stop at analysis and do not decline a real setup just because it isn't flawless. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
     ) as string,
   });
 
@@ -613,7 +606,6 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         if (await tryHandlePendingFirecrawlKeyEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingMcpServerEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingPushIntervalEntry(routerDeps, chatId, message.text)) return;
-        if (await tryHandlePendingWorkerBotEntry(routerDeps, chatId, message.text)) return;
         // Item 11: a typed "yes"/"no" answering a real pending settings-change approval is
         // handled here, BEFORE the agent loop ever sees it -- otherwise the model has no way
         // to know an approval is already pending and could re-propose the same change, sending
@@ -696,18 +688,5 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     }
   }
 
-  // User-requested addition ("each worker panel have its own bot token... can respond to it").
-  // A real, dedicated webhook server for the Setup Panel's own specialist bots -- separate from
-  // Dave's own bot server above, since each specialist bot needs completely different update
-  // handling (a bounded, reactive turn, not the full agent loop). Registers/refreshes real
-  // webhooks for whichever worker bot tokens are ALREADY configured right now, then keeps
-  // checking every 20s so a token added later via /settings comes online with no restart --
-  // same real retry-until-configured pattern main.ts already uses for Dave's own bot token.
-  const workerBotServer = createWorkerBotWebhookServer({
-    onUpdate: (ownerUserId, specialist, update) => handleWorkerBotReactiveUpdate({ db: deps.db, ownerUserId, specialist, update }),
-  });
-  void syncWorkerBotWebhooks(deps.ownerUserId, deps.publicBaseUrl);
-  setInterval(() => void syncWorkerBotWebhooks(deps.ownerUserId, deps.publicBaseUrl), 20_000);
-
-  return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}`, client, workerBotServer };
+  return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}`, client };
 }

@@ -122,32 +122,33 @@ export const HUNT_MODE_MIN_SCORE = 60;
  */
 export async function huntForSetup(userId: string, analysis: AnalysisSource, tf = "H1", opts: { excludeSymbols?: string[] } = {}): Promise<HuntResult> {
   const exclude = new Set(opts.excludeSymbols ?? []);
-  const primary = await findSetup(userId, analysis, tf);
-  if (primary.skippedOutsideSession || primary.groupName === null) {
-    return { ...primary, huntModeActivated: false };
-  }
-
-  const primaryRanked = primary.rows.filter((r) => !r.error && !exclude.has(r.symbol)).sort((a, b) => b.score - a.score);
-  const primaryBest = primaryRanked[0] ?? null;
+  ensureGroupsUsable(userId);
   const info = getActiveGroupInfo(userId);
-  const singleFocus = info.activePairSymbol !== null;
 
-  if (!singleFocus) {
-    // Already a real whole-group scan -- re-ranking after exclusions is enough, no second real
-    // network scan needed. Only counts as "hunt mode" if an exclusion actually changed the pick.
-    const huntModeActivated = exclude.size > 0 && primary.bestSetup?.symbol !== primaryBest?.symbol;
-    return { ...primary, bestSetup: primaryBest, huntModeActivated };
-  }
-
-  if (primaryBest && primaryBest.score >= HUNT_MODE_MIN_SCORE) {
-    return { ...primary, bestSetup: primaryBest, huntModeActivated: false };
-  }
-
-  // A real single-pair focus with nothing good (or the only good pick excluded) -- broaden to
-  // the REST of the real active group, per the user's explicit ask.
+  // Real bug fixed (user, live: "it doesn't extract info from the market watch only the pair I
+  // add to do big check"): a single-pair focus (setActivePairSymbol) used to make hunt mode
+  // scan ONLY that one symbol unless its own score fell below HUNT_MODE_MIN_SCORE -- so a group
+  // with several real synthetic pairs configured was never actually checked while the focused
+  // pair scored decently, which reads exactly like "only checking the one pair I added." Hunting
+  // must always cover every symbol in the real active group, not just a focused pair -- a single
+  // pair focus is honored by find_setup (an explicit, deliberate "check just this one" request),
+  // never by the autonomous hunt loop.
   const group = info.activeGroup;
-  if (!group || group.symbols.length === 0) return { ...primary, bestSetup: primaryBest, huntModeActivated: false };
-  const rows = await scanSymbols(analysis, group.symbols, tf, exclude);
+  const symbols = group && group.symbols.length > 0 ? group.symbols : info.effectiveSymbols;
+  if (symbols.length === 0) {
+    return { scannedAt: Date.now(), groupName: null, rows: [], bestSetup: null, huntModeActivated: false };
+  }
+  if (!isWithinSelectedSession(userId)) {
+    return { scannedAt: Date.now(), groupName: group?.name ?? info.activePairSymbol, rows: [], bestSetup: null, skippedOutsideSession: true, huntModeActivated: false };
+  }
+
+  const rows = await scanSymbols(analysis, symbols, tf, exclude);
   const ranked = rows.filter((r) => !r.error).sort((a, b) => b.score - a.score);
-  return { scannedAt: Date.now(), groupName: group.name, rows, bestSetup: ranked[0] ?? null, huntModeActivated: true };
+  return {
+    scannedAt: Date.now(),
+    groupName: group?.name ?? info.activePairSymbol,
+    rows,
+    bestSetup: ranked[0] ?? null,
+    huntModeActivated: symbols.length > 1,
+  };
 }

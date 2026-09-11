@@ -82,8 +82,7 @@ try {
     MCP_MANAGER_TOOLS.length +
     FIRECRAWL_TOOLS.length +
     FEEDBACK_TOOLS.length + // Step 18 re-verification: record_skip/record_hypothesis/record_observation/etc, now genuinely wired into the registry
-    2 + // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
-    1; // +1 run_setup_panel (item 7: the Setup Panel entry point, always registered)
+    2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
 

@@ -33,7 +33,6 @@ export const CORE_TOOL_NAMES: string[] = [
   // Trading actions -- the real reason this bot exists, never gated behind discovery.
   "find_setup",
   "hunt_for_setup",
-  "run_setup_panel",
   "trade_execute",
   "trade_modify",
   "modify_sl_tp",
@@ -47,23 +46,18 @@ export const CORE_TOOL_NAMES: string[] = [
   "disable_position_trailing",
 
   // Live status/account -- what Dave checks before/after nearly every trade decision.
-  "get_price",
-  "get_candles",
-  "get_confluence",
-  // Item 1 real gap fixed (user: "analysis only uses 4 tools... trading.md mandates the FULL
-  // analysis suite before any trade -- but in practice only get_confluence/get_price/get_candles/
-  // get_trend are called"): get_all_analysis returns every one of the 44 real analysis endpoints
-  // (Ichimoku, structure, order blocks, momentum, volatility, RSI/MACD/Stochastic, Fibonacci,
-  // correlation, session/news, etc.) in ONE call -- promoted to core so a real trade decision can
-  // genuinely consult the full suite in a single guaranteed call, not depend on the model
-  // remembering to search for and call a dozen separate indicator tools one at a time.
+  // Item 10 real gap fixed (user: "remove this from his memory it shouldn't use any correlation
+  // check or get price or get candles it should just do get all analysis"): get_price, get_candles
+  // and correlation_check are deliberately NOT core anymore -- get_all_analysis alone returns every
+  // one of the 44 real analysis endpoints (Ichimoku, structure, order blocks, momentum, volatility,
+  // RSI/MACD/Stochastic, Fibonacci, correlation, session/news, price/candle data included) in ONE
+  // call, so a real trade decision is driven by that single guaranteed call, not a dozen separate
+  // indicator calls the model has to remember to make one at a time.
   "get_all_analysis",
-  "get_trend",
   "get_account_balance",
   "mt5_account",
   "get_live_state",
   "ping_ea",
-  "correlation_check",
 
   // Settings -- real gap fixed (user: "the bot keeps asking about these as if they were never
   // set"): these stay core so a settings question/change never depends on the model happening to

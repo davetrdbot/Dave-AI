@@ -30,7 +30,6 @@ import { runWorkerTask } from "./worker-loop.js";
 import type { Worker } from "@dave/workers";
 import type { OrderRequest } from "@dave/trading";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage } from "./trade-notifications.js";
-import { runSetupPanel } from "./setup-panel.js";
 
 /**
  * Update 11 (post-Update-9 follow-up): "you actually forgot to give
@@ -132,37 +131,6 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
               .sendMessage({ chat_id: deps.telegram.chatId, text: `🔍 Hunt Mode Active — no clean setup on the focused pair. Scanning ${n} pair(s) in ${result.groupName ?? "the active group"}…` })
               .catch(() => undefined);
           }
-          // Item 7 real gap fixed (user, re-pasting the original spec: "running automatically as
-          // part of the continuous hunt loop, not on-demand" -- the panel was only reachable via
-          // an OPTIONAL run_setup_panel tool call the model might never make, not genuinely
-          // automatic). Every real hunt_for_setup call that surfaces a candidate clearing the same
-          // real HUNT_MODE_MIN_SCORE bar hunt mode itself uses now deterministically convenes the
-          // real Setup Panel on it, in code -- never left to the model's discretion. Its verdict
-          // (converged/proposal/declineReason + the real discussion transcript) rides back on
-          // hunt_for_setup's own result, so Dave sees it on every hunt call, automatically.
-          if (result.bestSetup && result.bestSetup.score >= HUNT_MODE_MIN_SCORE) {
-            try {
-              const panel = await runSetupPanel({ db: deps.db, ownerUserId: deps.userId, symbol: result.bestSetup.symbol });
-              if (deps.telegram && !panel.converged) {
-                void deps.telegram.client
-                  .sendMessage({ chat_id: deps.telegram.chatId, text: `🧑‍🤝‍🧑 Panel reviewed ${panel.symbol}, no agreement — skipping.` })
-                  .catch(() => undefined);
-              }
-              return {
-                ...result,
-                setupPanel: {
-                  symbol: panel.symbol,
-                  converged: panel.converged,
-                  proposal: panel.proposal,
-                  declineReason: panel.declineReason,
-                  discussion: panel.transcript.map((m) => `${m.from}: ${m.content}`),
-                },
-              };
-            } catch (err) {
-              console.error(`[setup-panel] real panel run failed for ${result.bestSetup.symbol}:`, err);
-              return result; // a real panel failure must never block hunt_for_setup's own real result from reaching Dave
-            }
-          }
           return result;
         },
       };
@@ -187,35 +155,6 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
     return tool;
   });
   registry.register(wrappedTradingTools);
-
-  // Item 7: the Setup Panel -- 7 specialist workers (46 real EA analysis endpoints, split
-  // sensibly across them, see setup-panel.ts) genuinely discuss a candidate symbol via real
-  // worker-to-worker messaging before Dave considers it, instead of Dave alone using a shallow
-  // tool subset. Returns the panel's real verdict + the full real discussion transcript so Dave
-  // can review it with its own judgment (trading.md) -- this tool NEVER places a trade itself,
-  // it only informs Dave's own subsequent decision, same as any other analysis tool.
-  const runSetupPanelTool: AgentTool = {
-    name: "run_setup_panel",
-    description:
-      "Convene the Setup Panel -- 7 specialist analyst workers that jointly review a candidate symbol across all real EA analysis endpoints (structure, ICT/SMC, momentum, volatility, levels, macro, risk sizing) and genuinely discuss it before reporting back. Use this for a deeper, multi-angle second opinion on a candidate BEFORE deciding to trade it -- especially during hunt mode. Returns whether the panel converged on a direction, its proposal if so (never auto-executed -- you still decide), and the real discussion transcript.",
-    parameters: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["symbol"] },
-    execute: async (args) => {
-      const result = await runSetupPanel({ db: deps.db, ownerUserId: deps.userId, symbol: args.symbol as string, timeframe: args.timeframe as string | undefined });
-      if (deps.telegram && !result.converged) {
-        void deps.telegram.client
-          .sendMessage({ chat_id: deps.telegram.chatId, text: `🧑‍🤝‍🧑 Panel reviewed ${result.symbol}, no agreement — skipping.` })
-          .catch(() => undefined);
-      }
-      return {
-        symbol: result.symbol,
-        converged: result.converged,
-        proposal: result.proposal,
-        declineReason: result.declineReason,
-        discussion: result.transcript.map((m) => `${m.from}: ${m.content}`),
-      };
-    },
-  };
-  registry.register([runSetupPanelTool]);
 
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(EA_ANALYSIS_TOOLS, { userId: deps.userId }));

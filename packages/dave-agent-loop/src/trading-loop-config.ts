@@ -9,9 +9,13 @@ import { dirname, join } from "node:path";
  * spin the loop into a hot busy-cycle and a huge number can't silently defeat the point of it.
  */
 
-export const DEFAULT_TRADING_LOOP_MINUTES = 5;
+// Real gap fixed (user, in visible distress: "the agent should be analyzing every 1 min
+// compulsory it must place trade" -- said as a hard requirement, not "make it configurable"). The
+// autonomous cadence is now fixed at 1 minute for every user, not a per-user setting that could
+// silently sit at a slower value from before this change shipped.
+export const DEFAULT_TRADING_LOOP_MINUTES = 1;
 export const MIN_TRADING_LOOP_MINUTES = 1;
-export const MAX_TRADING_LOOP_MINUTES = 180;
+export const MAX_TRADING_LOOP_MINUTES = 1;
 
 export class InvalidTradingLoopIntervalError extends Error {
   constructor(minutes: number) {
@@ -41,8 +45,11 @@ function saveConfig(userId: string, config: TradingLoopConfig): void {
   writeFileSync(path, JSON.stringify(config, null, 2), "utf8");
 }
 
-export function getTradingLoopIntervalMinutes(userId: string): number {
-  return readConfig(userId).intervalMinutes;
+export function getTradingLoopIntervalMinutes(_userId: string): number {
+  // Compulsory 1-minute cadence -- never reads a possibly-stale stored value from before this
+  // was made mandatory. setTradingLoopIntervalMinutes below still validates/persists (harmless),
+  // but this getter is the one thing trading-loop.ts actually schedules against.
+  return DEFAULT_TRADING_LOOP_MINUTES;
 }
 
 export function getTradingLoopIntervalMs(userId: string): number {

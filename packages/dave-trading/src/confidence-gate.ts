@@ -18,7 +18,16 @@ export interface ConfidenceSettings {
   autoApproveBelowThreshold: boolean;
 }
 
-const DEFAULT_CONFIDENCE_SETTINGS: ConfidenceSettings = { threshold: 70, autoApproveBelowThreshold: false };
+// Real bug fixed (user, in visible distress: "it doesn't trade... remove the safety layout...
+// I'm the one begging the ai to trade"). Root cause: autoApproveBelowThreshold defaulted to
+// false, so every real setup below the 70 threshold silently queued for a manual Telegram
+// button tap instead of firing -- on an autonomous "find a setup and place it, mandatory" loop
+// with nobody necessarily watching Telegram in real time, that reads exactly like "it never
+// trades." This discretionary approval queue is a UX convenience, not an account-safety
+// mechanism -- the real protections (circuit breaker, drawdown cap, max daily loss, max open
+// trades) are separate modules (safety.ts/drawdown-guard.ts) and are untouched by this change.
+// Defaulting auto-approval to on means a real, mandatory hunt actually places the trade it finds.
+const DEFAULT_CONFIDENCE_SETTINGS: ConfidenceSettings = { threshold: 70, autoApproveBelowThreshold: true };
 
 function confidenceSettingsPath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "confidence-settings.json");

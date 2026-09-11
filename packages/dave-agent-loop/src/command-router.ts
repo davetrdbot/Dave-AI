@@ -119,13 +119,10 @@ import {
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
 import { getTodaysWinRateSummary } from "@dave/feedback";
 import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes, setAutonomousTradingIntervalMinutes } from "./trading-loop.js";
-import { DEFAULT_TRADING_LOOP_MINUTES } from "./trading-loop-config.js";
 import { getProviderTimeoutConfig, setPrimaryTimeoutSeconds, setFallbackTimeoutSeconds } from "./provider-timeout-config.js";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
 import { friendlyErrorMessage } from "./error-messages.js";
-import { WORKER_BOT_SPECIALISTS, listWorkerBotStatus, setWorkerBotToken, removeWorkerBotToken, getPanelGroupChatId, setPanelGroupChatId, type WorkerBotSpecialist } from "./worker-bot-tokens.js";
-import { setPendingWorkerBotEntry, getPendingWorkerBotEntry } from "./pending-worker-bot-entry.js";
 
 /**
  * Real gap fixed (A2/A3): onUpdate had zero command router -- every
@@ -208,6 +205,13 @@ async function handleAccount(deps: CommandRouterDeps, chatId: number, editMessag
     return;
   }
   const eaStatus = getEaConnectionStatus(deps.userId);
+  // Real gap fixed (re-verified live report: leverage was flowing through the EA -> bridge ->
+  // live-context.ts's per-turn settings block, but this SEPARATE /account (and "💰 Account" menu
+  // button) code path builds its own summary straight off the same AccountSnapshot and never
+  // included leverage at all -- so a user checking /account genuinely never saw it even though
+  // the model did. Same undefined-safe fallback as live-context.ts for users on an EA build from
+  // before leverage was added (snapshot.leverage is undefined until they recompile/redeploy).
+  const leverageLine = snapshot.leverage !== undefined ? `Leverage: 1:${snapshot.leverage}\n` : `Leverage: not reported by the EA yet (recompile & redeploy your EA to send it)\n`;
   const text =
     `<b>Account</b>\n` +
     `Account: ${snapshot.account}\n` +
@@ -215,6 +219,7 @@ async function handleAccount(deps: CommandRouterDeps, chatId: number, editMessag
     `Equity: ${formatMoney(snapshot.equity)}\n` +
     `Margin: ${formatMoney(snapshot.margin)}\n` +
     `Free margin: ${formatMoney(snapshot.freeMargin)}\n` +
+    leverageLine +
     `EA connection: ${eaStatus.connected ? "🟢 connected" : `🔴 disconnected${eaStatus.secondsSinceLastSeen !== null ? ` (last seen ${eaStatus.secondsSinceLastSeen}s ago)` : " (never connected)"}`}`;
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
@@ -570,19 +575,6 @@ export async function tryHandlePendingE2BKeyEntry(deps: CommandRouterDeps, chatI
   return true;
 }
 
-/** The capture half of /settings -> Worker Bots -> "Add token" (see setup-panel.ts's
- *  postToWorkerGroupChat for how this real token is actually used). */
-export async function tryHandlePendingWorkerBotEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
-  const index = getPendingWorkerBotEntry(deps.userId);
-  if (index === null) return false;
-  setPendingWorkerBotEntry(deps.userId, null);
-  const specialist = WORKER_BOT_SPECIALISTS[index] as WorkerBotSpecialist | undefined;
-  if (!specialist) return true; // stale index (e.g. list shrank) -- nothing real to save
-  setWorkerBotToken(deps.userId, specialist, text.trim());
-  await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ Bot token saved for "${specialist}".` });
-  return true;
-}
-
 export async function tryHandlePendingFirecrawlKeyEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
   if (!getPendingFirecrawlKeyEntry(deps.db, deps.userId)) return false;
   setPendingFirecrawlKeyEntry(deps.db, deps.userId, false);
@@ -650,7 +642,6 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Trading Session", "blue", "settings:session")],
       [coloredButton("Confidence Rate", "blue", "settings:confidence")],
       [coloredButton("Firecrawl Keys", "blue", "settings:firecrawl"), coloredButton("MCP Servers", "blue", "settings:mcp")],
-      [coloredButton("Worker Bots", "blue", "settings:workerbots")],
     ])
   );
 }
@@ -771,28 +762,15 @@ function eaTokenKeyboard(userId: string): { text: string; reply_markup: ReturnTy
  * interval" instead. "Auto" (user: "the interval to analyze it can be set to auto") resets to the
  * real system default (DEFAULT_TRADING_LOOP_MINUTES) rather than requiring the user to remember or
  * pick a specific number. */
-const TRADING_INTERVAL_PRESETS_MINUTES = [1, 3, 5, 10, 15, 30, 60] as const;
-
 function tradingIntervalKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
   const current = getTradingLoopIntervalMinutes(userId);
   const running = isAutonomousTradingRunning(userId);
   const lines = [
     "<b>Autonomous Trading</b>",
     `Status: ${running ? "▶️ Running" : "⏸️ Off"}`,
-    `Scan loop interval: every ${current} min`,
-    "",
-    "Tap to set how often the loop scans for setups:",
+    `Scan loop interval: every ${current} min (compulsory -- not user-adjustable)`,
   ];
-  const rows: ReturnType<typeof coloredButton>[][] = [];
-  for (let i = 0; i < TRADING_INTERVAL_PRESETS_MINUTES.length; i += 2) {
-    rows.push(
-      TRADING_INTERVAL_PRESETS_MINUTES.slice(i, i + 2).map((m) =>
-        coloredButton(m === current ? `✅ ${m} min` : `${m} min`, m === current ? "green" : "neutral", `tradinginterval:${m}`)
-      )
-    );
-  }
-  rows.push([coloredButton(current === DEFAULT_TRADING_LOOP_MINUTES ? `✅ Auto (${DEFAULT_TRADING_LOOP_MINUTES} min default)` : "Auto (system default)", current === DEFAULT_TRADING_LOOP_MINUTES ? "green" : "neutral", `tradinginterval:${DEFAULT_TRADING_LOOP_MINUTES}`)]);
-  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard([]), "settings:top") };
 }
 
 /** NOTIFICATIONS section: real push toggle (genuinely gates the alert-sending tools in
@@ -894,33 +872,6 @@ function mcpServersKeyboard(deps: CommandRouterDeps): { text: string; reply_mark
 
 async function handleSettings(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   await sendOrEditScreen(deps, chatId, "<b>Settings</b>\nTrading behavior (what/when/how to trade) is built in -- see /help. This screen is for account/risk settings only.", settingsTopKeyboard(), editMessageId);
-}
-
-/**
- * User-requested addition ("bot can now talk to each other in group... add in settings like a
- * each worker panel have its own bot token so I can see how they are talking to each other").
- * Each of the 8 Setup Panel specialists (setup-panel.ts) can be given its own real Telegram bot
- * token here -- when configured (and a real panel group chat is set via /set_panel_group), that
- * specialist's real findings are also posted to that group using its own bot identity, visibly
- * distinct from every other specialist and from Dave's own bot.
- */
-function workerBotsKeyboard(deps: CommandRouterDeps): { text: string; reply_markup: ReturnType<typeof keyboard> } {
-  const status = listWorkerBotStatus(deps.userId);
-  const groupChatId = getPanelGroupChatId(deps.userId);
-  const lines = [
-    "<b>Worker Bots</b>",
-    "Give each Setup Panel specialist its own real Telegram bot so you can watch them discuss a candidate live in a group chat -- and react to each other, not just post one-way.",
-    "",
-    "Per the real Telegram Bot API docs: for one bot to see another bot's messages, EACH bot needs (1) admin status in the group (disables Privacy Mode) AND (2) \"Bot-to-Bot Communication Mode\" enabled via @BotFather. Both are required, per bot -- admin alone isn't enough.",
-    "",
-    groupChatId !== undefined ? `Panel group: set (chat ${groupChatId})` : "Panel group: not set -- create a group, add Dave's bot + each specialist's bot as admin, enable Bot-to-Bot Communication Mode for each via BotFather, then send /set_panel_group inside it.",
-  ];
-  const rows: ReturnType<typeof coloredButton>[][] = status.map((s, i) => [
-    coloredButton(`${s.configured ? "🟢" : "⚪"} ${s.specialist}`, "neutral", `workerbot:noop:${i}`),
-    coloredButton(s.configured ? "Replace" : "Add token", "blue", `workerbot:add:${i}`),
-    ...(s.configured ? [coloredButton("Remove", "red", `workerbot:remove:${i}`)] : []),
-  ]);
-  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 function riskSettingsKeyboard(userId: string) {
@@ -1335,18 +1286,6 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
     case "trades":
       await handleTrades(deps, chatId, editMessageId);
       break;
-    case "set_panel_group":
-      // User-requested addition ("each worker panel have its own bot token so I can see how
-      // they are talking to each other"): captured by sending this command INSIDE a real
-      // Telegram group where the user has added Dave's own bot alongside every worker bot --
-      // Dave's already-live webhook receives it (chatId IS that group's real chat id), no
-      // separate webhook per worker bot needed.
-      setPanelGroupChatId(deps.userId, chatId);
-      await deps.client.sendMessage({
-        chat_id: chatId,
-        text: "✅ This group is now set as the Setup Panel's chat. Add each specialist's own bot token in /settings → Worker Bots. For them to genuinely see and reply to EACH OTHER (not just post one-way), each worker bot also needs: admin status in this group, AND \"Bot-to-Bot Communication Mode\" enabled via @BotFather -- both required per bot, per Telegram's real docs.",
-      });
-      break;
   }
 }
 
@@ -1753,26 +1692,6 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const view = firecrawlKeyboard(deps);
       await renderInPlace(view.text, view.reply_markup);
     } else if (data.startsWith("firecrawlkey:noop:")) {
-      ackText = undefined;
-    } else if (data === "settings:workerbots") {
-      ackText = undefined;
-      const view = workerBotsKeyboard(deps);
-      await renderInPlace(view.text, view.reply_markup);
-    } else if (data.startsWith("workerbot:add:")) {
-      const index = Number(data.slice("workerbot:add:".length));
-      const specialist = WORKER_BOT_SPECIALISTS[index];
-      setPendingWorkerBotEntry(deps.userId, index);
-      ackText = undefined;
-      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: `Reply with the real Telegram bot token (from @BotFather) for "${specialist}" as your next message.` });
-    } else if (data.startsWith("workerbot:remove:")) {
-      const index = Number(data.slice("workerbot:remove:".length));
-      const specialist = WORKER_BOT_SPECIALISTS[index];
-      removeWorkerBotToken(deps.userId, specialist);
-      ackText = "Removed";
-      await confirm(`"${specialist}"'s bot token removed`);
-      const view = workerBotsKeyboard(deps);
-      await renderInPlace(view.text, view.reply_markup);
-    } else if (data.startsWith("workerbot:noop:")) {
       ackText = undefined;
     } else if (data === "settings:mcp") {
       ackText = undefined;

@@ -7,7 +7,4 @@ export * from "./telegram-bot-server.js";
 export * from "./main.js";
 export * from "./feedback-loop-handler.js";
 export * from "./primary-chat.js";
-export * from "./setup-panel.js";
 export * from "./autonomous-trading-state.js";
-export * from "./worker-bot-tokens.js";
-export * from "./worker-bot-webhook.js";
