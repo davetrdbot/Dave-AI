@@ -76,6 +76,10 @@ export const CORE_TOOL_NAMES: string[] = [
   "get_confidence_settings",
   "set_confidence_threshold",
   "set_auto_approve_below_threshold",
+  // Real gap fixed (user, live: Dave repeatedly treated a settings value it didn't remember
+  // setting as evidence of a compromised account and self-halted trading over it). Must be core,
+  // not discovery-only -- checking this log before drawing that conclusion is the whole point.
+  "get_settings_log",
   "get_auto_approval",
   "set_auto_approval",
   "get_trailing_stop_config",
@@ -87,6 +91,11 @@ export const CORE_TOOL_NAMES: string[] = [
   // Journal -- real win-rate/history questions, asked often enough to stay core.
   "get_todays_journal",
   "get_win_rate",
+  // Real gap fixed (user, live: minutes after placing a real trade itself, Dave asked the user
+  // "did you put this in?"): must be core, not discovery-only -- the whole point is Dave checks
+  // this BEFORE asking the user, and it can't reliably do that if it has to think to search for
+  // the tool first.
+  "get_trade_history",
   "journal_trade",
   "journal_close",
   "journal_daily",

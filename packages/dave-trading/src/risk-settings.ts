@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { appendSettingsLogEntry } from "./settings-log.js";
 
 /**
  * Step 10.1: SL, TP, and lot size each have an Off/On/Auto mode. "On"
@@ -59,6 +60,8 @@ export function setRiskMode(userId: string, field: "sl" | "tp" | "lot", mode: Ri
     throw new OnModeRequiresValueError(field);
   }
   const settings = getRiskSettings(userId);
+  const oldMode = field === "sl" ? settings.slMode : field === "tp" ? settings.tpMode : settings.lotMode;
+  const oldValue = field === "sl" ? settings.slValue : field === "tp" ? settings.tpValue : settings.lotValue;
   if (field === "sl") {
     settings.slMode = mode;
     settings.slValue = mode === "on" ? value : undefined;
@@ -70,6 +73,7 @@ export function setRiskMode(userId: string, field: "sl" | "tp" | "lot", mode: Ri
     settings.lotValue = mode === "on" ? value : undefined;
   }
   saveRiskSettings(userId, settings);
+  appendSettingsLogEntry(userId, field, { mode: oldMode, value: oldValue }, { mode, value: mode === "on" ? value : undefined });
 }
 
 // --- Protected limits: max open trades, max daily loss ---

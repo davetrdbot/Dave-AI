@@ -88,9 +88,32 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
         ...tool,
         execute: async (args: Record<string, unknown>) => {
           const result = (await tool.execute(args)) as Record<string, unknown>;
+          const order = args as unknown as OrderRequest;
+          const confidence = args.confidence as number | undefined;
+          // Real bug fixed (user, live: minutes after placing a real trade itself, Dave asked
+          // "did you put this in?" -- root cause confirmed: trade_execute and the trade journal
+          // (logTrade) were fully disjoint. Nothing ever called logTrade after a real order
+          // succeeded; logging only happened if the model separately, voluntarily called the
+          // journal_trade tool, which it usually didn't -- and even then there was no read tool
+          // over the journal, so "did I place this" had no queryable answer anywhere. Auto-logged
+          // here, unconditionally, the moment a real order genuinely succeeds (a ticket exists) --
+          // get_trade_history (dave-feedback/src/tools.ts) is the real read side.
+          if (result.ticket) {
+            try {
+              logTrade(deps.db, deps.userId, {
+                symbol: order.symbol,
+                direction: order.type === "buy" || order.type === "buy_limit" || order.type === "buy_stop" ? "buy" : "sell",
+                entryPrice: order.price ?? 0,
+                sl: order.sl,
+                tp: order.tp,
+                reasoning: [args.reason as string | undefined].filter((r): r is string => Boolean(r)),
+                confluenceScore: confidence,
+              });
+            } catch {
+              // Logging must never block or fail a real trade that already succeeded.
+            }
+          }
           if (deps.telegram) {
-            const order = args as unknown as OrderRequest;
-            const confidence = args.confidence as number | undefined;
             if (result.needsApproval) {
               void deps.telegram.client
                 .sendMessage({

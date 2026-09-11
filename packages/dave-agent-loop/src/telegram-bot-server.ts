@@ -11,6 +11,7 @@ import { classifyToolAction } from "./action-classifier.js";
 import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
+import { runAutonomousTick } from "./autonomous-tick.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic, isTradingHalted, assertNotTripped, CircuitBreakerTrippedError } from "@dave/safety";
@@ -263,56 +264,26 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   });
   if (drawdownPaused) return;
 
-  const historyKey = `${deps.ownerUserId}:autonomous:${chatId}`;
-  const registry = getOrBuildRegistry(deps, client, chatId);
+  // Real gap fixed: this used to build a full AgentLoop with the entire tool registry and a
+  // long-persisted conversation thread -- an open-ended agentic loop with no boundary between
+  // the model "reasoning out loud" and "making a real control-flow decision," which is exactly
+  // what let Dave invent its own authority to halt trading, forget trades it had just placed,
+  // and hedge on real setups (three connected live complaints, confirmed by reading the user's
+  // own former bot's proven decision mechanism alongside this one). Replaced with a single
+  // structured decision per cycle (autonomous-tick.ts, modeled directly on that reference bot's
+  // tickOne()) -- one request, no tools, one of BUY/SELL/SKIP/ASK back, nothing more for the
+  // model to narrate its way out of. The main chat (runAgentTurn above) keeps the full agentic
+  // tool loop unchanged -- only this unattended background loop, running with real money with
+  // nobody watching each cycle, gets the tighter mechanism.
+  if (deps.executor === undefined) return; // no real trade executor configured -- nothing to run
   const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text) => {
     await client.sendMessage({ chat_id: chatId, text });
-  });
-  const loop = new AgentLoop(provider, registry);
-
-  let history = loadConversationHistory(deps.db, historyKey);
-  if (history.length === 0) history = [{ role: "system", content: deps.systemPrompt }];
-  // Item 2/6 real gap fixed (user: "'hunt for a setup and place it' should mean Dave actively
-  // scans the ACTIVE PAIR GROUP... RIGHT NOW, without asking the user which pair to trade"):
-  // this instruction now explicitly directs the model at hunt_for_setup (which genuinely
-  // broadens beyond a single-pair focus when it has nothing good -- find-setup.ts) instead of
-  // the narrower find_setup, and is explicit that asking the user which pair is never the answer
-  // while an active pair group exists.
-  history.push({
-    role: "user",
-    content: withLiveContext(
-      deps.ownerUserId,
-      "[Autonomous trading cycle -- not a message from the user, do not treat it as one] You are a scalper and a sniper: any real opportunity your analysis genuinely supports, you take it -- this is not optional and not a suggestion. Call hunt_for_setup NOW to scan every symbol in your active pair group (never just the one focused pair, and never ask the user which pair to trade while a group is configured -- hunt_for_setup itself broadens across the whole group). For analysis, call get_all_analysis -- it already returns the full analysis suite (price, candles, structure, momentum, volatility, correlation, everything) in one call; you do not need get_price, get_candles, or a separate correlation check on top of it. If a candidate clears your setup bar, finding it and placing it is mandatory this cycle -- do not stop at analysis and do not decline a real setup just because it isn't flawless. If there is nothing worth reporting this cycle -- no trade opened/closed, no TP/SL hit, nothing you need to ask -- respond with exactly: NOTHING_TO_REPORT"
-    ) as string,
   });
 
   setAutonomousBusy(deps.ownerUserId, "autonomous trading cycle");
   try {
-    const result = await loop.run(history);
-    saveConversationHistory(deps.db, historyKey, result.history);
-    if (result.status === "awaiting_user") {
-      const finalText = markdownToTelegramHtml(result.question.question);
-      if (result.question.options && result.question.options.length > 0) {
-        const rows = result.question.options.map((opt, i) => [{ text: opt, callback_data: `askuser:${result.toolCallId}:${i}` }]);
-        await client.sendMessage({ chat_id: chatId, text: finalText, parse_mode: "HTML" });
-        await client.sendMessage({ chat_id: chatId, text: "Tap an option:", reply_markup: { inline_keyboard: rows } });
-      } else {
-        await client.sendMessage({ chat_id: chatId, text: finalText, parse_mode: "HTML" });
-      }
-      return;
-    }
-    // Real bug fixed (user: "the loop should reason and check silently... only message the user
-    // when something actually happens -- not narrate every single cycle"). The exact-string
-    // "NOTHING_TO_REPORT" convention below is fragile against real model variance (a model that
-    // adds even a little commentary alongside the token never matches it, so the full narration
-    // still went out every cycle). This is the real, deterministic guarantee instead: a cycle's
-    // closing text is only ever sent if a REAL trade-affecting tool actually ran this cycle --
-    // tied to verifiable tool-call events, not trusted to the model's own self-classification.
-    const tookNotableAction = result.steps.some((s) => NOTABLE_TRADING_TOOLS.has(s.toolName) && !s.isError);
-    if (!tookNotableAction) return;
-    const text = (result.text ?? "").trim();
-    if (!text || text === "NOTHING_TO_REPORT") return;
-    await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(text), parse_mode: "HTML" });
+    const outcome = await runAutonomousTick({ userId: deps.ownerUserId, db: deps.db, executor: deps.executor, provider });
+    if (outcome.message) await client.sendMessage({ chat_id: chatId, text: outcome.message });
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
   } finally {

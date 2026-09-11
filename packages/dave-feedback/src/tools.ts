@@ -3,6 +3,7 @@ import { recordSkip, readSkipLog } from "./skip-log.js";
 import { recordHypothesis, recordObservation, readHypotheses, type Observation } from "./hypotheses.js";
 import { getReflectionThreshold, setReflectionThreshold } from "./reflection.js";
 import { getTodaysWinRateSummary, getWinRateSummary } from "./closed-trade-log.js";
+import { listTradesSince } from "./trade-log.js";
 
 /**
  * Real gap this closes: Step 18 built genuinely real, tested logic for
@@ -102,6 +103,18 @@ export const FEEDBACK_TOOLS: FeedbackToolDefinition[] = [
     execute: async (args, ctx) => {
       const days = (args.days as number | undefined) ?? 7;
       return getWinRateSummary(ctx.db, ctx.userId, Date.now() - days * 24 * 60 * 60 * 1000);
+    },
+  },
+  {
+    name: "get_trade_history",
+    description:
+      "Get every real trade this account has placed in the given window (default last 24h) -- symbol, direction, entry, SL/TP, confidence, when. This is the real, authoritative answer to " +
+      "'did I already place this trade' or 'what have I placed recently' -- every trade_execute call that genuinely succeeds is auto-logged here, so check this before asking the user whether " +
+      "a pending order or open position is one you placed yourself.",
+    parameters: { type: "object", properties: { hours: { type: "number", description: "how far back to look, default 24" } } },
+    execute: async (args, ctx) => {
+      const hours = (args.hours as number | undefined) ?? 24;
+      return listTradesSince(ctx.db, ctx.userId, Date.now() - hours * 60 * 60 * 1000);
     },
   },
 ];

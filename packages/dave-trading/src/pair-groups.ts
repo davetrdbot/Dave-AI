@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { appendSettingsLogEntry } from "./settings-log.js";
 
 /**
  * Step 10.5: pair selection is group-based. The GROUP SYSTEM is generic
@@ -108,9 +109,11 @@ export class UnknownGroupError extends Error {
 export function setActiveGroup(userId: string, groupId: string): void {
   const state = readState(userId);
   if (!state.groups.some((g) => g.id === groupId)) throw new UnknownGroupError(groupId);
+  const oldGroupId = state.activeGroupId;
   state.activeGroupId = groupId;
   state.pausedForExtremeConditions = false;
   saveState(userId, state);
+  appendSettingsLogEntry(userId, "activePairGroup", oldGroupId, groupId);
 }
 
 export function setFallbackGroup(userId: string, groupId: string): void {

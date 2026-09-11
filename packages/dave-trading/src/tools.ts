@@ -6,6 +6,7 @@ import { validateOrder, resolveEntryPrice, isPendingOrderType, type OrderRequest
 import { enableBreakevenTrailing, disableBreakevenTrailing } from "./breakeven-trailing.js";
 import { evaluateConfidenceGate } from "./confidence-gate.js";
 import { getRiskSettings } from "./risk-settings.js";
+import { getSettingsLog } from "./settings-log.js";
 
 /**
  * Agentic tool exposure. Real gap this fills: everything in this
@@ -260,6 +261,15 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       properties: { symbol: { type: "string" }, type: { type: "string" }, lots: { type: "number" }, price: { type: "number" } },
     },
     execute: async (args) => validateOrder(args as unknown as OrderRequest),
+  },
+  {
+    name: "get_settings_log",
+    description:
+      "Get the real, durable log of every settings change on this account (SL/TP/lot mode, active pair group, confidence threshold, auto-approve, trading mode) -- field, old value, new " +
+      "value, when. The user changes settings directly through /settings or the admin panel, which never shows up in your own conversation history -- check this log instead of treating a " +
+      "value you don't remember setting as suspicious. Most recent first.",
+    parameters: { type: "object", properties: { limit: { type: "number", description: "how many entries, default 50" } } },
+    execute: async (args, ctx) => getSettingsLog(ctx.userId, (args.limit as number | undefined) ?? 50),
   },
 ];
 

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { OrderRequest } from "./order-types.js";
+import { appendSettingsLogEntry } from "./settings-log.js";
 
 /**
  * Real gap fixed (user: "implement confidence rate so when it's placing a trade it should send
@@ -53,15 +54,19 @@ export function setConfidenceThreshold(userId: string, threshold: number): Confi
     throw new InvalidConfidenceThresholdError(threshold);
   }
   const settings = getConfidenceSettings(userId);
+  const oldThreshold = settings.threshold;
   settings.threshold = threshold;
   saveConfidenceSettings(userId, settings);
+  appendSettingsLogEntry(userId, "confidenceThreshold", oldThreshold, threshold);
   return settings;
 }
 
 export function setAutoApproveBelowThreshold(userId: string, enabled: boolean): ConfidenceSettings {
   const settings = getConfidenceSettings(userId);
+  const oldEnabled = settings.autoApproveBelowThreshold;
   settings.autoApproveBelowThreshold = enabled;
   saveConfidenceSettings(userId, settings);
+  appendSettingsLogEntry(userId, "autoApproveBelowThreshold", oldEnabled, enabled);
   return settings;
 }
 
