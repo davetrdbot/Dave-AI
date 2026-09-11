@@ -1,29 +1,30 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
 import { TelegramClient } from "@dave/telegram";
 import { setRiskMode, setTradingMode, setTrailingStopConfig, upsertGroup, setActiveGroup, getRiskSettings, getTradingMode, getActiveGroupInfo, getTrailingStopConfig } from "@dave/trading";
-import { setWriteApprovalSetting, getWriteApprovalSetting, ensureUserMemory, appendUserFact } from "@dave/memory";
+import { setWriteApprovalSetting, getWriteApprovalSetting, ensureUserMemory, appendUserFact, recordTurn, extractAtoms, recordScenario, getConversation, getAtoms, getScenarios } from "@dave/memory";
 import { setVoiceEnabled, getVoiceSettings, setPushEnabled, getNotificationSettings } from "@dave/notifications";
 import { addProviderKey, listProviderKeys } from "@dave/brain";
 import { saveConversationHistory, loadConversationHistory } from "../src/conversation-store.js";
 import { dispatchCommand, dispatchCallback, type CommandRouterDeps } from "../src/command-router.js";
 
 /**
- * Real proof for item 8: "/reset should be a full wipe... Delete all memory files... Delete all
- * config/settings back to defaults... Add a real confirmation step first (colored Approve/
- * Decline buttons)... After wiping, automatically send the /menu command's UI."
- * Confirms: (a) a single /reset does NOT wipe anything until confirmed, (b) tapping "Cancel"
- * genuinely leaves everything untouched, (c) tapping "Yes" genuinely wipes conversation history,
- * memory files, and every real trading/voice/notification setting back to their real defaults,
- * (d) provider API keys and goal.yaml-equivalent content survive, (e) /menu is genuinely sent
- * automatically afterward.
+ * Real proof, rewritten to the user's explicit corrected spec (live, verbatim): "/reset doesn't
+ * fuckin do anything... it should reset the bot like a brand new. The only thing it should leave
+ * is the user settings and the apis and ea token, it should delete every fuckin thing." The
+ * earlier version of /reset (and this test) treated risk/trading-mode/pair-group/trailing/voice/
+ * notification/write-approval/confidence settings as things to wipe back to defaults -- that's
+ * the OPPOSITE of what the user wants: settings must SURVIVE, only memory/conversation is wiped.
+ * Also proves the newly-found second memory store (tencent-tiers.ts's L0/L1/L2 -- every raw turn,
+ * extracted fact, and scenario summary, fully separate from MEMORY.md/USER.md/ADAPTABILITY.md and
+ * never touched by the old /reset) is now genuinely cleared too.
  */
 
-console.log("=== Real proof: /reset is a real confirmed full wipe, not a silent one-tap history clear ===\n");
+console.log("=== Real proof: /reset wipes memory + every conversation thread, leaves settings/keys/EA token untouched ===\n");
 
 const workDir = mkdtempSync(join(tmpdir(), "dave-full-reset-"));
 process.chdir(workDir);
@@ -43,11 +44,16 @@ try {
   const client = new TelegramClient("000000:fake-token-for-transport-mock");
   const deps: CommandRouterDeps = { db, client, userId: OWNER, publicBaseUrl: "https://dave.example.com" };
   const historyKey = `${OWNER}:${CHAT_ID}`;
+  const autonomousHistoryKey = `${OWNER}:autonomous:${CHAT_ID}`;
 
-  console.log("[1] Seed real state across every real subsystem /reset is supposed to touch...");
+  console.log("[1] Seed real state across every real subsystem -- both what /reset should wipe AND what it must now leave alone...");
   saveConversationHistory(db, historyKey, [{ role: "system", content: "sys" }, { role: "user", content: "hello, my real name is David" }]);
+  saveConversationHistory(db, autonomousHistoryKey, [{ role: "system", content: "sys" }, { role: "assistant", content: "Heads-up: settings changed." }]);
   ensureUserMemory(OWNER);
   appendUserFact(OWNER, "Prefers to be called: David");
+  const turn = recordTurn(OWNER, "user", "my name is David and I trade EURUSD");
+  extractAtoms(OWNER, turn);
+  recordScenario(OWNER, "User introduced themselves as David", 1);
   setRiskMode(OWNER, "sl", "on", 20);
   setTradingMode(OWNER, "trading-skills", "scalping-101");
   upsertGroup(OWNER, { id: "forex-1", name: "Forex", symbols: ["EURUSD"] });
@@ -57,7 +63,7 @@ try {
   setVoiceEnabled(db, OWNER, true);
   setPushEnabled(db, OWNER, false);
   addProviderKey(db, OWNER, "openai", "real key", { apiKey: "sk-real-fake-should-survive" });
-  console.log("    real state seeded: history, USER.md fact, risk SL=on/20, trading-skills mode, active pair group, trailing config, write-approval=on, voice=on, push=off, 1 provider key");
+  console.log("    real state seeded: 2 conversation threads (main + autonomous), USER.md fact, L0/L1/L2 tiers, risk SL=on/20, trading-skills mode, active pair group, trailing config, write-approval=on, voice=on, push=off, 1 provider key");
 
   console.log("\n[2] Typing /reset sends a REAL confirmation prompt with colored Approve/Decline buttons -- nothing is wiped yet...");
   sentMessages.length = 0;
@@ -78,52 +84,71 @@ try {
   assert.equal(getRiskSettings(OWNER).slMode, "on");
   console.log(`    "${sentMessages[0].text}" -- confirmed nothing was wiped`);
 
-  console.log("\n[4] Tapping 'Yes, wipe everything' genuinely wipes conversation history, memory files, AND every real trading/voice/notification setting back to defaults...");
+  console.log("\n[4] Tapping 'Yes, wipe everything' genuinely wipes BOTH conversation threads, MEMORY.md/USER.md/ADAPTABILITY.md, AND the L0/L1/L2 recall tiers...");
   sentMessages.length = 0;
   await dispatchCallback(deps, { id: "cb-confirm", data: "resetconfirm:yes", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
 
   const historyAfter = loadConversationHistory(db, historyKey);
-  console.log(`    conversation history: ${historyAfter.length} messages (was 2)`);
+  console.log(`    main chat history: ${historyAfter.length} messages (was 2)`);
   assert.equal(historyAfter.length, 0);
+
+  const autonomousHistoryAfter = loadConversationHistory(db, autonomousHistoryKey);
+  console.log(`    autonomous-cycle's OWN separate history: ${autonomousHistoryAfter.length} messages (was 2) -- a real gap the old /reset never touched`);
+  assert.equal(autonomousHistoryAfter.length, 0, "the autonomous cycle's own conversation thread must genuinely clear too, not just the chat the user typed in");
 
   const userMdAfter = readFileSync(join(workDir, "data", "memory", OWNER, "USER.md"), "utf8");
   console.log(`    USER.md after reset: "${userMdAfter.trim()}" (real fact genuinely gone)`);
   assert.ok(!userMdAfter.includes("David"), "USER.md must genuinely be back to empty/template, not still holding the real fact");
 
+  // Checked BEFORE any getConversation/getAtoms/getScenarios call below -- those getters call
+  // tierDir() internally, which auto-creates the directory as a read-side-effect (same pattern
+  // every other per-user store in this codebase uses), so reading first would recreate an empty
+  // dir and make this assertion meaningless.
+  assert.ok(!existsSync(join(workDir, "data", "memory", OWNER, "tiers")), "the whole tiers/ directory must genuinely be gone right after reset, not just emptied");
+
+  console.log(`    L0 conversation tier after reset: ${JSON.stringify(getConversation(OWNER))}`);
+  assert.equal(getConversation(OWNER).length, 0, "the L0 raw-turn log must be genuinely gone -- this is the real second memory store the old /reset never cleared");
+  console.log(`    L1 atoms tier after reset: ${JSON.stringify(getAtoms(OWNER))}`);
+  assert.equal(getAtoms(OWNER).length, 0);
+  console.log(`    L2 scenarios tier after reset: ${JSON.stringify(getScenarios(OWNER))}`);
+  assert.equal(getScenarios(OWNER).length, 0);
+
+  console.log("\n[5] Real settings genuinely SURVIVE the reset now -- this is a memory wipe, not a settings wipe...");
   const riskAfter = getRiskSettings(OWNER);
-  console.log(`    risk settings after reset: slMode=${riskAfter.slMode} (was "on")`);
-  assert.equal(riskAfter.slMode, "off", "risk settings must be genuinely back to default");
+  console.log(`    risk settings after reset: slMode=${riskAfter.slMode}, slValue=${riskAfter.slValue} (still "on"/20 -- untouched)`);
+  assert.equal(riskAfter.slMode, "on", "risk settings must genuinely survive a memory reset");
+  assert.equal(riskAfter.slValue, 20);
 
   const modeAfter = getTradingMode(OWNER);
-  console.log(`    trading mode after reset: ${modeAfter.mode} (was "trading-skills")`);
-  assert.equal(modeAfter.mode, "auto", "trading mode must be genuinely back to default");
+  console.log(`    trading mode after reset: ${modeAfter.mode} (still "trading-skills" -- untouched)`);
+  assert.equal(modeAfter.mode, "trading-skills");
 
   const groupAfter = getActiveGroupInfo(OWNER);
-  console.log(`    active pair group after reset: ${groupAfter.activeGroup?.name ?? "none"} (was "Forex")`);
-  assert.equal(groupAfter.activeGroup, null, "the active/fallback SELECTION must genuinely clear");
+  console.log(`    active pair group after reset: ${groupAfter.activeGroup?.name ?? "none"} (still "Forex" -- untouched)`);
+  assert.equal(groupAfter.activeGroup?.name, "Forex");
 
   const trailingAfter = getTrailingStopConfig(OWNER);
-  console.log(`    trailing config after reset: ${JSON.stringify(trailingAfter)} (was set)`);
-  assert.equal(trailingAfter, undefined, "trailing config must genuinely be gone");
+  console.log(`    trailing config after reset: ${JSON.stringify(trailingAfter)} (still set -- untouched)`);
+  assert.deepEqual(trailingAfter, { slAtTp1: 1.1, slAtTp2: 1.2, slAtTp3: 1.3 });
 
-  console.log(`    write-approval after reset: ${getWriteApprovalSetting(OWNER)} (was true)`);
-  assert.equal(getWriteApprovalSetting(OWNER), false);
+  console.log(`    write-approval after reset: ${getWriteApprovalSetting(OWNER)} (still true -- untouched)`);
+  assert.equal(getWriteApprovalSetting(OWNER), true);
 
   const voiceAfter = getVoiceSettings(db, OWNER);
-  console.log(`    voice settings after reset: enabled=${voiceAfter.enabled} (was true)`);
-  assert.equal(voiceAfter.enabled, false);
+  console.log(`    voice settings after reset: enabled=${voiceAfter.enabled} (still true -- untouched)`);
+  assert.equal(voiceAfter.enabled, true);
 
   const notifAfter = getNotificationSettings(db, OWNER);
-  console.log(`    notification settings after reset: pushEnabled=${notifAfter.pushEnabled} (was false, real default is true)`);
-  assert.equal(notifAfter.pushEnabled, true, "notification settings must be genuinely back to their real default, not just left at whatever was set");
+  console.log(`    notification settings after reset: pushEnabled=${notifAfter.pushEnabled} (still false -- untouched)`);
+  assert.equal(notifAfter.pushEnabled, false);
 
-  console.log("\n[5] The stored provider API key genuinely SURVIVES the reset -- credentials are not a 'setting'...");
+  console.log("\n[6] The stored provider API key genuinely SURVIVES the reset -- credentials are not memory...");
   const keysAfter = listProviderKeys(db, OWNER, "openai");
   console.log(`    provider keys after reset: ${keysAfter.length} (unchanged)`);
   assert.equal(keysAfter.length, 1);
   assert.equal(keysAfter[0].config.apiKey, "sk-real-fake-should-survive");
 
-  console.log("\n[6] /menu's real UI is automatically sent after the wipe, so the user lands somewhere useful...");
+  console.log("\n[7] /menu's real UI is automatically sent after the wipe, so the user lands somewhere useful...");
   console.log(`    real messages sent during the wipe: ${sentMessages.map((m) => m.text.split("\n")[0]).join(" | ")}`);
   const menuMessage = sentMessages.find((m) => m.text.includes("Menu"));
   assert.ok(menuMessage, "a real /menu UI message must be sent automatically after the wipe");

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureUserMemory } from "./hermes-store.js";
 
@@ -127,4 +127,14 @@ export function recordScenario(userId: string, summary: string, atomCount: numbe
 
 export function getScenarios(userId: string): Scenario[] {
   return readJsonl<Scenario>(l2Path(userId));
+}
+
+/** Real gap fixed (user: "/reset doesn't do anything... it should delete every fuckin thing"):
+ *  the L0/L1/L2 tiers are a real, separate, permanent record -- every raw turn ever recorded,
+ *  every extracted fact, every scenario summary -- fully searchable via recall_memory, and a
+ *  plain /reset never touched this directory at all. Deletes the whole tiers/ directory for this
+ *  user so a "full reset" is genuinely full, not just the three MEMORY.md/USER.md/ADAPTABILITY.md
+ *  files. */
+export function clearMemoryTiers(userId: string): void {
+  rmSync(tierDir(userId), { recursive: true, force: true });
 }

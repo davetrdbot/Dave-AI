@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { DaveDatabase } from "@dave/db";
 import { TelegramClient } from "@dave/telegram";
 import { EaTradeExecutor, createEaWebhookServer, getOrCreateEaWebhook, type EaCommand } from "@dave/ea-bridge";
-import { upsertGroup, setActiveGroup, setConfidenceThreshold, listPendingTradeApprovals } from "@dave/trading";
+import { upsertGroup, setActiveGroup, setConfidenceThreshold, setAutoApproveBelowThreshold, listPendingTradeApprovals } from "@dave/trading";
 import { buildFullToolRegistry } from "../src/full-registry.js";
 import { dispatchCallback, type CommandRouterDeps } from "../src/command-router.js";
 
@@ -41,6 +41,12 @@ try {
   upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD", "GBPUSD"] });
   setActiveGroup(OWNER, "majors");
   setConfidenceThreshold(OWNER, 80);
+  // Real bug fixed: auto-approve-below-threshold now defaults to true (this session's real fix,
+  // per the user's explicit ask). This test specifically needs the queued-for-approval path, so
+  // it must turn auto-approve off explicitly rather than relying on the old default -- otherwise
+  // the confidence-50 trade_execute call below fires immediately and tries to open a real order
+  // the simulated EA never answers, hanging on the real 300s trade-executor timeout.
+  setAutoApproveBelowThreshold(OWNER, false);
 
   const registry = buildFullToolRegistry({ userId: OWNER, db, executor, telegram: { client, chatId: CHAT_ID } });
 
@@ -85,11 +91,25 @@ try {
       await postReport({ ...heartbeat, results: [{ commandId: cmd.id, status: "ok", data: { score, direction: score >= 50 ? "buy" : "sell" } }] });
     }
   }
-  setTimeout(() => void simulateEaCycle({ EURUSD: 30, GBPUSD: 85 }), 50);
+  // Real bug fixed: a single one-shot simulated EA cycle at a fixed 50ms delay raced against
+  // dispatchCallback's own real enqueue timing -- if the "analyze" command for GBPUSD wasn't
+  // queued yet at exactly 50ms, that one shot found nothing to answer and the real group-scan
+  // timeout (300s, sized for the EA's real 2-minute push interval) would fire instead, hanging
+  // this test for 5 real minutes. A repeating simulated cycle (every 50ms until the real
+  // dispatchCallback call resolves) removes the race -- it keeps answering until there's
+  // genuinely nothing left to answer, same as a real EA's real repeating heartbeat would.
+  let simulating = true;
+  void (async () => {
+    while (simulating) {
+      await simulateEaCycle({ EURUSD: 30, GBPUSD: 85 });
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  })();
 
   const deps: CommandRouterDeps = { db, client, userId: OWNER, publicBaseUrl: "https://dave.example.com", executor };
   sentMessages.length = 0;
   await dispatchCallback(deps, { id: "cb1", data: findAnotherBtn!.callback_data, message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
+  simulating = false;
   eaServer.close();
   assert.equal(listPendingTradeApprovals(OWNER).length, 0, "the declined candidate must genuinely be removed from pending approvals");
   console.log(`    real message after tapping Find Another: "${sentMessages[0].text}"`);

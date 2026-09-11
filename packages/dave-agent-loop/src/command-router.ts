@@ -49,14 +49,10 @@ import {
   getTradingSession,
   setTradingSession,
   type TradingSession,
-  resetPairGroupSelectionForUser,
   seedDefaultPairGroups,
   getTradingMode,
   setTradingMode,
-  resetTradingModeForUser,
   TradingSkillsModeRequiresSkillError,
-  resetRiskSettingsForUser,
-  resetTrailingStopConfigForUser,
   type RiskMode,
   getConfidenceSettings,
   setConfidenceThreshold,
@@ -65,7 +61,6 @@ import {
   getPendingConfidenceEntry,
   takePendingTradeApproval,
   TradeApprovalNotFoundError,
-  resetConfidenceSettingsForUser,
   tradeExecute,
   huntForSetup,
 } from "@dave/trading";
@@ -90,10 +85,8 @@ import {
   setPushEnabled,
   setEmailEnabled,
   setTradeOpenedEnabled,
-  resetVoiceSettingsForUser,
-  resetNotificationSettingsForUser,
 } from "@dave/notifications";
-import { getWriteApprovalSetting, setWriteApprovalSetting, resetWriteApprovalForUser, resetUserMemory } from "@dave/memory";
+import { getWriteApprovalSetting, setWriteApprovalSetting, resetUserMemory, clearMemoryTiers } from "@dave/memory";
 import { addE2BKey, listE2BKeys, removeE2BKey, setPendingE2BKeyEntry, getPendingE2BKeyEntry } from "@dave/e2b";
 import { addFirecrawlKey, listFirecrawlKeys, removeFirecrawlKey, setPendingFirecrawlKeyEntry, getPendingFirecrawlKeyEntry } from "@dave/firecrawl";
 import { mcpConnect, listMcpServerConfigs, addMcpServerConfig, removeMcpServerConfig, InvalidMcpServerUrlError } from "@dave/mcp-manager";
@@ -1109,11 +1102,10 @@ async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<voi
     chat_id: chatId,
     text:
       "<b>⚠️ Full reset</b>\nThis will genuinely wipe:\n" +
-      "• Conversation history\n" +
+      "• Conversation history (both this chat and my own autonomous-cycle thread)\n" +
       "• Memory (MEMORY.md, USER.md, ADAPTABILITY.md)\n" +
-      "• Trading settings (risk/trading mode/pair group selection/trailing config/write-approval)\n" +
-      "• Voice and notification preferences\n\n" +
-      "Your trading behavior (built in, not something you upload) and stored provider/E2B API keys are NOT touched.\n\n" +
+      "• Every past-conversation record (the L0/L1/L2 recall tiers -- raw turns, extracted facts, scenario summaries)\n\n" +
+      "Your settings (risk mode, pair group, trading mode, confidence threshold, trailing config, voice/notification prefs), your trading behavior (built in, not something you upload), and your stored provider/E2B API keys and EA pairing token are NOT touched -- this is a memory wipe, not a settings wipe.\n\n" +
       "This cannot be undone. Continue?",
     parse_mode: "HTML",
     reply_markup: keyboard([[coloredButton("✅ Yes, wipe everything", "green", "resetconfirm:yes"), coloredButton("❌ Cancel", "red", "resetconfirm:no")]]),
@@ -1122,10 +1114,20 @@ async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<voi
 
 /**
  * The actual real wipe -- only ever reached after the user explicitly taps "Yes" above.
- * Deliberately does NOT touch goal.yaml (an optional, real user-authored override some users
- * may still have set -- same reasoning BOOTSTRAP.md used to use for the rules-file era) or any
- * stored provider/E2B API key (credentials, not "settings" -- losing those would be a real,
- * costly surprise, not a helpful fresh start).
+ *
+ * Real gap fixed (user, explicit spec: "/reset doesn't fuckin do anything... it should reset the
+ * bot like a brand new. The only thing it should leave is the user settings and the apis and ea
+ * token, it should delete every fuckin thing"). This used to ALSO wipe risk/trading-mode/pair-
+ * group/trailing/write-approval/voice/notification/confidence settings back to defaults -- the
+ * user has to redo real configuration every time, which isn't what "reset" means to them. Reset
+ * is now scoped to genuinely EVERYTHING memory/conversation-shaped (both real conversation
+ * threads, MEMORY.md/USER.md/ADAPTABILITY.md, AND the L0/L1/L2 recall tiers -- see
+ * tencent-tiers.ts's clearMemoryTiers, a second real memory store /reset never touched before)
+ * and leaves every real setting, provider/E2B API key, and the EA pairing token exactly as they
+ * were -- a genuine memory wipe, not a settings wipe. Also deliberately does NOT touch goal.yaml
+ * (an optional, real user-authored override some users may still have set) or the circuit
+ * breaker/drawdown-pause state (a real safety trip that exists specifically to require its own
+ * deliberate, separate clearing action -- never something a memory reset silently undoes).
  *
  * Telegram limitation, honestly reported rather than faked: bots can only delete their OWN
  * messages (and only within 48h) -- there is no real Bot API method to delete a user's own
@@ -1136,24 +1138,10 @@ async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<voi
  */
 async function performFullReset(deps: CommandRouterDeps, chatId: number, historyKey: string): Promise<void> {
   clearConversationHistory(deps.db, historyKey);
-  // Real bug fixed (user: "the bot keeps instructing me... his my agent, I changed it" -- the
-  // autonomous trading cycle runs on its own SEPARATE conversation history, `<owner>:autonomous:
-  // <chatId>`, never cleared by a plain /reset before this. If the model's own past reasoning in
-  // THAT history spiraled into repeatedly re-raising a false "unauthorized change" alarm, /reset
-  // looked like it did nothing -- the autonomous loop kept re-reading its own poisoned history on
-  // every cycle regardless. Cleared alongside the real chat history now so a full reset genuinely
-  // wipes every conversation thread this account has, not just the one the user is typing in.
   clearConversationHistory(deps.db, `${deps.userId}:autonomous:${chatId}`);
   resetUserMemory(deps.userId);
-  resetRiskSettingsForUser(deps.userId);
-  resetTradingModeForUser(deps.userId);
-  resetPairGroupSelectionForUser(deps.userId);
-  resetTrailingStopConfigForUser(deps.userId);
-  resetWriteApprovalForUser(deps.userId);
-  resetVoiceSettingsForUser(deps.db, deps.userId);
-  resetNotificationSettingsForUser(deps.db, deps.userId);
-  resetConfidenceSettingsForUser(deps.userId);
-  await deps.client.sendMessage({ chat_id: chatId, text: "✅ Full reset complete -- memory, trading settings, and conversation history are all genuinely cleared. Starting fresh." });
+  clearMemoryTiers(deps.userId);
+  await deps.client.sendMessage({ chat_id: chatId, text: "✅ Full reset complete -- every conversation thread and every memory record are genuinely gone. Your settings, API keys, and EA pairing token are untouched. Starting fresh." });
   await handleMenu(deps, chatId);
 }
 
