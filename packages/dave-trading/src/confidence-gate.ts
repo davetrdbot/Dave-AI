@@ -18,11 +18,11 @@ export interface ConfidenceSettings {
   autoApproveBelowThreshold: boolean;
 }
 
-// Real gap fixed (user: "remove this, the user will set this" -- auto-approval is the user's own
-// explicit choice via /settings -> Confidence Rate, never something forced on by default). Stays
-// off until the user genuinely opts in; a real setup below the threshold queues for their
-// approve/decline tap instead of firing unattended.
-const DEFAULT_CONFIDENCE_SETTINGS: ConfidenceSettings = { threshold: 70, autoApproveBelowThreshold: false };
+// Real gap fixed (user: "remove it the user must set the confidence rate but by default auto
+// approve is on by default"). Auto-approval starts ON so a real setup below threshold still
+// fires immediately instead of silently queuing forever -- the user can turn it off themselves
+// via /settings -> Confidence Rate if they want the approve/decline gate back.
+const DEFAULT_CONFIDENCE_SETTINGS: ConfidenceSettings = { threshold: 70, autoApproveBelowThreshold: true };
 
 function confidenceSettingsPath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "confidence-settings.json");

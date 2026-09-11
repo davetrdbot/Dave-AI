@@ -52,7 +52,13 @@ export class AgentLoop {
   ) {}
 
   async run(messages: CompletionMessage[], opts: { maxSteps?: number; timeoutMs?: number; onStep?: (step: AgentStep) => void } = {}): Promise<AgentRunResult> {
-    const maxSteps = opts.maxSteps ?? 8;
+    // Real bug fixed (user: "maxSteps: 8, remove that, no max step, unlimited max step"): a real
+    // trade decision (hunt -> analyze -> execute -> report, sometimes with a search_tools detour
+    // or a retry) can genuinely need more than 8 provider round trips, and a hard cap here meant
+    // the loop could throw MaxStepsExceededError mid-decision, silently killing a cycle before it
+    // ever reached trade_execute. No cap by default now -- callers that genuinely want one (tests
+    // proving the cap mechanism itself still works) pass maxSteps explicitly.
+    const maxSteps = opts.maxSteps ?? Infinity;
     const timeoutMs = opts.timeoutMs ?? 20000;
     const history = [...messages];
     const steps: AgentStep[] = [];

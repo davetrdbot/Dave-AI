@@ -50,8 +50,8 @@ const ctx: ToolContext = { userId: USER_ID, analysis: stubAnalysis, executor };
 const tradeExecuteTool = TRADING_TOOLS.find((t) => t.name === "trade_execute")!;
 
 try {
-  console.log("[1] Real default: threshold 70%, auto-approve-below-threshold off...\n");
-  assert.deepEqual(getConfidenceSettings(USER_ID), { threshold: 70, autoApproveBelowThreshold: false });
+  console.log("[1] Real default: threshold 70%, auto-approve-below-threshold ON (user: \"remove it the user must\n    set the confidence rate but by default auto approve is on by default\")...\n");
+  assert.deepEqual(getConfidenceSettings(USER_ID), { threshold: 70, autoApproveBelowThreshold: true });
 
   console.log("[2] Confidence AT/ABOVE threshold -> trade fires immediately, no gate...\n");
   const highConfResult = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, confidence: 82 }, ctx)) as { ticket: string; confidence: number };
@@ -60,7 +60,14 @@ try {
   assert.deepEqual(executedOrders, [{ symbol: "EURUSD", type: "buy" }]);
   console.log(`    real result: ${JSON.stringify(highConfResult)}`);
 
-  console.log("\n[3] Confidence BELOW threshold, auto-approve off -> genuinely queued, NOT executed...\n");
+  console.log("\n[3] Confidence BELOW threshold, default (auto-approve ON) -> fires immediately, not queued...\n");
+  const lowConfDefaultResult = (await tradeExecuteTool.execute({ symbol: "USDJPY", type: "buy", lots: 0.05, confidence: 30 }, ctx)) as { ticket: string };
+  assert.equal(lowConfDefaultResult.ticket, "T-USDJPY");
+  assert.equal(listPendingTradeApprovals(USER_ID).length, 0, "auto-approval is on by default -- must NOT create a pending entry");
+  console.log(`    real result (confidence 30% < threshold 70%, but auto-approve is on by default): ${JSON.stringify(lowConfDefaultResult)}`);
+
+  console.log("\n[4] User explicitly turns auto-approve OFF -> confidence BELOW threshold now genuinely queues...\n");
+  setAutoApproveBelowThreshold(USER_ID, false);
   const lowConfResult = (await tradeExecuteTool.execute({ symbol: "GBPUSD", type: "sell", lots: 0.2, confidence: 55, reason: "Weak momentum, counter-trend." }, ctx)) as {
     needsApproval: boolean;
     pendingId: string;
@@ -68,35 +75,36 @@ try {
   };
   assert.equal(lowConfResult.needsApproval, true);
   assert.equal(lowConfResult.threshold, 70);
-  assert.deepEqual(executedOrders, [{ symbol: "EURUSD", type: "buy" }], "the low-confidence order must NOT have reached the executor");
+  assert.deepEqual(executedOrders, [{ symbol: "EURUSD", type: "buy" }, { symbol: "USDJPY", type: "buy" }], "the low-confidence order must NOT have reached the executor");
   const pending = listPendingTradeApprovals(USER_ID);
   assert.equal(pending.length, 1);
   assert.equal(pending[0].confidence, 55);
   assert.equal(pending[0].order.symbol, "GBPUSD");
   console.log(`    real pending approval queued: ${JSON.stringify(pending[0])}`);
 
-  console.log("\n[4] Approving the pending trade removes it AND genuinely places the real order...\n");
+  console.log("\n[5] Approving the pending trade removes it AND genuinely places the real order...\n");
   const approved = takePendingTradeApproval(USER_ID, lowConfResult.pendingId);
   const { ticket } = await executor.openOrder(approved.order);
   assert.equal(ticket, "T-GBPUSD");
   assert.deepEqual(executedOrders, [
     { symbol: "EURUSD", type: "buy" },
+    { symbol: "USDJPY", type: "buy" },
     { symbol: "GBPUSD", type: "sell" },
   ]);
   assert.equal(listPendingTradeApprovals(USER_ID).length, 0, "approved trade must be removed from the pending queue");
 
-  console.log("\n[5] Re-deciding an already-decided pending id fails honestly, typed...\n");
+  console.log("\n[6] Re-deciding an already-decided pending id fails honestly, typed...\n");
   assert.throws(() => takePendingTradeApproval(USER_ID, lowConfResult.pendingId), TradeApprovalNotFoundError);
   console.log("    genuinely refused -- TradeApprovalNotFoundError");
 
-  console.log("\n[6] Auto-approve-below-threshold ON -> a low-confidence trade fires immediately instead of queuing...\n");
+  console.log("\n[7] Turning auto-approve back ON -> a low-confidence trade fires immediately again instead of queuing...\n");
   setAutoApproveBelowThreshold(USER_ID, true);
-  const autoApprovedResult = (await tradeExecuteTool.execute({ symbol: "USDJPY", type: "buy", lots: 0.05, confidence: 30 }, ctx)) as { ticket: string };
-  assert.equal(autoApprovedResult.ticket, "T-USDJPY");
+  const autoApprovedResult = (await tradeExecuteTool.execute({ symbol: "AUDNZD", type: "buy", lots: 0.05, confidence: 20 }, ctx)) as { ticket: string };
+  assert.equal(autoApprovedResult.ticket, "T-AUDNZD");
   assert.equal(listPendingTradeApprovals(USER_ID).length, 0, "auto-approval must NOT create a pending entry");
-  console.log(`    real auto-approved result (confidence 30% < threshold 70%, but auto-approve is on): ${JSON.stringify(autoApprovedResult)}`);
+  console.log(`    real auto-approved result (confidence 20% < threshold 70%, but auto-approve is on): ${JSON.stringify(autoApprovedResult)}`);
 
-  console.log("\n[7] Changing the threshold genuinely persists and re-gates...\n");
+  console.log("\n[8] Changing the threshold genuinely persists and re-gates (with auto-approve off)...\n");
   setAutoApproveBelowThreshold(USER_ID, false);
   setConfidenceThreshold(USER_ID, 90);
   assert.equal(getConfidenceSettings(USER_ID).threshold, 90);
@@ -104,19 +112,19 @@ try {
   assert.equal(nowGatedResult.needsApproval, true, "85% is now below the new 90% threshold -- must gate");
   console.log("    real re-gate confirmed: 85% confidence now requires approval against a 90% threshold");
 
-  console.log("\n[8] An invalid threshold is genuinely refused, typed...\n");
+  console.log("\n[9] An invalid threshold is genuinely refused, typed...\n");
   assert.throws(() => setConfidenceThreshold(USER_ID, 150), InvalidConfidenceThresholdError);
   assert.throws(() => setConfidenceThreshold(USER_ID, -5), InvalidConfidenceThresholdError);
   console.log("    genuinely refused -- InvalidConfidenceThresholdError");
 
-  console.log("\n[9] No confidence passed at all -> trade_execute behaves exactly as before (no gate involved)...\n");
+  console.log("\n[10] No confidence passed at all -> trade_execute behaves exactly as before (no gate involved)...\n");
   const noConfResult = (await tradeExecuteTool.execute({ symbol: "NZDUSD", type: "sell", lots: 0.1 }, ctx)) as { ticket: string; confidence?: number };
   assert.equal(noConfResult.ticket, "T-NZDUSD");
   assert.equal(noConfResult.confidence, undefined, "no confidence field should appear when none was passed");
 
-  console.log("\n[10] /reset genuinely clears confidence settings + pending approvals back to defaults...\n");
+  console.log("\n[11] /reset genuinely clears confidence settings + pending approvals back to defaults...\n");
   resetConfidenceSettingsForUser(USER_ID);
-  assert.deepEqual(getConfidenceSettings(USER_ID), { threshold: 70, autoApproveBelowThreshold: false });
+  assert.deepEqual(getConfidenceSettings(USER_ID), { threshold: 70, autoApproveBelowThreshold: true });
   assert.equal(listPendingTradeApprovals(USER_ID).length, 0);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");

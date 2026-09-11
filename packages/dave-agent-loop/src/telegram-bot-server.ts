@@ -133,10 +133,10 @@ async function runAgentTurn(
       let result: AgentRunResult;
       if (pendingQuestion && pendingToolCallId) {
         clearPendingQuestion(deps.ownerUserId);
-        result = await loop.resume({ status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] }, messageText as string, { maxSteps: 8, onStep });
+        result = await loop.resume({ status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] }, messageText as string, { onStep });
       } else {
         history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent) });
-        result = await loop.run(history, { maxSteps: 8, onStep });
+        result = await loop.run(history, { onStep });
       }
       saveConversationHistory(deps.db, historyKey, result.history);
       finalResult = result;
@@ -287,7 +287,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
 
   setBusy(deps.ownerUserId, "autonomous trading cycle");
   try {
-    const result = await loop.run(history, { maxSteps: 8 });
+    const result = await loop.run(history);
     saveConversationHistory(deps.db, historyKey, result.history);
     if (result.status === "awaiting_user") {
       const finalText = markdownToTelegramHtml(result.question.question);
