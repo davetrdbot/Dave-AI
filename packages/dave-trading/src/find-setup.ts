@@ -163,10 +163,10 @@ export async function huntForSetup(userId: string, analysis: AnalysisSource, tf 
 
   // Same real per-symbol market-hours filter as findSetup above -- a hunt must never propose a
   // closed-market forex setup either, whether the group being broadened into is the primary or
-  // a fallback group. Same override-irrelevance fix as findSetup: a single-pair focus makes the
-  // active group's category irrelevant to the symbols actually being scanned.
-  const groupIdForHours = info.activePairSymbol ? null : group?.id;
-  const openSymbols = symbols.filter((s) => isMarketOpenForSymbol(s, groupIdForHours, new Date()).open);
+  // a fallback group. Unlike findSetup, huntForSetup always scans the real active GROUP's own
+  // symbols (never just a single-pair override -- see the comment above `symbols`), so `group.id`
+  // is always the correct, legitimate category for every symbol here, override or not.
+  const openSymbols = symbols.filter((s) => isMarketOpenForSymbol(s, group?.id, new Date()).open);
   const rows = await scanSymbols(analysis, openSymbols, tf, exclude);
   const ranked = rows.filter((r) => !r.error).sort((a, b) => b.score - a.score);
   return {
