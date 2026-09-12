@@ -59,21 +59,36 @@ function clearBusyState(userId: string, kind: BusyKind): void {
 // takes this long), so it's treated as cleared rather than trusted forever.
 //
 // Real bug fixed (user, live: two messages minutes apart got answered "bundled" together). Root
-// cause: a real turn's own tool loop has no step cap (agent-loop.ts) and a single EA round trip
-// can genuinely take up to ~5 minutes on its own -- a turn with more than one such call could
-// legitimately still be running past the old 5-minute mark. When that happened, THIS check would
-// force-clear the busy lock out from under a still-live turn, letting a second message start a
-// genuinely concurrent second turn -- both load/save conversation history, last write wins, and
-// the two replies landing close together read exactly like "sent all in one." Widened well past
-// the real worst case (a handful of multi-minute EA round trips in one turn) instead of the bare
-// single-call estimate.
-const MAX_BUSY_AGE_MS = 15 * 60_000;
+// cause: a real USER turn's own tool loop has no step cap (agent-loop.ts) and a single EA round
+// trip can genuinely take up to ~5 minutes on its own -- a turn with more than one such call
+// could legitimately still be running past the old 5-minute mark. When that happened, THIS check
+// would force-clear the busy lock out from under a still-live turn, letting a second message
+// start a genuinely concurrent second turn -- both load/save conversation history, last write
+// wins, and the two replies landing close together read exactly like "sent all in one." Widened
+// well past the real worst case (a handful of multi-minute EA round trips in one turn) instead of
+// the bare single-call estimate.
+const MAX_USER_BUSY_AGE_MS = 15 * 60_000;
+
+// Real regression fixed (caught live, right after widening the user window above to 15 minutes):
+// this used to be ONE shared constant for both busy kinds, so a container restart mid-cycle
+// (confirmed live: a real BOOM_200 cycle was still "running" when a redeploy killed the process,
+// leaving busy-autonomous.json stale) now took up to 15 minutes to self-heal instead of the
+// original ~5-6 -- three real trading cycles silently skipped for no good reason. The autonomous
+// tick's own real worst case is much tighter than a user turn's unbounded tool loop -- one
+// decision call, one optional Journal consult round, and the EA's own analysis fetch -- so its
+// staleness window stays close to the original bound instead of inheriting the user turn's wider
+// one.
+const MAX_AUTONOMOUS_BUSY_AGE_MS = 6 * 60_000;
+
+function maxAgeFor(kind: BusyKind): number {
+  return kind === "autonomous" ? MAX_AUTONOMOUS_BUSY_AGE_MS : MAX_USER_BUSY_AGE_MS;
+}
 
 function getBusyStateFor(userId: string, kind: BusyKind): BusyState | null {
   const path = busyPath(userId, kind);
   if (!existsSync(path)) return null;
   const state = JSON.parse(readFileSync(path, "utf8")) as BusyState | null;
-  if (state && Date.now() - state.startedAt > MAX_BUSY_AGE_MS) return null;
+  if (state && Date.now() - state.startedAt > maxAgeFor(kind)) return null;
   return state;
 }
 

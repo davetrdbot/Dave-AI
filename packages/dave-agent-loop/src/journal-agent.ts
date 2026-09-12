@@ -3,7 +3,7 @@ import type { Provider } from "@dave/brain";
 import { FEEDBACK_TOOLS, type FeedbackToolContext } from "@dave/feedback";
 import { EA_ANALYSIS_TOOLS, EA_STATE_TOOLS, type EaToolContext } from "@dave/ea-bridge";
 import { ToolRegistry, adaptTools } from "./tool-registry.js";
-import { AgentLoop } from "./agent-loop.js";
+import { AgentLoop, MaxStepsExceededError } from "./agent-loop.js";
 
 /**
  * Real feature (user, live: "Journal is a ai like sidekick... it can ask journal what do you
@@ -45,14 +45,24 @@ export async function consultJournal(ctx: JournalContext, question: string, cont
 
   const loop = new AgentLoop(ctx.provider, registry);
   const userContent = [question, ...contextLines].join("\n");
+  // Real bug fixed (caught live: a stuck autonomous cycle turned out to be a container restart
+  // racing a busy-flag staleness window, but Journal's own loop had no step cap at all --
+  // agent-loop.ts's real default is Infinity steps. Consulting Journal happens INSIDE a single
+  // autonomous tick, which is meant to be reasonably bounded -- an unbounded Journal exploration
+  // (e.g. repeatedly calling a 300s-timeout analysis tool) could otherwise block the whole tick
+  // for a very long time. Capped to a real, generous-but-finite number of steps.
   const result = await loop.run(
     [
       { role: "system", content: JOURNAL_SYSTEM_PROMPT },
       { role: "user", content: userContent },
     ],
-    { timeoutMs: 60_000 }
-  );
+    { timeoutMs: 60_000, maxSteps: 5 }
+  ).catch((err) => {
+    if (err instanceof MaxStepsExceededError) return null;
+    throw err;
+  });
 
+  if (!result) return { opinion: "Journal ran out of steps without reaching a real opinion -- proceed on your own read." };
   if (result.status === "done") return { opinion: result.text };
   // Journal has no ask_user tool registered, so this should never genuinely happen -- but if the
   // underlying loop ever paused for one anyway, report that honestly rather than pretend an

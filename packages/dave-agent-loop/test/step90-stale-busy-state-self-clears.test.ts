@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setBusy, getBusyState, clearBusy } from "../src/busy-state.js";
+import { setBusy, getBusyState, clearBusy, setAutonomousBusy, getAutonomousBusyState, clearAutonomousBusy } from "../src/busy-state.js";
 
 /**
  * Real bug fixed (user: "it doesn't trade... check anything limiting it, check it now fix it").
@@ -24,6 +24,10 @@ const USER = "user-stale-busy-1";
 
 function busyPath(userId: string): string {
   return join(workDir, "data", "agent-loop", userId, "busy.json");
+}
+
+function autonomousBusyPath(userId: string): string {
+  return join(workDir, "data", "agent-loop", userId, "busy-autonomous.json");
 }
 
 try {
@@ -51,6 +55,29 @@ try {
   writeFileSync(busyPath(USER), JSON.stringify(stillFreshState), "utf8");
   assert.ok(getBusyState(USER), "a 10-minute-old record must still genuinely block -- it's within a real turn's possible duration now");
   console.log("    confirmed: a real still-plausibly-in-flight turn (10 minutes) is not prematurely force-cleared");
+
+  // Real regression fixed (caught live: a real container restart mid-cycle left a stale
+  // autonomous busy record that, under the shared 15-minute window above, would have blocked
+  // real trading cycles for up to 15 minutes instead of the original tighter bound). The
+  // autonomous tick's own real worst case (one decision call, one optional Journal consult,
+  // the EA's analysis fetch) is much tighter than a user turn's unbounded tool loop, so it keeps
+  // its own, shorter staleness window -- unaffected by the user-turn window's widening.
+  console.log("\n[4] The AUTONOMOUS busy kind uses its own tighter staleness window, unaffected by the user-turn widening...\n");
+  setAutonomousBusy(USER, "real autonomous cycle in flight");
+  assert.ok(getAutonomousBusyState(USER), "a fresh autonomous busy record must still block");
+  clearAutonomousBusy(USER);
+
+  const autoDir = join(workDir, "data", "agent-loop", USER);
+  mkdirSync(autoDir, { recursive: true });
+  const staleAutoState = { taskDescription: "autonomous trading cycle", startedAt: Date.now() - 7 * 60_000 };
+  writeFileSync(autonomousBusyPath(USER), JSON.stringify(staleAutoState), "utf8");
+  assert.equal(getAutonomousBusyState(USER), null, "a 7-minute-old AUTONOMOUS record (e.g. from a real container restart) must self-clear quickly, not wait 15 minutes like a user turn");
+  console.log("    confirmed: a real 7-minute-stale autonomous record self-clears -- a restart no longer blocks trading for up to 15 minutes");
+
+  const stillFreshAutoState = { taskDescription: "a real in-flight tick", startedAt: Date.now() - 3 * 60_000 };
+  writeFileSync(autonomousBusyPath(USER), JSON.stringify(stillFreshAutoState), "utf8");
+  assert.ok(getAutonomousBusyState(USER), "a genuinely still-in-flight 3-minute-old autonomous record must still block");
+  console.log("    confirmed: a real still-in-flight autonomous cycle (3 minutes) is not prematurely force-cleared");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {
