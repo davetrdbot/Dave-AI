@@ -59,13 +59,6 @@ export function getPendingDelegationQueue(userId: string): PendingDelegation[] {
   return readDelegationQueue(userId);
 }
 
-/** Back-compat convenience for a single caller that only ever expects one entry -- returns the
- *  OLDEST pending message (the one that's been waiting longest), or null if none. */
-export function getPendingDelegation(userId: string): PendingDelegation | null {
-  const queue = readDelegationQueue(userId);
-  return queue[0] ?? null;
-}
-
 /** Honest, rough estimate -- no historical per-task-type timing data exists to draw on, so
  * this reports what's actually knowable (elapsed time so far) rather than fabricating a
  * confident-sounding prediction it has no real basis for. */
