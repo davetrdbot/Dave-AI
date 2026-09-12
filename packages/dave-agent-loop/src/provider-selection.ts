@@ -48,7 +48,7 @@ export const NVIDIA_TIMEOUT_MS = MAX_TIMEOUT_SECONDS * 1000;
 export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
   return {
     name: "model-config" as ProviderName,
-    async generate(req: CompletionRequest, defaultTimeoutMs: number): Promise<CompletionResult> {
+    async generate(req: CompletionRequest, defaultTimeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
       const config = getModelConfig(userId);
       const order = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
       const attempts: { provider: ProviderName; reason: string }[] = [];
@@ -72,22 +72,30 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
         // provider switch over something a smaller request would have avoided.
         let reqForThisProvider = req;
         try {
-          return await generateWithKeyFailover(db, userId, provider, reqForThisProvider, timeoutMs, {
-            onKeySwitch: async ({ reason }) => {
-              await notify(`⚠️ ${provider} key issue (${classifyProviderError(reason)}) — trying next key`);
+          return await generateWithKeyFailover(
+            db,
+            userId,
+            provider,
+            reqForThisProvider,
+            timeoutMs,
+            {
+              onKeySwitch: async ({ reason }) => {
+                await notify(`⚠️ ${provider} key issue (${classifyProviderError(reason)}) — trying next key`);
+              },
+              onProviderExhausted: async ({ reason }) => {
+                attempts.push({ provider, reason });
+                if (hasNextProvider) await notify(`⚠️ ${provider} unavailable (${classifyProviderError(reason)}) — switching provider`);
+              },
             },
-            onProviderExhausted: async ({ reason }) => {
-              attempts.push({ provider, reason });
-              if (hasNextProvider) await notify(`⚠️ ${provider} unavailable (${classifyProviderError(reason)}) — switching provider`);
-            },
-          });
+            signal
+          );
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
           if (req.tools && req.tools.length > EMERGENCY_TOOL_TRIM && classifyProviderError(reason) === "too many tools in request") {
             try {
               reqForThisProvider = { ...req, tools: req.tools.slice(0, EMERGENCY_TOOL_TRIM) };
               await notify(`⚠️ ${provider} call failed — too many tools in request, retrying with a trimmed set`);
-              return await generateWithKeyFailover(db, userId, provider, reqForThisProvider, timeoutMs, {});
+              return await generateWithKeyFailover(db, userId, provider, reqForThisProvider, timeoutMs, {}, signal);
             } catch (retryErr) {
               const retryReason = retryErr instanceof Error ? retryErr.message : String(retryErr);
               if (!attempts.some((a) => a.provider === provider)) attempts.push({ provider, reason: retryReason });

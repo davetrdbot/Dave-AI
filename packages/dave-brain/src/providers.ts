@@ -166,16 +166,31 @@ export class ImageNotSupportedError extends ProviderError {
 
 export interface Provider {
   readonly name: ProviderName;
-  generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult>;
+  generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult>;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+/**
+ * Real bug fixed (user, live: a stuck turn kept "thinking"/burning credit forever -- changing the
+ * timeout setting, `/stop`, and `/reset` all did nothing). The per-call timeout here was always
+ * real, but there was no way for anything OUTSIDE this one call to cancel it early. `signal` is
+ * the real, external cancel path (wired from AgentLoop.run() -> turn-abort.ts, triggered by
+ * `/stop`/`/panic`/`/reset`): the request is genuinely aborted -- and stops billing/generating --
+ * the instant either the caller's own signal fires OR the per-call timeout elapses, whichever
+ * comes first.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", onExternalAbort);
+  }
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
@@ -230,7 +245,7 @@ export class AirLLMProvider implements Provider {
     private readonly compression: "4bit" | "8bit" | "none" = "4bit"
   ) {}
 
-  async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+  async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     if (containsImage(req.messages)) throw new ImageNotSupportedError("airllm");
     const start = Date.now();
     let res: Response;
@@ -242,7 +257,8 @@ export class AirLLMProvider implements Provider {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ messages: req.messages, max_tokens: req.maxTokens, compression: this.compression }),
         },
-        timeoutMs
+        timeoutMs,
+        signal
       );
     } catch (err) {
       throw new ProviderError("airllm", `request failed/timed out after ${timeoutMs}ms`, err);
@@ -278,7 +294,7 @@ export class DeepSeekProvider implements Provider {
     private readonly model = "deepseek-chat"
   ) {}
 
-  async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+  async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     if (containsImage(req.messages)) throw new ImageNotSupportedError("deepseek");
     const start = Date.now();
     const tools = toOpenAIToolSpecs(req.tools);
@@ -292,7 +308,8 @@ export class DeepSeekProvider implements Provider {
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
           body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools, tool_choice }),
         },
-        timeoutMs
+        timeoutMs,
+        signal
       );
     } catch (err) {
       throw new ProviderError("deepseek", `request failed/timed out after ${timeoutMs}ms`, err);
@@ -352,7 +369,7 @@ export class ClaudeProvider implements Provider {
       });
   }
 
-  async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+  async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     const start = Date.now();
     const systemMessage = req.messages.find((m) => m.role === "system");
     if (systemMessage && typeof systemMessage.content !== "string") {
@@ -395,7 +412,8 @@ export class ClaudeProvider implements Provider {
             tool_choice,
           }),
         },
-        timeoutMs
+        timeoutMs,
+        signal
       );
     } catch (err) {
       throw new ProviderError("claude", `request failed/timed out after ${timeoutMs}ms`, err);
@@ -450,7 +468,7 @@ export class OpenAICompatibleProvider implements Provider {
     private readonly authHeaderStyle: "bearer" | "api-key-header" = "bearer"
   ) {}
 
-  async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+  async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     const start = Date.now();
     const tools = toOpenAIToolSpecs(req.tools);
     const tool_choice = toOpenAIToolChoice(req.toolChoice);
@@ -466,7 +484,8 @@ export class OpenAICompatibleProvider implements Provider {
               : { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
           body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools, tool_choice }),
         },
-        timeoutMs
+        timeoutMs,
+        signal
       );
     } catch (err) {
       throw new ProviderError(this.name, `request failed/timed out after ${timeoutMs}ms`, err);
@@ -510,7 +529,7 @@ export class CohereProvider implements Provider {
     private readonly baseUrl = "https://api.cohere.com/v2"
   ) {}
 
-  async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+  async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     if (containsImage(req.messages)) throw new ImageNotSupportedError("cohere");
     const start = Date.now();
     // Real bug fixed (provider audit, same class of bug as the DeepSeek one -- user: "I can use
@@ -532,7 +551,8 @@ export class CohereProvider implements Provider {
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
           body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools, tool_choice }),
         },
-        timeoutMs
+        timeoutMs,
+        signal
       );
     } catch (err) {
       throw new ProviderError("cohere", `request failed/timed out after ${timeoutMs}ms`, err);
@@ -565,7 +585,7 @@ export class ReplicateProvider implements Provider {
     private readonly pollIntervalMs = 1000
   ) {}
 
-  async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+  async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     if (containsImage(req.messages)) throw new ImageNotSupportedError("replicate");
     const start = Date.now();
     const prompt = req.messages.map((m) => `${m.role}: ${typeof m.content === "string" ? m.content : ""}`).join("\n");
@@ -579,7 +599,8 @@ export class ReplicateProvider implements Provider {
           headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
           body: JSON.stringify({ version: this.model, input: { prompt, max_tokens: req.maxTokens } }),
         },
-        timeoutMs
+        timeoutMs,
+        signal
       );
     } catch (err) {
       throw new ProviderError("replicate", `create-prediction request failed/timed out after ${timeoutMs}ms`, err);
@@ -596,8 +617,13 @@ export class ReplicateProvider implements Provider {
       if (Date.now() >= deadline) {
         throw new ProviderError("replicate", `prediction ${created.id} did not reach a terminal status within ${timeoutMs}ms (last status: ${status})`);
       }
+      // Real cancel path: a genuinely aborted turn (`/stop`/`/panic`/`/reset`) must stop polling
+      // a still-running prediction instead of waiting out the rest of `timeoutMs` regardless.
+      if (signal?.aborted) {
+        throw new ProviderError("replicate", `prediction ${created.id} cancelled -- the turn was aborted while polling`);
+      }
       await new Promise((r) => setTimeout(r, this.pollIntervalMs));
-      const pollRes = await fetch(created.urls.get, { headers: { authorization: `Bearer ${this.apiKey}` } });
+      const pollRes = await fetchWithTimeout(created.urls.get, { headers: { authorization: `Bearer ${this.apiKey}` } }, Math.max(1, deadline - Date.now()), signal);
       if (!pollRes.ok) {
         throw new ProviderError("replicate", `HTTP ${pollRes.status} polling prediction ${created.id}`);
       }
@@ -659,7 +685,7 @@ export class BedrockProvider implements Provider {
     return { authorization, "x-amz-date": amzDate, "x-amz-content-sha256": payloadHash };
   }
 
-  async generate(req: CompletionRequest, timeoutMs: number): Promise<CompletionResult> {
+  async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     const start = Date.now();
     const path = `/model/${encodeURIComponent(this.model)}/converse`;
     // Real bug fixed (provider audit -- user: "check the providers... check if prompt caching is
@@ -719,7 +745,8 @@ export class BedrockProvider implements Provider {
       res = await fetchWithTimeout(
         `${this.baseUrl}${path}`,
         { method: "POST", headers: { "content-type": "application/json", ...signedHeaders }, body },
-        timeoutMs
+        timeoutMs,
+        signal
       );
     } catch (err) {
       throw new ProviderError("bedrock", `request failed/timed out after ${timeoutMs}ms`, err);

@@ -21,6 +21,7 @@ import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTrad
 import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState } from "./busy-state.js";
+import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
@@ -127,6 +128,10 @@ async function runAgentTurn(
 
   const taskDescription = typeof userContent === "string" ? userContent.slice(0, 80) : "processing your message";
   setBusy(deps.ownerUserId, taskDescription);
+  // Real bug fixed (user, live: a turn got stuck "thinking" forever, immune to a changed timeout
+  // setting, `/stop`, and `/reset`). This tracks the turn so those commands can genuinely cancel
+  // it (see turn-abort.ts) instead of only flipping flags nothing in this call ever checked.
+  const abortController = beginTurn(deps.ownerUserId);
   try {
     let finalResult: AgentRunResult | undefined;
     await withThinkingIndicator(client, chatId, async (indicator) => {
@@ -134,13 +139,20 @@ async function runAgentTurn(
       let result: AgentRunResult;
       if (pendingQuestion && pendingToolCallId) {
         clearPendingQuestion(deps.ownerUserId);
-        result = await loop.resume({ status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] }, messageText as string, { onStep });
+        result = await loop.resume(
+          { status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] },
+          messageText as string,
+          { onStep, signal: abortController.signal }
+        );
       } else {
         history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent) });
-        result = await loop.run(history, { onStep });
+        result = await loop.run(history, { onStep, signal: abortController.signal });
       }
       saveConversationHistory(deps.db, historyKey, result.history);
       finalResult = result;
+      if (result.status === "aborted") {
+        return { result: undefined, finalText: "⏹️ Stopped -- that turn was cancelled." };
+      }
       // Real bug fixed (user: "sometimes it shows (no text) like this everytime"): a turn that
       // ends with tool calls but no closing remark from the model (common after a purely
       // action-driven turn, e.g. placing a trade with nothing left to say) used to literally send
@@ -162,10 +174,11 @@ async function runAgentTurn(
       const rows = options.map((opt, i) => [{ text: opt, callback_data: `askuser:${toolCallId}:${i}` }]);
       await client.sendMessage({ chat_id: chatId, text: "Tap an option:", reply_markup: { inline_keyboard: rows } });
     }
-    sendTransientTokenUsage(client, chatId, finalResult?.tokenUsage);
+    if (finalResult?.status !== "aborted") sendTransientTokenUsage(client, chatId, finalResult?.tokenUsage);
   } catch (err) {
     await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) });
   } finally {
+    endTurn(deps.ownerUserId, abortController);
     clearBusy(deps.ownerUserId);
   }
 }
@@ -189,7 +202,14 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
     // mode -- a real /stop or /panic is a genuine full stop, so reset that too, otherwise a later
     // /start_trading would wake back up already stuck in watch-only mode instead of normal.
     setAutonomousExecutionEnabled(deps.ownerUserId, true);
-    await client.sendMessage({ chat_id: chatId, text: "🛑 Stopped -- all trading and workers halted immediately." });
+    // Real bug fixed (user, live: a stuck turn kept "thinking"/burning credit, and neither /stop
+    // nor changing the timeout setting did anything about it). /stop and /panic now also
+    // genuinely cancel an in-flight chat turn, not just flip trading flags.
+    const cancelled = abortTurn(deps.ownerUserId);
+    await client.sendMessage({
+      chat_id: chatId,
+      text: cancelled ? "🛑 Stopped -- all trading and workers halted immediately. Also cancelled the message you were waiting on." : "🛑 Stopped -- all trading and workers halted immediately.",
+    });
     return true;
   }
 

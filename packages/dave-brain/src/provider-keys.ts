@@ -241,7 +241,8 @@ export async function generateWithKeyFailover(
   provider: ProviderName,
   req: CompletionRequest,
   timeoutMs = 15000,
-  notifier?: KeyFailoverNotifier
+  notifier?: KeyFailoverNotifier,
+  signal?: AbortSignal
 ): Promise<CompletionResult> {
   const keys = listProviderKeys(db, userId, provider);
   if (keys.length === 0) {
@@ -262,7 +263,7 @@ export async function generateWithKeyFailover(
     try {
       // Real mid-request safety: this is the SAME `req` retried on the next key below, not a
       // fresh/dropped request -- the caller's in-flight response genuinely still completes.
-      const result = await instance.generate(req, timeoutMs);
+      const result = await instance.generate(req, timeoutMs, signal);
       db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null });
       return result;
     } catch (err) {
@@ -277,7 +278,7 @@ export async function generateWithKeyFailover(
       if (isModelScopedRateLimit(reason) && catalogDefault && key.config.model && key.config.model !== catalogDefault) {
         try {
           const altInstance = buildProvider(provider, { ...key.config, model: catalogDefault });
-          const result = await altInstance.generate(req, timeoutMs);
+          const result = await altInstance.generate(req, timeoutMs, signal);
           db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null });
           return result;
         } catch {

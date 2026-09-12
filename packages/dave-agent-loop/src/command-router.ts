@@ -17,6 +17,7 @@ import {
   escapeHtml,
 } from "@dave/telegram";
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource, setEaPushInterval, getEaPushIntervalPreference, setPendingPushIntervalEntry, getPendingPushIntervalEntry } from "@dave/ea-bridge";
+import { abortTurn } from "./turn-abort.js";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
 import { formatPnl, buildTradePlacedMessage } from "./trade-notifications.js";
@@ -1208,6 +1209,10 @@ async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<voi
  * actually happens, and the confirmation message above says so plainly rather than pretending.
  */
 async function performFullReset(deps: CommandRouterDeps, chatId: number, historyKey: string): Promise<void> {
+  // Real bug fixed (user, live: a stuck turn kept "thinking" forever, and /reset didn't stop it
+  // either). A wipe this thorough must never leave a turn still running against history that's
+  // about to be erased out from under it -- cancel it first, same real mechanism /stop uses.
+  abortTurn(deps.userId);
   clearConversationHistory(deps.db, historyKey);
   clearConversationHistory(deps.db, `${deps.userId}:autonomous:${chatId}`);
   resetUserMemory(deps.userId);
