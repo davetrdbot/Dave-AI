@@ -262,6 +262,7 @@ function resolveCursorSymbol(userId: string, primary: string[], fallback: string
     const symbol = active[symbolCursor % active.length];
     const hours = isMarketOpenForSymbol(symbol, groupIdFor(symbol, scanningFallback), new Date());
     if (!hours.open) {
+      logTick(userId, `skipped ${symbol} -- ${hours.reason}`);
       advanceCursor(userId, primary.length, fallback.length);
       continue;
     }
