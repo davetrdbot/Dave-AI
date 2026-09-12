@@ -19,7 +19,6 @@ import {
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource, setEaPushInterval, getEaPushIntervalPreference, setPendingPushIntervalEntry, getPendingPushIntervalEntry } from "@dave/ea-bridge";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
-import { setPendingAnalysisScopeEntry, getPendingAnalysisScopeEntry } from "./pending-analysis-scope-entry.js";
 import { formatPnl, buildTradePlacedMessage } from "./trade-notifications.js";
 import {
   getRiskSettings,
@@ -68,8 +67,9 @@ import {
   setSelfPauseEnabled,
   getAnalysisConfig,
   resetAnalysisConfigToAll,
-  setCustomTimeframes,
-  setCustomEndpoints,
+  toggleTimeframe,
+  toggleEndpoint,
+  ALL_ANALYSIS_TIMEFRAMES,
   ALL_ANALYSIS_ENDPOINTS,
 } from "@dave/trading";
 import { listSkills } from "@dave/skills";
@@ -661,12 +661,47 @@ function analysisConfigKeyboard(userId: string): { text: string; reply_markup: R
   const reply_markup = withMenuHome(
     keyboard([
       [coloredButton("Send ALL (reset to default)", "green", "analysisscope:all")],
-      [coloredButton("Set custom timeframes", "blue", "analysisscope:settf")],
-      [coloredButton("Set custom endpoints", "blue", "analysisscope:setep")],
+      [coloredButton("Timeframes >", "blue", "analysisscope:tf")],
+      [coloredButton("Endpoints >", "blue", "analysisscope:ep:0")],
     ]),
     "settings:top"
   );
   return { text, reply_markup };
+}
+
+/** Real gap fixed (user, live: "didn't I tell you to make the endpoints and timeframes in the
+ *  analysis scope UI" -- a typed-reply capture isn't a real UI). Real tap-to-toggle buttons, one
+ *  per timeframe (only 6, fits on one screen easily) -- same coloredButton on/off pattern every
+ *  other toggle in this file uses (e.g. providersKeyboard above). */
+function analysisTimeframesKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const config = getAnalysisConfig(userId);
+  const active = new Set(config.mode === "all" ? ALL_ANALYSIS_TIMEFRAMES : config.timeframes);
+  const rows = ALL_ANALYSIS_TIMEFRAMES.map((tf) => [coloredButton(`${active.has(tf) ? "✅" : "⬜"} ${tf}`, active.has(tf) ? "green" : "neutral", `analysistf:${tf}`)]);
+  const text = `<b>Analysis Timeframes</b>\nTap to include/exclude. At least one stays selected.\n\n${[...active].join(", ")} selected`;
+  return { text, reply_markup: withMenuHome(keyboard(rows), "settings:analysis") };
+}
+
+/** Same real tap-to-toggle pattern as timeframes, for the 44 endpoints -- paginated (8 per page,
+ *  2 per row) since a single screen of 44 buttons is unusable in Telegram. */
+const ENDPOINTS_PER_PAGE = 8;
+function analysisEndpointsKeyboard(userId: string, page: number): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const config = getAnalysisConfig(userId);
+  const active = new Set(config.mode === "all" ? ALL_ANALYSIS_ENDPOINTS : config.endpoints);
+  const totalPages = Math.ceil(ALL_ANALYSIS_ENDPOINTS.length / ENDPOINTS_PER_PAGE);
+  const clampedPage = Math.max(0, Math.min(page, totalPages - 1));
+  const pageEndpoints = ALL_ANALYSIS_ENDPOINTS.slice(clampedPage * ENDPOINTS_PER_PAGE, (clampedPage + 1) * ENDPOINTS_PER_PAGE);
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  for (let i = 0; i < pageEndpoints.length; i += 2) {
+    rows.push(
+      pageEndpoints.slice(i, i + 2).map((ep) => coloredButton(`${active.has(ep) ? "✅" : "⬜"} ${ep}`, active.has(ep) ? "green" : "neutral", `analysisep:${ep}:${clampedPage}`))
+    );
+  }
+  const navRow: ReturnType<typeof coloredButton>[] = [];
+  if (clampedPage > 0) navRow.push(coloredButton("< Prev", "blue", `analysisscope:ep:${clampedPage - 1}`));
+  if (clampedPage < totalPages - 1) navRow.push(coloredButton("Next >", "blue", `analysisscope:ep:${clampedPage + 1}`));
+  if (navRow.length > 0) rows.push(navRow);
+  const text = `<b>Analysis Endpoints</b>\nTap to include/exclude. At least one stays selected.\nPage ${clampedPage + 1}/${totalPages} -- ${active.size} of ${ALL_ANALYSIS_ENDPOINTS.length} selected total.`;
+  return { text, reply_markup: withMenuHome(keyboard(rows), "settings:analysis") };
 }
 
 /** Real gap fixed (user, with a real screenshot: "implement confidence rate... a setting to
@@ -1003,33 +1038,6 @@ export async function tryHandlePendingPushIntervalEntry(deps: CommandRouterDeps,
   }
   setEaPushInterval(deps.userId, Math.round(value));
   await deps.client.sendMessage({ chat_id: chatId, text: `✅ Push interval set to ${Math.round(value)}s -- applies live the next time the EA polls (no restart needed).` });
-  return true;
-}
-
-/** Real feature (user, live: "add a feature in the settings that the user can configure the get
- *  all analysis... select among endpoints... and the timeframe"): the capture half of the
- *  "Set custom timeframes"/"Set custom endpoints" buttons -- the user's next message is a
- *  comma-separated list of the ones to use. Invalid entries are silently dropped (never crash),
- *  and if everything typed was invalid, the PREVIOUS list is kept rather than emptied out.
- */
-export async function tryHandlePendingAnalysisScopeEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
-  const kind = getPendingAnalysisScopeEntry(deps.db, deps.userId);
-  if (!kind) return false;
-  setPendingAnalysisScopeEntry(deps.db, deps.userId, null);
-  const entries = text
-    .split(",")
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean);
-  if (kind === "timeframes") {
-    const result = setCustomTimeframes(deps.userId, entries);
-    await deps.client.sendMessage({ chat_id: chatId, text: `✅ Custom timeframes: ${result.timeframes.join(", ")}` });
-  } else {
-    const result = setCustomEndpoints(
-      deps.userId,
-      entries.map((e) => e.toLowerCase())
-    );
-    await deps.client.sendMessage({ chat_id: chatId, text: `✅ Custom endpoints (${result.endpoints.length}): ${result.endpoints.join(", ")}` });
-  }
   return true;
 }
 
@@ -1459,14 +1467,30 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       await confirm("Analysis scope reset to All");
       const view = analysisConfigKeyboard(deps.userId);
       await renderInPlace(view.text, view.reply_markup);
-    } else if (data === "analysisscope:settf" && chatId !== undefined) {
-      setPendingAnalysisScopeEntry(deps.db, deps.userId, "timeframes");
+    } else if (data === "analysisscope:tf") {
       ackText = undefined;
-      await deps.client.sendMessage({ chat_id: chatId, text: "Reply with a comma-separated list of timeframes to use, from: M1, M3, M5, M15, H1, H4" });
-    } else if (data === "analysisscope:setep" && chatId !== undefined) {
-      setPendingAnalysisScopeEntry(deps.db, deps.userId, "endpoints");
+      const view = analysisTimeframesKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("analysisscope:ep:")) {
       ackText = undefined;
-      await deps.client.sendMessage({ chat_id: chatId, text: `Reply with a comma-separated list of endpoints to use, from: ${ALL_ANALYSIS_ENDPOINTS.join(", ")}` });
+      const page = Number(data.slice("analysisscope:ep:".length)) || 0;
+      const view = analysisEndpointsKeyboard(deps.userId, page);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("analysistf:")) {
+      const tf = data.slice("analysistf:".length);
+      toggleTimeframe(deps.userId, tf);
+      ackText = `${tf} toggled`;
+      const view = analysisTimeframesKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("analysisep:")) {
+      const rest = data.slice("analysisep:".length);
+      const lastColon = rest.lastIndexOf(":");
+      const endpoint = rest.slice(0, lastColon);
+      const page = Number(rest.slice(lastColon + 1)) || 0;
+      toggleEndpoint(deps.userId, endpoint);
+      ackText = `${endpoint} toggled`;
+      const view = analysisEndpointsKeyboard(deps.userId, page);
+      await renderInPlace(view.text, view.reply_markup);
     } else if (data === "toggleselfpause") {
       const enabled = getSelfPauseEnabled(deps.userId);
       setSelfPauseEnabled(deps.userId, !enabled);

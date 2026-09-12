@@ -112,6 +112,38 @@ export function setCustomEndpoints(userId: string, endpoints: string[]): Analysi
   return next;
 }
 
+/** Real gap fixed (user, live: "didn't I tell you to make the endpoints and timeframes in the
+ *  analysis scope UI" -- a typed-reply capture is not a real UI, every other setting in this app
+ *  is a tappable button). Toggles a single timeframe in the custom set -- on if it was off, off
+ *  if it was on -- switching mode to "custom" the first time. When toggling FROM "all" mode, the
+ *  starting set is the full real list (not empty), so switching one off narrows by exactly one,
+ *  never wipes the rest. Never lets the set go empty -- a toggle that would remove the last
+ *  remaining entry is refused, since an empty scope is a real, silent "sends nothing" bug. */
+export function toggleTimeframe(userId: string, timeframe: string): AnalysisConfig {
+  const tf = timeframe.trim().toUpperCase();
+  if (!(ALL_ANALYSIS_TIMEFRAMES as readonly string[]).includes(tf)) return getAnalysisConfig(userId);
+  const current = getAnalysisConfig(userId);
+  const base = current.mode === "all" ? [...ALL_ANALYSIS_TIMEFRAMES] : current.timeframes;
+  const has = base.includes(tf);
+  if (has && base.length <= 1) return { ...current, mode: "custom", timeframes: base };
+  const next: AnalysisConfig = { mode: "custom", timeframes: has ? base.filter((t) => t !== tf) : [...base, tf], endpoints: current.mode === "all" ? [...ALL_ANALYSIS_ENDPOINTS] : current.endpoints };
+  setAnalysisConfig(userId, next);
+  return next;
+}
+
+/** Same real toggle behavior as toggleTimeframe, for a single endpoint. */
+export function toggleEndpoint(userId: string, endpoint: string): AnalysisConfig {
+  const ep = endpoint.trim().toLowerCase();
+  if (!(ALL_ANALYSIS_ENDPOINTS as readonly string[]).includes(ep)) return getAnalysisConfig(userId);
+  const current = getAnalysisConfig(userId);
+  const base = current.mode === "all" ? [...ALL_ANALYSIS_ENDPOINTS] : current.endpoints;
+  const has = base.includes(ep);
+  if (has && base.length <= 1) return { ...current, mode: "custom", endpoints: base };
+  const next: AnalysisConfig = { mode: "custom", endpoints: has ? base.filter((e) => e !== ep) : [...base, ep], timeframes: current.mode === "all" ? [...ALL_ANALYSIS_TIMEFRAMES] : current.timeframes };
+  setAnalysisConfig(userId, next);
+  return next;
+}
+
 /** Filters a merged "all"-endpoint suite object down to only the configured endpoint keys --
  *  a no-op (returns the object unchanged) when mode is "all", so the default behavior never
  *  drops anything the EA genuinely returned. */
