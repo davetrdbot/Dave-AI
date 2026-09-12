@@ -90,6 +90,12 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
             signal
           );
         } catch (err) {
+          // Real bug fixed (user, live: /stop cancelled one in-flight call, but "still thinking"
+          // never stopped). An abort was being caught here and treated as just "this provider
+          // failed," so the loop kept going -- trying the NEXT provider in the whole configured
+          // chain with a brand-new network call, over and over, instead of genuinely stopping.
+          // A signal that's already aborted means stop now, full stop -- never retry past it.
+          if (signal?.aborted) throw err;
           const reason = err instanceof Error ? err.message : String(err);
           if (req.tools && req.tools.length > EMERGENCY_TOOL_TRIM && classifyProviderError(reason) === "too many tools in request") {
             try {
@@ -97,6 +103,7 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
               await notify(`⚠️ ${provider} call failed — too many tools in request, retrying with a trimmed set`);
               return await generateWithKeyFailover(db, userId, provider, reqForThisProvider, timeoutMs, {}, signal);
             } catch (retryErr) {
+              if (signal?.aborted) throw retryErr;
               const retryReason = retryErr instanceof Error ? retryErr.message : String(retryErr);
               if (!attempts.some((a) => a.provider === provider)) attempts.push({ provider, reason: retryReason });
               continue;

@@ -151,6 +151,10 @@ async function runAgentTurn(
       saveConversationHistory(deps.db, historyKey, result.history);
       finalResult = result;
       if (result.status === "aborted") {
+        // Real, plain visibility into the exact bug this closes (user, live: "/stop didn't work,
+        // still showing typing") -- confirms in the logs that an abort genuinely reached and
+        // stopped the loop, not just "processing forever" with nothing to check.
+        console.log(`[turn-abort] ${deps.ownerUserId}: turn genuinely stopped (reason=${result.reason})`);
         return { result: undefined, finalText: "⏹️ Stopped -- that turn was cancelled." };
       }
       // Real bug fixed (user: "sometimes it shows (no text) like this everytime"): a turn that

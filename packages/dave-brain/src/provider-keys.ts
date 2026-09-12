@@ -267,6 +267,11 @@ export async function generateWithKeyFailover(
       db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null });
       return result;
     } catch (err) {
+      // Real bug fixed (user, live: /stop didn't cancel a stuck turn -- an abort mid-call was
+      // being caught here and treated as "this key failed," so the loop dutifully moved on to
+      // try the NEXT key with a brand-new network call instead of genuinely stopping). A signal
+      // that's already aborted means the CALLER wants this to stop now -- never retry past it.
+      if (signal?.aborted) throw err;
       const reason = err instanceof ProviderError ? err.message : String(err);
 
       // Real bug fixed (user: "NVIDIA's rate limit exceeded isn't a real persistent rate limit,
