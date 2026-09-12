@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 export interface TickDecisionRecord {
   ts: number;
   symbol: string;
-  action: "BUY" | "SELL" | "SKIP" | "ASK" | "DELETE_TICKET" | "PARTIAL_CLOSE" | "PAUSE";
+  action: "BUY" | "SELL" | "SKIP" | "ASK" | "DELETE_TICKET" | "PARTIAL_CLOSE" | "PAUSE" | "CONSULT_JOURNAL";
   reason: string;
 }
 

@@ -106,7 +106,10 @@ async function main() {
         const toolMsg = parsed.messages.find((m: any) => m.role === "tool");
         const result = JSON.parse(toolMsg.content);
         console.log("[3] The real, full-suite EA result genuinely reached the model -- more than just price/confluence...\n");
-        assert.deepEqual(result, fullSuiteData);
+        // Real gap fixed (user, live: "confirm get_all_analysis" also shows an existing position/
+        // pending order on this symbol): get_all_analysis now merges in real state on top of the
+        // pure analysis payload, so the result is the original data plus two new, real fields.
+        assert.deepEqual(result, { ...fullSuiteData, openPositionsForSymbol: [], pendingOrdersForSymbol: [] });
         for (const key of ["trend", "momentum", "volatility", "structure", "ichimoku", "fibonacci", "order_blocks", "session", "news", "confluence"]) {
           assert.ok(key in result, `real full-suite response must include "${key}"`);
         }

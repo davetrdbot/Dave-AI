@@ -16,6 +16,12 @@ export interface OrderRequest {
   price?: number; // required for pending types unless resolvable below
   sl?: number;
   tp?: number;
+  /** Real gap fixed (user, live: the reasoning behind a trade never reached MT5 itself, only our
+   *  own internal journal). Passed through to the EA's "open" command and, from there, as the
+   *  trailing `comment` argument on CTrade::Buy/Sell/BuyLimit/... -- so the order is visibly
+   *  labeled inside MT5, not just in this bot's own logs. Keep short: MT5's real, broker-enforced
+   *  comment length limit means a long string would just get silently cut by the terminal anyway. */
+  comment?: string;
 }
 
 export type EntryPriceResolution =

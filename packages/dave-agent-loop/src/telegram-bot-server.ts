@@ -21,9 +21,9 @@ import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTrad
 import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState } from "./busy-state.js";
-import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } from "./delegation.js";
+import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, tryHandlePendingAnalysisScopeEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
 import { isAutonomousTradingEnabled, setAutonomousTradingEnabled, setAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
@@ -497,26 +497,35 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         // in scope -- intercepted here, before the generic dispatchCallback.
         const delegateData = update.callback_query.data ?? "";
         if (delegateData.startsWith("delegate:") && cbChatId !== undefined) {
-          const pending = getPendingDelegation(deps.ownerUserId);
-          setPendingDelegation(deps.ownerUserId, null);
+          // Real bug fixed (user, live: two messages minutes apart got answered "bundled"
+          // together -- root-caused in part to this queue silently holding only the LAST
+          // message while an earlier one waited on this exact button prompt). Every message
+          // that queued up while busy is processed now, in order, not just the newest one.
+          const queue = getPendingDelegationQueue(deps.ownerUserId);
+          clearPendingDelegation(deps.ownerUserId);
           const action = delegateData.slice("delegate:".length);
-          if (!pending) {
+          if (queue.length === 0) {
             await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "That request is no longer waiting" }).catch(() => undefined);
             return;
           }
+          const pending = queue[0];
           if (action === "skip") {
             await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "Skipped" }).catch(() => undefined);
-            await client.sendMessage({ chat_id: pending.chatId, text: "Skipped -- let me know if you still need that." });
+            await client.sendMessage({ chat_id: pending.chatId, text: queue.length > 1 ? `Skipped all ${queue.length} -- let me know if you still need any of that.` : "Skipped -- let me know if you still need that." });
           } else if (action === "worker") {
             await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "Assigning a worker" }).catch(() => undefined);
-            const worker = createWorker(deps.ownerUserId, { assignment: "temporary", role: "generic", task: pending.text });
-            sendCommsMessage(deps.ownerUserId, DAVE_PARTICIPANT_ID, worker.id, pending.text);
-            await client.sendMessage({ chat_id: pending.chatId, text: `Handed to ${worker.name} (#${worker.name.toLowerCase()}) -- I'll keep going on what I was doing.` });
+            for (const item of queue) {
+              const worker = createWorker(deps.ownerUserId, { assignment: "temporary", role: "generic", task: item.text });
+              sendCommsMessage(deps.ownerUserId, DAVE_PARTICIPANT_ID, worker.id, item.text);
+              await client.sendMessage({ chat_id: item.chatId, text: `Handed to ${worker.name} (#${worker.name.toLowerCase()}) -- I'll keep going on what I was doing.` });
+            }
           } else if (action === "pause") {
             await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "Pausing to handle it now" }).catch(() => undefined);
-            await client.sendMessage({ chat_id: pending.chatId, text: "Pausing what I was doing -- on it now." });
-            const historyKeyForPending = `${deps.ownerUserId}:${pending.chatId}`;
-            await runAgentTurn(deps, client, pending.chatId, historyKeyForPending, pending.text, pending.text);
+            await client.sendMessage({ chat_id: pending.chatId, text: queue.length > 1 ? `Pausing what I was doing -- on all ${queue.length}, in order.` : "Pausing what I was doing -- on it now." });
+            for (const item of queue) {
+              const historyKeyForPending = `${deps.ownerUserId}:${item.chatId}`;
+              await runAgentTurn(deps, client, item.chatId, historyKeyForPending, item.text, item.text);
+            }
           }
           return;
         }
@@ -623,6 +632,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         if (await tryHandlePendingFirecrawlKeyEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingMcpServerEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingPushIntervalEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingAnalysisScopeEntry(routerDeps, chatId, message.text)) return;
         // Item 11: a typed "yes"/"no" answering a real pending settings-change approval is
         // handled here, BEFORE the agent loop ever sees it -- otherwise the model has no way
         // to know an approval is already pending and could re-propose the same change, sending
@@ -676,9 +686,19 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // in flight, not on every message.
       const busy = message.text ? getBusyState(deps.ownerUserId) : null;
       if (busy && message.text) {
-        setPendingDelegation(deps.ownerUserId, { text: message.text, chatId });
-        const prompt = buildDelegationPrompt(busy);
-        await client.sendMessage({ chat_id: chatId, text: prompt.text, reply_markup: prompt.reply_markup });
+        // Real bug fixed (user, live: two messages minutes apart got answered "bundled"
+        // together, root-caused in part to an earlier queued message being silently discarded
+        // by a THIRD arriving before either got answered). Every message queues now, but only
+        // the FIRST one still waiting gets the button prompt -- a second/third arrival while
+        // one is already pending just confirms it's been added, not another full prompt.
+        const alreadyQueued = getPendingDelegationQueue(deps.ownerUserId).length > 0;
+        addPendingDelegation(deps.ownerUserId, { text: message.text, chatId });
+        if (alreadyQueued) {
+          await client.sendMessage({ chat_id: chatId, text: "Got it -- queued behind what's already waiting on your answer above." });
+        } else {
+          const prompt = buildDelegationPrompt(busy);
+          await client.sendMessage({ chat_id: chatId, text: prompt.text, reply_markup: prompt.reply_markup });
+        }
         return;
       }
 

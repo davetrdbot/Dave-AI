@@ -106,7 +106,7 @@ export interface AccountSnapshot {
 }
 
 export type EaCommand =
-  | { id: string; action: "open"; symbol: string; type: string; lots: number; price?: number; sl?: number; tp?: number }
+  | { id: string; action: "open"; symbol: string; type: string; lots: number; price?: number; sl?: number; tp?: number; comment?: string }
   | { id: string; action: "modify"; ticket: string; sl?: number | null; tp?: number | null; price?: number }
   | { id: string; action: "close"; ticket: string; lots?: number }
   | { id: string; action: "delete_pending"; ticket: string }

@@ -19,6 +19,7 @@ import {
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource, setEaPushInterval, getEaPushIntervalPreference, setPendingPushIntervalEntry, getPendingPushIntervalEntry } from "@dave/ea-bridge";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
+import { setPendingAnalysisScopeEntry, getPendingAnalysisScopeEntry } from "./pending-analysis-scope-entry.js";
 import { formatPnl, buildTradePlacedMessage } from "./trade-notifications.js";
 import {
   getRiskSettings,
@@ -63,6 +64,13 @@ import {
   TradeApprovalNotFoundError,
   tradeExecute,
   huntForSetup,
+  getSelfPauseEnabled,
+  setSelfPauseEnabled,
+  getAnalysisConfig,
+  resetAnalysisConfigToAll,
+  setCustomTimeframes,
+  setCustomEndpoints,
+  ALL_ANALYSIS_ENDPOINTS,
 } from "@dave/trading";
 import { listSkills } from "@dave/skills";
 import {
@@ -635,8 +643,30 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Trading Session", "blue", "settings:session")],
       [coloredButton("Confidence Rate", "blue", "settings:confidence")],
       [coloredButton("Firecrawl Keys", "blue", "settings:firecrawl"), coloredButton("MCP Servers", "blue", "settings:mcp")],
+      [coloredButton("Analysis Scope", "blue", "settings:analysis")],
     ])
   );
+}
+
+/** Real feature (user, live: "add a feature in the settings that the user can configure the get
+ *  all analysis so they will select among endpoints... and the timeframe, and a default button
+ *  to send all"). Reset-to-all is one tap; narrowing either dimension is a typed reply (44
+ *  endpoints is too many for individual toggle buttons to stay usable). */
+function analysisConfigKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const config = getAnalysisConfig(userId);
+  const text =
+    `<b>Analysis Scope</b>\n` +
+    `Mode: ${config.mode === "all" ? "All endpoints & timeframes (default)" : "Custom"}\n` +
+    (config.mode === "custom" ? `Timeframes: ${config.timeframes.join(", ")}\nEndpoints: ${config.endpoints.length} of ${ALL_ANALYSIS_ENDPOINTS.length} selected` : "");
+  const reply_markup = withMenuHome(
+    keyboard([
+      [coloredButton("Send ALL (reset to default)", "green", "analysisscope:all")],
+      [coloredButton("Set custom timeframes", "blue", "analysisscope:settf")],
+      [coloredButton("Set custom endpoints", "blue", "analysisscope:setep")],
+    ]),
+    "settings:top"
+  );
+  return { text, reply_markup };
 }
 
 /** Real gap fixed (user, with a real screenshot: "implement confidence rate... a setting to
@@ -877,6 +907,11 @@ function riskSettingsKeyboard(userId: string) {
   const maxDailyLossLabel = pendingFor("maxDailyLossPct")
     ? `Max daily loss: ${settings.maxDailyLossPct ?? "not set"}% (pending approval)`
     : `Max daily loss: ${settings.maxDailyLossPct ?? "not set"}% (tap to change)`;
+  // Real gap fixed (user, live: self-pause was only ever reachable as an agent tool, with no
+  // real /settings button -- so the user had no direct way to turn it off themselves). Same
+  // toggle shape as every other on/off row here.
+  const selfPauseEnabled = getSelfPauseEnabled(userId);
+  const selfPauseLabel = `Dave can self-pause: ${selfPauseEnabled ? "On" : "Off"}`;
   return appendMenuHome(
     settingsScreen(
       [
@@ -898,6 +933,7 @@ function riskSettingsKeyboard(userId: string) {
         // separate approve/decline round trip, same as a Dave-initiated proposal.
         [{ label: maxOpenTradesLabel, callbackData: "proposelimit:maxOpenTrades", active: false }],
         [{ label: maxDailyLossLabel, callbackData: "proposelimit:maxDailyLossPct", active: false }],
+        [{ label: selfPauseLabel, callbackData: "toggleselfpause", active: selfPauseEnabled }],
       ],
       "settings:top"
     )
@@ -967,6 +1003,33 @@ export async function tryHandlePendingPushIntervalEntry(deps: CommandRouterDeps,
   }
   setEaPushInterval(deps.userId, Math.round(value));
   await deps.client.sendMessage({ chat_id: chatId, text: `✅ Push interval set to ${Math.round(value)}s -- applies live the next time the EA polls (no restart needed).` });
+  return true;
+}
+
+/** Real feature (user, live: "add a feature in the settings that the user can configure the get
+ *  all analysis... select among endpoints... and the timeframe"): the capture half of the
+ *  "Set custom timeframes"/"Set custom endpoints" buttons -- the user's next message is a
+ *  comma-separated list of the ones to use. Invalid entries are silently dropped (never crash),
+ *  and if everything typed was invalid, the PREVIOUS list is kept rather than emptied out.
+ */
+export async function tryHandlePendingAnalysisScopeEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const kind = getPendingAnalysisScopeEntry(deps.db, deps.userId);
+  if (!kind) return false;
+  setPendingAnalysisScopeEntry(deps.db, deps.userId, null);
+  const entries = text
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  if (kind === "timeframes") {
+    const result = setCustomTimeframes(deps.userId, entries);
+    await deps.client.sendMessage({ chat_id: chatId, text: `✅ Custom timeframes: ${result.timeframes.join(", ")}` });
+  } else {
+    const result = setCustomEndpoints(
+      deps.userId,
+      entries.map((e) => e.toLowerCase())
+    );
+    await deps.client.sendMessage({ chat_id: chatId, text: `✅ Custom endpoints (${result.endpoints.length}): ${result.endpoints.join(", ")}` });
+  }
   return true;
 }
 
@@ -1386,6 +1449,30 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
     } else if (data === "settings:top") {
       ackText = undefined;
       await renderInPlace("<b>Settings</b>\nTrading behavior (what/when/how to trade) is built in -- see /help. This screen is for account/risk settings only.", settingsTopKeyboard());
+    } else if (data === "settings:analysis") {
+      ackText = undefined;
+      const view = analysisConfigKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "analysisscope:all") {
+      resetAnalysisConfigToAll(deps.userId);
+      ackText = "Reset to all endpoints & timeframes";
+      await confirm("Analysis scope reset to All");
+      const view = analysisConfigKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "analysisscope:settf" && chatId !== undefined) {
+      setPendingAnalysisScopeEntry(deps.db, deps.userId, "timeframes");
+      ackText = undefined;
+      await deps.client.sendMessage({ chat_id: chatId, text: "Reply with a comma-separated list of timeframes to use, from: M1, M3, M5, M15, H1, H4" });
+    } else if (data === "analysisscope:setep" && chatId !== undefined) {
+      setPendingAnalysisScopeEntry(deps.db, deps.userId, "endpoints");
+      ackText = undefined;
+      await deps.client.sendMessage({ chat_id: chatId, text: `Reply with a comma-separated list of endpoints to use, from: ${ALL_ANALYSIS_ENDPOINTS.join(", ")}` });
+    } else if (data === "toggleselfpause") {
+      const enabled = getSelfPauseEnabled(deps.userId);
+      setSelfPauseEnabled(deps.userId, !enabled);
+      ackText = `Self-pause ${!enabled ? "enabled" : "disabled"}`;
+      await confirm(`Dave can self-pause: ${!enabled ? "On" : "Off"}`);
+      await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
     } else if (data === "settings:risk") {
       ackText = undefined;
       await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));

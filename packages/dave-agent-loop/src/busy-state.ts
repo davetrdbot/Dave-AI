@@ -57,7 +57,17 @@ function clearBusyState(userId: string, kind: BusyKind): void {
 // A busy state older than this is almost certainly stale from a dead process, not a real run still
 // in flight (no real single turn -- including a full analysis suite + trade_execute -- legitimately
 // takes this long), so it's treated as cleared rather than trusted forever.
-const MAX_BUSY_AGE_MS = 5 * 60_000;
+//
+// Real bug fixed (user, live: two messages minutes apart got answered "bundled" together). Root
+// cause: a real turn's own tool loop has no step cap (agent-loop.ts) and a single EA round trip
+// can genuinely take up to ~5 minutes on its own -- a turn with more than one such call could
+// legitimately still be running past the old 5-minute mark. When that happened, THIS check would
+// force-clear the busy lock out from under a still-live turn, letting a second message start a
+// genuinely concurrent second turn -- both load/save conversation history, last write wins, and
+// the two replies landing close together read exactly like "sent all in one." Widened well past
+// the real worst case (a handful of multi-minute EA round trips in one turn) instead of the bare
+// single-call estimate.
+const MAX_BUSY_AGE_MS = 15 * 60_000;
 
 function getBusyStateFor(userId: string, kind: BusyKind): BusyState | null {
   const path = busyPath(userId, kind);

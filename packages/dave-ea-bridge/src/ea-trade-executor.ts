@@ -78,8 +78,8 @@ export class EaTradeExecutor implements TradeExecutor {
     return randomBytes(8).toString("hex");
   }
 
-  async openOrder(order: { symbol: string; type: string; lots: number; price?: number; sl?: number; tp?: number }): Promise<{ ticket: string }> {
-    const command: EaCommand = { id: this.newCommandId(), action: "open", symbol: order.symbol, type: order.type, lots: order.lots, price: order.price, sl: order.sl, tp: order.tp };
+  async openOrder(order: { symbol: string; type: string; lots: number; price?: number; sl?: number; tp?: number; comment?: string }): Promise<{ ticket: string }> {
+    const command: EaCommand = { id: this.newCommandId(), action: "open", symbol: order.symbol, type: order.type, lots: order.lots, price: order.price, sl: order.sl, tp: order.tp, comment: order.comment };
     enqueueCommand(this.userId, command);
     const result = await this.awaitResult(command);
     if (!result.ticket) throw new Error(`EA reported success for open command ${command.id} but returned no ticket`);

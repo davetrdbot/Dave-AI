@@ -12,6 +12,10 @@ import {
   setAutoApprovalEnabled,
   getSelfPauseEnabled,
   setSelfPauseEnabled,
+  getAnalysisConfig,
+  resetAnalysisConfigToAll,
+  setCustomTimeframes,
+  setCustomEndpoints,
   getConfidenceSettings,
   setConfidenceThreshold,
   setAutoApproveBelowThreshold,
@@ -153,6 +157,30 @@ export const SETTINGS_TOOLS: ToolDefinition[] = [
       setSelfPauseEnabled(args.userId as string, Boolean(args.enabled));
       return { ok: true };
     },
+  },
+  {
+    name: "get_analysis_config",
+    description: "Get the user's real analysis scope -- whether get_all_analysis sends every endpoint/timeframe (the default, 'all') or a user-narrowed 'custom' subset.",
+    parameters: { type: "object", required: ["userId"], properties: { userId: { type: "string" } } },
+    execute: async (args) => getAnalysisConfig(args.userId as string),
+  },
+  {
+    name: "set_analysis_scope_all",
+    description: "Reset the analysis scope back to sending EVERY endpoint and timeframe -- the real default.",
+    parameters: { type: "object", required: ["userId"], properties: { userId: { type: "string" } } },
+    execute: async (args) => resetAnalysisConfigToAll(args.userId as string),
+  },
+  {
+    name: "set_analysis_timeframes",
+    description: "Narrow which real timeframes (from M1/M3/M5/M15/H1/H4) get_all_analysis fetches, switching scope to 'custom'.",
+    parameters: { type: "object", required: ["userId", "timeframes"], properties: { userId: { type: "string" }, timeframes: { type: "array", items: { type: "string" } } } },
+    execute: async (args) => setCustomTimeframes(args.userId as string, args.timeframes as string[]),
+  },
+  {
+    name: "set_analysis_endpoints",
+    description: "Narrow which real analysis endpoints (e.g. trend, momentum, structure, ichimoku, ...) get_all_analysis includes, switching scope to 'custom'.",
+    parameters: { type: "object", required: ["userId", "endpoints"], properties: { userId: { type: "string" }, endpoints: { type: "array", items: { type: "string" } } } },
+    execute: async (args) => setCustomEndpoints(args.userId as string, args.endpoints as string[]),
   },
   {
     name: "get_confidence_settings",

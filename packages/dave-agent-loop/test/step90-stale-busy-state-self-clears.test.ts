@@ -33,14 +33,24 @@ try {
   console.log("    confirmed: fresh busy state blocks, as intended");
   clearBusy(USER);
 
-  console.log("\n[2] A busy record from a real crashed process (6 minutes old, never cleared) genuinely self-clears...\n");
+  // Real bug fixed (user, live: two messages minutes apart got answered "bundled" together) --
+  // MAX_BUSY_AGE_MS was widened from 5 to 15 minutes, since a real turn's own tool loop has no
+  // step cap and a single EA round trip can take up to ~5 minutes on its own; a 6-minute-old
+  // record is no longer a safe assumption of a dead process. 16 minutes genuinely is.
+  console.log("\n[2] A busy record from a real crashed process (16 minutes old, never cleared) genuinely self-clears...\n");
   const dir = join(workDir, "data", "agent-loop", USER);
   mkdirSync(dir, { recursive: true });
-  const staleState = { taskDescription: "autonomous trading cycle", startedAt: Date.now() - 6 * 60_000 };
+  const staleState = { taskDescription: "autonomous trading cycle", startedAt: Date.now() - 16 * 60_000 };
   writeFileSync(busyPath(USER), JSON.stringify(staleState), "utf8");
   const result = getBusyState(USER);
-  assert.equal(result, null, "a 6-minute-old busy record from a dead process must genuinely read as NOT busy");
-  console.log("    confirmed: a real 6-minute-stale busy record no longer blocks the autonomous cycle");
+  assert.equal(result, null, "a 16-minute-old busy record from a dead process must genuinely read as NOT busy");
+  console.log("    confirmed: a real 16-minute-stale busy record no longer blocks the autonomous cycle");
+
+  console.log("\n[3] A busy record that's still within the real widened window (10 minutes) correctly still blocks...\n");
+  const stillFreshState = { taskDescription: "a real multi-EA-round-trip turn", startedAt: Date.now() - 10 * 60_000 };
+  writeFileSync(busyPath(USER), JSON.stringify(stillFreshState), "utf8");
+  assert.ok(getBusyState(USER), "a 10-minute-old record must still genuinely block -- it's within a real turn's possible duration now");
+  console.log("    confirmed: a real still-plausibly-in-flight turn (10 minutes) is not prematurely force-cleared");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

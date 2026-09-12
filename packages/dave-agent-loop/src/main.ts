@@ -1,6 +1,6 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
 import { EaBridge, DynamicTradeExecutor } from "@dave/ea-bridge";
@@ -11,6 +11,9 @@ import { startTelegramBotServer } from "./telegram-bot-server.js";
 import { getPrimaryChatId } from "./primary-chat.js";
 import { buildClosedTradeMessage, buildManualCloseMessage } from "./trade-notifications.js";
 import { logClosedTrade } from "@dave/feedback";
+import { loadSystemPrompt } from "./system-prompt.js";
+
+export { loadSystemPrompt };
 
 /**
  * Real gap fixed (final pre-deployment pass, Railway Part A item 1):
@@ -52,31 +55,6 @@ function resolvePublicBaseUrl(): string | undefined {
   return undefined;
 }
 
-/**
- * Real gap fixed: the default system prompt was a one-line placeholder
- * ("You are Dave, an autonomous trading assistant.") -- none of Dave's
- * actual real, checked-in behavioral rules (prompts/SOUL.md, IDENTITY.md,
- * SECURITY.md, BOOTSTRAP.md -- SOUL is personality, IDENTITY covers real
- * trade-decision rules like "check correlation before sizing", SECURITY
- * covers the absolute safety rules, BOOTSTRAP governs first contact)
- * were actually loaded into the real booted agent. SYSTEM_PROMPT can
- * still override this wholesale for a genuinely different deployment.
- */
-export function loadSystemPrompt(): string {
-  if (process.env.SYSTEM_PROMPT) return process.env.SYSTEM_PROMPT;
-  const promptsDir = join(process.cwd(), "prompts");
-  const files = ["SOUL.md", "IDENTITY.md", "SECURITY.md", "trading.md", "BOOTSTRAP.md"];
-  const sections = files.flatMap((file) => {
-    try {
-      return [readFileSync(join(promptsDir, file), "utf8")];
-    } catch {
-      console.error(`[boot] could not read prompts/${file} -- continuing without it`);
-      return [];
-    }
-  });
-  if (sections.length === 0) return "You are Dave, an autonomous trading assistant.";
-  return sections.join("\n\n---\n\n");
-}
 
 /**
  * Real gap fixed (Railway platform limitation discovered while wiring

@@ -22,3 +22,4 @@ export * from "./confidence-gate.js";
 export * from "./pending-confidence-entry.js";
 export * from "./settings-log.js";
 export * from "./market-hours.js";
+export * from "./analysis-config.js";

@@ -17,6 +17,8 @@ import {
   isMarketOpenForSymbol,
   isSlTooTight,
   getSelfPauseEnabled,
+  getAnalysisConfig,
+  filterSuiteToConfig,
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -25,6 +27,8 @@ import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCu
 import { isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { setSelfPause, getSelfPause, MAX_SELF_PAUSE_MINUTES } from "./self-pause.js";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperTierWhileStoppedMessage, summarizeReason } from "./trade-notifications.js";
+import { loadSystemPrompt } from "./system-prompt.js";
+import { consultJournal } from "./journal-agent.js";
 
 /**
  * Real replacement for the autonomous cycle's open-ended agentic tool-calling loop, modeled
@@ -72,7 +76,7 @@ type TradeAction = (typeof TRADE_ACTIONS)[number];
  *  the trade actions -- these are alternate values of the one `action` field, not a second tool
  *  the model can freely reach for, so the "one structured decision per tick" architecture is
  *  never reopened into an agentic multi-tool loop. */
-const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "PAUSE"] as const;
+const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "PAUSE", "CONSULT_JOURNAL"] as const;
 const DECISION_ACTIONS = [...TRADE_ACTIONS, ...MANAGEMENT_ACTIONS, "SKIP", "ASK"] as const;
 type DecisionAction = (typeof DECISION_ACTIONS)[number];
 
@@ -143,6 +147,7 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
         "DELETE_TICKET closes an existing open position or removes an existing pending order (needs ticket). " +
         "PARTIAL_CLOSE closes part of an existing open position (needs ticket and closeLots). " +
         "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
+        "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
         "SKIP if there's genuinely nothing. ASK only for real, specific ambiguity.",
     },
     symbol: { type: "string" },
@@ -217,16 +222,30 @@ function parseDecisionFromText(text: string): TickDecision {
  * model an excuse to pass on a real setup, and this is a single decisive call, not a place for
  * a rule to hide behind.
  */
+/** Real bug fixed (user, live: "it just only see the 4 prompts only"): this used to be a
+ *  bare, ~14-line hand-written prompt, completely separate from the real SOUL/IDENTITY/SECURITY/
+ *  trading/BOOTSTRAP prompt stack (system-prompt.ts's loadSystemPrompt, the same one normal chat
+ *  uses) -- meaning every mission/precedence/risk-discipline rule, and critically the SMC/ICT-
+ *  first analysis lens in trading.md, never reached a single live autonomous trade decision. Now
+ *  the real prompt stack is the base, with only the tick-specific mechanics (which tool to call,
+ *  what each action means) appended on top -- nothing about Dave's actual trading judgment lives
+ *  in this file anymore, it all comes from the one real source of truth. */
 function buildSystemPrompt(): string {
-  return `You are Dave, an autonomous MT5 trading AI. You are a scalper and a sniper, a real risk taker -- you don't sit on real opportunities waiting for textbook perfection. There is nothing like a perfect setup or a perfect entry -- nothing like that exists, nothing. If a real opportunity can bring profit, you take it. When auto-approve is on for this account, that means your decision fires the moment you make it -- no hesitation, no second-guessing yourself after the fact.
+  return `${loadSystemPrompt()}
 
-You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, PAUSE, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
+---
+
+You are in an autonomous trading TICK right now, not a conversation -- there is no user to reply to, just one real decision to make.
+
+You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, PAUSE, CONSULT_JOURNAL, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
 
 BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set -- if you genuinely don't see an immediate scalp or sniper entry, a well-placed limit order waiting for price to come to you is still finding the opportunity, not giving up on it. Prefer SKIP only when there is truly nothing real here, not as a default.
 
 You may ASK a single genuine question only for real, specific ambiguity you cannot resolve yourself. Prefer deciding over asking.
 
 DELETE_TICKET closes an existing open position or cancels an existing pending order you no longer want -- use it with a real ticket from OPEN POSITIONS/PENDING ORDERS below. PARTIAL_CLOSE takes some profit/reduces risk on part of an existing position (needs ticket + closeLots) without closing it entirely. PAUSE stops you from opening ANY new trade for a short while (1-5 minutes, your call) when you judge there's already enough real open exposure -- you can still ASK, DELETE_TICKET, or PARTIAL_CLOSE while paused, just not open something new.
+
+CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest opinion before you commit -- entirely optional, never required. Journal has its own access to trade history and analysis tools; it reviews and comments, it never places or modifies a trade itself. Use it when a setup is genuinely borderline and a second read would help, not as a default detour. After Journal answers, you'll be asked to decide again with its opinion in hand.
 
 sl/tp: apply automatically when the mode shown below is "on" -- you don't need to compute them, and the field won't even be offered to you. When "auto," you must compute a real sl/tp yourself from the analysis (structure, ATR, support/resistance) and the tool call requires it. A stop placed unreasonably close to price will be rejected -- size it to real, current volatility, not habit. When "off," don't include it.
 
@@ -314,6 +333,11 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const { positions, pendingOrders } = getLastKnownState(userId);
   const risk = getRiskSettings(userId);
   const confidenceSettings = getConfidenceSettings(userId);
+  // Real feature (user, live: "add a feature in the settings that the user can configure the
+  // get all analysis... select among endpoints... and the timeframe, and a default button to
+  // send all"). Defaults to every timeframe/endpoint (today's real behavior) until a user
+  // deliberately narrows it.
+  const analysisConfig = getAnalysisConfig(userId);
   const analysis = createEaAnalysisSource(userId);
 
   // Real gap fixed (user, live: "the have been placing a lot of trade recently because it
@@ -333,7 +357,8 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     return { action: "NONE", notable: false };
   }
   const { symbol } = picked;
-  logTick(userId, `picked ${symbol}${picked.usingFallback ? " (fallback group)" : ""} -- requesting full analysis across ${ANALYSIS_TIMEFRAMES.join("/")}...`);
+  const activeTimeframes = analysisConfig.mode === "custom" && analysisConfig.timeframes.length > 0 ? analysisConfig.timeframes : ANALYSIS_TIMEFRAMES;
+  logTick(userId, `picked ${symbol}${picked.usingFallback ? " (fallback group)" : ""} -- requesting full analysis across ${activeTimeframes.join("/")}...`);
 
   // Real gap fixed (user, live: doubted "all timeframes" was genuinely happening -- it wasn't.
   // The EA's own "all" endpoint (DaveEA.mq5's RunAnalysis/A_All) computes every sub-indicator
@@ -344,7 +369,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   // scalper mandate in trading.md) is real data the model actually receives, not a label on a
   // single H1 read.
   const suiteByTimeframe = await Promise.all(
-    ANALYSIS_TIMEFRAMES.map((tf) =>
+    activeTimeframes.map((tf) =>
       analysis
         .get<Record<string, unknown>>("all", symbol, tf, { timeoutMs: 300_000 })
         .then((data) => ({ tf, data }))
@@ -355,7 +380,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     )
   );
   const suite: Record<string, unknown> = {};
-  for (const { tf, data } of suiteByTimeframe) suite[tf] = data ?? { error: "unavailable this cycle" };
+  for (const { tf, data } of suiteByTimeframe) suite[tf] = data ? filterSuiteToConfig(data, analysisConfig) : { error: "unavailable this cycle" };
 
   const primaryTfResult = suiteByTimeframe.find((r) => r.tf === "H1")?.data ?? suiteByTimeframe.find((r) => r.data)?.data;
   const priceInfo = (primaryTfResult as { price?: { bid?: number; ask?: number; close?: number } } | null)?.price;
@@ -391,31 +416,63 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     !isAutonomousExecutionEnabled(userId)
       ? `AUTONOMOUS TRADING IS STOPPED (the user ran /stop_trading) -- you may still analyze, ASK, DELETE_TICKET, or PARTIAL_CLOSE, but a normal new trade will NOT be auto-placed. Only if your real confidence is ${SNIPER_TIER_CONFIDENCE}%+ (genuinely sniper-tier) will a BUY/SELL/pending decision be sent to the user as an approve/decline ask -- anything below that, just SKIP.`
       : null,
-    `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${ANALYSIS_TIMEFRAMES.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${JSON.stringify(suite).slice(0, 6000)}`,
+    // Real bug fixed (user, live: "confirm it's sending all the complete endpoints... and
+    // timeframe too"): this used to hard-cap the merged suite at 6000 characters -- with 44
+    // endpoints across 6 real timeframes the real JSON is far larger, so most of what
+    // ANALYSIS_TIMEFRAMES actually requested was silently cut before the model ever saw it.
+    // Raised well past any real single-request's actual size instead of an arbitrary small slice.
+    `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${activeTimeframes.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${JSON.stringify(suite).slice(0, 60_000)}`,
     formatRecentDecisions(userId),
   ].filter((line): line is string => line !== null);
 
   const tool = buildDecisionTool(risk);
-  let result;
-  try {
-    result = await provider.generate(
-      { messages: [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: contextLines.join("\n") }], tools: [tool], toolChoice: { name: DECISION_TOOL_NAME } },
-      60_000
-    );
-  } catch (err) {
-    logTick(userId, `model call for ${symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
-    throw err;
+
+  async function requestDecision(lines: string[]): Promise<TickDecision | null> {
+    let genResult;
+    try {
+      genResult = await provider.generate(
+        { messages: [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: lines.join("\n") }], tools: [tool], toolChoice: { name: DECISION_TOOL_NAME } },
+        60_000
+      );
+    } catch (err) {
+      logTick(userId, `model call for ${symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    }
+    try {
+      const toolCall = genResult.toolCalls?.find((c) => c.name === DECISION_TOOL_NAME);
+      return toolCall ? coerceDecision(toolCall.arguments) : parseDecisionFromText(genResult.text);
+    } catch {
+      logTick(userId, `${symbol}: unparseable model response -- raw text: ${genResult.text.slice(0, 300)}`);
+      return null;
+    }
   }
 
-  let decision: TickDecision;
-  try {
-    const toolCall = result.toolCalls?.find((c) => c.name === DECISION_TOOL_NAME);
-    decision = toolCall ? coerceDecision(toolCall.arguments) : parseDecisionFromText(result.text);
-  } catch {
-    logTick(userId, `${symbol}: unparseable model response -- raw text: ${result.text.slice(0, 300)}`);
+  let decision = await requestDecision(contextLines);
+  if (!decision) {
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "unparseable model response" });
     advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
     return { action: "NONE", notable: false };
+  }
+
+  // Real feature (user, live: "it can ask journal what do you think... not compulsory"). Bounded
+  // to at most one extra round trip per tick -- never a loop: if CONSULT_JOURNAL comes back
+  // again after Journal already answered, that's treated as a SKIP rather than consulted twice.
+  if (decision.action === "CONSULT_JOURNAL") {
+    logTick(userId, `${symbol}: consulting Journal before deciding -- ${decision.reason ?? "wants a second read"}`);
+    const journalResult = await consultJournal(
+      { userId, db, provider },
+      `Dave is considering a setup on ${symbol} and wants your honest opinion before committing. His own reasoning so far: ${decision.reason ?? "none given"}`,
+      contextLines
+    );
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "CONSULT_JOURNAL", reason: decision.reason ?? "" });
+    const decisionAfterConsult = await requestDecision([...contextLines, `JOURNAL'S OPINION (you asked for this -- decide now, do not consult again): ${journalResult.opinion}`]);
+    if (!decisionAfterConsult || decisionAfterConsult.action === "CONSULT_JOURNAL") {
+      logTick(userId, `${symbol}: no real decision after consulting Journal -- treating as SKIP`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no real decision after consulting Journal" });
+      advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+      return { action: "NONE", notable: false };
+    }
+    decision = decisionAfterConsult;
   }
 
   logTick(userId, `${symbol}: model decided ${decision.action}${decision.confidence !== undefined ? ` (confidence ${decision.confidence}%)` : ""} -- ${decision.reason ?? decision.question ?? "no reason given"}`);
@@ -510,6 +567,16 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "PAUSE requested but self-pause is disabled" });
       return { action: "NONE", notable: false };
     }
+    // Real bug fixed (user, live: "what the hell is this" -- a redundant PAUSE decision while
+    // already paused was re-extending the pause AND sending a fresh "Self-pausing" message every
+    // single time). The model already sees SELF-PAUSE ACTIVE in its own context; a repeat PAUSE
+    // decision is logged and silently absorbed, not re-announced or re-extended.
+    const existingPause = getSelfPause(userId);
+    if (existingPause) {
+      logTick(userId, `${symbol}: PAUSE requested but self-pause is already active until ${new Date(existingPause.pausedUntil).toISOString()} -- not re-extending or re-announcing`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "self-pause already active, redundant PAUSE absorbed" });
+      return { action: "NONE", notable: false };
+    }
     const state = setSelfPause(userId, decision.pauseMinutes ?? MAX_SELF_PAUSE_MINUTES, reason);
     const minutesLeft = Math.round((state.pausedUntil - Date.now()) / 60_000);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "PAUSE", reason });
@@ -561,6 +628,10 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     type: orderType,
     lots: risk.lotMode === "on" && risk.lotValue !== undefined ? risk.lotValue : (decision.lots ?? 0),
     price: decision.entry,
+    // Real gap fixed (user, live: the reasoning behind a trade never reached MT5 itself, only
+    // our own internal journal). MT5's comment field has a real, broker-enforced length limit --
+    // kept conservative so it's never silently cut mid-word by the terminal.
+    comment: `Dave ${decision.confidence ?? "?"}% ${decision.reason ?? ""}`.slice(0, 40).trimEnd(),
   };
   if (order.lots <= 0) {
     logTick(userId, `${symbol}: ${action} rejected -- no valid lot size (lot mode=${risk.lotMode}, model gave lots=${decision.lots ?? "none"})`);
@@ -654,6 +725,6 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     // Real gap fixed (user, live, pasted an actual jam-packed example): reuses the same clean,
     // fixed-template trade-placed message the main chat's trade_execute already sends, plus one
     // short bounded reason line -- never the full raw multi-sentence reasoning blob.
-    message: [buildTradePlacedMessage(order, placed.ticket, confidence), `💡 ${summarizeReason(reason)}`].join("\n\n"),
+    message: [buildTradePlacedMessage(order, placed.ticket, confidence), `📋 Why: ${summarizeReason(reason)}`].join("\n\n"),
   };
 }

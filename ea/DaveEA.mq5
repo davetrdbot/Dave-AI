@@ -513,18 +513,22 @@ void ExecuteOneCommand(string obj)
       double price = JsonGetNumber(obj, "price", 0);
       double sl = JsonGetNumber(obj, "sl", 0);
       double tp = JsonGetNumber(obj, "tp", 0);
+      // Real gap fixed (user, live: the reasoning behind a trade never reached MT5 itself, only
+      // Dave's own internal log) -- passed through as CTrade's real trailing comment argument so
+      // the order is visibly labeled inside the terminal, not just in the bot's own history.
+      string comment = JsonGetString(obj, "comment");
       bool ok = false;
       // Real bug fixed here: this used to only ever call trade.Buy/trade.Sell
       // (always market price, ignoring the "price" field entirely), so the 4
       // pending order types this SAME EA reports on in BuildReportJson could
       // never actually be placed via a Dave-issued "open" command -- silently
       // dropped as an unmatched type. All 6 real order types now handled.
-      if(type == "buy") ok = trade.Buy(lots, symbol, 0, sl, tp);
-      else if(type == "sell") ok = trade.Sell(lots, symbol, 0, sl, tp);
-      else if(type == "buy_limit") { price = EnforcePendingPrice(symbol, type, price); ok = trade.BuyLimit(lots, price, symbol, sl, tp); }
-      else if(type == "sell_limit") { price = EnforcePendingPrice(symbol, type, price); ok = trade.SellLimit(lots, price, symbol, sl, tp); }
-      else if(type == "buy_stop") { price = EnforcePendingPrice(symbol, type, price); ok = trade.BuyStop(lots, price, symbol, sl, tp); }
-      else if(type == "sell_stop") { price = EnforcePendingPrice(symbol, type, price); ok = trade.SellStop(lots, price, symbol, sl, tp); }
+      if(type == "buy") ok = trade.Buy(lots, symbol, 0, sl, tp, comment);
+      else if(type == "sell") ok = trade.Sell(lots, symbol, 0, sl, tp, comment);
+      else if(type == "buy_limit") { price = EnforcePendingPrice(symbol, type, price); ok = trade.BuyLimit(lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment); }
+      else if(type == "sell_limit") { price = EnforcePendingPrice(symbol, type, price); ok = trade.SellLimit(lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment); }
+      else if(type == "buy_stop") { price = EnforcePendingPrice(symbol, type, price); ok = trade.BuyStop(lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment); }
+      else if(type == "sell_stop") { price = EnforcePendingPrice(symbol, type, price); ok = trade.SellStop(lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment); }
       ulong ticket = ok ? trade.ResultOrder() : 0;
       AppendResult(id, ok, ok ? "opened" : ("failed: " + trade.ResultRetcodeDescription()), ok ? IntegerToString((int)ticket) : "");
       if(ok) NotifyTradeEvent("Opened " + type + " " + DoubleToString(lots, 2) + " " + symbol);

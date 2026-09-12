@@ -56,7 +56,13 @@ export function summarizeReason(reason: string, maxSentences = 2, maxChars = 220
     .split(/(?<=[.!?])\s+/)
     .slice(0, maxSentences)
     .join(" ");
-  return sentences.length > maxChars ? `${sentences.slice(0, maxChars - 1).trimEnd()}…` : sentences;
+  if (sentences.length <= maxChars) return sentences;
+  // Real bug fixed (user, live: a real message ended "...supply 360307-36…" -- a raw character
+  // slice cut mid-word/mid-number). Back up to the last real word boundary before the cap instead
+  // of hard-cutting wherever the character count happens to land.
+  const cut = sentences.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
 /** Real gap fixed (user: "implement confidence rate so when it's placing a trade it should send

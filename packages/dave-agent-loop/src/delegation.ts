@@ -20,17 +20,50 @@ function delegationPath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, "pending-delegation.json");
 }
 
-export function setPendingDelegation(userId: string, delegation: PendingDelegation | null): void {
+/** Real bug fixed (user, live: two messages minutes apart got answered "bundled" together --
+ *  root-caused to this file overwriting, not queueing). A THIRD message arriving before the user
+ *  ever answered the button prompt for the SECOND used to silently discard it (this file held
+ *  exactly one entry, and setPendingDelegation always replaced it). Every message that arrives
+ *  while busy is now appended, never dropped -- the storage shape is an array. */
+function readDelegationQueue(userId: string): PendingDelegation[] {
+  const path = delegationPath(userId);
+  if (!existsSync(path)) return [];
+  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  if (Array.isArray(parsed)) return parsed as PendingDelegation[];
+  // Back-compat with the old single-object shape, in case a file from before this fix is read.
+  return parsed ? [parsed as PendingDelegation] : [];
+}
+
+function writeDelegationQueue(userId: string, queue: PendingDelegation[]): void {
   const path = delegationPath(userId);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(path, JSON.stringify(delegation), "utf8");
+  writeFileSync(path, JSON.stringify(queue), "utf8");
 }
 
+/** Appends a new message to the queue rather than replacing whatever was already pending. */
+export function addPendingDelegation(userId: string, delegation: PendingDelegation): void {
+  const queue = readDelegationQueue(userId);
+  queue.push(delegation);
+  writeDelegationQueue(userId, queue);
+}
+
+/** Clears the whole queue -- used once the user has picked an option for it. */
+export function clearPendingDelegation(userId: string): void {
+  writeDelegationQueue(userId, []);
+}
+
+/** Every message that queued up while busy, oldest first. Empty array, never null, when there's
+ *  nothing pending -- callers no longer need to special-case null vs. an empty list. */
+export function getPendingDelegationQueue(userId: string): PendingDelegation[] {
+  return readDelegationQueue(userId);
+}
+
+/** Back-compat convenience for a single caller that only ever expects one entry -- returns the
+ *  OLDEST pending message (the one that's been waiting longest), or null if none. */
 export function getPendingDelegation(userId: string): PendingDelegation | null {
-  const path = delegationPath(userId);
-  if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, "utf8"));
+  const queue = readDelegationQueue(userId);
+  return queue[0] ?? null;
 }
 
 /** Honest, rough estimate -- no historical per-task-type timing data exists to draw on, so

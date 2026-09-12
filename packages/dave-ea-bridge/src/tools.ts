@@ -111,6 +111,28 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
   analysisTool("get_order_blocks", "order_blocks", "bullish/bearish order blocks (high/low, center, mitigated status, distance)"),
   analysisTool("get_inducement", "inducement", "inducement/IDM levels (taken status, next liquidity target, valid-setup flag)"),
   analysisTool("get_premium_discount", "premium_discount", "premium/discount zone position within the dealing range, OTE zone, bias"),
-  analysisTool("get_all_analysis", "all", "every one of the 44 real analysis endpoints above, in ONE response, for the given symbol/timeframe -- use when you need a full market read, not a single indicator"),
+  // Real gap fixed (user, live: wants get_all_analysis to also show whether a position/pending
+  // order already exists on this symbol, so the model can't "forget" it just placed something).
+  // A dedicated definition, not the shared analysisTool() factory, since this one merges in real
+  // state on top of the pure market analysis every other endpoint returns.
+  {
+    name: "get_all_analysis",
+    description:
+      "Every one of the 44 real analysis endpoints above, in ONE response, for the given symbol/timeframe -- use when you need a full market read, not a single indicator. " +
+      "Also reports whether you already have a real open position or pending order on this symbol, so you never propose a duplicate trade on something you've already placed.",
+    parameters: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["symbol"] },
+    execute: async (args, ctx) => {
+      const symbol = args.symbol as string;
+      const result = await requestAnalysis(ctx.userId, "all", symbol, (args.timeframe as string) ?? "M15", ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined);
+      const state = getLastKnownState(ctx.userId);
+      const upper = symbol.toUpperCase();
+      const resultObj = (typeof result === "object" && result !== null ? result : {}) as Record<string, unknown>;
+      return {
+        ...resultObj,
+        openPositionsForSymbol: state.positions.filter((p) => p.symbol.toUpperCase() === upper),
+        pendingOrdersForSymbol: state.pendingOrders.filter((p) => p.symbol.toUpperCase() === upper),
+      };
+    },
+  },
   analysisTool("ping_ea", "ping", "a trivial health check confirming the connected EA is alive and responsive -- no market data"),
 ];
