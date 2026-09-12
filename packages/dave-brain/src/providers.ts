@@ -130,6 +130,7 @@ export type ProviderName =
   | "nebius"
   | "tokenharbor"
   | "kiraai"
+  | "xpiki"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {

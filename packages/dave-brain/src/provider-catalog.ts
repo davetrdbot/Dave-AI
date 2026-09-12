@@ -236,6 +236,16 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   // Default set to kira-3.5-flash -- their own docs explicitly call this their default chat model.
   // Other real chat models: kira-3.5-pro, kira-2.5-pro, kira-mini-1.0 (free tier).
   kiraai: OPENAI_COMPAT("kiraai", "Kira AI", "https://kiraai.vn/api/v1", "kira-3.5-flash", "OpenAI-SDK-compatible per real docs (drop-in /v1/chat/completions). Other real chat models: kira-3.5-pro, kira-2.5-pro, kira-mini-1.0 (free tier)."),
+  // User-requested addition, real endpoint/model list provided directly by the user (not
+  // independently researched beyond confirming api.xpiki.com also serves a separate, unrelated
+  // image-generation product at /v1/images -- text/chat is a distinct real capability at this
+  // same host). OpenAI-compatible per the user's own stated usage instructions: base
+  // https://api.xpiki.com/v1, Bearer sk-... auth, chat/completions shape. No independently-
+  // confirmed /v1/models list endpoint -- manual model entry, same posture as OpenRouter/Z.AI,
+  // rather than guessing one. Model ids are Claude-family names (opus/sonnet/haiku/fable) routed
+  // through xpiki's own infrastructure -- default set to claude-sonnet-5, the mid-tier real model
+  // from the user's own provided list.
+  xpiki: { ...OPENAI_COMPAT("xpiki", "Xpiki", "https://api.xpiki.com/v1", "claude-sonnet-5", "OpenAI-compatible per the user's own provided usage instructions (Bearer sk-... key, /v1/chat/completions). Also exposes claude-opus-5, claude-opus-4-8, claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5, claude-fable-5. No confirmed /v1/models endpoint -- manual model entry.", null), manualModelEntry: true },
   custom: {
     id: "custom",
     displayName: "Custom provider",
