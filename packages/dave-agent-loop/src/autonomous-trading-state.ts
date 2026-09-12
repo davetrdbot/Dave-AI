@@ -29,3 +29,34 @@ export function isAutonomousTradingEnabled(userId: string): boolean {
   if (!existsSync(path)) return false;
   return JSON.parse(readFileSync(path, "utf8")) === true;
 }
+
+/**
+ * Real gap fixed (user, live: "/stop_trading it shouldn't give it offer to place new trade
+ * because I just did it now and it's still placing trade" -- plus the user's own explicit
+ * follow-up ask that /stop_trading keep watching for a genuinely sniper-tier setup instead of
+ * going fully dark). Deliberately a SEPARATE persisted flag from isAutonomousTradingEnabled
+ * above: that one controls whether the scheduler's loop is armed at all (survives a restart,
+ * only ever turned off by a real /stop or /panic, which stay a genuine full stop with no
+ * scanning). This one controls whether a NORMAL trade may auto-execute -- /stop_trading turns
+ * this off without tearing down the loop, so the tick keeps running (still analyzing, still
+ * showing open-position info, still able to ASK/DELETE_TICKET/PARTIAL_CLOSE) but a normal
+ * decision won't auto-fire; only a genuinely sniper-tier setup gets surfaced as an approve/
+ * decline ask. Defaults to true (normal execution) so a brand-new user's very first
+ * /start_trading isn't silently in watch-only mode.
+ */
+function executionEnabledPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "autonomous-execution-enabled.json");
+}
+
+export function setAutonomousExecutionEnabled(userId: string, enabled: boolean): void {
+  const path = executionEnabledPath(userId);
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, JSON.stringify(enabled), "utf8");
+}
+
+export function isAutonomousExecutionEnabled(userId: string): boolean {
+  const path = executionEnabledPath(userId);
+  if (!existsSync(path)) return true;
+  return JSON.parse(readFileSync(path, "utf8")) !== false;
+}

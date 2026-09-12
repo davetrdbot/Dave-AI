@@ -10,6 +10,8 @@ import {
   proposeSettingsChange,
   getAutoApprovalEnabled,
   setAutoApprovalEnabled,
+  getSelfPauseEnabled,
+  setSelfPauseEnabled,
   getConfidenceSettings,
   setConfidenceThreshold,
   setAutoApproveBelowThreshold,
@@ -134,6 +136,21 @@ export const SETTINGS_TOOLS: ToolDefinition[] = [
     parameters: { type: "object", required: ["userId", "enabled"], properties: { userId: { type: "string" }, enabled: { type: "boolean" } } },
     execute: async (args) => {
       setAutoApprovalEnabled(args.userId as string, Boolean(args.enabled));
+      return { ok: true };
+    },
+  },
+  {
+    name: "get_self_pause_enabled",
+    description: "Check whether the autonomous bot is allowed to pause itself (up to 5 minutes) when it judges it already has enough open exposure.",
+    parameters: { type: "object", required: ["userId"], properties: { userId: { type: "string" } } },
+    execute: async (args) => ({ enabled: getSelfPauseEnabled(args.userId as string) }),
+  },
+  {
+    name: "set_self_pause_enabled",
+    description: "Turn the bot's ability to self-pause on/off. Off means it never self-pauses, no matter how much exposure it judges is open.",
+    parameters: { type: "object", required: ["userId", "enabled"], properties: { userId: { type: "string" }, enabled: { type: "boolean" } } },
+    execute: async (args) => {
+      setSelfPauseEnabled(args.userId as string, Boolean(args.enabled));
       return { ok: true };
     },
   },

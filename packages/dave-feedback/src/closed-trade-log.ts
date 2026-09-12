@@ -9,6 +9,10 @@ import type { DaveDatabase } from "@dave/db";
 
 export interface ClosedTradeLogEntry {
   id: string;
+  /** Real gap fixed (user, live: "it doesn't know when a tp hit"): the same real MT5 ticket the
+   *  EA's EaClosedPosition already carries -- the join key back to trade-log.ts's TradeLogEntry
+   *  that opened this trade. Optional only for rows logged before this field existed. */
+  ticket?: string;
   symbol: string;
   pnl: number;
   reason: "tp" | "sl" | "dave" | "manual";
@@ -17,6 +21,7 @@ export interface ClosedTradeLogEntry {
 
 interface ClosedTradeRow {
   id: string;
+  ticket: string | null;
   symbol: string;
   pnl: number;
   reason: string;
@@ -27,6 +32,7 @@ const TABLE = "closed_trade_log";
 
 function ensureTable(db: DaveDatabase): void {
   db.createTable(TABLE, [
+    { name: "ticket", type: "TEXT" },
     { name: "symbol", type: "TEXT" },
     { name: "pnl", type: "REAL" },
     { name: "reason", type: "TEXT" },
@@ -35,15 +41,15 @@ function ensureTable(db: DaveDatabase): void {
 }
 
 function toEntry(row: ClosedTradeRow): ClosedTradeLogEntry {
-  return { id: row.id, symbol: row.symbol, pnl: row.pnl, reason: row.reason as ClosedTradeLogEntry["reason"], closedAt: row.closed_at };
+  return { id: row.id, ticket: row.ticket ?? undefined, symbol: row.symbol, pnl: row.pnl, reason: row.reason as ClosedTradeLogEntry["reason"], closedAt: row.closed_at };
 }
 
 /** Real insert -- called from the same real onClosedPosition event that already drives the
  *  hardcoded "✅ SYMBOL closed. +$X.XX." Telegram notification, so this never drifts from what the
  *  user was actually told happened. */
-export function logClosedTrade(db: DaveDatabase, ownerUserId: string, entry: { symbol: string; pnl: number; reason: ClosedTradeLogEntry["reason"] }): string {
+export function logClosedTrade(db: DaveDatabase, ownerUserId: string, entry: { ticket?: string; symbol: string; pnl: number; reason: ClosedTradeLogEntry["reason"] }): string {
   ensureTable(db);
-  return db.insert(TABLE, ownerUserId, { symbol: entry.symbol, pnl: entry.pnl, reason: entry.reason, closed_at: Date.now() });
+  return db.insert(TABLE, ownerUserId, { ticket: entry.ticket ?? null, symbol: entry.symbol, pnl: entry.pnl, reason: entry.reason, closed_at: Date.now() });
 }
 
 export function listClosedTradesSince(db: DaveDatabase, ownerUserId: string, sinceTs: number): ClosedTradeLogEntry[] {

@@ -46,6 +46,19 @@ export function buildSkippedSetupMessage(symbol: string, reason: string): string
   return `⏭ Skipping ${symbol}\n${reason}`;
 }
 
+/** Real gap fixed (user, live, pasted an actual example: a trade message whose reasoning was one
+ *  dense, unbounded, multi-sentence wall-of-text paragraph dumped verbatim after "💡" -- "very jam
+ *  packed and not neat... it should be neat and clean"). Bounds a model's raw reasoning to ~2
+ *  sentences / ~220 chars for the message the user actually sees -- the FULL reason is still saved
+ *  in full to the trade journal (trade-log.ts), this only shortens what's pushed to Telegram. */
+export function summarizeReason(reason: string, maxSentences = 2, maxChars = 220): string {
+  const sentences = reason
+    .split(/(?<=[.!?])\s+/)
+    .slice(0, maxSentences)
+    .join(" ");
+  return sentences.length > maxChars ? `${sentences.slice(0, maxChars - 1).trimEnd()}…` : sentences;
+}
+
 /** Real gap fixed (user: "implement confidence rate so when it's placing a trade it should send
  *  like the screenshot" -- and separately, "confirm if the bot took for trade even to set tp and
  *  set sl too"): a real, hardcoded trade-placement message that ALWAYS fires for every trade that
@@ -68,6 +81,22 @@ export function buildTradePlacedMessage(order: OrderRequest, ticket: string, con
 export function buildTradeApprovalRequestMessage(order: OrderRequest, confidence: number, threshold: number, reason?: string): string {
   return [
     `⚠️ ${order.symbol} ${order.type.toUpperCase()} ${order.lots} lots -- confidence ${confidence}% is below your ${threshold}% threshold.`,
+    reason ? reason : null,
+    "Approve to place it, or decline to skip.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Real gap fixed (user, live: "/stop_trading... when it sees a set-up like a sniper tier
+ *  level... it should ask the user approve or decline"). Deliberately separate wording from
+ *  buildTradeApprovalRequestMessage above -- that one means "below threshold," the opposite of
+ *  what's true here (this fires because confidence is genuinely ABOVE the sniper-tier bar while
+ *  autonomous trading is stopped), so reusing that exact copy would read as factually wrong
+ *  ("confidence 90% is below your 85% threshold" when 90 is not below 85). */
+export function buildSniperTierWhileStoppedMessage(order: OrderRequest, confidence: number, sniperTierBar: number, reason?: string): string {
+  return [
+    `⭐ ${order.symbol} ${order.type.toUpperCase()} ${order.lots} lots -- ${confidence}% confidence, genuinely sniper-tier (≥${sniperTierBar}%) while trading is stopped.`,
     reason ? reason : null,
     "Approve to place it, or decline to skip.",
   ]

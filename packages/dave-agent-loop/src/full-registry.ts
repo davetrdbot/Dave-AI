@@ -101,6 +101,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
           if (result.ticket) {
             try {
               logTrade(deps.db, deps.userId, {
+                ticket: result.ticket as string,
                 symbol: order.symbol,
                 direction: order.type === "buy" || order.type === "buy_limit" || order.type === "buy_stop" ? "buy" : "sell",
                 entryPrice: order.price ?? 0,

@@ -6,14 +6,25 @@ import {
   getActiveGroupInfo,
   getConfidenceSettings,
   evaluateConfidenceGate,
+  queueTradeForApproval,
   tradeExecute,
+  partialClose,
+  fullClose,
+  deletePendingOrder,
   huntForSetup,
   isWithinSelectedSession,
   ensureGroupsUsable,
+  isMarketOpenForSymbol,
+  isSlTooTight,
+  getSelfPauseEnabled,
 } from "@dave/trading";
+import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
 import { logTrade } from "@dave/feedback";
 import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCursor, recordSkipForHunt, clearHuntState, HUNT_THRESHOLD } from "./autonomous-tick-state.js";
+import { isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
+import { setSelfPause, getSelfPause, MAX_SELF_PAUSE_MINUTES } from "./self-pause.js";
+import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperTierWhileStoppedMessage, summarizeReason } from "./trade-notifications.js";
 
 /**
  * Real replacement for the autonomous cycle's open-ended agentic tool-calling loop, modeled
@@ -32,6 +43,14 @@ import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCu
  * constraint, not a prose request the model can ignore. Falls back to text-JSON parsing for a
  * provider that doesn't return a tool call.
  *
+ * Extended again this session (user, live, four more real problems): the decision's action set now
+ * also covers managing an EXISTING position (DELETE_TICKET/PARTIAL_CLOSE) and self-pausing
+ * (PAUSE) -- still exactly one forced tool call per cycle, the architecture is never reopened into
+ * a multi-tool agentic loop. Real per-symbol market hours (forex only, for now), real ATR-relative
+ * SL sanity, real max-open-trades enforcement, and a final gate check right before order execution
+ * (closing a real /stop_trading race where an in-flight cycle could still fire after the user
+ * stopped trading) are all new here too.
+ *
  * This module owns the DECISION only. Scheduling (trading-loop.ts, compulsory 1-minute cadence)
  * and the top-level safety gates (isTradingHalted, EA connection, pending question, circuit
  * breaker, drawdown) stay exactly as they are in telegram-bot-server.ts -- this is what runs
@@ -48,7 +67,13 @@ const ANALYSIS_TIMEFRAMES = ["M1", "M3", "M5", "M15", "H1", "H4"] as const;
 
 const TRADE_ACTIONS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
 type TradeAction = (typeof TRADE_ACTIONS)[number];
-const DECISION_ACTIONS = [...TRADE_ACTIONS, "SKIP", "ASK"] as const;
+/** Real gap fixed (user, live: "add a tool to delete the existing trade... a tool that the bot
+ *  can pause... a tool like partial close"). Kept inside the SAME one-forced-tool-call schema as
+ *  the trade actions -- these are alternate values of the one `action` field, not a second tool
+ *  the model can freely reach for, so the "one structured decision per tick" architecture is
+ *  never reopened into an agentic multi-tool loop. */
+const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "PAUSE"] as const;
+const DECISION_ACTIONS = [...TRADE_ACTIONS, ...MANAGEMENT_ACTIONS, "SKIP", "ASK"] as const;
 type DecisionAction = (typeof DECISION_ACTIONS)[number];
 
 const ACTION_TO_ORDER_TYPE: Record<TradeAction, OrderType> = {
@@ -59,6 +84,11 @@ const ACTION_TO_ORDER_TYPE: Record<TradeAction, OrderType> = {
   BUY_STOP: "buy_stop",
   SELL_STOP: "sell_stop",
 };
+
+/** Real, confirmed bar (user, live): a trade action at/above this confidence, decided while
+ *  autonomous trading is stopped, is exceptional enough to interrupt the user for an explicit
+ *  approve/decline rather than either firing on its own or staying silent. */
+const SNIPER_TIER_CONFIDENCE = 85;
 
 export interface TickDecision {
   action: DecisionAction;
@@ -72,6 +102,12 @@ export interface TickDecision {
   reason?: string;
   question?: string;
   options?: string[];
+  /** Required for DELETE_TICKET/PARTIAL_CLOSE -- the real ticket to act on. */
+  ticket?: string;
+  /** Required for PARTIAL_CLOSE -- how many lots of the position to close. */
+  closeLots?: number;
+  /** Optional for PAUSE, clamped to [1, MAX_SELF_PAUSE_MINUTES]; defaults to the max if omitted. */
+  pauseMinutes?: number;
 }
 
 export interface TickOutcome {
@@ -99,7 +135,16 @@ const DECISION_TOOL_NAME = "submit_trading_decision";
  *  model supplied, so it must be required whenever mode isn't "on". */
 function buildDecisionTool(risk: RiskSettings): ToolSpec {
   const properties: Record<string, unknown> = {
-    action: { type: "string", enum: DECISION_ACTIONS, description: "BUY/SELL are market orders. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders -- include entry. SKIP if there's genuinely nothing. ASK only for real, specific ambiguity." },
+    action: {
+      type: "string",
+      enum: DECISION_ACTIONS,
+      description:
+        "BUY/SELL are market orders. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders -- include entry. " +
+        "DELETE_TICKET closes an existing open position or removes an existing pending order (needs ticket). " +
+        "PARTIAL_CLOSE closes part of an existing open position (needs ticket and closeLots). " +
+        "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
+        "SKIP if there's genuinely nothing. ASK only for real, specific ambiguity.",
+    },
     symbol: { type: "string" },
     entry: { type: "number", description: "Required for a pending order type (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP). Omit for market BUY/SELL." },
     lots: { type: "number", description: "Required unless the account has a fixed lot size configured -- size your own real lots against the live account balance." },
@@ -107,6 +152,9 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
     reason: { type: "string" },
     question: { type: "string", description: "only when action is ASK" },
     options: { type: "array", items: { type: "string" }, description: "only when action is ASK" },
+    ticket: { type: "string", description: "the real ticket to act on -- required for DELETE_TICKET and PARTIAL_CLOSE, pick one from OPEN POSITIONS/PENDING ORDERS below" },
+    closeLots: { type: "number", description: "required for PARTIAL_CLOSE -- how many lots of the position to close" },
+    pauseMinutes: { type: "number", description: "optional for PAUSE -- how long to pause, 1 to 5 minutes; defaults to 5 if omitted" },
   };
   const required = ["action", "reason"];
   if (risk.lotMode !== "on") required.push("lots");
@@ -142,6 +190,9 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     reason: typeof obj.reason === "string" ? obj.reason : undefined,
     question: typeof obj.question === "string" ? obj.question : undefined,
     options: Array.isArray(obj.options) ? obj.options.map(String) : undefined,
+    ticket: typeof obj.ticket === "string" ? obj.ticket : undefined,
+    closeLots: typeof obj.closeLots === "number" ? obj.closeLots : undefined,
+    pauseMinutes: typeof obj.pauseMinutes === "number" ? obj.pauseMinutes : undefined,
   };
 }
 
@@ -169,13 +220,15 @@ function parseDecisionFromText(text: string): TickDecision {
 function buildSystemPrompt(): string {
   return `You are Dave, an autonomous MT5 trading AI. You are a scalper and a sniper, a real risk taker -- you don't sit on real opportunities waiting for textbook perfection. There is nothing like a perfect setup or a perfect entry -- nothing like that exists, nothing. If a real opportunity can bring profit, you take it. When auto-approve is on for this account, that means your decision fires the moment you make it -- no hesitation, no second-guessing yourself after the fact.
 
-You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
+You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, PAUSE, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
 
 BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set -- if you genuinely don't see an immediate scalp or sniper entry, a well-placed limit order waiting for price to come to you is still finding the opportunity, not giving up on it. Prefer SKIP only when there is truly nothing real here, not as a default.
 
 You may ASK a single genuine question only for real, specific ambiguity you cannot resolve yourself. Prefer deciding over asking.
 
-sl/tp: apply automatically when the mode shown below is "on" -- you don't need to compute them, and the field won't even be offered to you. When "auto," you must compute a real sl/tp yourself from the analysis (structure, ATR, support/resistance) and the tool call requires it. When "off," don't include it.
+DELETE_TICKET closes an existing open position or cancels an existing pending order you no longer want -- use it with a real ticket from OPEN POSITIONS/PENDING ORDERS below. PARTIAL_CLOSE takes some profit/reduces risk on part of an existing position (needs ticket + closeLots) without closing it entirely. PAUSE stops you from opening ANY new trade for a short while (1-5 minutes, your call) when you judge there's already enough real open exposure -- you can still ASK, DELETE_TICKET, or PARTIAL_CLOSE while paused, just not open something new.
+
+sl/tp: apply automatically when the mode shown below is "on" -- you don't need to compute them, and the field won't even be offered to you. When "auto," you must compute a real sl/tp yourself from the analysis (structure, ATR, support/resistance) and the tool call requires it. A stop placed unreasonably close to price will be rejected -- size it to real, current volatility, not habit. When "off," don't include it.
 
 lots: applied automatically when mode is "on." Otherwise include your own real sizing against the real account balance shown -- size to win, not timidly.`;
 }
@@ -193,9 +246,11 @@ interface CursorSymbolResult {
 }
 
 /** Resolves the real symbol for THIS tick from the round-robin cursor, skipping past any symbol
- *  that already carries an open position (advancing without spending a decision call on it) --
- *  bounded so an all-positions-open list can't spin forever. */
-function resolveCursorSymbol(userId: string, primary: string[], fallback: string[], openSymbols: Set<string>): CursorSymbolResult | null {
+ *  that already carries an open position, or whose real market is genuinely closed right now
+ *  (user, live: "whether market is closed that's for forex it shouldn't analyze that even set as
+ *  fallback too") -- advancing without spending a decision call on either case, bounded so an
+ *  all-closed/all-open list can't spin forever. */
+function resolveCursorSymbol(userId: string, primary: string[], fallback: string[], openSymbols: Set<string>, groupIdFor: (symbol: string, usingFallback: boolean) => string | null): CursorSymbolResult | null {
   const maxAttempts = primary.length + fallback.length;
   for (let i = 0; i < Math.max(1, maxAttempts); i++) {
     const { symbolCursor, scanningFallback } = getCursorPosition(userId);
@@ -205,6 +260,11 @@ function resolveCursorSymbol(userId: string, primary: string[], fallback: string
       continue;
     }
     const symbol = active[symbolCursor % active.length];
+    const hours = isMarketOpenForSymbol(symbol, groupIdFor(symbol, scanningFallback), new Date());
+    if (!hours.open) {
+      advanceCursor(userId, primary.length, fallback.length);
+      continue;
+    }
     if (!openSymbols.has(symbol.toUpperCase())) return { symbol, usingFallback: scanningFallback };
     advanceCursor(userId, primary.length, fallback.length); // already open -- move past it, no decision spent
   }
@@ -242,17 +302,33 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     return { action: "NONE", notable: false };
   }
   const fallbackSymbols = !info.activePairSymbol ? (info.fallbackGroup?.symbols ?? []) : [];
+  // Real bug fixed (test regression, step12): once a single-pair override is active, the active
+  // GROUP's category is irrelevant to the overridden symbol -- pass null so isForexSymbol falls
+  // through to pure shape-sniffing instead of trusting a group id that no longer describes what's
+  // actually being scanned (e.g. an active "forex" group overridden to XAUUSD, a metal).
+  const groupIdFor = (_symbol: string, usingFallback: boolean): string | null =>
+    usingFallback ? (info.fallbackGroup?.id ?? null) : info.activePairSymbol ? null : (info.activeGroup?.id ?? null);
 
   const account = getLastKnownAccountSnapshot(userId);
-  const { positions } = getLastKnownState(userId);
+  const { positions, pendingOrders } = getLastKnownState(userId);
   const risk = getRiskSettings(userId);
   const confidenceSettings = getConfidenceSettings(userId);
   const analysis = createEaAnalysisSource(userId);
 
+  // Real gap fixed (user, live: "the have been placing a lot of trade recently because it
+  // doesn't know the pending orders it just place and the active" -- `maxOpenTrades` was stored
+  // but never actually read by any trade-placement code path). A hard, code-level ceiling, not
+  // left to the model's own judgment -- checked before the expensive multi-timeframe analysis
+  // fetch, so it also saves the EA round-trips.
+  if (risk.maxOpenTrades !== undefined && positions.length >= risk.maxOpenTrades) {
+    logTick(userId, `no trade -- at max open trades (${positions.length}/${risk.maxOpenTrades})`);
+    return { action: "NONE", notable: false };
+  }
+
   const openSymbols = new Set(positions.map((p) => p.symbol.toUpperCase()));
-  const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols);
+  const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols, groupIdFor);
   if (!picked) {
-    logTick(userId, `no trade -- every symbol in the active group already has an open position (${[...openSymbols].join(", ") || "none tracked"})`);
+    logTick(userId, `no trade -- every symbol in the active group already has an open position or a closed market (${[...openSymbols].join(", ") || "none tracked"})`);
     return { action: "NONE", notable: false };
   }
   const { symbol } = picked;
@@ -283,6 +359,16 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const primaryTfResult = suiteByTimeframe.find((r) => r.tf === "H1")?.data ?? suiteByTimeframe.find((r) => r.data)?.data;
   const priceInfo = (primaryTfResult as { price?: { bid?: number; ask?: number; close?: number } } | null)?.price;
   const referencePrice = priceInfo?.bid ?? priceInfo?.ask ?? priceInfo?.close ?? 0;
+  const atr = (primaryTfResult as { volatility?: { atr?: number } } | null)?.volatility?.atr ?? 0;
+
+  const positionsSummary = positions.length
+    ? positions
+        .map((p) => `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.openPrice}${p.sl !== undefined ? ` SL ${p.sl}` : ""}${p.tp !== undefined ? ` TP ${p.tp}` : ""} pnl=${p.pnl ?? "?"} #${p.ticket}`)
+        .join("; ")
+    : "none";
+  const pendingSummary = pendingOrders.length ? pendingOrders.map((p) => `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.price} #${p.ticket}`).join("; ") : "none";
+
+  const selfPause = getSelfPause(userId);
 
   const contextLines = [
     `SYMBOL: ${symbol}`,
@@ -291,9 +377,22 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     `SL_MODE: ${risk.slMode}${risk.slMode === "on" ? ` (fixed ${risk.slValue} pips)` : ""} | TP_MODE: ${risk.tpMode}${risk.tpMode === "on" ? ` (fixed ${risk.tpValue} pips)` : ""} | LOT_MODE: ${risk.lotMode}${risk.lotMode === "on" ? ` (fixed ${risk.lotValue})` : ""}`,
     `CONFIDENCE THRESHOLD: ${confidenceSettings.threshold}%`,
     buildTradeAdviceBlock(confidenceSettings),
+    // Real gap fixed (user, live: "it doesn't know the pending orders it just place and the
+    // active" / wants position info shown "when it knows that the trade it opened is already
+    // plenty"). Every cycle, regardless of which symbol was picked, sees the real current
+    // exposure -- this is what actually gives the model position awareness, not just the hard
+    // maxOpenTrades ceiling above.
+    `OPEN POSITIONS (${positions.length}${risk.maxOpenTrades !== undefined ? `/${risk.maxOpenTrades} max` : ""}): ${positionsSummary}`,
+    `PENDING ORDERS: ${pendingSummary}`,
+    selfPause
+      ? `SELF-PAUSE ACTIVE until ${new Date(selfPause.pausedUntil).toISOString()} (${selfPause.reason}) -- you may still ASK, DELETE_TICKET, or PARTIAL_CLOSE, but you may NOT open a new BUY/SELL/pending order until this expires.`
+      : null,
+    !isAutonomousExecutionEnabled(userId)
+      ? `AUTONOMOUS TRADING IS STOPPED (the user ran /stop_trading) -- you may still analyze, ASK, DELETE_TICKET, or PARTIAL_CLOSE, but a normal new trade will NOT be auto-placed. Only if your real confidence is ${SNIPER_TIER_CONFIDENCE}%+ (genuinely sniper-tier) will a BUY/SELL/pending decision be sent to the user as an approve/decline ask -- anything below that, just SKIP.`
+      : null,
     `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${ANALYSIS_TIMEFRAMES.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${JSON.stringify(suite).slice(0, 6000)}`,
     formatRecentDecisions(userId),
-  ];
+  ].filter((line): line is string => line !== null);
 
   const tool = buildDecisionTool(risk);
   let result;
@@ -358,8 +457,78 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     };
   }
 
+  // Real gap fixed (user, live: "add to it... a tool to delete the existing trade"). Look up
+  // whether the given ticket is a pending order or an open position to pick the right real
+  // operation -- never guess when it's neither.
+  if (decision.action === "DELETE_TICKET") {
+    const reason = decision.reason ?? "";
+    if (!decision.ticket) {
+      logTick(userId, `${symbol}: DELETE_TICKET rejected -- no ticket given`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "DELETE_TICKET needs a ticket" });
+      return { action: "NONE", notable: false };
+    }
+    const isPendingTicket = pendingOrders.some((p) => p.ticket === decision.ticket);
+    const isOpenTicket = positions.some((p) => p.ticket === decision.ticket);
+    if (!isPendingTicket && !isOpenTicket) {
+      logTick(userId, `${symbol}: DELETE_TICKET rejected -- ticket #${decision.ticket} isn't a real open position or pending order`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `DELETE_TICKET given an unknown ticket #${decision.ticket}` });
+      return { action: "NONE", notable: false };
+    }
+    if (isPendingTicket) await deletePendingOrder(executor, decision.ticket);
+    else await fullClose(executor, decision.ticket);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "DELETE_TICKET", reason });
+    return {
+      action: "DELETE_TICKET",
+      symbol,
+      notable: true,
+      message: `🗑 Ticket #${decision.ticket} ${isPendingTicket ? "pending order deleted" : "closed"}\n💡 ${summarizeReason(reason || "no reason given")}`,
+    };
+  }
+
+  if (decision.action === "PARTIAL_CLOSE") {
+    const reason = decision.reason ?? "";
+    if (!decision.ticket || !decision.closeLots) {
+      logTick(userId, `${symbol}: PARTIAL_CLOSE rejected -- needs both a ticket and closeLots`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "PARTIAL_CLOSE needs both a ticket and closeLots" });
+      return { action: "NONE", notable: false };
+    }
+    const closeResult = await partialClose(executor, decision.ticket, decision.closeLots);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "PARTIAL_CLOSE", reason });
+    return {
+      action: "PARTIAL_CLOSE",
+      symbol,
+      notable: true,
+      message: `✂️ Partially closed ${decision.closeLots} lots on ticket #${decision.ticket} (${closeResult.remainingLots} lots remain)\n💡 ${summarizeReason(reason || "no reason given")}`,
+    };
+  }
+
+  if (decision.action === "PAUSE") {
+    const reason = decision.reason ?? "judged enough open exposure for now";
+    if (!getSelfPauseEnabled(userId)) {
+      logTick(userId, `${symbol}: PAUSE requested but self-pause is disabled in settings -- ignored`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "PAUSE requested but self-pause is disabled" });
+      return { action: "NONE", notable: false };
+    }
+    const state = setSelfPause(userId, decision.pauseMinutes ?? MAX_SELF_PAUSE_MINUTES, reason);
+    const minutesLeft = Math.round((state.pausedUntil - Date.now()) / 60_000);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "PAUSE", reason });
+    return { action: "PAUSE", symbol, notable: true, message: `⏸ Self-pausing for ${minutesLeft}m\n💡 ${summarizeReason(reason)}` };
+  }
+
   // A real trade action from here.
   const action = decision.action as TradeAction;
+
+  // Real gap fixed (user, live: wants the bot able to self-pause for up to 5 minutes when it
+  // judges exposure is already high). The context line above tells the model about an active
+  // pause, but a prose instruction alone isn't enough -- same lesson already applied elsewhere in
+  // this file (e.g. the SL-auto rejection) -- so this is enforced in code: a real trade action
+  // decided during an active self-pause is discarded here, never reaches order placement.
+  if (selfPause) {
+    logTick(userId, `${symbol}: ${action} rejected -- self-paused until ${new Date(selfPause.pausedUntil).toISOString()} (${selfPause.reason})`);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `self-paused, new trades blocked until ${new Date(selfPause.pausedUntil).toISOString()}` });
+    return { action: "NONE", notable: false };
+  }
+
   const orderType = ACTION_TO_ORDER_TYPE[action];
   const isPending = orderType !== "buy" && orderType !== "sell";
   if (isPending && decision.entry === undefined) {
@@ -367,6 +536,24 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `${action} needs an entry price and none was given` });
     return { action: "NONE", notable: false };
   }
+
+  // Real gap fixed (user, live: "the bot doesn't consider the sl in instance the there is a
+  // solution... it usually put a sl that will kill a trade in instance"). Reject-only, sized to
+  // real current volatility, not a fixed pip number -- never widens or otherwise changes the
+  // SL/entry/direction/TP the model chose, just discards this cycle's decision back to a SKIP so
+  // it can recompute on retry, exactly like the existing "SL mode is auto but didn't compute one"
+  // rejection below.
+  if (decision.sl !== undefined && atr > 0 && isSlTooTight(referencePrice, decision.sl, atr)) {
+    logTick(userId, `${symbol}: ${action} rejected -- SL ${decision.sl} is too tight relative to current ATR ${atr} (real price noise would likely stop this out immediately)`);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "SL too tight relative to current volatility" });
+    return { action: "NONE", notable: false };
+  }
+
+  // Real gap fixed (user, live: /stop_trading not reliably stopping new trades. Root cause: the
+  // top-of-cycle isTradingHalted/isAutonomousExecutionEnabled check happens once, before the
+  // multi-minute analysis + model call above -- an in-flight cycle had nothing re-checking that
+  // gate before firing. This is that final check, right before the order actually goes out.
+  const stoppedMidFlight = isTradingHalted(userId) || !isAutonomousExecutionEnabled(userId);
 
   const order: OrderRequest = {
     symbol,
@@ -384,8 +571,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const direction = action === "BUY" || action === "BUY_LIMIT" || action === "BUY_STOP" ? 1 : -1;
   const decisionAction = action === "BUY" || action === "BUY_LIMIT" || action === "BUY_STOP" ? "BUY" : "SELL";
   if (decision.sl !== undefined) order.sl = decision.sl;
-  else if (risk.slMode === "on" && risk.slValue !== undefined && referencePrice > 0) order.sl = referencePrice - direction * risk.slValue * pip;
-  else if (risk.slMode === "auto") {
+  else if (risk.slMode === "on" && risk.slValue !== undefined && referencePrice > 0) {
+    const candidateSl = referencePrice - direction * risk.slValue * pip;
+    if (atr > 0 && isSlTooTight(referencePrice, candidateSl, atr)) {
+      logTick(userId, `${symbol}: ${action} rejected -- the user's fixed ${risk.slValue}-pip SL is too tight relative to current ATR ${atr}`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "fixed SL is too tight relative to current volatility" });
+      return { action: "NONE", notable: false };
+    }
+    order.sl = candidateSl;
+  } else if (risk.slMode === "auto") {
     logTick(userId, `${symbol}: ${action} rejected -- SL mode is auto but the model didn't compute one`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "SL mode is auto but the model didn't compute one" });
     return { action: "NONE", notable: false };
@@ -400,6 +594,28 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
 
   const confidence = decision.confidence ?? 0;
   const reason = decision.reason ?? "";
+
+  if (stoppedMidFlight) {
+    // Real gap fixed (user, live: "/stop_trading it shouldn't give it offer to place new trade
+    // because I just did it now and it's still placing trade"). Whatever was decided, discard it
+    // rather than fire -- BUT per the user's own explicit follow-up ask, autonomous trading being
+    // stopped isn't a total blackout: a genuinely sniper-tier setup still gets surfaced as a real
+    // approve/decline ask instead of just vanishing.
+    logTick(userId, `${symbol}: ${action} aborted at the final gate -- trading was stopped mid-cycle`);
+    if (!isTradingHalted(userId) && confidence >= SNIPER_TIER_CONFIDENCE) {
+      const pendingApproval = queueTradeForApproval(userId, order, confidence, reason);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: decisionAction, reason: `sniper-tier while stopped, asked for approval: ${reason}` });
+      return {
+        action,
+        symbol,
+        notable: true,
+        message: buildSniperTierWhileStoppedMessage(order, confidence, SNIPER_TIER_CONFIDENCE, `${summarizeReason(reason)} (ref #${pendingApproval.id})`),
+      };
+    }
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "trading stopped mid-cycle, decision discarded" });
+    return { action: "NONE", notable: false };
+  }
+
   const gate = evaluateConfidenceGate(userId, order, confidence, reason);
   clearHuntState(userId);
 
@@ -409,13 +625,14 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       action,
       symbol,
       notable: true,
-      message: `📋 A real ${action} setup on ${symbol} (confidence ${confidence}%, below your ${gate.threshold}% threshold) is queued for your approval.`,
+      message: buildTradeApprovalRequestMessage(order, confidence, gate.threshold, summarizeReason(reason)),
     };
   }
 
   const placed = await tradeExecute(executor, order);
   try {
     logTrade(db, userId, {
+      ticket: placed.ticket,
       symbol: order.symbol,
       direction: decisionAction === "BUY" ? "buy" : "sell",
       entryPrice: order.price ?? referencePrice,
@@ -433,6 +650,9 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     action,
     symbol,
     notable: true,
-    message: `🤖 ${symbol} ${orderType.toUpperCase()} ${order.price ? `@ ${order.price}` : "(market)"}\nLot ${order.lots}${order.sl ? ` | SL ${order.sl}` : ""}${order.tp ? ` | TP ${order.tp}` : ""}\nConfidence ${confidence}%\n💡 ${reason}\nTicket #${placed.ticket}`,
+    // Real gap fixed (user, live, pasted an actual jam-packed example): reuses the same clean,
+    // fixed-template trade-placed message the main chat's trade_execute already sends, plus one
+    // short bounded reason line -- never the full raw multi-sentence reasoning blob.
+    message: [buildTradePlacedMessage(order, placed.ticket, confidence), `💡 ${summarizeReason(reason)}`].join("\n\n"),
   };
 }

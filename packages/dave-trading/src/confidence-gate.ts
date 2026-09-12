@@ -97,16 +97,27 @@ function savePendingTrades(userId: string, pending: PendingTradeApproval[]): voi
 
 export type ConfidenceGateDecision = { needsApproval: false } | { needsApproval: true; pendingId: string; threshold: number };
 
+/** Real, direct queue -- shared by evaluateConfidenceGate below AND the autonomous tick's
+ *  sniper-tier-while-stopped path (user, live: "/stop_trading... when it sees a set-up like a
+ *  sniper tier level... it should ask the user approve or decline"), so a sniper-tier setup found
+ *  while stopped reuses the EXACT same pending-approval storage and the existing tradeapprove:/
+ *  tradedecline: button flow (command-router.ts) already wired for a low-confidence queued trade
+ *  -- no second, parallel approval mechanism. */
+export function queueTradeForApproval(userId: string, order: OrderRequest, confidence: number, reason?: string): PendingTradeApproval {
+  const pending = readPendingTrades(userId);
+  const entry: PendingTradeApproval = { id: `${Date.now()}-${pending.length}`, order, confidence, reason, createdAt: Date.now() };
+  pending.push(entry);
+  savePendingTrades(userId, pending);
+  return entry;
+}
+
 /** The real gate: below threshold and auto-approval is off -> queued, not fired. */
 export function evaluateConfidenceGate(userId: string, order: OrderRequest, confidence: number, reason?: string): ConfidenceGateDecision {
   const settings = getConfidenceSettings(userId);
   if (confidence >= settings.threshold || settings.autoApproveBelowThreshold) {
     return { needsApproval: false };
   }
-  const pending = readPendingTrades(userId);
-  const entry: PendingTradeApproval = { id: `${Date.now()}-${pending.length}`, order, confidence, reason, createdAt: Date.now() };
-  pending.push(entry);
-  savePendingTrades(userId, pending);
+  const entry = queueTradeForApproval(userId, order, confidence, reason);
   return { needsApproval: true, pendingId: entry.id, threshold: settings.threshold };
 }
 

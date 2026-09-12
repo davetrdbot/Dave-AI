@@ -8,6 +8,10 @@
  */
 
 export interface TradeJournalInput {
+  /** The real MT5 ticket this trade opened under -- optional (journal_trade's voluntary path
+   *  isn't always tied to a fresh placement); the narrative itself doesn't use it, it's plumbed
+   *  through for trade-log.ts's ticket-based lifecycle correlation. */
+  ticket?: string;
   symbol: string;
   direction: "buy" | "sell";
   entryPrice: number;

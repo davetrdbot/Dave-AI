@@ -25,7 +25,7 @@ import { setPendingDelegation, getPendingDelegation, buildDelegationPrompt } fro
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
-import { isAutonomousTradingEnabled, setAutonomousTradingEnabled } from "./autonomous-trading-state.js";
+import { isAutonomousTradingEnabled, setAutonomousTradingEnabled, setAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
 import { friendlyErrorMessage } from "./error-messages.js";
@@ -185,6 +185,10 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
     // deploy/restart -- the user explicitly killed it, so the persisted intent goes off too,
     // same as /stop_trading below.
     setAutonomousTradingEnabled(deps.ownerUserId, false);
+    // Real gap fixed: /stop_trading (below) can leave execution in "watch-only, sniper-tier-only"
+    // mode -- a real /stop or /panic is a genuine full stop, so reset that too, otherwise a later
+    // /start_trading would wake back up already stuck in watch-only mode instead of normal.
+    setAutonomousExecutionEnabled(deps.ownerUserId, true);
     await client.sendMessage({ chat_id: chatId, text: "🛑 Stopped -- all trading and workers halted immediately." });
     return true;
   }
@@ -212,6 +216,7 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
     // startTelegramBotServer below) can genuinely re-arm this after a restart, not leave the
     // user to notice the silence and manually retype /start_trading every time.
     setAutonomousTradingEnabled(deps.ownerUserId, true);
+    setAutonomousExecutionEnabled(deps.ownerUserId, true);
     const interval = getTradingLoopIntervalMinutes(deps.ownerUserId);
     let replyText: string;
     if (started) {
@@ -225,9 +230,22 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
     return true;
   }
   if (/^\/stop_trading\b/i.test(text)) {
-    const stopped = stopAutonomousTradingLoop(deps.ownerUserId);
-    setAutonomousTradingEnabled(deps.ownerUserId, false);
-    await client.sendMessage({ chat_id: chatId, text: stopped ? "⏸️ Autonomous trading is off. I'll still help directly whenever you message me." : "Autonomous trading wasn't running." });
+    // Real bug fixed (user, live: "/stop_trading it shouldn't give it offer to place new trade
+    // because I just did it now and it's still placing trade so it doesn't work" -- root cause:
+    // the scheduler kept running but nothing re-checked mid-cycle before an already-in-flight
+    // decision fired). The scheduler now deliberately stays ARMED (no stopAutonomousTradingLoop
+    // here) -- this only turns off normal auto-execution; autonomous-tick.ts's own final gate
+    // check discards anything already in flight, and per the user's own follow-up ask, the loop
+    // keeps watching: a genuinely sniper-tier setup still gets surfaced as a real approve/decline
+    // ask instead of the account going fully dark.
+    const wasRunning = isAutonomousTradingRunning(deps.ownerUserId);
+    setAutonomousExecutionEnabled(deps.ownerUserId, false);
+    await client.sendMessage({
+      chat_id: chatId,
+      text: wasRunning
+        ? "⏸️ Autonomous trading is off. I'll keep watching in the background, but I won't open a normal new trade -- only a genuinely sniper-tier setup will come to you as an approve/decline ask. I'll still help directly whenever you message me."
+        : "Autonomous trading wasn't running.",
+    });
     return true;
   }
   return false;

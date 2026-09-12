@@ -3,7 +3,7 @@ import { recordSkip, readSkipLog } from "./skip-log.js";
 import { recordHypothesis, recordObservation, readHypotheses, type Observation } from "./hypotheses.js";
 import { getReflectionThreshold, setReflectionThreshold } from "./reflection.js";
 import { getTodaysWinRateSummary, getWinRateSummary } from "./closed-trade-log.js";
-import { listTradesSince } from "./trade-log.js";
+import { getTradeLifecycle, appendTradeComment } from "./trade-log.js";
 
 /**
  * Real gap this closes: Step 18 built genuinely real, tested logic for
@@ -108,13 +108,44 @@ export const FEEDBACK_TOOLS: FeedbackToolDefinition[] = [
   {
     name: "get_trade_history",
     description:
-      "Get every real trade this account has placed in the given window (default last 24h) -- symbol, direction, entry, SL/TP, confidence, when. This is the real, authoritative answer to " +
-      "'did I already place this trade' or 'what have I placed recently' -- every trade_execute call that genuinely succeeds is auto-logged here, so check this before asking the user whether " +
-      "a pending order or open position is one you placed yourself.",
-    parameters: { type: "object", properties: { hours: { type: "number", description: "how far back to look, default 24" } } },
+      "Get every real trade this account has placed in the given window (default last 24h) -- symbol, direction, entry, SL/TP, confidence, when, PLUS its real lifecycle status " +
+      "(open/closed/unknown, and if closed: whether it was TP, SL, a manual close, or Dave closing it, with the real P/L). This is the real, authoritative answer to 'did I already place " +
+      "this trade', 'what have I placed recently', or 'did my TP hit' -- every trade_execute call that genuinely succeeds is auto-logged here with its real ticket, correlated against the " +
+      "EA's own real close reports, so check this before asking the user whether a pending order or open position is one you placed yourself, or what happened to one that's gone.",
+    parameters: {
+      type: "object",
+      properties: {
+        hours: { type: "number", description: "how far back to look, default 24" },
+        ticket: { type: "string", description: "look up one specific trade by its real MT5 ticket" },
+        symbol: { type: "string", description: "filter to one symbol" },
+      },
+    },
     execute: async (args, ctx) => {
       const hours = (args.hours as number | undefined) ?? 24;
-      return listTradesSince(ctx.db, ctx.userId, Date.now() - hours * 60 * 60 * 1000);
+      return getTradeLifecycle(ctx.db, ctx.userId, {
+        sinceTs: Date.now() - hours * 60 * 60 * 1000,
+        ticket: args.ticket as string | undefined,
+        symbol: args.symbol as string | undefined,
+      });
+    },
+  },
+  {
+    name: "add_trade_comment",
+    description:
+      "Add a real, timestamped note to a trade you're still watching -- e.g. 'moved SL to breakeven', 'price approaching TP, holding', 'widened SL after a news spike'. " +
+      "Separate from the trade's original placement reason (fixed at open time): this is an appendable running log for the trade's life, never overwriting earlier notes. " +
+      "Use this when something real changes about a trade you're monitoring, not on every routine check -- get_trade_history returns any comments on record.",
+    parameters: {
+      type: "object",
+      properties: {
+        ticket: { type: "string", description: "the real MT5 ticket of the trade to annotate" },
+        comment: { type: "string", description: "the note to add" },
+      },
+      required: ["ticket", "comment"],
+    },
+    execute: async (args, ctx) => {
+      const added = appendTradeComment(ctx.db, ctx.userId, args.ticket as string, args.comment as string);
+      return added ? { added: true } : { added: false, error: "no trade journal entry found for that ticket" };
     },
   },
 ];

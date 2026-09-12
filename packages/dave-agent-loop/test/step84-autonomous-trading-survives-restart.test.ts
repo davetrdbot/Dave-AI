@@ -7,7 +7,7 @@ import { DaveDatabase } from "@dave/db";
 import { EaTradeExecutor } from "@dave/ea-bridge";
 import { startTelegramBotServer } from "../src/telegram-bot-server.js";
 import { isAutonomousTradingRunning, stopAutonomousTradingLoop } from "../src/trading-loop.js";
-import { isAutonomousTradingEnabled } from "../src/autonomous-trading-state.js";
+import { isAutonomousTradingEnabled, isAutonomousExecutionEnabled } from "../src/autonomous-trading-state.js";
 
 /**
  * Real bug fixed (user, live: "check I don't think the worker is working... it's not analyzing
@@ -91,18 +91,34 @@ try {
   assert.ok(sentMessages.some((t) => t.includes("Resumed autonomous trading")), `expected a real visible resume notification, got: ${JSON.stringify(sentMessages)}`);
   console.log(`    confirmed: real second boot resumed autonomous trading on its own, real notification sent: "${sentMessages.find((t) => t.includes("Resumed"))}"`);
 
-  console.log("\n[5] /stop_trading clears the real persisted intent too -- a LATER restart must NOT resume it again...\n");
+  console.log("\n[5] /stop_trading is deliberately NOT a full stop anymore (user, live: '/stop_trading it shouldn't give it offer to place new trade... it should ask the user approve or decline' for a sniper-tier setup instead of going fully dark) -- it only clears execution, the scan loop itself stays armed and genuinely resumes watch-only after a restart...\n");
   const webhookPath2 = new URL(secondServer.webhookUrl).pathname;
   await new Promise<void>((resolve) => secondServer!.server.listen(0, "127.0.0.1", resolve));
   const port2 = (secondServer.server.address() as { port: number }).port;
   await postText(port2, webhookPath2, routeInfo.secretToken, "/stop_trading");
-  assert.equal(isAutonomousTradingEnabled(OWNER), false, "the real persisted intent must genuinely clear on /stop_trading");
+  assert.equal(isAutonomousTradingEnabled(OWNER), true, "the scan loop's own armed intent must survive /stop_trading -- only a real /stop or /panic clears this");
+  assert.equal(isAutonomousExecutionEnabled(OWNER), false, "but normal auto-execution must genuinely be off");
   secondServer.server.close();
   stopAutonomousTradingLoop(OWNER); // simulate the restart's in-memory reset again
   const thirdServer = await startTelegramBotServer({ ownerUserId: OWNER, db, executor, botToken: "000000:fake-bot-token", publicBaseUrl: "https://dave.example.com", systemPrompt: "You are Dave." });
-  assert.equal(isAutonomousTradingRunning(OWNER), false, "a real restart after an explicit /stop_trading must genuinely NOT resume autonomous trading");
+  assert.equal(isAutonomousTradingRunning(OWNER), true, "a real restart after /stop_trading must still resume the scan loop -- watch-only, not fully dark");
+  assert.equal(isAutonomousExecutionEnabled(OWNER), false, "watch-only mode must genuinely survive the restart too, not silently reset to normal execution");
   thirdServer.server.close();
-  console.log("    confirmed: an explicit /stop_trading genuinely prevents a later restart from silently turning trading back on");
+  console.log("    confirmed: /stop_trading's watch-only mode genuinely survives a real restart -- the loop keeps scanning, still not auto-executing");
+
+  console.log("\n[6] A real /stop (the absolute kill) DOES genuinely prevent a later restart from resuming anything, unlike /stop_trading...\n");
+  const fourthServerForStop = await startTelegramBotServer({ ownerUserId: OWNER, db, executor, botToken: "000000:fake-bot-token", publicBaseUrl: "https://dave.example.com", systemPrompt: "You are Dave." });
+  const webhookPath3 = new URL(fourthServerForStop.webhookUrl).pathname;
+  await new Promise<void>((resolve) => fourthServerForStop.server.listen(0, "127.0.0.1", resolve));
+  const port3 = (fourthServerForStop.server.address() as { port: number }).port;
+  await postText(port3, webhookPath3, routeInfo.secretToken, "/stop");
+  assert.equal(isAutonomousTradingEnabled(OWNER), false, "a genuine /stop must clear the real persisted intent -- this is the actual full stop");
+  fourthServerForStop.server.close();
+  stopAutonomousTradingLoop(OWNER);
+  const fifthServer = await startTelegramBotServer({ ownerUserId: OWNER, db, executor, botToken: "000000:fake-bot-token", publicBaseUrl: "https://dave.example.com", systemPrompt: "You are Dave." });
+  assert.equal(isAutonomousTradingRunning(OWNER), false, "a real restart after an explicit /stop must genuinely NOT resume autonomous trading");
+  fifthServer.server.close();
+  console.log("    confirmed: only a real /stop/panic (never /stop_trading) genuinely prevents a later restart from resuming");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

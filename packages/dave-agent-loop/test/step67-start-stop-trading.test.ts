@@ -8,6 +8,7 @@ import { EaTradeExecutor } from "@dave/ea-bridge";
 import { getInterruptState } from "@dave/safety";
 import { startTelegramBotServer } from "../src/telegram-bot-server.js";
 import { isAutonomousTradingRunning, stopAutonomousTradingLoop } from "../src/trading-loop.js";
+import { isAutonomousExecutionEnabled } from "../src/autonomous-trading-state.js";
 
 /**
  * Real gap fixed (user: "you forgot /start_trading and /stop_trading, and the loop for
@@ -88,20 +89,23 @@ try {
   const alreadyRunning = sentMessages.find((m) => m.method === "sendMessage" && (m.body as { text: string }).text?.startsWith("Autonomous trading is already running"));
   assert.ok(alreadyRunning, "a second /start_trading must be recognized as a no-op, not a second loop");
 
-  console.log("\n[4] A real webhook POST with '/stop_trading' genuinely stops the real loop...");
+  console.log("\n[4] A real webhook POST with '/stop_trading' turns off auto-execution but deliberately keeps the real scan loop ARMED (user, live: '/stop_trading it shouldn't give it offer to place new trade... it should ask the user approve or decline' for a sniper-tier setup instead of going fully dark)...");
   sentMessages.length = 0;
   await postText("/stop_trading");
-  assert.equal(isAutonomousTradingRunning(OWNER), false, "the real interval must genuinely be cleared");
-  assert.equal(getInterruptState(OWNER).tradingLoop, "idle", "distinct from a /stop or /panic halt -- this is a clean, intentional stop");
+  assert.equal(isAutonomousTradingRunning(OWNER), true, "the real scan loop must stay armed -- /stop_trading is watch-only now, not a full teardown");
+  assert.equal(isAutonomousExecutionEnabled(OWNER), false, "normal auto-execution must genuinely be off");
+  assert.equal(getInterruptState(OWNER).tradingLoop, "running", "distinct from a /stop or /panic halt -- the loop is still genuinely running, just not auto-executing");
   const stopConfirmation = sentMessages.find((m) => m.method === "sendMessage" && (m.body as { text: string }).text?.includes("Autonomous trading is off"));
   assert.ok(stopConfirmation, "a real confirmation must have been sent");
+  assert.ok((stopConfirmation!.body as { text: string }).text.includes("keep watching"), "the message must be honest that scanning continues in watch-only mode");
   console.log(`    "${(stopConfirmation!.body as { text: string }).text}"`);
 
-  console.log("\n[5] Calling /stop_trading again when nothing is running says so honestly...");
+  console.log("\n[5] Calling /stop_trading again (loop still armed from before) is idempotent, not a false 'wasn't running'...");
   sentMessages.length = 0;
   await postText("/stop_trading");
-  const wasntRunning = sentMessages.find((m) => m.method === "sendMessage" && (m.body as { text: string }).text === "Autonomous trading wasn't running.");
-  assert.ok(wasntRunning, "must not claim to have stopped something that wasn't running");
+  const stillOff = sentMessages.find((m) => m.method === "sendMessage" && (m.body as { text: string }).text?.includes("Autonomous trading is off"));
+  assert.ok(stillOff, "the loop is still genuinely armed, so this must say it's off/watch-only again, not falsely claim nothing was running");
+  assert.equal(isAutonomousExecutionEnabled(OWNER), false);
 
   console.log("\n[6] /stop (the hard kill) ALSO stops a running autonomous loop, not just the interrupt state...");
   sentMessages.length = 0;
@@ -109,7 +113,8 @@ try {
   assert.equal(isAutonomousTradingRunning(OWNER), true);
   await postText("/stop");
   assert.equal(isAutonomousTradingRunning(OWNER), false, "/stop must genuinely tear down the real interval too, not just flag halted state");
-  console.log("    real interval torn down by /stop, not just the halted flag");
+  assert.equal(isAutonomousExecutionEnabled(OWNER), true, "/stop is a genuine full stop -- it must reset watch-only mode too, so a later /start_trading resumes normally, not still stuck watch-only");
+  console.log("    real interval torn down by /stop, not just the halted flag, and watch-only mode reset");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

@@ -183,6 +183,26 @@ export function setAutoApprovalEnabled(userId: string, enabled: boolean): void {
   writeFileSync(path, JSON.stringify({ enabled }, null, 2), "utf8");
 }
 
+// --- Self-pause switch: ON by default -- the bot may pause itself (up to 5 min) when it judges
+// exposure is already high; the user can turn this off entirely so it never self-pauses. ---
+
+function selfPauseEnabledPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "self-pause-enabled.json");
+}
+
+export function getSelfPauseEnabled(userId: string): boolean {
+  const path = selfPauseEnabledPath(userId);
+  if (!existsSync(path)) return true;
+  return (JSON.parse(readFileSync(path, "utf8")) as { enabled: boolean }).enabled;
+}
+
+export function setSelfPauseEnabled(userId: string, enabled: boolean): void {
+  const path = selfPauseEnabledPath(userId);
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, JSON.stringify({ enabled }, null, 2), "utf8");
+}
+
 /** Item 8 (/reset "config/settings back to defaults"): deletes the underlying files so
  * getRiskSettings/getAutoApprovalEnabled's own real fallback defaults take over -- no hardcoded
  * default duplicated here that could drift from those functions' own definition of "default". */

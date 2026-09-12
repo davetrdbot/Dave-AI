@@ -1,6 +1,7 @@
 import type { AnalysisSource } from "./analysis-source.js";
 import { getActiveGroupInfo, ensureGroupsUsable } from "./pair-groups.js";
 import { isWithinSelectedSession } from "./trading-session-config.js";
+import { isMarketOpenForSymbol } from "./market-hours.js";
 
 /**
  * Step 10.10: explicit "find me a setup" tool -- scans the current
@@ -52,7 +53,17 @@ export async function findSetup(userId: string, analysis: AnalysisSource, tf = "
     return { scannedAt: Date.now(), groupName, rows: [], bestSetup: null, skippedOutsideSession: true };
   }
 
-  const rows = await scanSymbols(analysis, effectiveSymbols, tf);
+  // Real gap fixed (user, live: "whether market is closed that's for forex it shouldn't analyze
+  // that"): never scan a forex symbol whose real market is closed for the weekend, whether it's
+  // the active group or a fallback -- market-hours.ts is the one real per-symbol check for this.
+  // Real bug fixed (test regression, step12): once a single-pair override is active, the active
+  // GROUP's category is irrelevant to the overridden symbol -- e.g. an active "forex" group with
+  // a metals override (XAUUSD) must not inherit the group's forex label. Pass null so
+  // isForexSymbol falls through to pure shape-sniffing (which already excludes metals) instead of
+  // trusting a group id that no longer describes what's actually being scanned.
+  const groupIdForHours = activePairSymbol ? null : activeGroup?.id;
+  const openSymbols = effectiveSymbols.filter((s) => isMarketOpenForSymbol(s, groupIdForHours, new Date()).open);
+  const rows = await scanSymbols(analysis, openSymbols, tf);
   const ranked = rows.filter((r) => !r.error).sort((a, b) => b.score - a.score);
   const groupName = activePairSymbol ? `${activePairSymbol} (single pair)` : (activeGroup?.name ?? null);
   return { scannedAt: Date.now(), groupName, rows, bestSetup: ranked[0] ?? null };
@@ -150,7 +161,13 @@ export async function huntForSetup(userId: string, analysis: AnalysisSource, tf 
     return { scannedAt: Date.now(), groupName: group?.name ?? info.activePairSymbol, rows: [], bestSetup: null, skippedOutsideSession: true, huntModeActivated: false };
   }
 
-  const rows = await scanSymbols(analysis, symbols, tf, exclude);
+  // Same real per-symbol market-hours filter as findSetup above -- a hunt must never propose a
+  // closed-market forex setup either, whether the group being broadened into is the primary or
+  // a fallback group. Same override-irrelevance fix as findSetup: a single-pair focus makes the
+  // active group's category irrelevant to the symbols actually being scanned.
+  const groupIdForHours = info.activePairSymbol ? null : group?.id;
+  const openSymbols = symbols.filter((s) => isMarketOpenForSymbol(s, groupIdForHours, new Date()).open);
+  const rows = await scanSymbols(analysis, openSymbols, tf, exclude);
   const ranked = rows.filter((r) => !r.error).sort((a, b) => b.score - a.score);
   return {
     scannedAt: Date.now(),

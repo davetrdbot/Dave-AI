@@ -58,6 +58,18 @@ export function resolveEntryPrice(
   };
 }
 
+/**
+ * Real gap fixed (user, live: "the bot doesn't consider the sl... it usually put a sl that will
+ * kill a trade in instance" -- the user's own explicit correction: this is the bot's own judgment
+ * problem, not a broker/EA minimum-distance issue, so the fix is sized to real current volatility
+ * (ATR), never a fixed pip number that's wrong for at least some instrument). An SL closer than
+ * `minAtrMultiple` * ATR is unreasonably tight for essentially any instrument -- reject-only, never
+ * widens or otherwise changes the SL/entry/direction/TP the model chose.
+ */
+export function isSlTooTight(referencePrice: number, sl: number, atr: number, minAtrMultiple = 0.25): boolean {
+  return atr > 0 && Math.abs(referencePrice - sl) < atr * minAtrMultiple;
+}
+
 export function validateOrder(order: OrderRequest): string[] {
   const errors: string[] = [];
   if (!order.symbol) errors.push("symbol is required");
