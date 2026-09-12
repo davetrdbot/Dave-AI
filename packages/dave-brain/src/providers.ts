@@ -178,7 +178,7 @@ export interface Provider {
  * the instant either the caller's own signal fires OR the per-call timeout elapses, whichever
  * comes first.
  */
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
+export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onExternalAbort = () => controller.abort();

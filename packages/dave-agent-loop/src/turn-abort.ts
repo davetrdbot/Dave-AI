@@ -3,35 +3,55 @@
  * credit -- changing the AI Response Timeout setting, `/stop`, and `/reset` all did nothing).
  * Root cause: nothing anywhere held a reference to an in-flight turn that a command could act on
  * -- `/stop`/`/reset` only ever flipped stored flags nothing in a running `AgentLoop.run()` call
- * ever checked. This is that real, wired cancel path: one `AbortController` per user, live only
- * for the duration of their current turn, in-memory (a turn only exists in-flight in this same
- * process, so there is nothing to persist across a restart -- a crashed process taking its
- * in-flight controller with it is the correct behavior, not a gap).
+ * ever checked. This is that real, wired cancel path: an in-memory set of AbortControllers per
+ * user, live only for the duration of each of their current turns, in-memory (a turn only exists
+ * in-flight in this same process, so there is nothing to persist across a restart -- a crashed
+ * process taking its in-flight controllers with it is the correct behavior, not a gap).
+ *
+ * A single user can genuinely have MORE THAN ONE turn in flight at once (their own chat message,
+ * a delegated worker task, an autonomous tick's Journal consult -- all keyed by the same userId).
+ * An earlier version of this module tracked exactly one AbortController per userId and
+ * defensively `.abort()`-ed whatever was already there before starting a new turn ("replace any
+ * stale leftover") -- that is a real race: it would wrongly kill a still-running concurrent turn
+ * that was never actually stale. Tracking a Set per user instead means beginTurn() never touches
+ * any other controller already tracked for that user, and abortTurn() (e.g. `/stop`) aborts
+ * EVERYTHING running for that user, which is also the more correct behavior for a panic-stop.
  */
-const controllers = new Map<string, AbortController>();
+const controllers = new Map<string, Set<AbortController>>();
 
-/** Starts tracking a new in-flight turn for this user. Aborts and replaces any stale leftover
- *  controller first (defensive -- a previous turn should always have called endTurn, but this
- *  guarantees a fresh, not-already-aborted signal for the turn about to start). */
+/** Starts tracking a new in-flight turn for this user. Creates a brand-new controller and adds it
+ *  to this user's set of in-flight turns -- never touches any other controller already tracked
+ *  for this user, so a genuinely concurrent turn (worker task, autonomous tick, ...) is left
+ *  running untouched. */
 export function beginTurn(userId: string): AbortController {
-  controllers.get(userId)?.abort();
   const controller = new AbortController();
-  controllers.set(userId, controller);
+  let set = controllers.get(userId);
+  if (!set) {
+    set = new Set();
+    controllers.set(userId, set);
+  }
+  set.add(controller);
   return controller;
 }
 
-/** Stops tracking a turn once it's done (success, error, or aborted) -- only clears the entry if
- *  it's still the SAME controller (a newer turn may have already replaced it). */
+/** Stops tracking one turn once it's done (success, error, or aborted) -- removes only this
+ *  specific controller from the user's set (other genuinely concurrent turns for the same user
+ *  are left tracked), deleting the map entry entirely once the set becomes empty. */
 export function endTurn(userId: string, controller: AbortController): void {
-  if (controllers.get(userId) === controller) controllers.delete(userId);
+  const set = controllers.get(userId);
+  if (!set) return;
+  set.delete(controller);
+  if (set.size === 0) controllers.delete(userId);
 }
 
-/** Real cancel: aborts the user's in-flight turn, if any. Returns whether there genuinely was one
- *  to cancel -- callers (e.g. `/stop`) use this to tell the user whether anything was actually
- *  stopped, rather than always claiming success. */
+/** Real cancel: aborts EVERY in-flight turn for this user (their chat message, any delegated
+ *  worker task, any autonomous tick consult -- all of it), which is the correct behavior for a
+ *  genuine `/stop`/`/panic`. Returns whether there was at least one controller to cancel --
+ *  callers use this to tell the user whether anything was actually stopped, rather than always
+ *  claiming success. */
 export function abortTurn(userId: string): boolean {
-  const controller = controllers.get(userId);
-  if (!controller) return false;
-  controller.abort();
+  const set = controllers.get(userId);
+  if (!set || set.size === 0) return false;
+  for (const controller of set) controller.abort();
   return true;
 }

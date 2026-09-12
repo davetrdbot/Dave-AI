@@ -106,6 +106,48 @@ try {
   console.log(`    real, unaffected normal run: status=${fastResult.status}, text="${(fastResult as any).text}"`);
   await new Promise<void>((resolve) => fastServer.close(() => resolve()));
 
+  // --- [5] beginTurn() called twice for the same user tracks two genuinely independent
+  //         controllers -- starting the second must NOT abort the first (this is the real
+  //         concurrency bug: a user's own chat message, a delegated worker task, and an
+  //         autonomous tick's Journal consult can all be in flight at once under the same
+  //         userId). ---
+  console.log("\n[5] Two concurrent beginTurn() calls for the same user are genuinely independent...\n");
+  const CONCURRENT_OWNER = "user-concurrent-1";
+  const controllerA = beginTurn(CONCURRENT_OWNER);
+  const controllerB = beginTurn(CONCURRENT_OWNER);
+  assert.notEqual(controllerA, controllerB, "beginTurn must return a distinct controller each call");
+  assert.equal(controllerA.signal.aborted, false, "starting a second turn must NOT abort the first, still-genuinely-running turn");
+  assert.equal(controllerB.signal.aborted, false);
+  console.log("    confirmed: second beginTurn() did not touch the first controller");
+
+  // --- [6] abortTurn() aborts BOTH controllers for that user (the correct /stop behavior --
+  //         kill everything running for that user, not just one turn). ---
+  console.log("\n[6] abortTurn() aborts every in-flight controller for the user...\n");
+  const abortedBoth = abortTurn(CONCURRENT_OWNER);
+  assert.equal(abortedBoth, true);
+  assert.equal(controllerA.signal.aborted, true, "abortTurn must abort every controller tracked for this user");
+  assert.equal(controllerB.signal.aborted, true);
+  console.log("    confirmed: both controllers aborted by a single abortTurn() call");
+  endTurn(CONCURRENT_OWNER, controllerA);
+  endTurn(CONCURRENT_OWNER, controllerB);
+
+  // --- [7] endTurn() removing one controller from a two-controller set leaves the other one
+  //         still tracked and abortable (no cross-talk, no accidental clobber of the Set). ---
+  console.log("\n[7] endTurn() on one of two controllers leaves the other still tracked...\n");
+  const PARTIAL_OWNER = "user-partial-1";
+  const controllerC = beginTurn(PARTIAL_OWNER);
+  const controllerD = beginTurn(PARTIAL_OWNER);
+  endTurn(PARTIAL_OWNER, controllerC);
+  assert.equal(controllerC.signal.aborted, false, "endTurn must never abort the controller it removes");
+  const stillTracked = abortTurn(PARTIAL_OWNER);
+  assert.equal(stillTracked, true, "the remaining controller D must still be tracked and abortable after C was ended");
+  assert.equal(controllerD.signal.aborted, true, "abortTurn must have aborted the still-tracked controller D");
+  assert.equal(controllerC.signal.aborted, false, "the already-ended controller C must remain untouched by a later abortTurn for the same user");
+  endTurn(PARTIAL_OWNER, controllerD);
+  const nothingLeft = abortTurn(PARTIAL_OWNER);
+  assert.equal(nothingLeft, false, "once both controllers are ended, abortTurn for that user must report false");
+  console.log("    confirmed: removing one controller never disturbs the other; set is fully drained after both end");
+
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {
   rmSync(workDir, { recursive: true, force: true });

@@ -20,7 +20,7 @@ import { enforceDrawdownLimit } from "./drawdown-guard.js";
 import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes } from "./trading-loop.js";
 import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
-import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState } from "./busy-state.js";
+import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState, waitForBusyToClear } from "./busy-state.js";
 import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
@@ -85,10 +85,16 @@ export interface TelegramBotServer {
  * message"). Fire-and-forget: never awaited by the real turn, and any failure (rate limit, chat
  * gone) is swallowed -- this is cosmetic, must never affect the real conversation.
  */
-function sendTransientTokenUsage(client: TelegramClient, chatId: number, usage: { totalTokens: number } | undefined): void {
+function sendTransientTokenUsage(client: TelegramClient, chatId: number, usage: { totalTokens: number; cacheReadInputTokens?: number } | undefined): void {
   if (!usage) return;
+  // Real addition (independent audit): CompletionResult.cacheUsage was computed by
+  // Claude/Bedrock but never surfaced anywhere a user could see it -- now aggregated onto the run
+  // (agent-loop.ts's RunTokenUsage) and, when this run genuinely had a cache hit, appended here as
+  // a short suffix. Kept small and in the same style as the existing message, not redesigned.
+  const cacheRead = usage.cacheReadInputTokens ?? 0;
+  const cacheSuffix = cacheRead > 0 ? ` (${(cacheRead / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k cached)` : "";
   void client
-    .sendMessage({ chat_id: chatId, text: `🔢 ${usage.totalTokens.toLocaleString()} tokens` })
+    .sendMessage({ chat_id: chatId, text: `🔢 ${usage.totalTokens.toLocaleString()} tokens${cacheSuffix}` })
     .then((sent) => {
       setTimeout(() => {
         void client.deleteMessage({ chat_id: chatId, message_id: sent.message_id }).catch(() => {});
@@ -210,9 +216,27 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
     // nor changing the timeout setting did anything about it). /stop and /panic now also
     // genuinely cancel an in-flight chat turn, not just flip trading flags.
     const cancelled = abortTurn(deps.ownerUserId);
+    // Real bug fixed (independent audit): /stop and /panic used to abort the in-flight turn but
+    // never touch the pending-delegation queue -- a message that arrived while busy (and got the
+    // 3-button "pause/worker/skip" prompt) was left silently sitting in pending-delegation.json
+    // forever, with a now-stale prompt, unless the user still had that old message to tap. An
+    // emergency stop means stop everything, including anything queued -- so it's discarded here,
+    // but never silently: the user is told exactly how many messages were dropped.
+    let discardedCount = 0;
+    if (cancelled) {
+      const queue = getPendingDelegationQueue(deps.ownerUserId);
+      if (queue.length > 0) {
+        clearPendingDelegation(deps.ownerUserId);
+        discardedCount = queue.length;
+      }
+    }
+    let stopReplyText = cancelled ? "🛑 Stopped -- all trading and workers halted immediately. Also cancelled the message you were waiting on." : "🛑 Stopped -- all trading and workers halted immediately.";
+    if (discardedCount > 0) {
+      stopReplyText += discardedCount === 1 ? " Also discarded 1 message that was waiting." : ` Also discarded ${discardedCount} messages that were waiting.`;
+    }
     await client.sendMessage({
       chat_id: chatId,
-      text: cancelled ? "🛑 Stopped -- all trading and workers halted immediately. Also cancelled the message you were waiting on." : "🛑 Stopped -- all trading and workers halted immediately.",
+      text: stopReplyText,
     });
     return true;
   }
@@ -546,6 +570,18 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
           } else if (action === "pause") {
             await client.answerCallbackQuery({ callback_query_id: update.callback_query.id, text: "Pausing to handle it now" }).catch(() => undefined);
             await client.sendMessage({ chat_id: pending.chatId, text: queue.length > 1 ? `Pausing what I was doing -- on all ${queue.length}, in order.` : "Pausing what I was doing -- on it now." });
+            // Real bug fixed (independent audit, confirmed): this used to start runAgentTurn for
+            // the queued message(s) immediately on the button tap, assuming the ORIGINAL turn
+            // (still possibly mid-loop.run()) had already finished. It hadn't necessarily -- both
+            // calls then load/save conversation-store.ts history around the same window and
+            // whichever save lands last silently overwrites the other's real exchange. Genuinely
+            // wait for the original turn's busy flag to actually clear first, so the two
+            // load/save cycles are sequential, not concurrent -- see waitForBusyToClear's own
+            // reasoning in busy-state.ts.
+            const wait = await waitForBusyToClear(deps.ownerUserId);
+            if (!wait.cleared) {
+              console.warn(`[delegate:pause] ${deps.ownerUserId}: proceeding without confirmed clear after ${wait.waitedMs}ms -- see waitForBusyToClear warning above`);
+            }
             for (const item of queue) {
               const historyKeyForPending = `${deps.ownerUserId}:${item.chatId}`;
               await runAgentTurn(deps, client, item.chatId, historyKeyForPending, item.text, item.text);

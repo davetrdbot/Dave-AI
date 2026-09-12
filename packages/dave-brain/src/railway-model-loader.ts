@@ -2,6 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
+import { fetchWithTimeout } from "./providers.js";
+
+/** Short bound for the local /health poll -- each poll iteration must fail fast so the
+ * outer waitForHealth() deadline loop keeps making real progress rather than one hung
+ * fetch silently eating the whole timeoutMs budget. */
+const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 
 /**
  * Item 2 (admin panel update): "Load Model on Railway" -- a real
@@ -123,7 +129,7 @@ export class LocalAirLLMProcessManager {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(`http://127.0.0.1:${this.port}/health`);
+        const res = await fetchWithTimeout(`http://127.0.0.1:${this.port}/health`, {}, HEALTH_CHECK_TIMEOUT_MS);
         if (res.ok) {
           const json = (await res.json()) as { status: string; model_loaded: boolean };
           this.status.modelLoaded = json.model_loaded;

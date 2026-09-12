@@ -6,6 +6,7 @@ import { logTrade } from "@dave/feedback";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { modelConfigProvider } from "./provider-selection.js";
+import { beginTurn, endTurn } from "./turn-abort.js";
 
 /**
  * The real worker execution engine (user: "build a real worker execution loop"). Before this, a
@@ -103,6 +104,12 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
 
     const systemPrompt = `You are ${worker.name}, a real subagent Dave created to help its user. Your standing assignment: ${worker.task}\n\nYour current task right now: ${task}\n\nUse report_to_user whenever you have something genuinely worth telling the user. If you need a tool you weren't given, call request_tool and explain why -- don't guess or make something up. When you're finished, answer in plain text summarizing what you actually did.`;
 
+    // Real gap fixed (independent audit, same class as telegram-bot-server.ts's runAgentTurn
+    // fix): a worker's own AgentLoop.run() never registered itself with turn-abort.ts at all, so
+    // /stop or /panic could never reach a genuinely stuck worker -- only AgentLoop's own baked-in
+    // default overall deadline (~4 minutes) would eventually end it. Mirrors runAgentTurn exactly:
+    // beginTurn before the run, the resulting signal passed into run(), endTurn in a finally.
+    const abortController = beginTurn(ownerUserId);
     let resultText: string;
     try {
       const result = await loop.run(
@@ -110,11 +117,18 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
           { role: "system", content: systemPrompt },
           { role: "user", content: task },
         ],
-        { maxSteps: 12, onStep }
+        { maxSteps: 12, onStep, signal: abortController.signal }
       );
-      resultText = result.status === "done" ? result.text : `${tag} paused waiting on a question it isn't allowed to ask on its own -- stopping.`;
+      if (result.status === "aborted") {
+        console.log(`[turn-abort] ${ownerUserId}: worker "${worker.name}" (${worker.id}) genuinely stopped (reason=${result.reason})`);
+        resultText = `⏹️ ${tag} stopped -- that task was cancelled.`;
+      } else {
+        resultText = result.status === "done" ? result.text : `${tag} paused waiting on a question it isn't allowed to ask on its own -- stopping.`;
+      }
     } catch (err) {
       resultText = `⚠️ ${tag} hit a real error and stopped: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      endTurn(ownerUserId, abortController);
     }
 
     if (resultText.trim().length > 0) {

@@ -120,3 +120,74 @@ export function clearAutonomousBusy(userId: string): void {
 export function getAutonomousBusyState(userId: string): BusyState | null {
   return getBusyStateFor(userId, "autonomous");
 }
+
+// Real bug fixed (independent audit, confirmed): the "delegate:pause" button handler in
+// telegram-bot-server.ts started a SECOND runAgentTurn() for the queued message(s) as soon as
+// the button was tapped, on the assumption that by then the original (still possibly in-flight)
+// turn had already finished. It hadn't necessarily -- runAgentTurn's own setBusy()/clearBusy()
+// only clears busy when that original loop.run() genuinely returns, and a slow tool call (an EA
+// round trip can take minutes) can easily still be running when the user taps the button. Both
+// runAgentTurn calls then load conversation-store.ts's history around the same starting point and
+// each save their own final result at the end -- last save wins, silently dropping whichever
+// turn's exchange finished first. There is no lock in conversation-store.ts to catch this, so the
+// fix has to stop the second call from ever starting while the first is still genuinely running:
+// poll the real busy flag until it's actually clear (not just assume it is) before letting a
+// queued message's runAgentTurn begin, making the two load/save cycles genuinely sequential.
+//
+// Bounded rather than unbounded: if busy is SOMEHOW still set after a generous ceiling (far past
+// any real turn's worst case -- see MAX_USER_BUSY_AGE_MS's own reasoning above), something else is
+// already wrong (a stuck turn, a bug), and hanging this button-tap handler forever would just add
+// a second bug on top of the first. Proceeds anyway at that point, but logs it loudly so it's
+// visible rather than a second silent failure mode.
+export interface WaitForBusyClearOptions {
+  /** How often to re-check busy state. Real default: fast enough to feel responsive to a user who
+   *  just tapped a button, slow enough not to hammer the filesystem. */
+  pollIntervalMs?: number;
+  /** Upper bound on total wait before giving up and proceeding anyway. */
+  timeoutMs?: number;
+  /** Injectable for tests -- real callers never pass this. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable clock for tests -- real callers never pass this. */
+  now?: () => number;
+  /** Injectable busy check for tests -- real callers never pass this (defaults to the real
+   *  file-backed getBusyState). */
+  getBusy?: (userId: string) => BusyState | null;
+}
+
+export const WAIT_FOR_BUSY_POLL_INTERVAL_MS = 300;
+export const WAIT_FOR_BUSY_TIMEOUT_MS = 45_000;
+
+export interface WaitForBusyClearResult {
+  /** True if busy genuinely cleared before the timeout; false if the timeout was hit and this
+   *  proceeded anyway. */
+  cleared: boolean;
+  waitedMs: number;
+}
+
+/**
+ * Polls the given owner's real user-turn busy state until it's actually clear (null), instead of
+ * assuming a prior turn has already finished. Resolves as soon as busy clears, or once
+ * `timeoutMs` has elapsed -- whichever comes first -- so callers (the delegate:pause handler)
+ * never start a second runAgentTurn concurrently with a first one that's still genuinely running.
+ */
+export async function waitForBusyToClear(userId: string, options: WaitForBusyClearOptions = {}): Promise<WaitForBusyClearResult> {
+  const pollIntervalMs = options.pollIntervalMs ?? WAIT_FOR_BUSY_POLL_INTERVAL_MS;
+  const timeoutMs = options.timeoutMs ?? WAIT_FOR_BUSY_TIMEOUT_MS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = options.now ?? Date.now;
+  const getBusy = options.getBusy ?? getBusyState;
+
+  const start = now();
+  while (getBusy(userId)) {
+    const waitedMs = now() - start;
+    if (waitedMs >= timeoutMs) {
+      console.warn(
+        `[busy-state] waitForBusyToClear: ${userId} still busy after ${waitedMs}ms -- proceeding anyway ` +
+          `(the original turn should have finished by now; this may indicate a stuck turn or a bug)`
+      );
+      return { cleared: false, waitedMs };
+    }
+    await sleep(pollIntervalMs);
+  }
+  return { cleared: true, waitedMs: now() - start };
+}

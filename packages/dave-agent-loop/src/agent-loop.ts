@@ -32,6 +32,16 @@ export interface RunTokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /**
+   * Real prompt-caching usage, summed the same way across every provider.generate() call this
+   * run made. `CompletionResult.cacheUsage` (providers.ts) was being computed by Claude/Bedrock
+   * responses but never surfaced anywhere a user could see it -- confirmed zero references to
+   * `.cacheUsage` outside providers.ts and its own test. Present only when at least one call in
+   * this run reported cache usage, same "undefined, not zero, when unreported" convention as the
+   * per-call field.
+   */
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
 }
 
 export type AgentRunResult =
@@ -80,6 +90,38 @@ function combineSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefin
   return combined.signal;
 }
 
+/**
+ * Real bug fixed (independent audit): `this.registry.execute(...)` was awaited directly, with NO
+ * timeout or abort mechanism of its own. If a tool's own `execute()` hung on an unresolved
+ * DB/EA/network await, the whole turn was stuck forever -- neither the overall wall-clock
+ * deadline nor a real `/stop` (both only ever wired around `provider.generate()`) could recover
+ * it. This races the tool's own promise against `signal` -- when `signal` wins, the caller learns
+ * that immediately via `{ kind: "aborted" }` instead of awaiting the tool forever. It can NOT
+ * force-cancel the tool's own underlying operation (most tools have no way to accept a
+ * cancellation signal at all) -- the abandoned promise may still be running in the background --
+ * but it genuinely stops the LOOP from waiting on it. Never rejects: a genuine tool error is
+ * captured as `{ kind: "error" }` so it can be turned into the exact same step/isError shape the
+ * loop already produced for a synchronously-caught failure.
+ */
+type ExecOutcome<T> = { kind: "value"; value: T } | { kind: "error"; error: unknown } | { kind: "aborted" };
+
+function raceExecution<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<ExecOutcome<T>> {
+  const settled: Promise<ExecOutcome<T>> = promise.then(
+    (value): ExecOutcome<T> => ({ kind: "value", value }),
+    (error): ExecOutcome<T> => ({ kind: "error", error })
+  );
+  if (!signal) return settled;
+  if (signal.aborted) return Promise.resolve({ kind: "aborted" });
+  return new Promise<ExecOutcome<T>>((resolve) => {
+    const onAbort = () => resolve({ kind: "aborted" });
+    signal.addEventListener("abort", onAbort, { once: true });
+    settled.then((outcome) => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(outcome);
+    });
+  });
+}
+
 export class AgentLoop {
   constructor(
     private readonly provider: Provider,
@@ -122,11 +164,25 @@ export class AgentLoop {
     const activeNames = new Set(allNames.length <= MAX_TOOLS_PER_REQUEST ? allNames : CORE_TOOL_NAMES.filter((n) => this.registry.has(n)));
 
     let tokenUsage: RunTokenUsage | undefined;
-    const accumulateUsage = (u?: RunTokenUsage) => {
-      if (!u) return;
-      tokenUsage = tokenUsage
-        ? { promptTokens: tokenUsage.promptTokens + u.promptTokens, completionTokens: tokenUsage.completionTokens + u.completionTokens, totalTokens: tokenUsage.totalTokens + u.totalTokens }
-        : { ...u };
+    const accumulateUsage = (
+      u?: { promptTokens: number; completionTokens: number; totalTokens: number },
+      cache?: { cacheCreationInputTokens: number; cacheReadInputTokens: number }
+    ) => {
+      if (!u && !cache) return;
+      const base = tokenUsage;
+      const next: RunTokenUsage = {
+        promptTokens: (base?.promptTokens ?? 0) + (u?.promptTokens ?? 0),
+        completionTokens: (base?.completionTokens ?? 0) + (u?.completionTokens ?? 0),
+        totalTokens: (base?.totalTokens ?? 0) + (u?.totalTokens ?? 0),
+      };
+      // Real cache-usage aggregation (independent audit finding): CompletionResult.cacheUsage can
+      // be present on a call with no tokenUsage at all (Bedrock, providers.ts) -- so this sums
+      // across the run independently of whether `u` was reported on that particular call.
+      if (cache || base?.cacheCreationInputTokens !== undefined || base?.cacheReadInputTokens !== undefined) {
+        next.cacheCreationInputTokens = (base?.cacheCreationInputTokens ?? 0) + (cache?.cacheCreationInputTokens ?? 0);
+        next.cacheReadInputTokens = (base?.cacheReadInputTokens ?? 0) + (cache?.cacheReadInputTokens ?? 0);
+      }
+      tokenUsage = next;
     };
 
     try {
@@ -149,7 +205,7 @@ export class AgentLoop {
           if (deadlineController.signal.aborted) return { status: "aborted", reason: "deadline", history, steps, tokenUsage };
           throw err;
         }
-        accumulateUsage(result.tokenUsage);
+        accumulateUsage(result.tokenUsage, result.cacheUsage);
 
         if (!result.toolCalls || result.toolCalls.length === 0) {
           return { status: "done", text: result.text, history, steps, tokenUsage };
@@ -159,7 +215,16 @@ export class AgentLoop {
 
         for (const call of result.toolCalls) {
           if (call.name === ASK_USER_TOOL_NAME) {
-            const question = (await this.registry.execute(call.name, call.arguments)) as PendingQuestion;
+            // Real fix (independent audit): race the tool's own execute() against the same
+            // combinedSignal that already bounds provider.generate() -- an ask_user
+            // implementation that itself hangs (unlikely, but this branch must not be a special
+            // exception to the fix below) can no longer wedge the whole turn forever.
+            const outcome = await raceExecution(this.registry.execute(call.name, call.arguments), combinedSignal);
+            if (outcome.kind === "aborted") {
+              return { status: "aborted", reason: opts.signal?.aborted ? "cancelled" : "deadline", history, steps, tokenUsage };
+            }
+            if (outcome.kind === "error") throw outcome.error;
+            const question = outcome.value as PendingQuestion;
             const step: AgentStep = { toolName: call.name, arguments: call.arguments, result: question, isError: false };
             steps.push(step);
             opts.onStep?.(step);
@@ -168,13 +233,25 @@ export class AgentLoop {
             return { status: "awaiting_user", question, toolCallId: call.id, history, steps, tokenUsage };
           }
 
+          // Real bug fixed (independent audit, CONFIRMED): this used to be a bare
+          // `await this.registry.execute(...)` with no timeout or abort mechanism at all -- a
+          // tool whose own execute() hangs on an unresolved DB/EA/network await stuck the whole
+          // turn forever, immune to both the overall deadline and a real /stop (both were only
+          // ever wired around provider.generate()). Racing against combinedSignal can't force-
+          // cancel the tool's own underlying operation (most tools have no cancellation hook at
+          // all), but it genuinely stops THIS LOOP from waiting on it past the same deadline/
+          // cancel that already bounds model calls.
+          const outcome = await raceExecution(this.registry.execute(call.name, call.arguments), combinedSignal);
+          if (outcome.kind === "aborted") {
+            return { status: "aborted", reason: opts.signal?.aborted ? "cancelled" : "deadline", history, steps, tokenUsage };
+          }
           let output: unknown;
           let isError = false;
-          try {
-            output = await this.registry.execute(call.name, call.arguments);
-          } catch (err) {
+          if (outcome.kind === "error") {
             isError = true;
-            output = { error: err instanceof Error ? err.message : String(err) };
+            output = { error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error) };
+          } else {
+            output = outcome.value;
           }
           const step: AgentStep = { toolName: call.name, arguments: call.arguments, result: output, isError };
           steps.push(step);

@@ -1,5 +1,5 @@
 import { PROVIDER_CATALOG, resolveProviderAlias, type ProviderKeyConfig } from "./provider-catalog.js";
-import type { ProviderName } from "./providers.js";
+import { fetchWithTimeout, type ProviderName } from "./providers.js";
 
 export interface ModelListResult {
   provider: ProviderName;
@@ -26,13 +26,12 @@ export async function fetchAvailableModels(name: ProviderName, config: ProviderK
   }
 
   const baseUrl = config.baseUrlOverride ?? (typeof entry.baseUrl === "function" ? entry.baseUrl(config) : entry.baseUrl);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${baseUrl}${entry.modelsPath}`, {
-      headers: { authorization: `Bearer ${config.apiKey}` },
-      signal: controller.signal,
-    });
+    const res = await fetchWithTimeout(
+      `${baseUrl}${entry.modelsPath}`,
+      { headers: { authorization: `Bearer ${config.apiKey}` } },
+      timeoutMs,
+    );
     if (!res.ok) {
       return { provider: name, manualEntryRequired: false, models: [], error: `HTTP ${res.status}: ${await res.text()}` };
     }
@@ -41,7 +40,5 @@ export async function fetchAvailableModels(name: ProviderName, config: ProviderK
     return { provider: name, manualEntryRequired: false, models };
   } catch (err) {
     return { provider: name, manualEntryRequired: false, models: [], error: err instanceof Error ? err.message : String(err) };
-  } finally {
-    clearTimeout(timer);
   }
 }
