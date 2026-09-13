@@ -14,7 +14,7 @@ import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS 
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS, MEMORY_EXTRA_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
-import { PUSH_TOOLS, TELEGRAM_TOOLS, type TelegramClient } from "@dave/telegram";
+import { PUSH_TOOLS, TELEGRAM_TOOLS, type TelegramClient, chunkForTelegram } from "@dave/telegram";
 import { NOTIFICATION_TOOLS } from "@dave/notifications";
 import { SAFETY_TOOLS } from "@dave/safety";
 import { SELF_IMPROVE_TOOLS } from "@dave/self-improve";
@@ -117,24 +117,46 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
           }
           if (deps.telegram) {
             if (result.needsApproval) {
-              void deps.telegram.client
-                .sendMessage({
-                  chat_id: deps.telegram.chatId,
-                  text: buildTradeApprovalRequestMessage(order, confidence as number, result.threshold as number, args.reason as string | undefined),
-                  reply_markup: {
-                    inline_keyboard: [[
-                      { text: "✅ Approve", callback_data: `tradeapprove:${result.pendingId as string}`, style: "success" },
-                      { text: "❌ Decline", callback_data: `tradedecline:${result.pendingId as string}`, style: "danger" },
-                      // Item 2/6 real gap fixed (user's reference pattern: "an Approve / Decline /
-                      // Find Another inline button prompt"): a real 3rd option, wired to re-hunt
-                      // excluding this declined symbol, not just a plain decline.
-                      { text: "🔍 Find Another", callback_data: `tradefindanother:${result.pendingId as string}` },
-                    ]],
-                  },
-                })
-                .catch(() => undefined);
+              // Real bug fixed (live Railway logs + direct code read: repeated `TelegramError:
+              // 400: message is too long` errors, swallowed by the .catch below so the user saw
+              // nothing). `args.reason` is the model's raw, free-text argument -- never
+              // summarized/bounded here (unlike autonomous-tick.ts's summarizeReason path) -- so a
+              // long one could blow Telegram's real 4096-char sendMessage limit and fail outright.
+              // Chunked via the same shared chunkForTelegram utility autonomous-tick.ts already
+              // uses, sent as real sequential messages -- the Approve/Decline/Find Another buttons
+              // stay attached to only the LAST chunk so the common (single-chunk) case is
+              // byte-for-byte identical to before this fix.
+              const approvalText = buildTradeApprovalRequestMessage(order, confidence as number, result.threshold as number, args.reason as string | undefined);
+              const approvalChunks = chunkForTelegram(approvalText);
+              void (async () => {
+                for (let i = 0; i < approvalChunks.length; i++) {
+                  await deps.telegram!.client.sendMessage({
+                    chat_id: deps.telegram!.chatId,
+                    text: approvalChunks[i],
+                    ...(i === approvalChunks.length - 1
+                      ? {
+                          reply_markup: {
+                            inline_keyboard: [[
+                              { text: "✅ Approve", callback_data: `tradeapprove:${result.pendingId as string}`, style: "success" },
+                              { text: "❌ Decline", callback_data: `tradedecline:${result.pendingId as string}`, style: "danger" },
+                              // Item 2/6 real gap fixed (user's reference pattern: "an Approve / Decline /
+                              // Find Another inline button prompt"): a real 3rd option, wired to re-hunt
+                              // excluding this declined symbol, not just a plain decline.
+                              { text: "🔍 Find Another", callback_data: `tradefindanother:${result.pendingId as string}` },
+                            ]],
+                          },
+                        }
+                      : {}),
+                  });
+                }
+              })().catch(() => undefined);
             } else if (result.ticket) {
-              void deps.telegram.client.sendMessage({ chat_id: deps.telegram.chatId, text: buildTradePlacedMessage(order, result.ticket as string, confidence) }).catch(() => undefined);
+              const placedText = buildTradePlacedMessage(order, result.ticket as string, confidence);
+              void (async () => {
+                for (const chunk of chunkForTelegram(placedText)) {
+                  await deps.telegram!.client.sendMessage({ chat_id: deps.telegram!.chatId, text: chunk });
+                }
+              })().catch(() => undefined);
             }
           }
           return result;
@@ -176,7 +198,12 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
             const tp = args.tp as number | null | undefined;
             const parts = [sl !== undefined ? (sl === null ? "SL removed" : `SL -> ${sl}`) : null, tp !== undefined ? (tp === null ? "TP removed" : `TP -> ${tp}`) : null].filter(Boolean);
             if (parts.length > 0) {
-              void deps.telegram.client.sendMessage({ chat_id: deps.telegram.chatId, text: `🔧 Ticket #${args.ticket as string}: ${parts.join(", ")}` }).catch(() => undefined);
+              const modifyText = `🔧 Ticket #${args.ticket as string}: ${parts.join(", ")}`;
+              void (async () => {
+                for (const chunk of chunkForTelegram(modifyText)) {
+                  await deps.telegram!.client.sendMessage({ chat_id: deps.telegram!.chatId, text: chunk });
+                }
+              })().catch(() => undefined);
             }
           }
           return result;

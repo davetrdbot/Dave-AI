@@ -27,8 +27,11 @@ import { beginTurn, endTurn, abortTurn } from "../src/turn-abort.js";
  *  (c) a second, genuinely concurrent beginTurn() for the same user (simulating a second real chat
  *      turn) is NOT wrongly killed when the tick's own controller is separately aborted -- the real
  *      regression risk given turn-abort.ts's Set-based multi-controller design.
- *  (d) the round-robin cursor position is genuinely unchanged after an aborted tick -- confirming
- *      "next cycle just retries from the same symbol" is real, not assumed.
+ *  (d) the round-robin cursor genuinely ADVANCES after an aborted tick -- real, live bug fixed
+ *      (user: "the slide from one pair to another pair isn't working"): an interrupted tick used
+ *      to return without ever calling advanceCursor, so any user who chats with Dave at all
+ *      permanently trapped the round-robin on whichever symbol happened to be mid-analysis. The
+ *      cursor must now move on, exactly like every other SKIP/no-decision outcome.
  */
 
 console.log("=== Real proof: a real user message genuinely interrupts an in-flight autonomous tick ===\n");
@@ -173,10 +176,11 @@ try {
       assert.equal(stillTrackedAfter, false, "endTurn must have genuinely untracked the tick's controller once it finished -- nothing left to abort for this user");
       console.log("    confirmed: endTurn genuinely ran -- the tick's controller is no longer tracked");
 
-      // --- (d) the round-robin cursor must be genuinely unchanged after an aborted tick. ---
+      // --- (d) the round-robin cursor must genuinely ADVANCE after an aborted tick, so the next
+      //         scheduled cycle moves on to the next symbol instead of retrying this one forever. ---
       const cursorAfter = getCursorPosition(OWNER);
-      assert.deepEqual(cursorAfter, cursorBefore, "the round-robin cursor must be genuinely unchanged after an aborted tick -- advanceCursor is only ever called after a real decision, so the next scheduled cycle retries the same symbol");
-      console.log(`    confirmed: cursor unchanged (${JSON.stringify(cursorBefore)} -> ${JSON.stringify(cursorAfter)})`);
+      assert.notDeepEqual(cursorAfter, cursorBefore, "the round-robin cursor must genuinely advance after an aborted tick -- a real user message must never permanently trap the round-robin on one symbol");
+      console.log(`    confirmed: cursor advanced (${JSON.stringify(cursorBefore)} -> ${JSON.stringify(cursorAfter)})`);
     } finally {
       await ea.stop();
       server.close();

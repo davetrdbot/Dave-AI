@@ -651,7 +651,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       // already uses) rather than trying to pattern-match the rejection itself, since different
       // providers/runtimes surface an aborted fetch differently.
       if (signal?.aborted) {
-        logTick(userId, `${symbol}: model call interrupted by a real user message -- backing off, will retry this symbol next cycle`);
+        logTick(userId, `${symbol}: model call interrupted by a real user message -- moving on, next cycle continues to the next symbol`);
         throw new TickAbortedError();
       }
       logTick(userId, `model call for ${symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -671,7 +671,16 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     decision = await requestDecision(contextLines);
   } catch (err) {
     if (err instanceof TickAbortedError) {
+      // Real, live bug fixed (user: "the slide from one pair to another pair isn't working").
+      // Root cause: an interrupted tick used to return here WITHOUT ever calling advanceCursor --
+      // every real user message aborts the in-flight tick (Feature 1, turn-abort.ts's abortTurn),
+      // so any user who chats with Dave at all trapped the round-robin on whichever symbol
+      // happened to be mid-analysis at that moment, forever. The original design (and the user's
+      // own request) was clear: an interrupted tick's slot is simply skipped and the NEXT cycle
+      // continues to the next symbol, nothing stuck. Cursor now genuinely advances here too, same
+      // as every other SKIP/no-decision outcome below.
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+      advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
       return { action: "NONE", notable: false };
     }
     throw err;
@@ -698,7 +707,10 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       decisionAfterConsult = await requestDecision([...contextLines, `JOURNAL'S OPINION (you asked for this -- decide now, do not consult again): ${journalResult.opinion}`]);
     } catch (err) {
       if (err instanceof TickAbortedError) {
+        // Same real cursor-advance fix as the initial requestDecision's abort branch above -- an
+        // interrupt mid-CONSULT_JOURNAL must not trap the round-robin on this symbol either.
         recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+        advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
         return { action: "NONE", notable: false };
       }
       throw err;
@@ -739,7 +751,10 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       decisionAfterCandles = await requestDecision([...contextLines, `${candlesLine} (decide now -- do not request candles again)`]);
     } catch (err) {
       if (err instanceof TickAbortedError) {
+        // Same real cursor-advance fix as above -- an interrupt mid-REQUEST_CANDLES must not trap
+        // the round-robin on this symbol either.
         recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+        advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
         return { action: "NONE", notable: false };
       }
       throw err;

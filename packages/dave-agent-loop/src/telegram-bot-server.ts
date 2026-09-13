@@ -26,7 +26,7 @@ import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
-import { isAutonomousTradingEnabled, setAutonomousTradingEnabled, setAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
+import { isAutonomousTradingEnabled, setAutonomousTradingEnabled, setAutonomousExecutionEnabled, isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
 import { friendlyErrorMessage } from "./error-messages.js";
@@ -257,6 +257,14 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
       }
     }
     const wasAlreadyRunning = isAutonomousTradingRunning(deps.ownerUserId);
+    // Real, live bug fixed (user: "if I turn on trading it will tell me it's already on"). Root
+    // cause: /stop_trading (below) deliberately leaves the scheduler's setInterval ARMED -- it
+    // only flips execution off -- so isAutonomousTradingRunning stays true the whole time the
+    // user thinks trading is off. /start_trading after a /stop_trading then hit the "already
+    // running" branch below even though real execution had genuinely been off and the user was
+    // now turning it back on. Capture whether execution was actually enabled BEFORE flipping it,
+    // so the reply can tell a genuine "already fully on" apart from "was paused, now resumed."
+    const wasExecutionEnabled = isAutonomousExecutionEnabled(deps.ownerUserId);
     const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId));
     // Real bug fixed (user, live: autonomous trading silently stops on every deploy/restart --
     // startAutonomousTradingLoop's setInterval is purely in-memory, no persistence, no resume).
@@ -271,8 +279,10 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
       replyText = `▶️ Autonomous trading is on (scan loop: every ${interval} min). I'll scan every pair in my active pair group and act on real setups on my own initiative -- I'll only message you when something actually happens (a trade, a TP/SL hit, or a real question). /stop_trading turns this off, /stop or /panic is still the instant hard kill.`;
     } else if (requestedMinutes !== undefined && wasAlreadyRunning) {
       replyText = `🔄 Autonomous trading loop interval updated to every ${interval} min, applied immediately.`;
+    } else if (wasAlreadyRunning && !wasExecutionEnabled) {
+      replyText = `▶️ Resumed -- I was paused (/stop_trading), now back to acting on real setups on my own initiative (scan loop: every ${interval} min).`;
     } else {
-      replyText = `Autonomous trading is already running (scan loop: every ${interval} min).`;
+      replyText = `Autonomous trading is already running and actively trading (scan loop: every ${interval} min).`;
     }
     await client.sendMessage({ chat_id: chatId, text: replyText });
     return true;
