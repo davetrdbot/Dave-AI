@@ -21,6 +21,7 @@ import {
   getAnalysisConfig,
   filterSuiteToConfig,
   getTwoStepTradingEnabled,
+  isForexSymbol,
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -43,6 +44,7 @@ import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperT
 import { loadSystemPrompt } from "./system-prompt.js";
 import { consultJournal } from "./journal-agent.js";
 import { consultFlo } from "./flo-agent.js";
+import { computeMtfAlignment, computeMtfConfluenceScore, computeBasketCurrencyRisk, computeSpreadNewsRisk } from "./mtf-confluence.js";
 
 /**
  * Real replacement for the autonomous cycle's open-ended agentic tool-calling loop, modeled
@@ -543,6 +545,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const referencePrice = priceInfo?.bid ?? priceInfo?.ask ?? priceInfo?.close ?? 0;
   const atr = (primaryTfResult as { volatility?: { atr?: number } } | null)?.volatility?.atr ?? 0;
 
+  // Real gaps fixed (user: SMC/ICT audit -- "HTF bias same as HTF & LTF", "a single real number
+  // multi-timeframe confluence score", "no basket/correlation risk check", "no spread-widening-
+  // around-news detection"). All four computed from data already genuinely fetched this cycle --
+  // no new EA call, no MQL5 change. See mtf-confluence.ts for the real reasoning per computation.
+  const mtfAlignmentLine = computeMtfAlignment(suiteByTimeframe);
+  const mtfConfluenceLine = computeMtfConfluenceScore(suiteByTimeframe);
+  const basketRiskLine = computeBasketCurrencyRisk(positions, () => null);
+  const spreadNewsRiskLine = computeSpreadNewsRisk(primaryTfResult);
+
   // Real feature (user, live: wants visual TP/SL progress bars per open position, plus a
   // self-aware alert when a trade is genuinely close to hitting its SL). Only computed for a
   // position that HAS a real sl, tp, AND currentPrice -- never fabricated for one missing any of
@@ -628,6 +639,10 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     // ANALYSIS_TIMEFRAMES actually requested was silently cut before the model ever saw it.
     // Raised well past any real single-request's actual size instead of an arbitrary small slice.
     `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${activeTimeframes.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${JSON.stringify(suite).slice(0, 60_000)}`,
+    mtfAlignmentLine,
+    mtfConfluenceLine,
+    basketRiskLine,
+    spreadNewsRiskLine,
     formatRecentDecisions(userId),
     selfAwareAlertLine,
   ].filter((line): line is string => line !== null);
