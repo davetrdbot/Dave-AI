@@ -23,12 +23,12 @@ import {
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
-import { logTrade } from "@dave/feedback";
+import { logTrade, getTradeLifecycle } from "@dave/feedback";
 import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCursor, recordSkipForHunt, clearHuntState, HUNT_THRESHOLD } from "./autonomous-tick-state.js";
 import { isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { setSelfPause, getSelfPause, MAX_SELF_PAUSE_MINUTES } from "./self-pause.js";
 import { recordAnalysisFetch } from "./analysis-debug-store.js";
-import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperTierWhileStoppedMessage, summarizeReason } from "./trade-notifications.js";
+import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperTierWhileStoppedMessage, summarizeReason, buildProgressBar } from "./trade-notifications.js";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { consultJournal } from "./journal-agent.js";
 
@@ -78,7 +78,7 @@ type TradeAction = (typeof TRADE_ACTIONS)[number];
  *  the trade actions -- these are alternate values of the one `action` field, not a second tool
  *  the model can freely reach for, so the "one structured decision per tick" architecture is
  *  never reopened into an agentic multi-tool loop. */
-const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "MODIFY", "PAUSE", "CONSULT_JOURNAL"] as const;
+const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "MODIFY", "PAUSE", "CONSULT_JOURNAL", "REQUEST_CANDLES"] as const;
 const DECISION_ACTIONS = [...TRADE_ACTIONS, ...MANAGEMENT_ACTIONS, "SKIP", "ASK"] as const;
 type DecisionAction = (typeof DECISION_ACTIONS)[number];
 
@@ -95,6 +95,13 @@ const ACTION_TO_ORDER_TYPE: Record<TradeAction, OrderType> = {
  *  autonomous trading is stopped, is exceptional enough to interrupt the user for an explicit
  *  approve/decline rather than either firing on its own or staying silent. */
 const SNIPER_TIER_CONFIDENCE = 85;
+
+/** Real, live-stated bar (user's own number, exact: "89%"). Real SL-progress -- genuine distance
+ *  travelled from a real open position's entry toward its real SL, as a fraction of the real
+ *  entry-to-SL distance (see buildProgressBar in trade-notifications.ts, the same math the visual
+ *  bar renders) -- at or beyond this fraction triggers the SELF-AWARE ALERT context line below,
+ *  for ANY open position account-wide, not just the current round-robin symbol's own position. */
+const SL_DANGER_THRESHOLD = 0.89;
 
 export interface TickDecision {
   action: DecisionAction;
@@ -163,6 +170,7 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
         "MODIFY adjusts SL/TP on an existing open position (needs ticket; optional newSl/newTp -- pass a number to set it, null to explicitly remove it, or omit to leave it unchanged). " +
         "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
+        "REQUEST_CANDLES only makes sense while a SELF-AWARE ALERT is active below -- fetches one fresh real batch of candles for the at-risk symbol so you decide with current price action, not stale data; you'll be asked to decide again right after with the candles in hand. " +
         "SKIP if there's genuinely nothing. ASK only for real, specific ambiguity.",
     },
     symbol: { type: "string" },
@@ -267,7 +275,7 @@ function buildSystemPrompt(): string {
 
 You are in an autonomous trading TICK right now, not a conversation -- there is no user to reply to, just one real decision to make.
 
-You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, MODIFY, PAUSE, CONSULT_JOURNAL, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
+You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open -- including, per open position that has both a real SL and TP, a visual progress bar toward each. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, MODIFY, PAUSE, CONSULT_JOURNAL, REQUEST_CANDLES, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
 
 BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set -- if you genuinely don't see an immediate scalp or sniper entry, a well-placed limit order waiting for price to come to you is still finding the opportunity, not giving up on it. Prefer SKIP only when there is truly nothing real here, not as a default.
 
@@ -276,6 +284,8 @@ You may ASK a single genuine question only for real, specific ambiguity you cann
 DELETE_TICKET closes an existing open position or cancels an existing pending order you no longer want -- use it with a real ticket from OPEN POSITIONS/PENDING ORDERS below. PARTIAL_CLOSE takes some profit/reduces risk on part of an existing position (needs ticket + closeLots) without closing it entirely. MODIFY adjusts SL and/or TP on an existing open position (needs ticket) without closing anything -- pass newSl/newTp as a number to set it, null to explicitly remove it, or omit either to leave it unchanged. PAUSE stops you from opening ANY new trade for a short while (1-5 minutes, your call) when you judge there's already enough real open exposure -- you can still ASK, DELETE_TICKET, PARTIAL_CLOSE, or MODIFY while paused, just not open something new.
 
 CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest opinion before you commit -- entirely optional, never required. Journal has its own access to trade history and analysis tools; it reviews and comments, it never places or modifies a trade itself. Use it when a setup is genuinely borderline and a second read would help, not as a default detour. After Journal answers, you'll be asked to decide again with its opinion in hand.
+
+If a SELF-AWARE ALERT appears below, one of your real open positions is genuinely close to hitting its SL -- you may REQUEST_CANDLES for that symbol to get one fresh real batch of candle data before deciding, entirely optional, at most once. After the candles come back, you'll be asked to decide again with them in hand -- act directly with MODIFY (tighten/loosen/adjust), DELETE_TICKET (cut it now), PARTIAL_CLOSE, or SKIP if it genuinely still looks fine.
 
 sl/tp: apply automatically when the mode shown below is "on" -- you don't need to compute them, and the field won't even be offered to you. When "auto," you must compute a real sl/tp yourself from the analysis (structure, ATR, support/resistance) and the tool call requires it. A stop placed unreasonably close to price will be rejected -- size it to real, current volatility, not habit. When "off," don't include it.
 
@@ -449,12 +459,62 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const referencePrice = priceInfo?.bid ?? priceInfo?.ask ?? priceInfo?.close ?? 0;
   const atr = (primaryTfResult as { volatility?: { atr?: number } } | null)?.volatility?.atr ?? 0;
 
+  // Real feature (user, live: wants visual TP/SL progress bars per open position, plus a
+  // self-aware alert when a trade is genuinely close to hitting its SL). Only computed for a
+  // position that HAS a real sl, tp, AND currentPrice -- never fabricated for one missing any of
+  // the three, per the real EaPosition shape (ea-webhook.ts). slProgress is the same real
+  // distance-travelled fraction buildProgressBar renders as a bar, kept as a raw number here too
+  // so the SELF-AWARE ALERT threshold check below is a real numeric comparison, not a re-parse of
+  // the rendered string.
+  interface PositionProgress {
+    ticket: string;
+    symbol: string;
+    tpBar: string;
+    slBar: string;
+    slProgress: number;
+  }
+  const positionsProgress = new Map<string, PositionProgress>();
+  for (const p of positions) {
+    if (p.sl === undefined || p.tp === undefined || p.currentPrice === undefined) continue;
+    const slDenominator = Math.abs(p.sl - p.openPrice);
+    const slProgress = slDenominator === 0 ? 0 : Math.min(1, Math.max(0, Math.abs(p.currentPrice - p.openPrice) / slDenominator));
+    positionsProgress.set(p.ticket, {
+      ticket: p.ticket,
+      symbol: p.symbol,
+      tpBar: buildProgressBar(p.openPrice, p.currentPrice, p.tp),
+      slBar: buildProgressBar(p.openPrice, p.currentPrice, p.sl),
+      slProgress,
+    });
+  }
+
   const positionsSummary = positions.length
     ? positions
-        .map((p) => `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.openPrice}${p.sl !== undefined ? ` SL ${p.sl}` : ""}${p.tp !== undefined ? ` TP ${p.tp}` : ""} pnl=${p.pnl ?? "?"} #${p.ticket}`)
+        .map((p) => {
+          const base = `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.openPrice}${p.sl !== undefined ? ` SL ${p.sl}` : ""}${p.tp !== undefined ? ` TP ${p.tp}` : ""} pnl=${p.pnl ?? "?"} #${p.ticket}`;
+          const progress = positionsProgress.get(p.ticket);
+          return progress ? `${base} | Progress to TP: ${progress.tpBar} | Progress to SL: ${progress.slBar}` : base;
+        })
         .join("; ")
     : "none";
   const pendingSummary = pendingOrders.length ? pendingOrders.map((p) => `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.price} #${p.ticket}`).join("; ") : "none";
+
+  // Real self-aware SL-danger alert (user's own exact stated bar, 89%): ANY open position
+  // account-wide at/beyond SL_DANGER_THRESHOLD, not just the current round-robin symbol's own
+  // position -- picks the single worst (highest SL-progress) one if more than one qualifies, and
+  // pulls its REAL original placement reason from the real trade journal by ticket (never a
+  // placeholder), matching exactly how getTradeLifecycle/journal-agent.ts already read a stored
+  // trade's reason by ticket elsewhere in this codebase.
+  const dangerPosition = [...positionsProgress.values()].filter((pp) => pp.slProgress >= SL_DANGER_THRESHOLD).sort((a, b) => b.slProgress - a.slProgress)[0] ?? null;
+  let selfAwareAlertLine: string | null = null;
+  if (dangerPosition) {
+    const lifecycle = getTradeLifecycle(db, userId, { ticket: dangerPosition.ticket });
+    const originalReason = lifecycle[0]?.reasoning?.length ? lifecycle[0].reasoning.join(" ") : (lifecycle[0]?.narrative ?? "no original placement reason recorded in the trade journal");
+    logTick(
+      userId,
+      `SELF-AWARE ALERT: ticket #${dangerPosition.ticket} (${dangerPosition.symbol}) is at ${Math.round(dangerPosition.slProgress * 100)}% progress toward its SL`
+    );
+    selfAwareAlertLine = `SELF-AWARE ALERT: Ticket #${dangerPosition.ticket} (${dangerPosition.symbol}) is at ${Math.round(dangerPosition.slProgress * 100)}% real progress toward its SL -- genuinely close to being stopped out. Original real reason when this trade was placed: "${originalReason}". You may REQUEST_CANDLES for ${dangerPosition.symbol} for one fresh look before deciding, or act now with MODIFY/DELETE_TICKET/PARTIAL_CLOSE/SKIP.`;
+  }
 
   const selfPause = getSelfPause(userId);
 
@@ -485,6 +545,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     // Raised well past any real single-request's actual size instead of an arbitrary small slice.
     `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${activeTimeframes.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${JSON.stringify(suite).slice(0, 60_000)}`,
     formatRecentDecisions(userId),
+    selfAwareAlertLine,
   ].filter((line): line is string => line !== null);
 
   const tool = buildDecisionTool(risk);
@@ -535,6 +596,38 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       return { action: "NONE", notable: false };
     }
     decision = decisionAfterConsult;
+  }
+
+  // Real bounded auxiliary tool call (user's own explicit self-aware SL-danger spec): the EXACT
+  // same one-extra-round-trip shape as CONSULT_JOURNAL just above -- reuses the real get_candles
+  // endpoint via `analysis.get("candles", ...)` (the same requestAnalysis("candles", ...) call
+  // EA_ANALYSIS_TOOLS's own get_candles tool makes, see dave-ea-bridge/src/tools.ts), never a new
+  // tool, never a loop. Only ever meaningful while a real SELF-AWARE ALERT is active -- with none
+  // active there is no at-risk symbol to fetch candles for, so this is a clean no-op back to a
+  // real re-decide rather than a crash or a fabricated candle set.
+  if (decision.action === "REQUEST_CANDLES") {
+    let candlesLine: string;
+    if (!dangerPosition) {
+      logTick(userId, `${symbol}: REQUEST_CANDLES chosen but no SELF-AWARE ALERT is active right now -- nothing at-risk to fetch fresh candles for`);
+      candlesLine = "REQUEST_CANDLES was chosen but there is no active SELF-AWARE ALERT right now -- decide with what you already have, do not request again.";
+    } else {
+      logTick(userId, `${symbol}: fetching fresh candles for at-risk ticket #${dangerPosition.ticket} (${dangerPosition.symbol}) before re-deciding`);
+      try {
+        const candles = await analysis.get<Record<string, unknown>>("candles", dangerPosition.symbol, "M5", { timeoutMs: 60_000 });
+        candlesLine = `FRESH CANDLES for ${dangerPosition.symbol} (you requested this for the at-risk ticket #${dangerPosition.ticket}): ${JSON.stringify(candles).slice(0, 10_000)}`;
+      } catch (err) {
+        candlesLine = `REQUEST_CANDLES for ${dangerPosition.symbol} failed: ${err instanceof Error ? err.message : String(err)} -- decide with what you already have.`;
+      }
+    }
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "REQUEST_CANDLES", reason: decision.reason ?? "" });
+    const decisionAfterCandles = await requestDecision([...contextLines, `${candlesLine} (decide now -- do not request candles again)`]);
+    if (!decisionAfterCandles || decisionAfterCandles.action === "REQUEST_CANDLES") {
+      logTick(userId, `${symbol}: no real decision after REQUEST_CANDLES -- treating as SKIP`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no real decision after REQUEST_CANDLES" });
+      advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+      return { action: "NONE", notable: false };
+    }
+    decision = decisionAfterCandles;
   }
 
   logTick(userId, `${symbol}: model decided ${decision.action}${decision.confidence !== undefined ? ` (confidence ${decision.confidence}%)` : ""} -- ${decision.reason ?? decision.question ?? "no reason given"}`);

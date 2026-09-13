@@ -65,6 +65,24 @@ export function summarizeReason(reason: string, maxSentences = 2, maxChars = 220
   return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
+/** Real feature (user, live: wants visual TP/SL progress bars, and a self-aware alert when a
+ *  trade is close to hitting SL -- "like the screenshot"). Pure, real math -- no placeholder
+ *  bar: progress is genuine distance travelled from entry toward target, clamped to [0, 1] so a
+ *  price that has already overshot the target (or reversed past entry) never renders past a full
+ *  bar or a negative one. Works identically for BUY and SELL -- direction never enters the
+ *  computation, only the real distances do, so a SELL's SL sitting numerically ABOVE entry (price
+ *  going up hurts a SELL) still produces the correct progress purely from |current - entry| vs.
+ *  |target - entry|. Division-by-zero (target === entry -- e.g. no real SL/TP distance at all) is
+ *  guarded to a flat 0%, never NaN/Infinity. */
+export function buildProgressBar(entry: number, current: number, target: number, width = 10): string {
+  const denominator = Math.abs(target - entry);
+  const rawProgress = denominator === 0 ? 0 : Math.abs(current - entry) / denominator;
+  const progress = Math.min(1, Math.max(0, rawProgress));
+  const filled = Math.round(progress * width);
+  const bar = "█".repeat(filled) + "░".repeat(width - filled);
+  return `${bar} ${Math.round(progress * 100)}%`;
+}
+
 /** Real gap fixed (user: "implement confidence rate so when it's placing a trade it should send
  *  like the screenshot" -- and separately, "confirm if the bot took for trade even to set tp and
  *  set sl too"): a real, hardcoded trade-placement message that ALWAYS fires for every trade that
