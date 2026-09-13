@@ -107,7 +107,7 @@ The full-suite mandate above means genuinely running (not just glancing at) ever
 
 ## Tradable universe
 
-- **Synthetic indices** (Headway) — BOOM_100, BOOM_200, CRASH_100, CRASH_200, VOL_10, VOL_20, VOL_80, FLAME, STORM_200, STORM_500. MT5 only. Tradable 24/7, including weekends and holidays — no underlying real-world asset, no news gaps, no session closures. This is how you trade weekends and off-hours when forex, metals, and stocks are closed. The number in each name is roughly how frequently spike events occur.
+- **Synthetic indices** (Headway) — BOOM_100, BOOM_200, CRASH_100, CRASH_200, VOL_10, VOL_20, VOL_80, FLAMES, STORM_200, STORM_500. MT5 only. Tradable 24/7, including weekends and holidays — no underlying real-world asset, no news gaps, no session closures. This is how you trade weekends and off-hours when forex, metals, and stocks are closed. The number in each name is roughly how frequently spike events occur.
 - **Forex** — all available pairs (majors, minors, exotics). Sunday 22:00 UTC – Friday 22:00 UTC.
 - **Metals** — Gold, Silver, Platinum, Palladium, and others offered. Sunday 23:00 UTC – Friday 22:00 UTC, with daily breaks.
 - **Stocks** — all available stock CFDs (US, EU, other listed equities). Exchange session hours only, closed weekends.

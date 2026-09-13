@@ -25,11 +25,12 @@ const CHAT_ID = 727272;
 const db = new DaveDatabase(join(workDir, "dave.db"));
 const client = new TelegramClient("000000:fake-token-for-transport-mock");
 const closedTickets: string[] = [];
+const deletedPendingTickets: string[] = [];
 const stubExecutor: TradeExecutor = {
   async openOrder() { return { ticket: "T" }; },
   async modifyOrder() {},
   async closePosition(ticket: string) { closedTickets.push(ticket); return { closedLots: 0.01, remainingLots: 0 }; },
-  async deletePendingOrder() {},
+  async deletePendingOrder(ticket: string) { deletedPendingTickets.push(ticket); },
   async listOpenPositions() { return []; },
   async listPendingOrders() { return []; },
 };
@@ -68,7 +69,10 @@ try {
         { ticket: "T1", symbol: "VOL_80", type: "buy", lots: 0.01, openPrice: 355624, pnl: 1.6 },
         { ticket: "T2", symbol: "CRASH_100", type: "sell", lots: 0.01, openPrice: 503999, pnl: -2.56 },
       ],
-      pendingOrders: [],
+      pendingOrders: [
+        { ticket: "P1", symbol: "BOOM_100", type: "buy_limit", lots: 0.02, price: 1390000 },
+        { ticket: "P2", symbol: "STORM_500", type: "sell_stop", lots: 0.01, price: 790000 },
+      ],
     }),
   });
   server.close();
@@ -79,6 +83,12 @@ try {
   assert.match(screen, /VOL_80 BUY 0\.01 @ 355624 — \+\$1\.60/);
   assert.match(screen, /CRASH_100 SELL 0\.01 @ 503999 — -\$2\.56/);
   console.log(`    real /trades screen:\n${screen}`);
+
+  console.log("\n[2b] /trades ALSO genuinely shows real pending orders (real gap fixed: user, 'the trades in the telegram it should able to check pending orders and delete it')...");
+  assert.match(screen, /Pending orders/);
+  assert.match(screen, /BOOM_100 BUY_LIMIT 0\.02 @ 1390000 — #P1/);
+  assert.match(screen, /STORM_500 SELL_STOP 0\.01 @ 790000 — #P2/);
+  console.log("    real pending orders present in the /trades screen");
 
   console.log("\n[3] Tapping 'Close losers' genuinely routes ONLY the losing position to the real executor...");
   closedTickets.length = 0;
@@ -97,6 +107,18 @@ try {
   await dispatchCallback(deps, { id: "cb3", data: "trades:close:T1", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
   assert.deepEqual(closedTickets, ["T1"]);
   console.log(`    real individual close routed to executor: ${JSON.stringify(closedTickets)}`);
+
+  console.log("\n[6] Tapping an individual pending-order delete button genuinely deletes only that one real pending order...");
+  deletedPendingTickets.length = 0;
+  await dispatchCallback(deps, { id: "cb4", data: "trades:delpending:P1", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
+  assert.deepEqual(deletedPendingTickets, ["P1"], "only the real targeted pending order (P1) must have been deleted");
+  console.log(`    real individual pending delete routed to executor: ${JSON.stringify(deletedPendingTickets)}`);
+
+  console.log("\n[7] Tapping 'Delete ALL pending' genuinely routes every real pending order...");
+  deletedPendingTickets.length = 0;
+  await dispatchCallback(deps, { id: "cb5", data: "trades:delpendingall", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
+  assert.deepEqual(deletedPendingTickets.sort(), ["P1", "P2"]);
+  console.log(`    real delete-all-pending routed to executor: ${JSON.stringify(deletedPendingTickets.sort())}`);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

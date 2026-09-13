@@ -55,12 +55,32 @@ function stripDerivSyntheticSymbols(state: GroupState): GroupState {
   return changed ? { ...state, groups } : state;
 }
 
+/**
+ * Real, live bug fixed (user: "It's FLAMES NOT FLAME. YOU CAN UPDATE IT"). The broker's actual
+ * MT5 symbol is FLAMES, not FLAME -- the earlier default seed's misspelling meant every real
+ * analysis request for it never matched a real symbol, so it came back "unavailable this cycle"
+ * every single tick, forever. Same targeted-rename pattern as stripDerivSyntheticSymbols above:
+ * corrects any already-persisted "FLAME" entry on every read (idempotent, only ever touches this
+ * one exact symbol name in any group, never a broader rewrite).
+ */
+function renameFlameToFlames(state: GroupState): GroupState {
+  let changed = false;
+  const groups = state.groups.map((g) => {
+    if (!g.symbols.includes("FLAME")) return g;
+    changed = true;
+    return { ...g, symbols: g.symbols.map((s) => (s === "FLAME" ? "FLAMES" : s)) };
+  });
+  const activePairSymbol = state.activePairSymbol === "FLAME" ? "FLAMES" : state.activePairSymbol;
+  if (activePairSymbol !== state.activePairSymbol) changed = true;
+  return changed ? { ...state, groups, activePairSymbol } : state;
+}
+
 function readState(userId: string): GroupState {
   const path = statePath(userId);
   if (!existsSync(path)) return { ...EMPTY_STATE, groups: [] };
   // activePairSymbol defaults to null for state files persisted before this field existed.
   const raw: GroupState = { activePairSymbol: null, ...JSON.parse(readFileSync(path, "utf8")) };
-  const cleaned = stripDerivSyntheticSymbols(raw);
+  const cleaned = renameFlameToFlames(stripDerivSyntheticSymbols(raw));
   if (cleaned !== raw) saveState(userId, cleaned);
   return cleaned;
 }
@@ -166,7 +186,10 @@ export const DEFAULT_PAIR_GROUPS: PairGroup[] = [
     // Deriv -- every "_INDEX"-suffixed Deriv-style symbol previously seeded here has been removed.
     id: "synthetic",
     name: "Synthetic",
-    symbols: ["VOL_10", "VOL_20", "VOL_80", "BOOM_100", "BOOM_200", "STORM_200", "STORM_500", "CRASH_100", "CRASH_200", "FLAME"],
+    // Real, live bug fixed (user: "It's FLAMES NOT FLAME") -- the broker's actual MT5 symbol is
+    // FLAMES, not FLAME; the wrong spelling here meant every analysis request for it never
+    // matched a real symbol, so it always came back "unavailable this cycle."
+    symbols: ["VOL_10", "VOL_20", "VOL_80", "BOOM_100", "BOOM_200", "STORM_200", "STORM_500", "CRASH_100", "CRASH_200", "FLAMES"],
   },
   {
     id: "forex",

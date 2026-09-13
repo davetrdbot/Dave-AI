@@ -29,7 +29,7 @@ try {
   // User-corrected: this project only uses Headway broker synthetics -- exactly these 10 real
   // symbols, zero Deriv-style "_INDEX" symbols anywhere.
   const synthetic = groups.find((g) => g.id === "synthetic")!;
-  assert.deepEqual(synthetic.symbols, ["VOL_10", "VOL_20", "VOL_80", "BOOM_100", "BOOM_200", "STORM_200", "STORM_500", "CRASH_100", "CRASH_200", "FLAME"]);
+  assert.deepEqual(synthetic.symbols, ["VOL_10", "VOL_20", "VOL_80", "BOOM_100", "BOOM_200", "STORM_200", "STORM_500", "CRASH_100", "CRASH_200", "FLAMES"]);
   assert.ok(!synthetic.symbols.some((s) => s.includes("_INDEX")), "must contain zero Deriv-style _INDEX symbols");
   const forex = groups.find((g) => g.id === "forex")!;
   assert.equal(forex.symbols.length, 28);

@@ -248,17 +248,41 @@ async function handleAccount(deps: CommandRouterDeps, chatId: number, editMessag
  * from the EA's own real POSITION_PROFIT (see ea-webhook.ts's EaPosition.pnl) -- previously never
  * reported at all, so a real profit/loss figure per open trade genuinely couldn't be shown.
  */
+/**
+ * Real gap fixed (user: "the trades in the telegram it should able to check pending orders and
+ * delete it") -- the /trades screen only ever showed open positions; a pending limit/stop order
+ * had no way to be seen or deleted from Telegram at all short of asking the model to do it. Now
+ * lists real pending orders (ticket, symbol, type, lots, price -- from the EA's own last-known
+ * state, same source tradesScreen already uses for positions) with a real delete button per
+ * order, wired to the same real `executor.deletePendingOrder(ticket)` the model's own
+ * delete_pending_order tool already uses -- one real deletion path, not a second parallel one.
+ */
 function tradesScreen(deps: CommandRouterDeps, liveSeconds?: number): { text: string; reply_markup: ReturnType<typeof keyboard> } {
-  const { positions } = getLastKnownState(deps.userId);
+  const { positions, pendingOrders } = getLastKnownState(deps.userId);
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  const lines: string[] = ["<b>Trades</b>"];
+
   if (positions.length === 0) {
-    return { text: "<b>Trades</b>\nNo open positions right now.", reply_markup: withMenuHome(keyboard([[coloredButton("🔄 Refresh", "neutral", "trades:refresh")]])) };
+    lines.push("No open positions right now.");
+  } else {
+    lines.push(...positions.map((p) => `${(p.pnl ?? 0) >= 0 ? "🟢" : "🔴"} ${p.symbol} ${p.type.toUpperCase()} ${p.lots} @ ${p.openPrice} — ${formatPnl(p.pnl ?? 0)}`));
+    rows.push(...positions.map((p) => [coloredButton(`❌ Close ${p.symbol} (${formatPnl(p.pnl ?? 0)})`, "red", `trades:close:${p.ticket}`)]));
+    const losers = positions.filter((p) => (p.pnl ?? 0) < 0);
+    rows.push([coloredButton(`🛑 Close ALL (${positions.length})`, "red", "trades:closeall")]);
+    if (losers.length > 0) rows.push([coloredButton(`🔴 Close losers (${losers.length})`, "red", "trades:closelosers")]);
   }
-  const lines = ["<b>Trades</b>", ...positions.map((p) => `${(p.pnl ?? 0) >= 0 ? "🟢" : "🔴"} ${p.symbol} ${p.type.toUpperCase()} ${p.lots} @ ${p.openPrice} — ${formatPnl(p.pnl ?? 0)}`)];
+
+  if (pendingOrders.length > 0) {
+    lines.push("", "<b>Pending orders</b>");
+    lines.push(...pendingOrders.map((o) => `🕒 ${o.symbol} ${o.type.toUpperCase()} ${o.lots} @ ${o.price} — #${o.ticket}`));
+    rows.push(...pendingOrders.map((o) => [coloredButton(`🗑 Delete ${o.symbol} ${o.type.toUpperCase()} @ ${o.price}`, "red", `trades:delpending:${o.ticket}`)]));
+    if (pendingOrders.length > 1) rows.push([coloredButton(`🗑 Delete ALL pending (${pendingOrders.length})`, "red", "trades:delpendingall")]);
+  }
+
+  if (positions.length === 0 && pendingOrders.length === 0) {
+    lines.push("No open positions or pending orders right now.");
+  }
   if (liveSeconds) lines.push("", `🔴 Live -- refreshing every ${liveSeconds}s`);
-  const rows: ReturnType<typeof coloredButton>[][] = positions.map((p) => [coloredButton(`❌ Close ${p.symbol} (${formatPnl(p.pnl ?? 0)})`, "red", `trades:close:${p.ticket}`)]);
-  const losers = positions.filter((p) => (p.pnl ?? 0) < 0);
-  rows.push([coloredButton(`🛑 Close ALL (${positions.length})`, "red", "trades:closeall")]);
-  if (losers.length > 0) rows.push([coloredButton(`🔴 Close losers (${losers.length})`, "red", "trades:closelosers")]);
   rows.push([coloredButton("🔄 Refresh", "neutral", "trades:refresh"), coloredButton(liveSeconds ? "⏸️ Stop live" : "📡 Live (3s)", liveSeconds ? "red" : "blue", "trades:live")]);
   return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows)) };
 }
@@ -1302,6 +1326,60 @@ function formatAnalysisDebugEntry(entry: AnalysisDebugEntry, verbose: boolean): 
 }
 
 /**
+ * Real gap fixed (user: "the json sent from the EA... it's jam-packed... arrange it so it should
+ * clearly neat with paragraph and spacing"). The raw rawSuite dump used to be one compact
+ * `JSON.stringify` line, mechanically cut at Telegram's 4000-char boundary regardless of real
+ * structure -- unreadable, and a chunk boundary could land mid-object. This renders the SAME real
+ * recorded data (never a summary or a fabricated shape) as neat, real sections per timeframe/
+ * endpoint -- no braces/quotes/commas -- while keeping spacing tight per the user's explicit
+ * follow-up ("the space shouldn't be too much"): one blank line between timeframe blocks only, no
+ * blank line between endpoints within a timeframe, and an array of objects (zones, order blocks,
+ * FVGs, etc.) compressed to one real line per item instead of one line per field.
+ */
+function renderValueNeatly(value: unknown, indent: number): string[] {
+  const pad = "  ".repeat(indent);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [`${pad}(none)`];
+    return value.map((item) => {
+      if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+        return `${pad}• ${Object.entries(item as Record<string, unknown>).map(([k, v]) => `${k}=${v}`).join(", ")}`;
+      }
+      return `${pad}• ${item}`;
+    });
+  }
+  if (value !== null && typeof value === "object") {
+    const lines: string[] = [];
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== null && typeof v === "object") {
+        lines.push(`${pad}${k}:`);
+        lines.push(...renderValueNeatly(v, indent + 1));
+      } else {
+        lines.push(`${pad}${k}: ${v}`);
+      }
+    }
+    return lines;
+  }
+  return [`${pad}${value}`];
+}
+
+function renderRawSuiteNeatly(entry: AnalysisDebugEntry): string {
+  const lines = [`📊 ${entry.symbol} — raw analysis (${entry.timeframesReceived.length} timeframe(s))`];
+  for (const tf of entry.timeframesReceived) {
+    lines.push("", `═ ${tf} ═`);
+    const tfData = (entry.rawSuite as Record<string, unknown>)[tf];
+    if (tfData === null || typeof tfData !== "object") {
+      lines.push(`  ${tfData}`);
+      continue;
+    }
+    for (const [endpoint, value] of Object.entries(tfData as Record<string, unknown>)) {
+      lines.push(`— ${endpoint} —`);
+      lines.push(...renderValueNeatly(value, 1));
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
  * Real gap fixed (user, live: doubted `get_all_analysis` genuinely fetches the FULL suite across
  * every configured timeframe/endpoint, not something silently partial/stubbed). Shows the real,
  * recorded values from the actual last fetch(es) -- analysis-debug-store.ts's file-backed
@@ -2151,20 +2229,40 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         ackText = `${targets.length} close request(s) sent`;
         if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: results.length > 0 ? results.join("\n") : "Nothing to close." });
       }
+    } else if (data === "trades:delpendingall" || data.startsWith("trades:delpending:")) {
+      if (!deps.executor) {
+        ackText = "No trade executor configured";
+      } else {
+        const { pendingOrders } = getLastKnownState(deps.userId);
+        const targets = data === "trades:delpendingall" ? pendingOrders : pendingOrders.filter((o) => o.ticket === data.slice("trades:delpending:".length));
+        const results = await Promise.all(
+          targets.map(async (o) => {
+            try {
+              await deps.executor!.deletePendingOrder(o.ticket);
+              return `✅ ${o.symbol} ${o.type.toUpperCase()} #${o.ticket} deleted`;
+            } catch (err) {
+              return `⚠️ ${o.symbol} #${o.ticket} failed: ${err instanceof Error ? err.message : String(err)}`;
+            }
+          })
+        );
+        ackText = `${targets.length} delete request(s) sent`;
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: results.length > 0 ? results.join("\n") : "Nothing to delete." });
+      }
     } else if (data === "analysisdebug:raw") {
       const entries = getRecentAnalysisFetches(deps.userId);
       if (entries.length === 0) {
         ackText = "Nothing recorded yet";
         if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "No analysis fetches recorded yet." });
       } else {
-        // Real, untruncated rawSuite for the most recent entry -- exactly what was actually
-        // fetched, not a summary. Chunked via the shared chunkForTelegram utility so it respects
-        // Telegram's real 4096-char message limit rather than getting silently rejected/cut. Sent
-        // plain (no parse_mode, no added wrapper text) so the chunks, concatenated, are exactly
-        // the real original JSON -- independently verifiable, not decorated/reformatted.
-        const raw = JSON.stringify(entries[0].rawSuite);
+        // Real, untruncated data for the most recent entry -- exactly what was actually fetched,
+        // never a summary -- rendered as neat, real sections (renderRawSuiteNeatly above) instead
+        // of one compact JSON.stringify blob. Chunked via the shared chunkForTelegram utility so
+        // it respects Telegram's real 4096-char message limit; a chunk boundary can still land
+        // mid-section on a genuinely huge suite, but each individual chunk stays readable text,
+        // never a raw brace/quote fragment.
+        const raw = renderRawSuiteNeatly(entries[0]);
         const chunks = chunkForTelegram(raw);
-        ackText = `Raw JSON (${chunks.length} message${chunks.length === 1 ? "" : "s"})`;
+        ackText = `Raw analysis (${chunks.length} message${chunks.length === 1 ? "" : "s"})`;
         if (chatId) {
           for (const chunk of chunks) await deps.client.sendMessage({ chat_id: chatId, text: chunk });
         }
