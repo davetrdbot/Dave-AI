@@ -8,6 +8,7 @@ import {
   evaluateConfidenceGate,
   queueTradeForApproval,
   tradeExecute,
+  tradeModify,
   partialClose,
   fullClose,
   deletePendingOrder,
@@ -77,7 +78,7 @@ type TradeAction = (typeof TRADE_ACTIONS)[number];
  *  the trade actions -- these are alternate values of the one `action` field, not a second tool
  *  the model can freely reach for, so the "one structured decision per tick" architecture is
  *  never reopened into an agentic multi-tool loop. */
-const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "PAUSE", "CONSULT_JOURNAL"] as const;
+const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "MODIFY", "PAUSE", "CONSULT_JOURNAL"] as const;
 const DECISION_ACTIONS = [...TRADE_ACTIONS, ...MANAGEMENT_ACTIONS, "SKIP", "ASK"] as const;
 type DecisionAction = (typeof DECISION_ACTIONS)[number];
 
@@ -113,6 +114,10 @@ export interface TickDecision {
   closeLots?: number;
   /** Optional for PAUSE, clamped to [1, MAX_SELF_PAUSE_MINUTES]; defaults to the max if omitted. */
   pauseMinutes?: number;
+  /** Optional for MODIFY -- the position's new SL. `null` explicitly removes the SL; omitted/undefined leaves it unchanged. Matches tradeModify's real semantics exactly. */
+  newSl?: number | null;
+  /** Optional for MODIFY -- the position's new TP. `null` explicitly removes the TP; omitted/undefined leaves it unchanged. Matches tradeModify's real semantics exactly. */
+  newTp?: number | null;
 }
 
 export interface TickOutcome {
@@ -147,6 +152,7 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
         "BUY/SELL are market orders. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders -- include entry. " +
         "DELETE_TICKET closes an existing open position or removes an existing pending order (needs ticket). " +
         "PARTIAL_CLOSE closes part of an existing open position (needs ticket and closeLots). " +
+        "MODIFY adjusts SL/TP on an existing open position (needs ticket; optional newSl/newTp -- pass a number to set it, null to explicitly remove it, or omit to leave it unchanged). " +
         "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
         "SKIP if there's genuinely nothing. ASK only for real, specific ambiguity.",
@@ -158,8 +164,10 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
     reason: { type: "string" },
     question: { type: "string", description: "only when action is ASK" },
     options: { type: "array", items: { type: "string" }, description: "only when action is ASK" },
-    ticket: { type: "string", description: "the real ticket to act on -- required for DELETE_TICKET and PARTIAL_CLOSE, pick one from OPEN POSITIONS/PENDING ORDERS below" },
+    ticket: { type: "string", description: "the real ticket to act on -- required for DELETE_TICKET, PARTIAL_CLOSE, and MODIFY, pick one from OPEN POSITIONS/PENDING ORDERS below" },
     closeLots: { type: "number", description: "required for PARTIAL_CLOSE -- how many lots of the position to close" },
+    newSl: { type: ["number", "null"], description: "optional for MODIFY -- the open position's new SL. A number sets it, null explicitly removes it, omit to leave it unchanged." },
+    newTp: { type: ["number", "null"], description: "optional for MODIFY -- the open position's new TP. A number sets it, null explicitly removes it, omit to leave it unchanged." },
     pauseMinutes: { type: "number", description: "optional for PAUSE -- how long to pause, 1 to 5 minutes; defaults to 5 if omitted" },
   };
   const required = ["action", "reason"];
@@ -199,6 +207,12 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     ticket: typeof obj.ticket === "string" ? obj.ticket : undefined,
     closeLots: typeof obj.closeLots === "number" ? obj.closeLots : undefined,
     pauseMinutes: typeof obj.pauseMinutes === "number" ? obj.pauseMinutes : undefined,
+    // Real semantics (must match tradeModify/modifyOrder exactly): explicit null means "remove
+    // this SL/TP", a real number means "set it", and genuinely absent/undefined -- including any
+    // other unexpected type -- means "leave it unchanged". `"newSl" in obj` is what distinguishes
+    // an explicit null from a key that was never sent at all.
+    newSl: typeof obj.newSl === "number" ? obj.newSl : "newSl" in obj && obj.newSl === null ? null : undefined,
+    newTp: typeof obj.newTp === "number" ? obj.newTp : "newTp" in obj && obj.newTp === null ? null : undefined,
   };
 }
 
@@ -238,13 +252,13 @@ function buildSystemPrompt(): string {
 
 You are in an autonomous trading TICK right now, not a conversation -- there is no user to reply to, just one real decision to make.
 
-You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, PAUSE, CONSULT_JOURNAL, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
+You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, MODIFY, PAUSE, CONSULT_JOURNAL, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
 
 BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set -- if you genuinely don't see an immediate scalp or sniper entry, a well-placed limit order waiting for price to come to you is still finding the opportunity, not giving up on it. Prefer SKIP only when there is truly nothing real here, not as a default.
 
 You may ASK a single genuine question only for real, specific ambiguity you cannot resolve yourself. Prefer deciding over asking.
 
-DELETE_TICKET closes an existing open position or cancels an existing pending order you no longer want -- use it with a real ticket from OPEN POSITIONS/PENDING ORDERS below. PARTIAL_CLOSE takes some profit/reduces risk on part of an existing position (needs ticket + closeLots) without closing it entirely. PAUSE stops you from opening ANY new trade for a short while (1-5 minutes, your call) when you judge there's already enough real open exposure -- you can still ASK, DELETE_TICKET, or PARTIAL_CLOSE while paused, just not open something new.
+DELETE_TICKET closes an existing open position or cancels an existing pending order you no longer want -- use it with a real ticket from OPEN POSITIONS/PENDING ORDERS below. PARTIAL_CLOSE takes some profit/reduces risk on part of an existing position (needs ticket + closeLots) without closing it entirely. MODIFY adjusts SL and/or TP on an existing open position (needs ticket) without closing anything -- pass newSl/newTp as a number to set it, null to explicitly remove it, or omit either to leave it unchanged. PAUSE stops you from opening ANY new trade for a short while (1-5 minutes, your call) when you judge there's already enough real open exposure -- you can still ASK, DELETE_TICKET, PARTIAL_CLOSE, or MODIFY while paused, just not open something new.
 
 CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest opinion before you commit -- entirely optional, never required. Journal has its own access to trade history and analysis tools; it reviews and comments, it never places or modifies a trade itself. Use it when a setup is genuinely borderline and a second read would help, not as a default detour. After Journal answers, you'll be asked to decide again with its opinion in hand.
 
@@ -590,6 +604,49 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       symbol,
       notable: true,
       message: `✂️ Partially closed ${decision.closeLots} lots on ticket #${decision.ticket} (${closeResult.remainingLots} lots remain)\n💡 ${summarizeReason(reason || "no reason given")}`,
+    };
+  }
+
+  // Real MODIFY action (user, live: adjust SL/TP on an existing open position without closing
+  // it). Reuses the exact same isOpenTicket-style check PARTIAL_CLOSE already uses against the
+  // real `positions` snapshot -- never reimplemented, so it works for any real open ticket
+  // regardless of which symbol the round-robin cursor is currently on, exactly like
+  // DELETE_TICKET/PARTIAL_CLOSE already do. newSl/newTp being explicitly `null` vs. genuinely
+  // absent/undefined are kept distinct all the way through from coerceDecision -- null means
+  // "remove this SL/TP", undefined means "leave it unchanged" -- matching tradeModify's/
+  // modifyOrder's own real semantics exactly (see trade-execute.ts / ea-trade-executor.ts).
+  if (decision.action === "MODIFY") {
+    const reason = decision.reason ?? "";
+    if (!decision.ticket) {
+      logTick(userId, `${symbol}: MODIFY rejected -- no ticket given`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "MODIFY needs a ticket" });
+      return { action: "NONE", notable: false };
+    }
+    const openPosition = positions.find((p) => p.ticket === decision.ticket);
+    if (!openPosition) {
+      logTick(userId, `${symbol}: MODIFY rejected -- ticket #${decision.ticket} isn't a real open position`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `MODIFY given an unknown ticket #${decision.ticket}` });
+      return { action: "NONE", notable: false };
+    }
+    if (decision.newSl === undefined && decision.newTp === undefined) {
+      logTick(userId, `${symbol}: MODIFY rejected -- ticket #${decision.ticket} given neither newSl nor newTp`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "MODIFY needs at least one of newSl/newTp" });
+      return { action: "NONE", notable: false };
+    }
+    // Real old values captured from the live snapshot fetched THIS tick, before the call --
+    // never guessed or reconstructed from the model's own claim, so the notification reflects
+    // what the position's SL/TP genuinely were.
+    const oldSl = openPosition.sl;
+    const oldTp = openPosition.tp;
+    await tradeModify(executor, decision.ticket, { sl: decision.newSl, tp: decision.newTp });
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "MODIFY", reason });
+    const slLine = decision.newSl !== undefined ? `SL ${oldSl ?? "none"} → ${decision.newSl === null ? "none" : decision.newSl}` : null;
+    const tpLine = decision.newTp !== undefined ? `TP ${oldTp ?? "none"} → ${decision.newTp === null ? "none" : decision.newTp}` : null;
+    return {
+      action: "MODIFY",
+      symbol,
+      notable: true,
+      message: `✏️ Ticket #${decision.ticket} modified -- ${[slLine, tpLine].filter(Boolean).join(", ")}\n💡 ${summarizeReason(reason || "no reason given")}`,
     };
   }
 
