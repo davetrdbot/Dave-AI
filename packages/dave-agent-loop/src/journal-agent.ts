@@ -5,6 +5,7 @@ import { EA_ANALYSIS_TOOLS, EA_STATE_TOOLS, type EaToolContext } from "@dave/ea-
 import { ToolRegistry, adaptTools } from "./tool-registry.js";
 import { AgentLoop, MaxStepsExceededError } from "./agent-loop.js";
 import { beginTurn, endTurn } from "./turn-abort.js";
+import { recordAnalysisFetch } from "./analysis-debug-store.js";
 
 /**
  * Real feature (user, live: "Journal is a ai like sidekick... it can ask journal what do you
@@ -39,7 +40,7 @@ Answer directly and honestly -- take the setup or don't, say why, specifically. 
 export async function consultJournal(ctx: JournalContext, question: string, contextLines: string[] = []): Promise<{ opinion: string }> {
   const registry = new ToolRegistry();
   const feedbackCtx: FeedbackToolContext = { userId: ctx.userId, db: ctx.db };
-  const eaCtx: EaToolContext = { userId: ctx.userId };
+  const eaCtx: EaToolContext = { userId: ctx.userId, onAnalysisDebug: (entry) => recordAnalysisFetch(ctx.userId, entry) };
   registry.register(adaptTools(FEEDBACK_TOOLS, feedbackCtx));
   registry.register(adaptTools(EA_STATE_TOOLS, eaCtx));
   registry.register(adaptTools(EA_ANALYSIS_TOOLS, eaCtx));

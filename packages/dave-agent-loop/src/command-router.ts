@@ -15,6 +15,7 @@ import {
   type TelegramCallbackQuery,
   sendSelfDeletingMessage,
   escapeHtml,
+  chunkForTelegram,
 } from "@dave/telegram";
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource, setEaPushInterval, getEaPushIntervalPreference, setPendingPushIntervalEntry, getPendingPushIntervalEntry } from "@dave/ea-bridge";
 import { abortTurn } from "./turn-abort.js";
@@ -125,6 +126,7 @@ import { getProviderTimeoutConfig, setPrimaryTimeoutSeconds, setFallbackTimeoutS
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
 import { friendlyErrorMessage } from "./error-messages.js";
+import { getRecentAnalysisFetches, type AnalysisDebugEntry } from "./analysis-debug-store.js";
 
 /**
  * Real gap fixed (A2/A3): onUpdate had zero command router -- every
@@ -1262,6 +1264,61 @@ async function handleStatus(deps: CommandRouterDeps, chatId: number, editMessage
   await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([])), editMessageId);
 }
 
+function formatBytesAsKb(bytes: number): string {
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+/** One entry's full mismatch-visible summary: requested vs received (so a timeframe that was
+ *  asked for but never came back is impossible to miss), and the real endpoint key count per
+ *  received timeframe (so the user can see/count that the real 44-endpoint suite came back, not
+ *  a truncated stub). */
+function formatAnalysisDebugEntry(entry: AnalysisDebugEntry, verbose: boolean): string {
+  const missing = entry.timeframesRequested.filter((tf) => !entry.timeframesReceived.includes(tf));
+  const lines = [
+    `Symbol: <b>${escapeHtml(entry.symbol)}</b>`,
+    `Requested: ${entry.timeframesRequested.join(", ") || "(none)"}`,
+    `Received: ${entry.timeframesReceived.join(", ") || "(none)"}${missing.length > 0 ? ` ⚠️ MISSING: ${missing.join(", ")}` : " ✅ all requested timeframes received"}`,
+  ];
+  if (verbose) {
+    for (const tf of entry.timeframesReceived) {
+      const keys = entry.endpointKeysPerTimeframe[tf] ?? [];
+      lines.push(`  ${tf}: ${keys.length} endpoint key(s) -- ${keys.join(", ")}`);
+    }
+  } else {
+    const counts = entry.timeframesReceived.map((tf) => `${tf}=${(entry.endpointKeysPerTimeframe[tf] ?? []).length}`);
+    lines.push(`Endpoint keys per timeframe: ${counts.join(", ") || "(none)"}`);
+  }
+  lines.push(`Payload size: ${formatBytesAsKb(entry.totalPayloadBytes)}`);
+  lines.push(`Fetched: ${new Date(entry.fetchedAt).toISOString()}`);
+  return lines.join("\n");
+}
+
+/**
+ * Real gap fixed (user, live: doubted `get_all_analysis` genuinely fetches the FULL suite across
+ * every configured timeframe/endpoint, not something silently partial/stubbed). Shows the real,
+ * recorded values from the actual last fetch(es) -- analysis-debug-store.ts's file-backed
+ * per-user rolling record, written at the real fetch sites (autonomous-tick.ts's merged
+ * multi-timeframe suite, and dave-ea-bridge's own get_all_analysis tool) -- so a real mismatch
+ * (a timeframe requested but never received) is visually obvious here, not hidden. The
+ * "Show raw JSON" button sends the REAL stored rawSuite for the most recent entry, chunked via
+ * the shared chunkForTelegram utility, so it's independently verifiable, not a summary Dave
+ * could have made up.
+ */
+async function handleLastAnalysis(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
+  const entries = getRecentAnalysisFetches(deps.userId);
+  if (entries.length === 0) {
+    await sendOrEditScreen(deps, chatId, "<b>Last Analysis</b>\nNo analysis fetches recorded yet.", withMenuHome(keyboard([])), editMessageId);
+    return;
+  }
+  const [latest, ...rest] = entries;
+  const parts = [`<b>Last Analysis</b>\nMost recent real get_all_analysis fetch:\n\n${formatAnalysisDebugEntry(latest, true)}`];
+  if (rest.length > 0) {
+    parts.push(`\n<b>Earlier fetches (${rest.length}):</b>\n${rest.map((e) => formatAnalysisDebugEntry(e, false)).join("\n\n")}`);
+  }
+  const text = parts.join("\n");
+  await sendOrEditScreen(deps, chatId, text, withMenuHome(keyboard([[coloredButton("📄 Show raw JSON", "blue", "analysisdebug:raw")]])), editMessageId);
+}
+
 /** Real fix (user: "when sending the ea it normally does need a ui that's not necessary...
  * remove it the ui should be Dave EA and mcp for trading so incase they don't want to use the ea
  * I can provide my mcp for the placing of trade"): the old picker's two buttons ("Dave's default
@@ -1358,6 +1415,9 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
     case "trades":
       await handleTrades(deps, chatId, editMessageId);
       break;
+    case "last_analysis":
+      await handleLastAnalysis(deps, chatId, editMessageId);
+      break;
   }
 }
 
@@ -1375,6 +1435,7 @@ const MENU_BUTTONS: { command: DaveCommand; label: string }[] = [
   { command: "models", label: "🧠 Models" },
   { command: "connection", label: "🔌 Connection" },
   { command: "ea", label: "📄 EA File" },
+  { command: "last_analysis", label: "🔍 Last Analysis" },
   { command: "reset", label: "🔄 Reset" },
   { command: "help", label: "❓ Help" },
 ];
@@ -2075,6 +2136,24 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
         );
         ackText = `${targets.length} close request(s) sent`;
         if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: results.length > 0 ? results.join("\n") : "Nothing to close." });
+      }
+    } else if (data === "analysisdebug:raw") {
+      const entries = getRecentAnalysisFetches(deps.userId);
+      if (entries.length === 0) {
+        ackText = "Nothing recorded yet";
+        if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "No analysis fetches recorded yet." });
+      } else {
+        // Real, untruncated rawSuite for the most recent entry -- exactly what was actually
+        // fetched, not a summary. Chunked via the shared chunkForTelegram utility so it respects
+        // Telegram's real 4096-char message limit rather than getting silently rejected/cut. Sent
+        // plain (no parse_mode, no added wrapper text) so the chunks, concatenated, are exactly
+        // the real original JSON -- independently verifiable, not decorated/reformatted.
+        const raw = JSON.stringify(entries[0].rawSuite);
+        const chunks = chunkForTelegram(raw);
+        ackText = `Raw JSON (${chunks.length} message${chunks.length === 1 ? "" : "s"})`;
+        if (chatId) {
+          for (const chunk of chunks) await deps.client.sendMessage({ chat_id: chatId, text: chunk });
+        }
       }
     } else if (data === "resetconfirm:yes") {
       ackText = undefined;

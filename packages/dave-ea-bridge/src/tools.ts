@@ -17,6 +17,29 @@ export interface EaToolContext {
    * uses requestAnalysis's own real default (300s, sized for the EA's 2-minute push interval).
    */
   timeoutMs?: number;
+  /**
+   * Real gap fixed (user, live: doubted `get_all_analysis` genuinely fetches the full suite
+   * rather than something silently partial/stubbed). Optional DI callback -- dave-ea-bridge has
+   * no dependency on dave-agent-loop (the dependency runs the other way: agent-loop depends on
+   * ea-bridge), so this package cannot import agent-loop's file-backed analysis-debug-store
+   * directly without creating a real circular package dependency. Same pattern already used by
+   * JOURNAL_TOOLS's `onTradeLogged` in full-registry.ts -- the caller (dave-agent-loop, wiring up
+   * this context at registration time) supplies the real recorder; this package just invokes it
+   * with the real values from what was actually fetched, right at the real fetch site.
+   */
+  onAnalysisDebug?: (entry: AnalysisDebugFetch) => void;
+}
+
+/** Mirrors AnalysisDebugEntry (minus `rawSuite`'s specific shape, which is just `unknown` here
+ *  too) in packages/dave-agent-loop/src/analysis-debug-store.ts, without importing it. */
+export interface AnalysisDebugFetch {
+  symbol: string;
+  timeframesRequested: string[];
+  timeframesReceived: string[];
+  endpointKeysPerTimeframe: Record<string, string[]>;
+  totalPayloadBytes: number;
+  fetchedAt: number;
+  rawSuite: unknown;
 }
 
 export interface EaToolDefinition {
@@ -123,15 +146,36 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
     parameters: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["symbol"] },
     execute: async (args, ctx) => {
       const symbol = args.symbol as string;
-      const result = await requestAnalysis(ctx.userId, "all", symbol, (args.timeframe as string) ?? "M15", ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined);
+      const timeframe = (args.timeframe as string) ?? "M15";
+      const result = await requestAnalysis(ctx.userId, "all", symbol, timeframe, ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined);
       const state = getLastKnownState(ctx.userId);
       const upper = symbol.toUpperCase();
       const resultObj = (typeof result === "object" && result !== null ? result : {}) as Record<string, unknown>;
-      return {
+      const finalResult = {
         ...resultObj,
         openPositionsForSymbol: state.positions.filter((p) => p.symbol.toUpperCase() === upper),
         pendingOrdersForSymbol: state.pendingOrders.filter((p) => p.symbol.toUpperCase() === upper),
       };
+
+      // Real, honest record of what THIS call actually got back -- requestAnalysis already
+      // threw above if the EA round-trip genuinely failed, so reaching here means this one
+      // timeframe's fetch genuinely succeeded. endpointKeysPerTimeframe reflects the real
+      // top-level keys the EA's "all" endpoint actually returned, not an assumed/expected list.
+      const endpointKeysPerTimeframe: Record<string, string[]> = { [timeframe]: Object.keys(resultObj) };
+      const totalPayloadBytes = Buffer.byteLength(JSON.stringify(finalResult), "utf8");
+      const debugEntry: AnalysisDebugFetch = {
+        symbol,
+        timeframesRequested: [timeframe],
+        timeframesReceived: [timeframe],
+        endpointKeysPerTimeframe,
+        totalPayloadBytes,
+        fetchedAt: Date.now(),
+        rawSuite: finalResult,
+      };
+      console.log("[analysis-debug] " + JSON.stringify({ symbol, timeframesRequested: [timeframe], timeframesReceived: [timeframe], endpointKeysPerTimeframe, totalPayloadBytes, fetchedAt: debugEntry.fetchedAt }));
+      ctx.onAnalysisDebug?.(debugEntry);
+
+      return finalResult;
     },
   },
   analysisTool("ping_ea", "ping", "a trivial health check confirming the connected EA is alive and responsive -- no market data"),

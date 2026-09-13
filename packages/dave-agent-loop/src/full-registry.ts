@@ -30,6 +30,7 @@ import { runWorkerTask } from "./worker-loop.js";
 import type { Worker } from "@dave/workers";
 import type { OrderRequest } from "@dave/trading";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage } from "./trade-notifications.js";
+import { recordAnalysisFetch } from "./analysis-debug-store.js";
 
 /**
  * Update 11 (post-Update-9 follow-up): "you actually forgot to give
@@ -187,7 +188,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(wrappedTradingTools);
 
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
-  registry.register(adaptTools(EA_ANALYSIS_TOOLS, { userId: deps.userId }));
+  registry.register(adaptTools(EA_ANALYSIS_TOOLS, { userId: deps.userId, onAnalysisDebug: (entry) => recordAnalysisFetch(deps.userId, entry) }));
   registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, workspaceRoot: process.cwd() }));
   registry.register(adaptTools(KNOWLEDGE_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(MCP_MANAGER_TOOLS, { userId: deps.userId }));

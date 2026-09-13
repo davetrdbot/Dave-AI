@@ -26,6 +26,7 @@ import { logTrade } from "@dave/feedback";
 import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCursor, recordSkipForHunt, clearHuntState, HUNT_THRESHOLD } from "./autonomous-tick-state.js";
 import { isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { setSelfPause, getSelfPause, MAX_SELF_PAUSE_MINUTES } from "./self-pause.js";
+import { recordAnalysisFetch } from "./analysis-debug-store.js";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperTierWhileStoppedMessage, summarizeReason } from "./trade-notifications.js";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { consultJournal } from "./journal-agent.js";
@@ -381,6 +382,38 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   );
   const suite: Record<string, unknown> = {};
   for (const { tf, data } of suiteByTimeframe) suite[tf] = data ? filterSuiteToConfig(data, analysisConfig) : { error: "unavailable this cycle" };
+
+  // Real gap fixed (user, live: doubted `get_all_analysis` is genuinely fetching the FULL suite
+  // across every configured timeframe, not something silently partial/stubbed). Built from the
+  // real, unfiltered `suiteByTimeframe` results above -- what actually came back from the EA per
+  // timeframe -- not from `suite` (which is already narrowed by the user's own analysisConfig
+  // selection, and would understate what was genuinely fetched). A timeframe whose fetch failed
+  // above (data === null) is real-honestly left OUT of both timeframesReceived and
+  // endpointKeysPerTimeframe -- this must reflect what actually happened this cycle, not what was
+  // merely requested.
+  const rawMergedSuite: Record<string, unknown> = {};
+  for (const { tf, data } of suiteByTimeframe) if (data) rawMergedSuite[tf] = data;
+  const timeframesReceived = suiteByTimeframe.filter((r) => r.data).map((r) => r.tf);
+  const endpointKeysPerTimeframe: Record<string, string[]> = {};
+  for (const tf of timeframesReceived) {
+    const d = rawMergedSuite[tf];
+    endpointKeysPerTimeframe[tf] = d && typeof d === "object" ? Object.keys(d as Record<string, unknown>) : [];
+  }
+  const totalPayloadBytes = Buffer.byteLength(JSON.stringify(rawMergedSuite), "utf8");
+  const analysisDebugFetchedAt = Date.now();
+  console.log(
+    "[analysis-debug] " +
+      JSON.stringify({ symbol, timeframesRequested: activeTimeframes, timeframesReceived, endpointKeysPerTimeframe, totalPayloadBytes, fetchedAt: analysisDebugFetchedAt })
+  );
+  recordAnalysisFetch(userId, {
+    symbol,
+    timeframesRequested: [...activeTimeframes],
+    timeframesReceived,
+    endpointKeysPerTimeframe,
+    totalPayloadBytes,
+    fetchedAt: analysisDebugFetchedAt,
+    rawSuite: rawMergedSuite,
+  });
 
   const primaryTfResult = suiteByTimeframe.find((r) => r.tf === "H1")?.data ?? suiteByTimeframe.find((r) => r.data)?.data;
   const priceInfo = (primaryTfResult as { price?: { bid?: number; ask?: number; close?: number } } | null)?.price;
