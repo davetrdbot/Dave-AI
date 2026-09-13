@@ -203,6 +203,27 @@ export function setSelfPauseEnabled(userId: string, enabled: boolean): void {
   writeFileSync(path, JSON.stringify({ enabled }, null, 2), "utf8");
 }
 
+// --- Two-step trading: a second, independent AI ("Flo") approves or declines every trade before
+// it fires. OFF by default -- an explicit opt-in, same file-backed boolean pattern as self-pause
+// above (default value baked into the getter, not duplicated elsewhere). ---
+
+function twoStepTradingEnabledPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "two-step-trading-enabled.json");
+}
+
+export function getTwoStepTradingEnabled(userId: string): boolean {
+  const path = twoStepTradingEnabledPath(userId);
+  if (!existsSync(path)) return false;
+  return (JSON.parse(readFileSync(path, "utf8")) as { enabled: boolean }).enabled;
+}
+
+export function setTwoStepTradingEnabled(userId: string, enabled: boolean): void {
+  const path = twoStepTradingEnabledPath(userId);
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, JSON.stringify({ enabled }, null, 2), "utf8");
+}
+
 /** Item 8 (/reset "config/settings back to defaults"): deletes the underlying files so
  * getRiskSettings/getAutoApprovalEnabled's own real fallback defaults take over -- no hardcoded
  * default duplicated here that could drift from those functions' own definition of "default". */
@@ -210,6 +231,7 @@ export function resetRiskSettingsForUser(userId: string): void {
   rmSync(settingsPath(userId), { force: true });
   rmSync(autoApprovalPath(userId), { force: true });
   rmSync(pendingLimitPath(userId), { force: true });
+  rmSync(twoStepTradingEnabledPath(userId), { force: true });
 }
 
 export interface SettingsChangeDecision {

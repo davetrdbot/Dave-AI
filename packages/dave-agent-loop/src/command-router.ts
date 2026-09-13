@@ -67,6 +67,8 @@ import {
   huntForSetup,
   getSelfPauseEnabled,
   setSelfPauseEnabled,
+  getTwoStepTradingEnabled,
+  setTwoStepTradingEnabled,
   getAnalysisConfig,
   resetAnalysisConfigToAll,
   toggleTimeframe,
@@ -950,6 +952,11 @@ function riskSettingsKeyboard(userId: string) {
   // toggle shape as every other on/off row here.
   const selfPauseEnabled = getSelfPauseEnabled(userId);
   const selfPauseLabel = `Dave can self-pause: ${selfPauseEnabled ? "On" : "Off"}`;
+  // Real feature ("Two-step trading" -- a second, independent AI, Flo, approves or declines every
+  // trade before it fires). Same direct on/off toggle-row pattern as self-pause above, OFF by
+  // default (getTwoStepTradingEnabled's own real default).
+  const twoStepEnabled = getTwoStepTradingEnabled(userId);
+  const twoStepLabel = `Two-step trading (Flo reviews every trade): ${twoStepEnabled ? "On" : "Off"}`;
   return appendMenuHome(
     settingsScreen(
       [
@@ -972,6 +979,7 @@ function riskSettingsKeyboard(userId: string) {
         [{ label: maxOpenTradesLabel, callbackData: "proposelimit:maxOpenTrades", active: false }],
         [{ label: maxDailyLossLabel, callbackData: "proposelimit:maxDailyLossPct", active: false }],
         [{ label: selfPauseLabel, callbackData: "toggleselfpause", active: selfPauseEnabled }],
+        [{ label: twoStepLabel, callbackData: "toggletwostep", active: twoStepEnabled }],
       ],
       "settings:top"
     )
@@ -1562,6 +1570,12 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       setSelfPauseEnabled(deps.userId, !enabled);
       ackText = `Self-pause ${!enabled ? "enabled" : "disabled"}`;
       await confirm(`Dave can self-pause: ${!enabled ? "On" : "Off"}`);
+      await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
+    } else if (data === "toggletwostep") {
+      const enabled = getTwoStepTradingEnabled(deps.userId);
+      setTwoStepTradingEnabled(deps.userId, !enabled);
+      ackText = `Two-step trading ${!enabled ? "enabled" : "disabled"}`;
+      await confirm(`Two-step trading (Flo reviews every trade): ${!enabled ? "On" : "Off"}`);
       await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
     } else if (data === "settings:risk") {
       ackText = undefined;

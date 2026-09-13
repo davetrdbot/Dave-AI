@@ -20,6 +20,7 @@ import {
   getSelfPauseEnabled,
   getAnalysisConfig,
   filterSuiteToConfig,
+  getTwoStepTradingEnabled,
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -41,6 +42,7 @@ import { recordAnalysisFetch } from "./analysis-debug-store.js";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperTierWhileStoppedMessage, summarizeReason, buildProgressBar } from "./trade-notifications.js";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { consultJournal } from "./journal-agent.js";
+import { consultFlo } from "./flo-agent.js";
 
 /**
  * Real replacement for the autonomous cycle's open-ended agentic tool-calling loop, modeled
@@ -997,8 +999,65 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     return { action: "NONE", notable: false };
   }
 
+  // Real fix (general, applies regardless of two-step mode -- both this and Flo touch the same
+  // pre-execute code path): a pending order (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP) is only
+  // still meaningful as a PENDING order if the real live price hasn't already reached the entry
+  // level the model set it at. The model's decision was computed against the analysis suite
+  // fetched at the top of this tick -- by the time execution reaches here, the real live price
+  // (referencePrice, the same one already used for SL-sanity/fixed-SL calculations above) may
+  // have already moved past that entry, meaning the exact move the pending order was meant to
+  // catch (a dip for a BUY_LIMIT/breakdown for a SELL_STOP, a rally for a SELL_LIMIT/breakout for
+  // a BUY_STOP) has already happened. Genuine MT5 order-placement rules require a pending order's
+  // entry to sit on the correct side of the current live price at all -- a BUY_LIMIT needs
+  // entry < price (still waiting for a dip down to it), a SELL_LIMIT needs entry > price (still
+  // waiting for a rally up to it), a BUY_STOP needs entry > price (still waiting for a breakout
+  // above it), a SELL_STOP needs entry < price (still waiting for a breakdown below it). Once the
+  // real live price has already crossed to the other side, the anticipated move already happened,
+  // so this converts the order in code to the equivalent real MARKET action instead -- sl/tp are
+  // left exactly as the model decided, unchanged; only `type`/`price` change.
+  let marketConversionNote: string | null = null;
+  if (isPending && decision.entry !== undefined && referencePrice > 0) {
+    const entry = decision.entry;
+    const alreadyPassed =
+      action === "BUY_LIMIT" ? referencePrice <= entry :
+      action === "SELL_LIMIT" ? referencePrice >= entry :
+      action === "BUY_STOP" ? referencePrice >= entry :
+      /* SELL_STOP */ referencePrice <= entry;
+    if (alreadyPassed) {
+      const marketOrderType = action === "BUY_LIMIT" || action === "BUY_STOP" ? "buy" : "sell";
+      logTick(userId, `${symbol}: ${action} entry ${entry} already reached/passed by the real live price ${referencePrice} -- placing as MARKET ${marketOrderType.toUpperCase()} instead, sl/tp unchanged`);
+      order.type = marketOrderType;
+      order.price = undefined;
+      marketConversionNote = `placed as market -- the limit/stop price had already been reached`;
+    }
+  }
+
   const confidence = decision.confidence ?? 0;
   const reason = decision.reason ?? "";
+
+  // Real feature ("Two-step trading" -- a second, independent AI, Flo, approves or declines every
+  // trade before it fires). Only ever consulted for a genuine trade action (never management
+  // actions -- those already returned above), and only right here, right after the decision (and
+  // any limit->market conversion above) is finalized, BEFORE the existing final-gate/tradeExecute
+  // path below -- Flo reviews the exact real order that would actually be placed. A decline is
+  // treated as a real SKIP: no trade, no execution, same cursor-advance behavior a normal SKIP
+  // already gets (the cursor was already advanced above, unconditionally, for every decision).
+  let floNote: string | null = null;
+  if (getTwoStepTradingEnabled(userId) && !stoppedMidFlight) {
+    logTick(userId, `${symbol}: two-step trading is on -- consulting Flo before ${action} can fire`);
+    const verdict = await consultFlo({ userId, provider }, decision, contextLines);
+    if (!verdict.approved) {
+      logTick(userId, `${symbol}: Flo declined -- ${verdict.reason}`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `Flo declined: ${verdict.reason}` });
+      return {
+        action: "NONE",
+        notable: true,
+        message: `🛑 Flo declined ${symbol} ${action} -- no trade placed.\n💡 ${summarizeReason(verdict.reason)}`,
+      };
+    }
+    logTick(userId, `${symbol}: Flo approved -- ${verdict.reason}`);
+    floNote = `✅ Flo reviewed and approved -- ${summarizeReason(verdict.reason)}`;
+  }
 
   if (stoppedMidFlight) {
     // Real gap fixed (user, live: "/stop_trading it shouldn't give it offer to place new trade
@@ -1014,7 +1073,12 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
         action,
         symbol,
         notable: true,
-        message: buildSniperTierWhileStoppedMessage(order, confidence, SNIPER_TIER_CONFIDENCE, `${summarizeReason(reason)} (ref #${pendingApproval.id})`),
+        message: buildSniperTierWhileStoppedMessage(
+          order,
+          confidence,
+          SNIPER_TIER_CONFIDENCE,
+          [marketConversionNote, `${summarizeReason(reason)} (ref #${pendingApproval.id})`].filter(Boolean).join(" -- ")
+        ),
       };
     }
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "trading stopped mid-cycle, decision discarded" });
@@ -1030,7 +1094,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       action,
       symbol,
       notable: true,
-      message: buildTradeApprovalRequestMessage(order, confidence, gate.threshold, summarizeReason(reason)),
+      message: buildTradeApprovalRequestMessage(order, confidence, gate.threshold, [marketConversionNote, summarizeReason(reason)].filter(Boolean).join(" -- ")),
     };
   }
 
@@ -1063,6 +1127,8 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     // sendMessage call in telegram-bot-server.ts chunks this via the shared chunkForTelegram
     // utility, so a rare pathologically long reason still sends in full across multiple messages
     // rather than failing on Telegram's real 4096-char limit or being silently shortened here.
-    message: [buildTradePlacedMessage(order, placed.ticket, confidence), `📋 Why: ${reason || "no reason given"}`].join("\n\n"),
+    message: [buildTradePlacedMessage(order, placed.ticket, confidence), marketConversionNote, floNote, `📋 Why: ${reason || "no reason given"}`]
+      .filter((line): line is string => line !== null)
+      .join("\n\n"),
   };
 }
