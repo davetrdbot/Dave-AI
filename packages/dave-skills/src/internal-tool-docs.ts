@@ -9,10 +9,16 @@ import { createSkill, listSkills, updateSkillContent, type Skill } from "./skill
  * of its major tools correctly ... confirm Dave actually recalls and
  * reads these before attempting to use an unfamiliar tool, per the
  * recall-before-acting rule already specified." These three docs live
- * in `docs/skills/` -- same category/location as the existing DAVEMA
- * skill doc (`docs/davema/davema-skill.md`), real markdown reference
- * material, not the per-user dynamic skill store (`@dave/skills`'s own
- * `skill-store.ts`, which is a different, complementary mechanism).
+ * in `docs/skills/` -- real markdown reference material, not the
+ * per-user dynamic skill store (`@dave/skills`'s own `skill-store.ts`,
+ * which is a different, complementary mechanism).
+ *
+ * `docs/davema/davema-skill.md` (an older, now-deleted doc describing
+ * the fully-retired external DAVEMA API as if it were still live and
+ * directly callable) was never in this loaded set and has been removed
+ * entirely -- it was dead weight that actively contradicted
+ * `docs/skills/ea-analysis-skill.md`'s correct "DAVEMA is retired"
+ * framing, a real risk if anyone ever wired it in by mistake.
  *
  * Enforcement reuses Step 4.5's REAL recall-before-acting guard
  * (`@dave/memory`'s `executeTask`/`markRecalled`) -- calling one of the
