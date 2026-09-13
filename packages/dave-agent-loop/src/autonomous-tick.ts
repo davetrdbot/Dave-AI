@@ -24,7 +24,17 @@ import {
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
 import { logTrade, getTradeLifecycle } from "@dave/feedback";
-import { recordTickDecision, formatRecentDecisions, getCursorPosition, advanceCursor, recordSkipForHunt, clearHuntState, HUNT_THRESHOLD } from "./autonomous-tick-state.js";
+import {
+  recordTickDecision,
+  formatRecentDecisions,
+  getCursorPosition,
+  advanceCursor,
+  recordSkipForHunt,
+  clearHuntState,
+  HUNT_THRESHOLD,
+  setPendingSymbolOverride,
+  consumePendingSymbolOverride,
+} from "./autonomous-tick-state.js";
 import { isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { setSelfPause, getSelfPause, MAX_SELF_PAUSE_MINUTES } from "./self-pause.js";
 import { recordAnalysisFetch } from "./analysis-debug-store.js";
@@ -133,6 +143,16 @@ export interface TickDecision {
   newSl?: number | null;
   /** Optional for MODIFY -- the position's new TP. `null` explicitly removes the TP; omitted/undefined leaves it unchanged. Matches tradeModify's real semantics exactly. */
   newTp?: number | null;
+  /** Optional on ANY decision (not a separate action) -- requests a SPECIFIC symbol for the NEXT
+   *  cycle instead of the mechanical round-robin order, e.g. "check back on this once a candle
+   *  closes" or "keep an eye on this related pair after the trade just taken". Honored by
+   *  resolveCursorSymbol on the very next tick, consumed exactly once, and only if the requested
+   *  symbol is still genuinely valid to analyze then (see autonomous-tick-state.ts's
+   *  pendingSymbolOverride). */
+  requestedNextSymbol?: string;
+  /** The real reason accompanying `requestedNextSymbol` -- required alongside it to mean anything,
+   *  logged whenever the override is honored or skipped. */
+  requestedNextReason?: string;
 }
 
 export interface TickOutcome {
@@ -170,7 +190,7 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
         "MODIFY adjusts SL/TP on an existing open position (needs ticket; optional newSl/newTp -- pass a number to set it, null to explicitly remove it, or omit to leave it unchanged). " +
         "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
-        "REQUEST_CANDLES only makes sense while a SELF-AWARE ALERT is active below -- fetches one fresh real batch of candles for the at-risk symbol so you decide with current price action, not stale data; you'll be asked to decide again right after with the candles in hand. " +
+        "REQUEST_CANDLES fetches one fresh real batch of candles (for the at-risk symbol if a SELF-AWARE ALERT is active below, otherwise for the symbol you're currently analyzing) so you decide with current price action, not stale data -- optional, never required, available on any cycle, at most once; you'll be asked to decide again right after with the candles in hand. " +
         "SKIP if there's genuinely nothing. ASK only for real, specific ambiguity.",
     },
     symbol: { type: "string" },
@@ -191,6 +211,11 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
     newSl: { type: ["number", "null"], description: "optional for MODIFY -- the open position's new SL. A number sets it, null explicitly removes it, omit to leave it unchanged." },
     newTp: { type: ["number", "null"], description: "optional for MODIFY -- the open position's new TP. A number sets it, null explicitly removes it, omit to leave it unchanged." },
     pauseMinutes: { type: "number", description: "optional for PAUSE -- how long to pause, 1 to 5 minutes; defaults to 5 if omitted" },
+    requestedNextSymbol: {
+      type: "string",
+      description: "optional -- request a SPECIFIC symbol for the NEXT cycle instead of round-robin order, with a real, genuine reason (e.g. related to a trade you took, or something you want to confirm once a candle closes)",
+    },
+    requestedNextReason: { type: "string", description: "the real reason for requestedNextSymbol -- required alongside it to mean anything" },
   };
   const required = ["action", "reason"];
   if (risk.lotMode !== "on") required.push("lots");
@@ -252,6 +277,8 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     // an explicit null from a key that was never sent at all.
     newSl: typeof obj.newSl === "number" ? obj.newSl : "newSl" in obj && obj.newSl === null ? null : undefined,
     newTp: typeof obj.newTp === "number" ? obj.newTp : "newTp" in obj && obj.newTp === null ? null : undefined,
+    requestedNextSymbol: typeof obj.requestedNextSymbol === "string" && obj.requestedNextSymbol.length > 0 ? obj.requestedNextSymbol : undefined,
+    requestedNextReason: typeof obj.requestedNextReason === "string" ? obj.requestedNextReason : undefined,
   };
 }
 
@@ -301,7 +328,11 @@ DELETE_TICKET closes an existing open position or cancels an existing pending or
 
 CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest opinion before you commit -- entirely optional, never required. Journal has its own access to trade history and analysis tools; it reviews and comments, it never places or modifies a trade itself. Use it when a setup is genuinely borderline and a second read would help, not as a default detour. After Journal answers, you'll be asked to decide again with its opinion in hand.
 
-If a SELF-AWARE ALERT appears below, one of your real open positions is genuinely close to hitting its SL -- you may REQUEST_CANDLES for that symbol to get one fresh real batch of candle data before deciding, entirely optional, at most once. After the candles come back, you'll be asked to decide again with them in hand -- act directly with MODIFY (tighten/loosen/adjust), DELETE_TICKET (cut it now), PARTIAL_CLOSE, or SKIP if it genuinely still looks fine.
+REQUEST_CANDLES gets you one fresh real batch of candle data for the symbol you're analyzing right now before you finalize your decision -- entirely optional, never required, available on any cycle, at most once. After the candles come back, you'll be asked to decide again with them in hand -- do not request candles a second time.
+
+If a SELF-AWARE ALERT appears below, one of your real open positions is genuinely close to hitting its SL -- REQUEST_CANDLES there fetches for that at-risk symbol instead. After the candles come back, act directly with MODIFY (tighten/loosen/adjust), DELETE_TICKET (cut it now), PARTIAL_CLOSE, or SKIP if it genuinely still looks fine.
+
+You may also set requestedNextSymbol (with a real requestedNextReason) on ANY decision to ask that a specific symbol be analyzed next cycle instead of the mechanical round-robin order -- e.g. to follow up on a trade you just took, or to check back once a candle you're watching closes. Optional, never required.
 
 sl/tp: apply automatically when the mode shown below is "on" -- you don't need to compute them, and the field won't even be offered to you. When "auto," you must compute a real sl/tp yourself from the analysis (structure, ATR, support/resistance) and the tool call requires it. A stop placed unreasonably close to price will be rejected -- size it to real, current volatility, not habit. When "off," don't include it.
 
@@ -326,6 +357,35 @@ interface CursorSymbolResult {
  *  fallback too") -- advancing without spending a decision call on either case, bounded so an
  *  all-closed/all-open list can't spin forever. */
 function resolveCursorSymbol(userId: string, primary: string[], fallback: string[], openSymbols: Set<string>, groupIdFor: (symbol: string, usingFallback: boolean) => string | null): CursorSymbolResult | null {
+  // Real requested-next-symbol override (user, live: the model can note "analyze SYMBOL next,
+  // because REASON" on any decision, and the round-robin honors that specific symbol on the VERY
+  // NEXT cycle). Consumed exactly once regardless of outcome -- a stale/invalid request never
+  // sticks around to be retried on a later cycle, it just falls back to normal round-robin THIS
+  // cycle. Only ever honored if the requested symbol is still genuinely valid right now -- the
+  // exact same real checks (still in the active group, market open, no existing position) a normal
+  // round-robin symbol must pass, never skipped for an override. The round-robin cursor itself is
+  // left untouched either way -- honoring an override is a one-off substitution, not a cursor jump.
+  const override = consumePendingSymbolOverride(userId);
+  if (override) {
+    const inPrimary = primary.find((s) => s.toUpperCase() === override.symbol.toUpperCase());
+    const inFallback = fallback.find((s) => s.toUpperCase() === override.symbol.toUpperCase());
+    const matched = inPrimary ?? inFallback;
+    const usingFallback = !inPrimary && !!inFallback;
+    if (!matched) {
+      logTick(userId, `requested-next-symbol override skipped -- ${override.symbol} is no longer in the active group (requested reason: ${override.reason})`);
+    } else {
+      const hours = isMarketOpenForSymbol(matched, groupIdFor(matched, usingFallback), new Date());
+      if (!hours.open) {
+        logTick(userId, `requested-next-symbol override skipped -- ${matched} market closed (${hours.reason}) (requested reason: ${override.reason})`);
+      } else if (openSymbols.has(matched.toUpperCase())) {
+        logTick(userId, `requested-next-symbol override skipped -- ${matched} already has an open position (requested reason: ${override.reason})`);
+      } else {
+        logTick(userId, `requested-next-symbol override honored -- analyzing ${matched} next (requested reason: ${override.reason})`);
+        return { symbol: matched, usingFallback };
+      }
+    }
+  }
+
   const maxAttempts = primary.length + fallback.length;
   for (let i = 0; i < Math.max(1, maxAttempts); i++) {
     const { symbolCursor, scanningFallback } = getCursorPosition(userId);
@@ -650,26 +710,26 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     decision = decisionAfterConsult;
   }
 
-  // Real bounded auxiliary tool call (user's own explicit self-aware SL-danger spec): the EXACT
-  // same one-extra-round-trip shape as CONSULT_JOURNAL just above -- reuses the real get_candles
+  // Real bounded auxiliary tool call (user's own explicit self-aware SL-danger spec, generalized
+  // this session -- user, live: the model should have a general way to ask for one more real piece
+  // of data before finalizing an ORDINARY decision too, not just during an SL-danger alert): the
+  // EXACT same one-extra-round-trip shape as CONSULT_JOURNAL above -- reuses the real get_candles
   // endpoint via `analysis.get("candles", ...)` (the same requestAnalysis("candles", ...) call
   // EA_ANALYSIS_TOOLS's own get_candles tool makes, see dave-ea-bridge/src/tools.ts), never a new
-  // tool, never a loop. Only ever meaningful while a real SELF-AWARE ALERT is active -- with none
-  // active there is no at-risk symbol to fetch candles for, so this is a clean no-op back to a
-  // real re-decide rather than a crash or a fabricated candle set.
+  // tool, never a loop. Fetches for the at-risk symbol when a real SELF-AWARE ALERT is active
+  // (unchanged behavior), otherwise for the symbol this cycle is already analyzing -- available on
+  // ANY tick now, still bounded to exactly one extra round trip: a repeat REQUEST_CANDLES on the
+  // second call is rejected below, exactly mirroring CONSULT_JOURNAL's own repeat-guard.
   if (decision.action === "REQUEST_CANDLES") {
+    const targetSymbol = dangerPosition?.symbol ?? symbol;
+    const forNote = dangerPosition ? ` for at-risk ticket #${dangerPosition.ticket}` : "";
     let candlesLine: string;
-    if (!dangerPosition) {
-      logTick(userId, `${symbol}: REQUEST_CANDLES chosen but no SELF-AWARE ALERT is active right now -- nothing at-risk to fetch fresh candles for`);
-      candlesLine = "REQUEST_CANDLES was chosen but there is no active SELF-AWARE ALERT right now -- decide with what you already have, do not request again.";
-    } else {
-      logTick(userId, `${symbol}: fetching fresh candles for at-risk ticket #${dangerPosition.ticket} (${dangerPosition.symbol}) before re-deciding`);
-      try {
-        const candles = await analysis.get<Record<string, unknown>>("candles", dangerPosition.symbol, "M5", { timeoutMs: 60_000 });
-        candlesLine = `FRESH CANDLES for ${dangerPosition.symbol} (you requested this for the at-risk ticket #${dangerPosition.ticket}): ${JSON.stringify(candles).slice(0, 10_000)}`;
-      } catch (err) {
-        candlesLine = `REQUEST_CANDLES for ${dangerPosition.symbol} failed: ${err instanceof Error ? err.message : String(err)} -- decide with what you already have.`;
-      }
+    logTick(userId, `${symbol}: fetching fresh candles for ${targetSymbol}${forNote} before re-deciding -- ${decision.reason ?? "wants current price action"}`);
+    try {
+      const candles = await analysis.get<Record<string, unknown>>("candles", targetSymbol, "M5", { timeoutMs: 60_000 });
+      candlesLine = `FRESH CANDLES for ${targetSymbol}${dangerPosition ? ` (you requested this for the at-risk ticket #${dangerPosition.ticket})` : " (you requested this before finalizing your decision)"}: ${JSON.stringify(candles).slice(0, 10_000)}`;
+    } catch (err) {
+      candlesLine = `REQUEST_CANDLES for ${targetSymbol} failed: ${err instanceof Error ? err.message : String(err)} -- decide with what you already have.`;
     }
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "REQUEST_CANDLES", reason: decision.reason ?? "" });
     let decisionAfterCandles: TickDecision | null;
@@ -692,6 +752,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   }
 
   logTick(userId, `${symbol}: model decided ${decision.action}${decision.confidence !== undefined ? ` (confidence ${decision.confidence}%)` : ""} -- ${decision.reason ?? decision.question ?? "no reason given"}`);
+
+  // Real requested-next-symbol override -- can accompany ANY decision (BUY/SELL/SKIP/etc, not a
+  // separate action), persisted right after the real decision is recorded so resolveCursorSymbol
+  // picks it up on the VERY NEXT cycle. Overwrites any previous still-pending override.
+  if (decision.requestedNextSymbol) {
+    const overrideReason = decision.requestedNextReason ?? "no reason given";
+    logTick(userId, `${symbol}: requesting ${decision.requestedNextSymbol} for the next cycle -- ${overrideReason}`);
+    setPendingSymbolOverride(userId, decision.requestedNextSymbol, overrideReason);
+  }
 
   // The cursor always advances after a real decision, regardless of outcome -- this is what
   // keeps the loop moving through the whole group instead of getting stuck on one symbol.

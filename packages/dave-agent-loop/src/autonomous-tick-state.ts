@@ -29,6 +29,13 @@ export interface TickState {
   symbolCursor: number;
   scanningFallback: boolean;
   primaryLapsCompleted: number;
+  /** Real, live feature (user: the model can ask "analyze SYMBOL next, because REASON" on any
+   *  decision, and the round-robin should honor that specific symbol on the VERY NEXT cycle
+   *  instead of whatever's mechanically next in the array). Set right after a decision carrying
+   *  `requestedNextSymbol` is recorded, overwriting any previous pending override -- consumed
+   *  exactly once by the next call to resolveCursorSymbol (see autonomous-tick.ts), whether or not
+   *  the requested symbol turns out to still be valid to analyze. */
+  pendingSymbolOverride?: { symbol: string; reason: string; requestedAt: number };
 }
 
 const DEFAULT_STATE: TickState = { recentDecisions: [], huntSkipCount: 0, huntLastSymbol: null, symbolCursor: 0, scanningFallback: false, primaryLapsCompleted: 0 };
@@ -139,4 +146,25 @@ export function advanceCursor(userId: string, primaryLength: number, fallbackLen
   }
   state.symbolCursor = 0;
   saveTickState(userId, state);
+}
+
+/** Persists a real requested-next-symbol override, overwriting any previous one -- called right
+ *  after a decision carrying `requestedNextSymbol` is recorded, regardless of that decision's own
+ *  action (BUY/SELL/SKIP/etc). */
+export function setPendingSymbolOverride(userId: string, symbol: string, reason: string): void {
+  const state = getTickState(userId);
+  state.pendingSymbolOverride = { symbol, reason, requestedAt: Date.now() };
+  saveTickState(userId, state);
+}
+
+/** Reads and clears the real pending override in one step -- consumed exactly once, whether or
+ *  not the caller ultimately finds the requested symbol still valid to analyze this cycle. */
+export function consumePendingSymbolOverride(userId: string): { symbol: string; reason: string; requestedAt: number } | null {
+  const state = getTickState(userId);
+  const override = state.pendingSymbolOverride ?? null;
+  if (override) {
+    state.pendingSymbolOverride = undefined;
+    saveTickState(userId, state);
+  }
+  return override;
 }
