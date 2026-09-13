@@ -809,6 +809,21 @@ double A_EMA(int period, int shift = 0)
    for(int i = shift + span - 2; i >= shift; i--) e = g_aC[i] * k + e * (1 - k);
    return e;
   }
+// Real gap fixed (user, SMC/ICT audit: "SMMA 6,20,100" -- genuinely missing before, only plain
+// SMA/EMA existed at any period). A true smoothed moving average (Wilder-style RMA), NOT the same
+// math as A_EMA above -- seeded with a real SMA over the oldest `period` bars in the bounded
+// window, then smoothed forward one bar at a time toward the newest, same real recompute-from-
+// scratch-every-call shape as A_EMA (no persisted state needed across ticks).
+double A_SMMA(int period, int shift = 0)
+  {
+   int span = MathMin(g_anb - shift, period * 4);
+   if(span < period) return 0;
+   double s = 0;
+   for(int i = shift + span - period; i < shift + span; i++) s += g_aC[i];
+   double smma = s / period;
+   for(int i = shift + span - period - 1; i >= shift; i--) smma = (smma * (period - 1) + g_aC[i]) / period;
+   return smma;
+  }
 double A_StdDev(int period, int shift = 0)
   {
    if(shift + period > g_anb) return 0;
@@ -897,6 +912,11 @@ string A_Trend(string sym)
    double ma20 = A_SMA(20), ma50 = A_SMA(50), ma200 = A_SMA(MathMin(200, g_anb - 1));
    double ema9 = A_EMA(9), ema21 = A_EMA(21);
    double ma20p = A_SMA(20, 5), ma50p = A_SMA(50, 5), ma200p = A_SMA(MathMin(200, g_anb - 6), 5);
+   // Real gap fixed (user, SMC/ICT audit: "SMMA 6,20,100"). A genuinely smoothed MA, distinct
+   // from the plain SMA/EMA above -- 100-period needs a real 400-bar window (period*4 inside
+   // A_SMMA), so on a genuinely fresh symbol this honestly returns 0 like every other insufficient-
+   // history case in this file, not a fabricated number.
+   double smma6 = A_SMMA(6), smma20 = A_SMMA(20), smma100 = A_SMMA(100);
    int score = 0;
    if(g_aC[0] > ma20)  score++; else score--;
    if(g_aC[0] > ma50)  score++; else score--;
@@ -906,6 +926,8 @@ string A_Trend(string sym)
    string bias = score >= 4 ? "STRONG_BULL" : score >= 2 ? "BULL" : score <= -4 ? "STRONG_BEAR" : score <= -2 ? "BEAR" : "NEUTRAL";
    bool allBull = g_aC[0] > ma20 && ma20 > ma50 && ma50 > ma200;
    bool allBear = g_aC[0] < ma20 && ma20 < ma50 && ma50 < ma200;
+   bool smmaAllBull = smma100 > 0 && g_aC[0] > smma6 && smma6 > smma20 && smma20 > smma100;
+   bool smmaAllBear = smma100 > 0 && g_aC[0] < smma6 && smma6 < smma20 && smma20 < smma100;
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    return "{\"bias\":\"" + bias + "\",\"score\":" + IntegerToString(score) + "," +
           "\"slope_20\":" + DoubleToString(A_Pips(sym, ma20 - ma20p), 2) + "," +
@@ -923,7 +945,12 @@ string A_Trend(string sym)
           "\"price_above_all_mas\":" + (allBull ? "true" : "false") + "," +
           "\"ma_alignment\":\"" + (allBull ? "PERFECT_BULL" : allBear ? "PERFECT_BEAR" : "MIXED") + "\"," +
           "\"dist_ma200_pips\":" + DoubleToString(A_Pips(sym, g_aC[0] - ma200), 1) + "," +
-          "\"dist_ma50_pips\":" + DoubleToString(A_Pips(sym, g_aC[0] - ma50), 1) + "}";
+          "\"dist_ma50_pips\":" + DoubleToString(A_Pips(sym, g_aC[0] - ma50), 1) + "," +
+          "\"smma6\":" + DoubleToString(smma6, digits) + ",\"smma20\":" + DoubleToString(smma20, digits) + ",\"smma100\":" + DoubleToString(smma100, digits) + "," +
+          "\"price_vs_smma6\":\"" + (g_aC[0] > smma6 ? "ABOVE" : "BELOW") + "\"," +
+          "\"price_vs_smma20\":\"" + (g_aC[0] > smma20 ? "ABOVE" : "BELOW") + "\"," +
+          "\"price_vs_smma100\":\"" + (g_aC[0] > smma100 ? "ABOVE" : "BELOW") + "\"," +
+          "\"smma_alignment\":\"" + (smmaAllBull ? "PERFECT_BULL" : smmaAllBear ? "PERFECT_BEAR" : "MIXED") + "\"}";
   }
 
 string A_Momentum()
@@ -1235,6 +1262,16 @@ string A_Zones(string sym)
         }
      }
    bool inZone = (nearestSupply > 0 && g_aC[0] >= nearestSupply) || (nearestDemand > 0 && g_aC[0] <= nearestDemand);
+   // Real gap fixed (user, SMC/ICT audit: "retest logic... nothing distinguishes a clean rejection
+   // retest from a retest that broke through"). `tests`/`mitigation_pct` above only ever answer
+   // "has this been touched" -- this genuinely reads the CURRENT real candle's wick against the
+   // real nearest zone boundary: a real wick into the zone that closes back out is a clean
+   // rejection; a real close through the zone boundary is a genuine break, not a rejection at all.
+   string retestQuality = "NONE"; string retestZoneType = "NONE";
+   if(nearestSupply > 0 && g_aH[0] >= nearestSupply)
+     { retestZoneType = "SUPPLY"; retestQuality = g_aC[0] < nearestSupply ? "CLEAN_REJECTION" : "BROKEN_THROUGH"; }
+   else if(nearestDemand > 0 && g_aL[0] <= nearestDemand)
+     { retestZoneType = "DEMAND"; retestQuality = g_aC[0] > nearestDemand ? "CLEAN_REJECTION" : "BROKEN_THROUGH"; }
    string f[];
    A_Push(f, Jr("supply", "[" + A_Join(sup) + "]"));
    A_Push(f, Jr("demand", "[" + A_Join(dem) + "]"));
@@ -1245,6 +1282,7 @@ string A_Zones(string sym)
    A_Push(f, Jb("price_in_zone", inZone));
    A_Push(f, J("zone_at_price", inZone ? (g_aC[0] >= nearestSupply && nearestSupply > 0 ? "SUPPLY" : "DEMAND") : "NONE"));
    A_Push(f, Jr("strongest_zone", Obj(J("type", strongestType) + "," + Jn("level", strongestLvl, g_aDigits))));
+   A_Push(f, Jr("retest", Obj(J("zone_type", retestZoneType) + "," + J("quality", retestQuality))));
    return Obj(A_Join(f));
   }
 
@@ -1497,6 +1535,21 @@ string A_Patterns()
    bool tbc = g_anb > 2 && !bull0 && !bull1 && !bull2 && g_aC[0] < g_aC[1] && g_aC[1] < g_aC[2];
    bool tiu = g_anb > 2 && harami && bull0 && !bull2;
    bool tid = g_anb > 2 && harami && !bull0 && bull2;
+   // Real gap fixed (user, SMC/ICT audit: "institutional candle detection" -- genuinely absent
+   // before, distinct from the generic candlestick patterns above). A real composite signature:
+   // a large real body relative to its range (like `maru` above but a slightly looser 0.6 bar,
+   // since real institutional candles aren't always a pure marubozu), genuinely elevated real
+   // volume vs its own recent real average (not just a big body on thin volume, which is not the
+   // same real thing), and a real close near the candle's own extreme in its own direction
+   // (top 20% of range for a bull candle, bottom 20% for a bear one) -- all three together, not
+   // any one alone, since each individually is common and not institutional-specific.
+   double volAvg20 = 0; int volN = MathMin(20, g_anb - 1);
+   for(int i = 1; i <= volN; i++) volAvg20 += (double)g_aV[i];
+   if(volN > 0) volAvg20 /= volN;
+   bool bigBody = body0 / rng0 > 0.6;
+   bool bigVolume = volAvg20 > 0 && (double)g_aV[0] > volAvg20 * 1.5;
+   bool closeNearExtreme = bull0 ? (g_aH[0] - g_aC[0]) / rng0 < 0.2 : (g_aC[0] - g_aL[0]) / rng0 < 0.2;
+   bool institutional = bigBody && bigVolume && closeNearExtreme;
    string strongest = "NONE"; string bias = "NEUTRAL"; int reliability = 0;
    if(engulf)  { strongest = bull0 ? "BULLISH_ENGULFING" : "BEARISH_ENGULFING"; bias = bull0 ? "BULL":"BEAR"; reliability = 80; }
    else if(morning) { strongest = "MORNING_STAR"; bias = "BULL"; reliability = 85; }
@@ -1516,11 +1569,13 @@ string A_Patterns()
                     Jb("three_white_soldiers", tws) + "," + Jb("three_black_crows", tbc) + "," +
                     Jb("three_inside_up", tiu) + "," + Jb("three_inside_down", tid));
    return Obj(Jr("single", single) + "," + Jr("double", dbl) + "," + Jr("triple", tri) + "," +
-              J("strongest", strongest) + "," + J("bias", bias) + "," + Ji("reliability", reliability));
+              J("strongest", strongest) + "," + J("bias", bias) + "," + Ji("reliability", reliability) + "," +
+              Jr("institutional_candle", Obj(Jb("detected", institutional) + "," + J("direction", institutional ? (bull0 ? "BULL" : "BEAR") : "NONE") + "," +
+                   Jb("big_body", bigBody) + "," + Jb("big_volume", bigVolume) + "," + Jb("close_near_extreme", closeNearExtreme))));
   }
 
 //--- 13 ict ----------------------------------------------------------
-string A_Ict(string sym)
+string A_Ict(string sym, ENUM_TIMEFRAMES tf)
   {
    string fvg[], ifvg[], vi[];
    double atr = A_ATR(14);
@@ -1590,8 +1645,27 @@ string A_Ict(string sym)
    A_Push(f, Jr("ob", Obj(J("type", obType) + "," + Jn("high", obH, g_aDigits) + "," + Jn("low", obL, g_aDigits) + "," +
         Jn("ce", obCe, g_aDigits) + "," + Jn("mt", obCe, g_aDigits) + "," + Ji("bar", obBar) + "," +
         Jb("valid", obBar > 0) + "," + Jb("tested", obTested))));
-   A_Push(f, Jr("breaker", Obj(J("type", obType == "BULL" ? "BEAR" : obType == "BEAR" ? "BULL" : "NONE") + "," +
-        Jn("high", obH, g_aDigits) + "," + Jn("low", obL, g_aDigits) + "," + Ji("bar", obBar))));
+   // Real gap fixed (user, SMC/ICT audit: "breaker blocks have no reversal-candle confirmation --
+   // just an OB type-flip"). `breakerType` alone was always emitted the instant an OB existed,
+   // regardless of whether price had genuinely broken through it -- this now requires a real close
+   // beyond the OB's far boundary since it formed (`breakerValid`, a genuine break, not just the
+   // `obTested` wick-back-in check above), AND a real confirming candle -- the CURRENT bar closing
+   // decisively (>50% real body-to-range) in the breaker's own direction -- before calling it
+   // confirmed, so the model isn't told a breaker is active off a bare type-flip alone.
+   string breakerType = obType == "BULL" ? "BEAR" : obType == "BEAR" ? "BULL" : "NONE";
+   bool breakerValid = false;
+   if(obBar > 0)
+     for(int j = obBar - 1; j >= 0; j--)
+       {
+        if(obType == "BULL" && g_aC[j] < obL) { breakerValid = true; break; }
+        if(obType == "BEAR" && g_aC[j] > obH) { breakerValid = true; break; }
+       }
+   double body0Ict = MathAbs(g_aC[0] - g_aO[0]), rng0Ict = MathMax(g_aH[0] - g_aL[0], g_aPoint);
+   bool bull0Ict = g_aC[0] >= g_aO[0];
+   bool breakerConfirmed = breakerValid && (body0Ict / rng0Ict > 0.5) && (breakerType == "BULL" ? bull0Ict : (breakerType == "BEAR" ? !bull0Ict : false));
+   A_Push(f, Jr("breaker", Obj(J("type", breakerType) + "," +
+        Jn("high", obH, g_aDigits) + "," + Jn("low", obL, g_aDigits) + "," + Ji("bar", obBar) + "," +
+        Jb("valid", breakerValid) + "," + Jb("confirmed", breakerConfirmed))));
    A_Push(f, Jr("mb", Obj(Jb("detected", ArraySize(fvg) > 0) + "," + Jn("level", eq, g_aDigits))));
    A_Push(f, Jr("sweep", Obj(J("type", g_aH[0] > dr_hi ? "BSL" : g_aL[0] < dr_lo ? "SSL" : "NONE") + "," +
         Jn("level", g_aH[0] > dr_hi ? dr_hi : dr_lo, g_aDigits) + "," + Ji("bar", 0))));
@@ -1618,7 +1692,23 @@ string A_Ict(string sym)
    A_Push(f, Jr("ote_zone", Obj(Jn("high", dr_lo + (dr_hi-dr_lo)*0.79, g_aDigits) + "," +
         Jn("low", dr_lo + (dr_hi-dr_lo)*0.62, g_aDigits))));
    A_Push(f, Ji("poi_count", ArraySize(fvg) + (obBar > 0 ? 1 : 0)));
-   A_Push(f, Jr("smt", Obj(Jb("detected", false))));
+   // Real gap fixed (user, SMC/ICT audit: "smt is a hardcoded false stub -- never computed at
+   // all"). Genuine SMT (Smart Money Divergence): this symbol makes a real new swing high/low
+   // (its two most recent real swings, sh/sl already collected above) while the real EURUSD proxy
+   // -- the same correlation proxy A_Correlation already uses -- moves the OPPOSITE way over the
+   // same real bar window. That divergence between two instruments that should move together is
+   // the real definition; `sym == "EURUSD"` itself can never diverge against its own proxy, so it
+   // honestly reports not-detected rather than comparing against itself.
+   bool smtDetected = false; string smtDir = "NONE";
+   if(sym != "EURUSD" && ArraySize(sh) > 1 && ArraySize(sl) > 1)
+     {
+      double euRet = A_SymReturn("EURUSD", tf, 20);
+      bool higherHigh = sh[0] > sh[1];
+      bool lowerLow   = sl[0] < sl[1];
+      if(higherHigh && euRet <= 0) { smtDetected = true; smtDir = "BEARISH"; }   // this symbol strong, EURUSD not confirming
+      else if(lowerLow && euRet >= 0) { smtDetected = true; smtDir = "BULLISH"; } // this symbol weak, EURUSD not confirming
+     }
+   A_Push(f, Jr("smt", Obj(Jb("detected", smtDetected) + "," + J("direction", smtDir))));
    A_Push(f, Jb("mmbm", obType == "BULL" && g_aC[0] < eq));
    A_Push(f, Jb("mmsm", obType == "BEAR" && g_aC[0] > eq));
    return Obj(A_Join(f));
@@ -2477,7 +2567,7 @@ string A_All(string sym, ENUM_TIMEFRAMES tf)
    A_Push(d, Jr("fibonacci",        A_Fibonacci(sym)));
    A_Push(d, Jr("candles",          A_Candles()));
    A_Push(d, Jr("patterns",         A_Patterns()));
-   A_Push(d, Jr("ict",              A_Ict(sym)));
+   A_Push(d, Jr("ict",              A_Ict(sym, tf)));
    A_Push(d, Jr("wyckoff",          A_Wyckoff()));
    A_Push(d, Jr("divergence",       A_Divergence()));
    A_Push(d, Jr("session",          A_Session()));
@@ -2546,7 +2636,7 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr)
    else if(endpoint == "fibonacci") data = A_Fibonacci(symbol);
    else if(endpoint == "candles") data = A_Candles();
    else if(endpoint == "patterns") data = A_Patterns();
-   else if(endpoint == "ict") data = A_Ict(symbol);
+   else if(endpoint == "ict") data = A_Ict(symbol, tf);
    else if(endpoint == "wyckoff") data = A_Wyckoff();
    else if(endpoint == "divergence") data = A_Divergence();
    else if(endpoint == "session") data = A_Session();

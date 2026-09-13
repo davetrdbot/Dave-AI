@@ -28,7 +28,11 @@ not a bug to paper over.
   premium/discount, OTE zone. Your primary "what is price actually doing"
   read.
 - **get_zones** — supply/demand zones with freshness, strength, and
-  mitigation %. Where price is likely to react.
+  mitigation %. Where price is likely to react. Also returns `retest`:
+  whether the current real candle is genuinely testing the nearest zone
+  right now, and whether that test is a clean rejection (wicked in,
+  closed back out) or a real break-through — distinct from `tests`/
+  `mitigation_pct` above, which only ever answer "has this been touched."
 - **get_liquidity** — BSL/SSL levels, equal highs/lows, real sweep
   detection, liquidity voids. Where stops are likely resting.
 - **get_order_blocks** — bullish/bearish order blocks, mitigated status,
@@ -40,7 +44,10 @@ not a bug to paper over.
 
 ## Trend & momentum
 
-- **get_trend** — MA/EMA alignment, golden/death cross, bias score.
+- **get_trend** — MA/EMA alignment, golden/death cross, bias score. Also
+  returns `smma6`/`smma20`/`smma100` (real smoothed moving averages,
+  distinct from the plain SMA/EMA above) with the same
+  `price_vs_smma*`/`smma_alignment` shape as the regular MAs.
 - **get_momentum** — RSI/MACD/Stochastic/CCI/Williams %R blended into one
   bull/bear read.
 - **get_volatility** — ATR, Bollinger Bands, Keltner Channel, expansion/
@@ -79,14 +86,23 @@ not a bug to paper over.
 - **get_candles** — the last 10 real candles with body/wick ratios, gap
   and imbalance detection.
 - **get_patterns** — candlestick pattern recognition (engulfing, stars,
-  hammers, dojis, ...) with a strongest-pattern call and reliability.
+  hammers, dojis, ...) with a strongest-pattern call and reliability. Also
+  returns `institutional_candle`: a real composite signal (large body +
+  genuinely elevated volume + close near the candle's own extreme) distinct
+  from the generic single-candle patterns above -- all three conditions
+  must hold together, not just one.
 - **get_harmonic** — Gartley/Bat/Butterfly/Crab pattern detection with
   XABCD ratios and PRZ.
 - **get_elliott** — current wave count, impulse/correction, wave target
   and invalidation.
 - **get_ict** — the big one: FVG/iFVG, order blocks, breaker blocks,
   killzones, silver bullet window, Judas swing, AMD phase, asian range,
-  OTE zone, all in one call.
+  OTE zone, DOL (`dol`/`dol_dir`), all in one call. `breaker.confirmed`
+  requires a genuine break through the order block's far boundary AND a
+  real confirming candle -- a bare type-flip is never enough on its own.
+  `smt` is a genuinely computed Smart Money Divergence read (this symbol
+  making a real new swing high/low while the EURUSD proxy moves the
+  opposite way over the same window) -- not a stub.
 - **get_wyckoff** — accumulation/distribution/markup phase, spring/UTAD
   events, effort-vs-result.
 
