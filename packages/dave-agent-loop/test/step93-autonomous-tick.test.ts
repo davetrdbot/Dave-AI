@@ -11,6 +11,7 @@ import { getOrCreateEaWebhook, createEaWebhookServer, type EaCommand } from "@da
 import { listTradesSince } from "@dave/feedback";
 import { runAutonomousTick } from "../src/autonomous-tick.js";
 import { getCursorPosition } from "../src/autonomous-tick-state.js";
+import { summarizeReason } from "../src/trade-notifications.js";
 
 /**
  * Real proof for the plan's core fix: the autonomous cycle's decision mechanism replaced with a
@@ -285,6 +286,149 @@ try {
     } finally {
       await ea.stop();
     }
+  }
+
+  console.log("\n[7] Real MT5 comment is short and structured (Dave:<confidence>% <strategyTag>), never a slice of the raw reasoning text -- and the full push-notification reason is the model's real, untruncated `reason`, never run through summarizeReason...\n");
+  {
+    const OWNER7 = "user-autonomous-tick-7";
+    upsertGroup(OWNER7, { id: "majors", name: "Majors", symbols: ["EURUSD"] });
+    setActiveGroup(OWNER7, "majors");
+    setRiskMode(OWNER7, "sl", "off");
+    setRiskMode(OWNER7, "tp", "off");
+    setRiskMode(OWNER7, "lot", "on", 0.05);
+    setConfidenceThreshold(OWNER7, 50);
+    setAutoApproveBelowThreshold(OWNER7, true);
+
+    const longReason =
+      "Multi-timeframe alignment is genuinely strong here: H4 shows a clean bullish market structure shift off the weekly demand zone, H1 printed a bullish order block retest with a clear break of structure, and M15 confirms with a liquidity sweep below the prior swing low followed by a strong displacement candle back through structure. RSI is turning up off oversold on both H1 and M15, and volume on the displacement candle was well above the 20-period average, which is real confirmation this isn't a low-conviction retail trap. Risk is well-defined against the sweep low with a clean 1:3 R:R into the next real liquidity pool above.";
+
+    const placedOrders: { symbol: string; type: string; comment?: string }[] = [];
+    const executor: TradeExecutor = {
+      openOrder: async (order) => { placedOrders.push({ symbol: order.symbol, type: order.type, comment: order.comment }); return { ticket: "T-EURUSD-7" }; },
+      modifyOrder: async () => {}, closePosition: async () => ({ closedLots: 0, remainingLots: 0 }),
+      deletePendingOrder: async () => {}, listOpenPositions: async () => [], listPendingOrders: async () => [],
+    };
+    const ea = startSimulatedEa(OWNER7, { EURUSD: { bid: 1.085, ask: 1.0852 } });
+    const { provider } = mockToolProvider([
+      { action: "BUY", symbol: "EURUSD", confidence: 67, reason: longReason, strategyTag: "Bullish engulfing" },
+    ]);
+    try {
+      const outcome = await runAutonomousTick({ userId: OWNER7, db, executor, provider });
+      console.log(`    real MT5 comment: ${JSON.stringify(placedOrders[0]?.comment)}`);
+      assert.equal(placedOrders.length, 1);
+      assert.equal(placedOrders[0].comment, "Dave:67% Bullish engulfing", "the real MT5 comment must be short and structured, not a slice of the reasoning text");
+      assert.ok((placedOrders[0].comment?.length ?? 0) <= 28, "MT5 comment must stay within the conservative 28-char cap");
+
+      console.log(`    real Telegram message length: ${outcome.message?.length}, contains full reason: ${outcome.message?.includes(longReason)}`);
+      assert.ok(outcome.message?.includes(longReason), "the real Telegram trade-placed message must contain the model's FULL, untruncated reason verbatim, not a summarized/shortened version");
+      assert.ok(!outcome.message?.includes(summarizeReason(longReason)) || summarizeReason(longReason) === longReason, "sanity: the message must not merely be carrying the summarized text");
+    } finally {
+      await ea.stop();
+    }
+  }
+
+  console.log("\n[7b] A strategyTag longer than the 28-char cap is correctly truncated, and a genuinely missing strategyTag falls back to 'setup' rather than leaving a malformed comment...\n");
+  {
+    const OWNER7B = "user-autonomous-tick-7b";
+    upsertGroup(OWNER7B, { id: "majors", name: "Majors", symbols: ["GBPUSD"] });
+    setActiveGroup(OWNER7B, "majors");
+    setRiskMode(OWNER7B, "sl", "off");
+    setRiskMode(OWNER7B, "tp", "off");
+    setRiskMode(OWNER7B, "lot", "on", 0.05);
+    setConfidenceThreshold(OWNER7B, 50);
+    setAutoApproveBelowThreshold(OWNER7B, true);
+
+    const placedOrders: { comment?: string }[] = [];
+    const executor: TradeExecutor = {
+      openOrder: async (order) => { placedOrders.push({ comment: order.comment }); return { ticket: "T-GBPUSD-7b" }; },
+      modifyOrder: async () => {}, closePosition: async () => ({ closedLots: 0, remainingLots: 0 }),
+      deletePendingOrder: async () => {}, listOpenPositions: async () => [], listPendingOrders: async () => [],
+    };
+    const ea = startSimulatedEa(OWNER7B, { GBPUSD: { bid: 1.27, ask: 1.2702 } });
+    const { provider } = mockToolProvider([
+      { action: "BUY", symbol: "GBPUSD", confidence: 72, reason: "real long reason text", strategyTag: "A genuinely very long strategy tag that goes way past the safe MT5 comment length" },
+    ]);
+    try {
+      await runAutonomousTick({ userId: OWNER7B, db, executor, provider });
+      console.log(`    real MT5 comment (long tag): ${JSON.stringify(placedOrders[0]?.comment)} (length ${placedOrders[0]?.comment?.length})`);
+      assert.ok((placedOrders[0].comment?.length ?? 0) <= 28, "a long strategyTag must still be truncated to the 28-char cap, never left malformed");
+      assert.equal(placedOrders[0].comment, "Dave:72% A genuinely very lo".slice(0, 28));
+    } finally {
+      await ea.stop();
+    }
+
+    const OWNER7C = "user-autonomous-tick-7c";
+    upsertGroup(OWNER7C, { id: "majors", name: "Majors", symbols: ["AUDCAD"] });
+    setActiveGroup(OWNER7C, "majors");
+    setRiskMode(OWNER7C, "sl", "off");
+    setRiskMode(OWNER7C, "tp", "off");
+    setRiskMode(OWNER7C, "lot", "on", 0.05);
+    setConfidenceThreshold(OWNER7C, 50);
+    setAutoApproveBelowThreshold(OWNER7C, true);
+    const placedNoTag: { comment?: string }[] = [];
+    const executorNoTag: TradeExecutor = {
+      openOrder: async (order) => { placedNoTag.push({ comment: order.comment }); return { ticket: "T-AUDCAD-7c" }; },
+      modifyOrder: async () => {}, closePosition: async () => ({ closedLots: 0, remainingLots: 0 }),
+      deletePendingOrder: async () => {}, listOpenPositions: async () => [], listPendingOrders: async () => [],
+    };
+    const ea2 = startSimulatedEa(OWNER7C, { AUDCAD: { bid: 0.9, ask: 0.9002 } });
+    const { provider: providerNoTag } = mockToolProvider([{ action: "BUY", symbol: "AUDCAD", confidence: 55, reason: "no tag given here" }]);
+    try {
+      await runAutonomousTick({ userId: OWNER7C, db, executor: executorNoTag, provider: providerNoTag });
+      console.log(`    real MT5 comment (no strategyTag given): ${JSON.stringify(placedNoTag[0]?.comment)}`);
+      assert.equal(placedNoTag[0].comment, "Dave:55% setup", "a genuinely missing strategyTag must fall back to 'setup', never leave the comment malformed");
+    } finally {
+      await ea2.stop();
+    }
+  }
+
+  console.log("\n[8] summarizeReason itself is unaffected for the other real call sites that still legitimately use it (e.g. DELETE_TICKET's short notice)...\n");
+  {
+    const OWNER8 = "user-autonomous-tick-8";
+    // Real ticket to close lives on GBPUSD; the active group is EURJPY -- a different symbol --
+    // so the cursor genuinely picks EURJPY (no open position on it) and requests a real decision,
+    // matching the reference pattern step97's own DELETE_TICKET proof uses (an open-position
+    // symbol is otherwise skipped before any model call, per block [2] above).
+    upsertGroup(OWNER8, { id: "majors", name: "Majors", symbols: ["EURJPY"] });
+    setActiveGroup(OWNER8, "majors");
+    const longReason =
+      "This position no longer makes sense given the real shift in structure. Price has broken back below the level that originally justified the entry, momentum has clearly reversed on the lower timeframes, and holding further would just be hoping rather than trading a real edge, so closing it now protects the account instead of giving back more of the open profit than necessary.";
+    const executor: TradeExecutor = {
+      openOrder: async () => ({ ticket: "T" }), modifyOrder: async () => {},
+      closePosition: async () => ({ closedLots: 0.1, remainingLots: 0 }),
+      deletePendingOrder: async () => {},
+      listOpenPositions: async () => [{ ticket: "T-DEL-8", symbol: "GBPUSD", type: "buy", lots: 0.1, openPrice: 1.27 }],
+      listPendingOrders: async () => [],
+    };
+    const webhook = getOrCreateEaWebhook(OWNER8);
+    const server = createEaWebhookServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    await new Promise<void>((resolve, reject) => {
+      const body = JSON.stringify({ type: "heartbeat", account: "1", balance: 1000, positions: [{ ticket: "T-DEL-8", symbol: "GBPUSD", type: "buy", lots: 0.1, openPrice: 1.27 }], pendingOrders: [] });
+      const req = request({ hostname: "127.0.0.1", port, path: webhook.path, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => { res.on("data", () => {}); res.on("end", () => resolve()); });
+      req.on("error", reject); req.write(body); req.end();
+    });
+    server.close();
+
+    const ea = startSimulatedEa(OWNER8, { EURJPY: { bid: 160, ask: 160.02 } });
+    const { provider } = mockToolProvider([{ action: "DELETE_TICKET", ticket: "T-DEL-8", reason: longReason }]);
+    let outcome;
+    try {
+      outcome = await runAutonomousTick({ userId: OWNER8, db, executor, provider });
+    } finally {
+      await ea.stop();
+    }
+    console.log(`    real DELETE_TICKET message: ${outcome.message}`);
+    const expectedSummary = summarizeReason(longReason);
+    assert.ok(outcome.message?.includes(expectedSummary), "DELETE_TICKET's message must still use summarizeReason's real short summary -- unaffected by Part A's trade-placed-message-only change");
+    assert.ok(!outcome.message?.includes(longReason), "DELETE_TICKET's message must NOT carry the full raw reason -- summarizeReason is still doing real work here");
+
+    // And a direct, isolated proof that summarizeReason's own behavior (2 sentences / 220 chars,
+    // word-boundary truncation with a trailing ellipsis) is unchanged.
+    assert.equal(summarizeReason("One sentence. Two sentence. Three sentence should be dropped."), "One sentence. Two sentence.");
+    const overLong = "A".repeat(300);
+    assert.equal(summarizeReason(overLong).endsWith("…"), true, "summarizeReason must still cap and ellipsize a genuinely over-length single \"sentence\"");
   }
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");

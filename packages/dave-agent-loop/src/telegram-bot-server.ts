@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, markdownToTelegramHtml, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, markdownToTelegramHtml, chunkForTelegram, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
 import { classifyToolAction } from "./action-classifier.js";
@@ -376,7 +376,13 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   try {
     const outcome = await runAutonomousTick({ userId: deps.ownerUserId, db: deps.db, executor: deps.executor, provider });
     logCycle(deps.ownerUserId, `decision: ${outcome.action}${outcome.symbol ? ` ${outcome.symbol}` : ""}${outcome.notable ? " (notable)" : ""}${outcome.message ? ` -- ${outcome.message.replace(/\n/g, " | ")}` : ""}`);
-    if (outcome.message) await client.sendMessage({ chat_id: chatId, text: outcome.message });
+    // Real, live fix (user: the trade-placed message's reason is now the model's full, real,
+    // untruncated reasoning, not a summary -- a rare pathologically long one could exceed
+    // Telegram's real 4096-char sendMessage limit and fail outright). Chunked via the same shared
+    // chunkForTelegram utility every other long-message send path in this codebase already uses
+    // (command-router.ts, thinking-indicator.ts) -- sent as real sequential messages, never
+    // summarized or shortened.
+    if (outcome.message) for (const chunk of chunkForTelegram(outcome.message)) await client.sendMessage({ chat_id: chatId, text: chunk });
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
   } finally {

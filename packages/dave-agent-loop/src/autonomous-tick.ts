@@ -106,6 +106,14 @@ export interface TickDecision {
   lots?: number;
   confidence?: number;
   reason?: string;
+  /** Real, live fix (user: the MT5 comment used to cram as much of the real `reason` text as fit
+   *  into 40 chars, reading as garbled/cut-off mid-word/mid-sentence on the MT5 side). A SHORT
+   *  strategy/setup label the model fills in alongside `reason` on a real trade decision -- e.g.
+   *  "Bullish engulfing", "ICT OB", "Liquidity sweep" -- used to build a short, structured MT5
+   *  comment (`Dave:67% Bullish engulfing`) instead of a truncated slice of the real reasoning.
+   *  The full, real `reason` still goes out in full elsewhere (the Telegram push notification);
+   *  this field is only ever for the space-constrained MT5 comment. */
+  strategyTag?: string;
   question?: string;
   options?: string[];
   /** Required for DELETE_TICKET/PARTIAL_CLOSE -- the real ticket to act on. */
@@ -162,6 +170,12 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
     lots: { type: "number", description: "Required unless the account has a fixed lot size configured -- size your own real lots against the live account balance." },
     confidence: { type: "number", description: "your own honest 0-100 confidence in this specific setup" },
     reason: { type: "string" },
+    strategyTag: {
+      type: "string",
+      description:
+        "a SHORT strategy/setup label, e.g. 'Bullish engulfing', 'ICT OB', 'Liquidity sweep' -- a few words, never a full sentence. " +
+        "Used to build the short MT5 order comment alongside your confidence -- your full real reasoning belongs in `reason`, not here.",
+    },
     question: { type: "string", description: "only when action is ASK" },
     options: { type: "array", items: { type: "string" }, description: "only when action is ASK" },
     ticket: { type: "string", description: "the real ticket to act on -- required for DELETE_TICKET, PARTIAL_CLOSE, and MODIFY, pick one from OPEN POSITIONS/PENDING ORDERS below" },
@@ -202,6 +216,7 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     lots: typeof obj.lots === "number" ? obj.lots : undefined,
     confidence: typeof obj.confidence === "number" ? obj.confidence : undefined,
     reason: typeof obj.reason === "string" ? obj.reason : undefined,
+    strategyTag: typeof obj.strategyTag === "string" ? obj.strategyTag : undefined,
     question: typeof obj.question === "string" ? obj.question : undefined,
     options: Array.isArray(obj.options) ? obj.options.map(String) : undefined,
     ticket: typeof obj.ticket === "string" ? obj.ticket : undefined,
@@ -718,10 +733,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     type: orderType,
     lots: risk.lotMode === "on" && risk.lotValue !== undefined ? risk.lotValue : (decision.lots ?? 0),
     price: decision.entry,
-    // Real gap fixed (user, live: the reasoning behind a trade never reached MT5 itself, only
-    // our own internal journal). MT5's comment field has a real, broker-enforced length limit --
-    // kept conservative so it's never silently cut mid-word by the terminal.
-    comment: `Dave ${decision.confidence ?? "?"}% ${decision.reason ?? ""}`.slice(0, 40).trimEnd(),
+    // Real, live fix (user: the old `Dave ${confidence}% ${reason}`.slice(0, 40) comment crammed
+    // as much of the real reasoning text as fit into 40 chars -- garbled/cut off mid-word or
+    // mid-sentence on the MT5 side). Short and structured instead: confidence + a short
+    // strategy/setup tag, nothing else -- the real, full reasoning goes out in full via the
+    // Telegram push notification below, never here. `strategyTag` is optional on the schema (not
+    // every action needs it), so a genuinely conservative fallback ("setup") keeps the comment
+    // well-formed even if the model omits it; 28 chars is comfortably inside MT5's real
+    // broker-enforced comment limit.
+    comment: `Dave:${decision.confidence ?? "?"}% ${decision.strategyTag ?? "setup"}`.slice(0, 28).trimEnd(),
   };
   if (order.lots <= 0) {
     logTick(userId, `${symbol}: ${action} rejected -- no valid lot size (lot mode=${risk.lotMode}, model gave lots=${decision.lots ?? "none"})`);
@@ -812,9 +832,14 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     action,
     symbol,
     notable: true,
-    // Real gap fixed (user, live, pasted an actual jam-packed example): reuses the same clean,
-    // fixed-template trade-placed message the main chat's trade_execute already sends, plus one
-    // short bounded reason line -- never the full raw multi-sentence reasoning blob.
-    message: [buildTradePlacedMessage(order, placed.ticket, confidence), `📋 Why: ${summarizeReason(reason)}`].join("\n\n"),
+    // Real, live fix (user: the trade-placed push notification's reason line must carry the
+    // model's FULL, real, untruncated reasoning -- not summarizeReason's ~2-sentence/~220-char
+    // summary. summarizeReason stays exactly as-is for the other, legitimately-short contexts
+    // that still use it (DELETE_TICKET/PARTIAL_CLOSE/MODIFY/PAUSE notices, the approval-request
+    // messages above) -- this is the one call site that must stop summarizing. Telegram's real
+    // sendMessage call in telegram-bot-server.ts chunks this via the shared chunkForTelegram
+    // utility, so a rare pathologically long reason still sends in full across multiple messages
+    // rather than failing on Telegram's real 4096-char limit or being silently shortened here.
+    message: [buildTradePlacedMessage(order, placed.ticket, confidence), `📋 Why: ${reason || "no reason given"}`].join("\n\n"),
   };
 }
