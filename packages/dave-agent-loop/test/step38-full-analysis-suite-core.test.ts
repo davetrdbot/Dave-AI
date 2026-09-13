@@ -108,8 +108,23 @@ async function main() {
         console.log("[3] The real, full-suite EA result genuinely reached the model -- more than just price/confluence...\n");
         // Real gap fixed (user, live: "confirm get_all_analysis" also shows an existing position/
         // pending order on this symbol): get_all_analysis now merges in real state on top of the
-        // pure analysis payload, so the result is the original data plus two new, real fields.
-        assert.deepEqual(result, { ...fullSuiteData, openPositionsForSymbol: [], pendingOrdersForSymbol: [] });
+        // pure analysis payload. Further real gap fixed (user: full account-wide awareness, not
+        // just this symbol) adds allOpenPositions/allPendingOrders/accountMargin too -- this
+        // heartbeat reported no positions/orders and no margin fields, so all of that is honestly
+        // empty/null, never fabricated.
+        assert.deepEqual(result, {
+          ...fullSuiteData,
+          openPositionsForSymbol: [],
+          pendingOrdersForSymbol: [],
+          allOpenPositions: [],
+          allPendingOrders: [],
+          // The tool result travels through JSON.stringify/parse (the real tool-call channel), so
+          // fields that were genuinely `undefined` (equity/margin/freeMargin/leverage -- this
+          // heartbeat reported none of them) are dropped entirely rather than round-tripping as
+          // literal `undefined` keys -- exactly how a real client would see it.
+          accountMargin: { balance: 1000, marginLevel: null, updatedAt: result.accountMargin.updatedAt },
+        });
+        assert.equal(typeof result.accountMargin.updatedAt, "number", "accountMargin must carry a real updatedAt from the saved snapshot");
         for (const key of ["trend", "momentum", "volatility", "structure", "ichimoku", "fibonacci", "order_blocks", "session", "news", "confluence"]) {
           assert.ok(key in result, `real full-suite response must include "${key}"`);
         }

@@ -142,7 +142,9 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
     name: "get_all_analysis",
     description:
       "Every one of the 44 real analysis endpoints above, in ONE response, for the given symbol/timeframe -- use when you need a full market read, not a single indicator. " +
-      "Also reports whether you already have a real open position or pending order on this symbol, so you never propose a duplicate trade on something you've already placed.",
+      "Also reports whether you already have a real open position or pending order on this symbol, so you never propose a duplicate trade on something you've already placed. " +
+      "ALSO includes full account-wide awareness on every call: every open position and pending order across ALL symbols (not just this one), and real account margin data " +
+      "(balance/equity/margin/freeMargin/leverage plus a computed marginLevel), so you're never tunnel-visioned on just the current symbol.",
     parameters: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" } }, required: ["symbol"] },
     execute: async (args, ctx) => {
       const symbol = args.symbol as string;
@@ -151,10 +153,34 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
       const state = getLastKnownState(ctx.userId);
       const upper = symbol.toUpperCase();
       const resultObj = (typeof result === "object" && result !== null ? result : {}) as Record<string, unknown>;
+
+      // Real gap fixed (user: get_all_analysis must give full account awareness, not just
+      // tunnel-vision on the one symbol being analyzed) -- every open position/pending order
+      // account-wide, plus real account margin data. getLastKnownState/getLastKnownAccountSnapshot
+      // are both already-real, already-persisted EA report data (see ea-webhook.ts) -- nothing
+      // here is fabricated: an account with no snapshot yet genuinely reports undefined/null, never
+      // an invented number.
+      const snapshot = getLastKnownAccountSnapshot(ctx.userId);
+      const margin = snapshot?.margin;
+      const equity = snapshot?.equity;
+      const marginLevel = margin !== undefined && margin > 0 && equity !== undefined ? (equity / margin) * 100 : null;
+      const accountMargin = {
+        balance: snapshot?.balance,
+        equity,
+        margin,
+        freeMargin: snapshot?.freeMargin,
+        leverage: snapshot?.leverage,
+        marginLevel,
+        updatedAt: snapshot?.updatedAt,
+      };
+
       const finalResult = {
         ...resultObj,
         openPositionsForSymbol: state.positions.filter((p) => p.symbol.toUpperCase() === upper),
         pendingOrdersForSymbol: state.pendingOrders.filter((p) => p.symbol.toUpperCase() === upper),
+        allOpenPositions: state.positions,
+        allPendingOrders: state.pendingOrders,
+        accountMargin,
       };
 
       // Real, honest record of what THIS call actually got back -- requestAnalysis already
