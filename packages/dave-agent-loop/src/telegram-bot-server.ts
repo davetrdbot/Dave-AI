@@ -373,8 +373,17 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   });
 
   setAutonomousBusy(deps.ownerUserId, "autonomous trading cycle");
+  // Real interrupt wiring (user, live, this session): a real incoming chat message must be able
+  // to cut an in-flight tick off immediately, not run alongside it unaware. Mirrors runAgentTurn's
+  // exact real pattern above -- beginTurn() before the real tick work, endTurn() in a finally --
+  // so turn-abort.ts's Set-based tracking sees the tick as just another real in-flight turn for
+  // this owner, right alongside their own chat turn/any delegated worker task, never clobbering
+  // either. abortTurn(ownerUserId) (called at the top of onUpdate for every real incoming message,
+  // see below) then genuinely cancels this controller's signal, which autonomous-tick.ts threads
+  // into its own provider.generate() call.
+  const tickAbortController = beginTurn(deps.ownerUserId);
   try {
-    const outcome = await runAutonomousTick({ userId: deps.ownerUserId, db: deps.db, executor: deps.executor, provider });
+    const outcome = await runAutonomousTick({ userId: deps.ownerUserId, db: deps.db, executor: deps.executor, provider, signal: tickAbortController.signal });
     logCycle(deps.ownerUserId, `decision: ${outcome.action}${outcome.symbol ? ` ${outcome.symbol}` : ""}${outcome.notable ? " (notable)" : ""}${outcome.message ? ` -- ${outcome.message.replace(/\n/g, " | ")}` : ""}`);
     // Real, live fix (user: the trade-placed message's reason is now the model's full, real,
     // untruncated reasoning, not a summary -- a rare pathologically long one could exceed
@@ -386,6 +395,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
   } finally {
+    endTurn(deps.ownerUserId, tickAbortController);
     clearAutonomousBusy(deps.ownerUserId);
   }
 }
@@ -646,6 +656,20 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // note, photo, and document Telegram ever delivered -- real
       // transcription/vision code existed but nothing here called it.
       if (!message || (!message.text && !message.voice && !message.photo && !message.document)) return;
+      // Real interrupt wiring (user, live, this session): a real incoming user message must
+      // immediately interrupt an in-flight autonomous trading tick, not queue up alongside it
+      // unaware. Called unconditionally, at the very top of the real genuine-message path --
+      // before any busy check, command dispatch, or runAgentTurn -- so nothing about this
+      // message's own handling can ever delay it. abortTurn() aborts EVERY controller currently
+      // tracked for this owner (turn-abort.ts's real Set-based design), so this is a harmless,
+      // safe no-op when nothing is running (confirmed: abortTurn returns false in that case) and
+      // never touches a controller belonging to a genuinely different turn class -- it just
+      // cancels whatever was in flight, tick included. The user's OWN new turn then gets its own
+      // fresh controller a few lines below via runAgentTurn's existing beginTurn() call -- calling
+      // abortTurn() here first, then beginTurn() for the new turn right after, is safe: they touch
+      // the same per-user Set but at different times, with nothing concurrent between them, so
+      // there is no race between "cancel what was running" and "start what's new."
+      abortTurn(deps.ownerUserId);
       const chatId = message.chat.id;
       // Real fix (F5): the morning brief (and any other schedule-driven
       // push) has no incoming update to read a chatId off of -- this is

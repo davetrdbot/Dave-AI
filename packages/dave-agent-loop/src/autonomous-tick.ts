@@ -212,6 +212,22 @@ export class InvalidTickDecisionError extends Error {
   }
 }
 
+/** Real interrupt path (user, live: a real incoming chat message must be able to cut off an
+ *  in-flight autonomous tick's model call, not just run alongside it unaware). Thrown by
+ *  requestDecision() below when its provider.generate() call rejects because the caller's own
+ *  turn-abort.ts controller (wired in by runAutonomousTradingCycle in telegram-bot-server.ts) was
+ *  genuinely aborted -- distinct from InvalidTickDecisionError/a real provider failure, both of
+ *  which stay real, unexpected errors. Caught at each real requestDecision() call site so the
+ *  tick exits cleanly (no crash, no unhandled rejection) WITHOUT advancing the round-robin cursor
+ *  -- advanceCursor is only ever called after a genuine decision came back, so an aborted tick
+ *  naturally retries the same symbol next scheduled cycle, exactly the desired behavior. */
+export class TickAbortedError extends Error {
+  constructor() {
+    super("Autonomous tick interrupted by a real user message");
+    this.name = "TickAbortedError";
+  }
+}
+
 function coerceDecision(obj: Record<string, unknown>): TickDecision {
   const action = String(obj.action ?? "SKIP").toUpperCase();
   if (!(DECISION_ACTIONS as readonly string[]).includes(action)) throw new InvalidTickDecisionError(JSON.stringify(obj));
@@ -336,6 +352,12 @@ export interface RunTickDeps {
   db: DaveDatabase;
   executor: TradeExecutor;
   provider: Provider;
+  /** Real interrupt wiring (user, live, this session): the same turn-abort.ts controller signal
+   *  the main chat path (runAgentTurn) already threads into AgentLoop.run() -- here threaded into
+   *  the tick's own provider.generate() call so a real incoming user message can genuinely cancel
+   *  an in-flight tick's network call, not just something nothing was ever listening to. Optional
+   *  so every existing caller/test that doesn't wire it up keeps working unchanged. */
+  signal?: AbortSignal;
 }
 
 /** Real, plain trace of every tick -- there is no other way to see what the bot is actually
@@ -347,7 +369,7 @@ function logTick(userId: string, line: string): void {
 }
 
 export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome> {
-  const { userId, db, executor, provider } = deps;
+  const { userId, db, executor, provider, signal } = deps;
 
   ensureGroupsUsable(userId);
   if (!isWithinSelectedSession(userId)) {
@@ -555,9 +577,21 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     try {
       genResult = await provider.generate(
         { messages: [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: lines.join("\n") }], tools: [tool], toolChoice: { name: DECISION_TOOL_NAME } },
-        60_000
+        60_000,
+        signal
       );
     } catch (err) {
+      // Real cancel path: a real incoming user message called abortTurn(userId) (turn-abort.ts),
+      // which aborted THIS tick's controller too (runAutonomousTradingCycle in
+      // telegram-bot-server.ts wires it in exactly like runAgentTurn already does for the main
+      // chat) -- the underlying provider call genuinely rejects because of that, not because of a
+      // real upstream failure. Checked via signal.aborted (the same real idiom AgentLoop.run()
+      // already uses) rather than trying to pattern-match the rejection itself, since different
+      // providers/runtimes surface an aborted fetch differently.
+      if (signal?.aborted) {
+        logTick(userId, `${symbol}: model call interrupted by a real user message -- backing off, will retry this symbol next cycle`);
+        throw new TickAbortedError();
+      }
       logTick(userId, `model call for ${symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
     }
@@ -570,7 +604,16 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     }
   }
 
-  let decision = await requestDecision(contextLines);
+  let decision: TickDecision | null;
+  try {
+    decision = await requestDecision(contextLines);
+  } catch (err) {
+    if (err instanceof TickAbortedError) {
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+      return { action: "NONE", notable: false };
+    }
+    throw err;
+  }
   if (!decision) {
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "unparseable model response" });
     advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
@@ -588,7 +631,16 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       contextLines
     );
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "CONSULT_JOURNAL", reason: decision.reason ?? "" });
-    const decisionAfterConsult = await requestDecision([...contextLines, `JOURNAL'S OPINION (you asked for this -- decide now, do not consult again): ${journalResult.opinion}`]);
+    let decisionAfterConsult: TickDecision | null;
+    try {
+      decisionAfterConsult = await requestDecision([...contextLines, `JOURNAL'S OPINION (you asked for this -- decide now, do not consult again): ${journalResult.opinion}`]);
+    } catch (err) {
+      if (err instanceof TickAbortedError) {
+        recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+        return { action: "NONE", notable: false };
+      }
+      throw err;
+    }
     if (!decisionAfterConsult || decisionAfterConsult.action === "CONSULT_JOURNAL") {
       logTick(userId, `${symbol}: no real decision after consulting Journal -- treating as SKIP`);
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no real decision after consulting Journal" });
@@ -620,7 +672,16 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       }
     }
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "REQUEST_CANDLES", reason: decision.reason ?? "" });
-    const decisionAfterCandles = await requestDecision([...contextLines, `${candlesLine} (decide now -- do not request candles again)`]);
+    let decisionAfterCandles: TickDecision | null;
+    try {
+      decisionAfterCandles = await requestDecision([...contextLines, `${candlesLine} (decide now -- do not request candles again)`]);
+    } catch (err) {
+      if (err instanceof TickAbortedError) {
+        recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+        return { action: "NONE", notable: false };
+      }
+      throw err;
+    }
     if (!decisionAfterCandles || decisionAfterCandles.action === "REQUEST_CANDLES") {
       logTick(userId, `${symbol}: no real decision after REQUEST_CANDLES -- treating as SKIP`);
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no real decision after REQUEST_CANDLES" });
