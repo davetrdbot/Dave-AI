@@ -444,15 +444,13 @@ function TeamsPanel({ userId }: { userId: string }) {
 function ModelsPanel({ userId }: { userId: string }) {
   const api = useApi(userId);
   const [config, setConfig] = useState<any>(null);
-  const [primary, setPrimary] = useState("airllm");
-  const [railwayLoad, setRailwayLoad] = useState<boolean | null>(null);
+  const [primary, setPrimary] = useState("openai");
 
   const reload = useCallback(() => {
     api("/api/model-config").then((c) => {
       setConfig(c);
       setPrimary(c.primary);
     });
-    api("/api/railway-model-toggle").then((r) => setRailwayLoad(r.enabled));
   }, [api]);
 
   useEffect(() => {
@@ -460,14 +458,8 @@ function ModelsPanel({ userId }: { userId: string }) {
   }, [reload]);
 
   const save = async () => {
-    const fallback = ["airllm", "deepseek", "claude"].filter((p) => p !== primary);
+    const fallback = ["deepseek", "claude"].filter((p) => p !== primary);
     await api("/api/model-config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ primary, fallback }) });
-    reload();
-  };
-
-  const toggleRailwayLoad = async () => {
-    const next = !railwayLoad;
-    await api("/api/railway-model-toggle", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: next }) });
     reload();
   };
 
@@ -477,7 +469,7 @@ function ModelsPanel({ userId }: { userId: string }) {
       <div className="row" style={{ marginBottom: 10 }}>
         <span>Primary:</span>
         <select value={primary} onChange={(e) => setPrimary(e.target.value)}>
-          <option value="airllm">AirLLM (self-hosted Qwen3-235B)</option>
+          <option value="openai">OpenAI</option>
           <option value="deepseek">DeepSeek</option>
           <option value="claude">Claude</option>
         </select>
@@ -486,21 +478,6 @@ function ModelsPanel({ userId }: { userId: string }) {
         </button>
       </div>
       {config && <div className="stat-note">fallback order: {config.fallback.join(" then ")}</div>}
-
-      <div className="group-card" style={{ marginTop: 16 }}>
-        <strong>Load Model on Railway</strong>
-        <div className="row" style={{ marginTop: 8 }}>
-          <button className="btn secondary" onClick={toggleRailwayLoad} disabled={railwayLoad === null}>
-            {railwayLoad ? "ON" : "OFF"}
-          </button>
-        </div>
-        <div className="stat-note" style={{ marginTop: 8 }}>
-          When ON, Dave attempts to run AirLLM directly on this Railway instance -- no separate GPU host
-          needed to try it. This will be slow (CPU-only, no GPU on Railway) and is best-effort; the
-          DeepSeek/Claude fallback providers remain the reliable path. When OFF (default), Dave expects
-          AirLLM to run on an external host.
-        </div>
-      </div>
     </div>
   );
 }

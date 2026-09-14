@@ -58,18 +58,6 @@ const OPENAI_COMPAT = (id: ProviderName, displayName: string, baseUrl: string, d
 });
 
 export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
-  airllm: {
-    id: "airllm",
-    displayName: "AirLLM (self-hosted Qwen3-235B)",
-    baseUrl: "http://127.0.0.1:8090",
-    chatPath: "/generate",
-    modelsPath: null,
-    authStyle: "bearer",
-    manualModelEntry: false,
-    defaultModel: "qwen3-235b",
-    openAICompatible: false,
-    notes: "Step 5.1/5.5 -- existing custom implementation, self-hosted, not OpenAI-shaped.",
-  },
   deepseek: OPENAI_COMPAT("deepseek", "DeepSeek AI", "https://api.deepseek.com", "deepseek-chat", "Step 5.2 -- existing custom implementation."),
   claude: {
     id: "claude",

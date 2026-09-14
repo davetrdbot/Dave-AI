@@ -34,7 +34,7 @@ try {
     "openai", "claude", "gemini", "groq", "mistral", "cohere", "together", "cerebras",
     "nvidia-nim", "fireworks", "hyperbolic", "deepinfra", "perplexity", "qwen", "sambanova",
     "novita", "ai21", "lepton", "cloudflare", "replicate", "xai", "openrouter", "huggingface",
-    "orcarouter", "bedrock", "airllm", "deepseek",
+    "orcarouter", "bedrock", "deepseek",
   ];
   const catalog = listProviderCatalog();
   for (const id of required) {

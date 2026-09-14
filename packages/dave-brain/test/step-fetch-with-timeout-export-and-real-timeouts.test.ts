@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import * as http from "node:http";
 import { fetchWithTimeout } from "../src/index.js";
-import { LocalAirLLMProcessManager } from "../src/railway-model-loader.js";
 import { fetchAvailableModels } from "../src/model-fetch.js";
 import { PROVIDER_CATALOG } from "../src/provider-catalog.js";
 
 /**
- * Real proof for the audit gap: railway-model-loader.ts and model-fetch.ts used to make raw,
- * un-abortable `fetch()` calls with no timeout of their own. Both now go through the shared
- * `fetchWithTimeout` helper (now exported from the package's public surface instead of staying
- * private to providers.ts), and both genuinely time out against a real server that hangs and
- * never responds -- not a faked/resolved promise.
+ * Real proof for the audit gap: model-fetch.ts used to make a raw, un-abortable `fetch()` call
+ * with no timeout of its own. It now goes through the shared `fetchWithTimeout` helper (now
+ * exported from the package's public surface instead of staying private to providers.ts), and
+ * genuinely times out against a real server that hangs and never responds -- not a faked/resolved
+ * promise.
  */
 
 console.log("=== Real proof: fetchWithTimeout is exported, and both fixed call sites genuinely time out ===\n");
@@ -35,30 +34,7 @@ function startHangingServer(): Promise<{ server: http.Server; port: number }> {
 }
 
 async function main() {
-  console.log("[2] LocalAirLLMProcessManager.waitForHealth() times out against a real hanging /health server...\n");
-  {
-    const { server, port } = await startHangingServer();
-    try {
-      const mgr = new LocalAirLLMProcessManager(process.cwd(), port);
-      const start = Date.now();
-      // waitForHealth's own outer deadline is set deliberately far shorter than the 5s
-      // per-request health-check timeout inside railway-model-loader.ts, and the poll loop only
-      // re-checks its deadline BETWEEN iterations -- so the one in-flight fetch this triggers
-      // must itself abort on its own for waitForHealth to ever return at all. Before this fix,
-      // a raw `fetch()` here had no timeout of its own and would never settle against a server
-      // that never responds -- this call would hang indefinitely (well past 5s), not return in
-      // ~5s the way it does now.
-      const result = await mgr.waitForHealth(100);
-      const elapsed = Date.now() - start;
-      assert.equal(result.healthy, false, "a server that never responds must never report healthy");
-      assert.ok(elapsed < 6000, `the per-request fetch must abort at ~its own 5s timeout, not hang forever (took ${elapsed}ms)`);
-      console.log(`    confirmed: waitForHealth() returned {healthy:false} in ${elapsed}ms against a server that never responds\n`);
-    } finally {
-      server.close();
-    }
-  }
-
-  console.log("[3] fetchAvailableModels() times out against a real hanging /models-shaped server...\n");
+  console.log("[2] fetchAvailableModels() times out against a real hanging /models-shaped server...\n");
   {
     const { server, port } = await startHangingServer();
     try {

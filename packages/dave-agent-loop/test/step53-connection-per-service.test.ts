@@ -49,7 +49,7 @@ try {
   const client = new TelegramClient("000000:fake-token-for-transport-mock");
   const deps: CommandRouterDeps = { db, client, userId: OWNER, publicBaseUrl: "https://dave.example.com" };
 
-  console.log("[1] Fresh install: AI provider/brain honestly shows 'no working key' for a non-airllm primary...");
+  console.log("[1] Fresh install: AI provider/brain honestly shows 'no working key' for an unconfigured primary...");
   setModelConfig(OWNER, { primary: "openai", fallback: [] });
   sentMessages.length = 0;
   await dispatchCommand(deps, CHAT_ID, `${OWNER}:${CHAT_ID}`, "/connection");

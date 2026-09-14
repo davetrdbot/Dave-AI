@@ -63,10 +63,10 @@ const tradingTools = toolsForWorker(tradingWorker).map((t) => t.name);
 console.log(`    trading-role worker's tools include trade_execute: ${tradingTools.includes("trade_execute")}`);
 assert.ok(tradingTools.includes("trade_execute"), "a designated trading worker DOES get real trade-placing tools");
 
-console.log("\n[2b] Workers route through DeepSeek/Claude, never AirLLM (Step 5.4, reachable per-worker)...");
+console.log("\n[2b] Workers route through DeepSeek/Claude (Step 5.4, reachable per-worker)...");
 const modelConfig = modelConfigForWorker(w2);
 console.log(`    ${JSON.stringify(modelConfig)}`);
-assert.notEqual(modelConfig.primary, "airllm");
+assert.ok(modelConfig.primary === "deepseek" || modelConfig.primary === "claude", "workers must route to deepseek or claude");
 
 // --- 12.3/12.6: real per-worker endpoint, tagged output, report_to_user ---
 console.log("\n[3] Real per-worker webhook endpoint + tagged output (report_to_user)...");

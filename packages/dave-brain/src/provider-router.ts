@@ -19,7 +19,14 @@ export interface ModelConfig {
 // longer silently gets deepseek+claude as its fallback chain -- fallback starts genuinely empty,
 // and the user builds it themselves via the real /providers "Add to fallback chain" toggle
 // (command-router.ts's togglefallback: callback).
-const DEFAULT_CONFIG: ModelConfig = { primary: "airllm", fallback: [] };
+// AirLLM (the previous default, self-hosted, no key required) was removed from the codebase --
+// it was never actually deployed anywhere real (no AIRLLM_BASE_URL in production). Every real
+// catalog provider now requires a stored key, so this default is functionally inert either way:
+// a fresh account with no key resolves through the existing, already-honest "no stored keys"
+// path (provider-keys.ts -> error-messages.ts's clean, actionable message) regardless of which
+// provider name sits here. "openai" is used as the label since it's the catalog's own reference/
+// canonical entry (see provider-catalog.ts's OPENAI_COMPAT doc comment).
+const DEFAULT_CONFIG: ModelConfig = { primary: "openai", fallback: [] };
 
 /**
  * Real bug fixed (user, repeatedly: "the providers are not still working"): the admin panel runs
@@ -27,7 +34,7 @@ const DEFAULT_CONFIG: ModelConfig = { primary: "airllm", fallback: [] };
  * spawnAdminPanel), so a primary/fallback provider genuinely set through the admin panel's real
  * "AI Models" tab (packages/dave-admin/app/api/model-config) was written to a COMPLETELY
  * DIFFERENT file than the one this bot process reads -- the bot kept running on whatever it had
- * before (or DEFAULT_CONFIG's plain airllm default), no matter what was actually saved in the
+ * before (or DEFAULT_CONFIG's default), no matter what was actually saved in the
  * admin panel. DAVE_DATA_ROOT (same real fix already applied to @dave/memory's goal.yaml) makes
  * both processes genuinely read/write the identical file.
  */
@@ -99,7 +106,7 @@ export class ProviderRouter {
   }
 }
 
-/** Step 5.4: workers never get AirLLM -- always DeepSeek or Claude. */
+/** Step 5.4: workers always get DeepSeek or Claude. */
 export function routeForWorker(preferred: "deepseek" | "claude" = "deepseek"): ModelConfig {
   const other: "deepseek" | "claude" = preferred === "deepseek" ? "claude" : "deepseek";
   return { primary: preferred, fallback: [other] };

@@ -3,29 +3,6 @@
 # Node.js build (confirmed via research against Railway's own docs) --
 # `...` merges this with Nixpacks' auto-detected Node toolchain rather
 # than replacing it.
-#
-# Real gap fixed (final pre-deployment pass): this file used to also
-# build a Python venv and pip-install ai-brain-service/requirements.txt
-# (airllm + torch + full CUDA stack, several GB) so the admin panel's
-# "Load Model on Railway" toggle could self-host AirLLM. Removed for a
-# real, deployment-specific reason, not because the feature is wrong:
-# this deploy runs on Railway's free/trial tier with no GPU, AirLLM
-# isn't configured for it, and that Python/CUDA install was a real
-# plausible cause of a silent, logless deploy failure (a multi-GB image
-# on a trial-tier resource/size limit). `railway-model-loader.ts`
-# degrades gracefully on its own (falls back through venv paths, fails
-# with a clear typed error) if that toggle is ever used without the
-# venv present -- nothing at boot depends on it existing. Re-add the
-# `installPython` phase below (and `python311` in nixPkgs) if/when this
-# deploy actually gets a real GPU host or upgrades to a tier that can
-# hold the image.
-#
-# [phases.installPython]
-# dependsOn = ["setup"]
-# cmds = [
-#   "python3 -m venv /opt/dave-ai-brain-venv",
-#   "/opt/dave-ai-brain-venv/bin/pip install -r ai-brain-service/requirements.txt",
-# ]
 providers = ["node"]
 
 [phases.setup]

@@ -351,7 +351,7 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number, editMes
 
   const config = getModelConfig(deps.userId);
   const configuredProviders = new Set(listProviderKeys(deps.db, deps.userId).map((k) => k.provider));
-  const brainReady = config.primary === "airllm" || configuredProviders.has(config.primary);
+  const brainReady = configuredProviders.has(config.primary);
   const brainLine = brainReady ? `🟢 AI provider/brain: ${config.primary}` : `🔴 AI provider/brain: ${config.primary} (no working key)`;
 
   let sandboxLine: string;
@@ -384,11 +384,10 @@ async function handleConnection(deps: CommandRouterDeps, chatId: number, editMes
 }
 
 /** Real fix (user report: "providers is missing? it's only airllm and deepseek and Claude") --
- * this used to hardcode 3 providers even after the catalog grew to all 28+AirLLM. Now it lists
- * every catalog entry, per-provider marking whether the user has a configured key (AirLLM excepted --
- * it's self-hosted via AIRLLM_BASE_URL, no key needed) so picking one that isn't ready yet is an
- * informed choice, not a silent dead end. Tapping a provider opens its detail screen (real stored
- * keys, tap-to-activate) rather than blindly setting it primary. */
+ * this used to hardcode 3 providers even after the catalog grew much larger. Now it lists every
+ * catalog entry, per-provider marking whether the user has a configured key, so picking one that
+ * isn't ready yet is an informed choice, not a silent dead end. Tapping a provider opens its
+ * detail screen (real stored keys, tap-to-activate) rather than blindly setting it primary. */
 /** Real fix (user: "remove the red color in providers buttons just make them normal grey main
  * primary should be green then fallback red"): red used to mean "no key stored" -- a purely
  * informational state that doesn't warrant an alarming color. Red is now reserved for what it
@@ -403,7 +402,7 @@ function providersKeyboard(current: ProviderName, configuredProviders: Set<Provi
     const pair = catalog.slice(i, i + 2);
     rows.push(
       pair.map((entry) => {
-        const ready = entry.id === "airllm" || configuredProviders.has(entry.id);
+        const ready = configuredProviders.has(entry.id);
         const isCurrent = current === entry.id;
         const isFallback = fallbackSet.has(entry.id);
         const label = `${isCurrent ? "✅ " : isFallback ? "🔁 " : ""}${entry.id}${ready ? "" : " (no key)"}`;
@@ -416,14 +415,14 @@ function providersKeyboard(current: ProviderName, configuredProviders: Set<Provi
 
 /** Real fix (user: "when providers is not set it to say provider not set") -- Primary previously
  * always printed getModelConfig's stored/default provider name as if it were a working, ready
- * choice, even on a totally fresh install where it's just DEFAULT_CONFIG's fallback ("airllm")
+ * choice, even on a totally fresh install where it's just DEFAULT_CONFIG's default provider
  * with zero real keys behind it. Now explicitly says "(not set -- no working key)" when the
- * primary provider isn't actually ready (airllm excepted: self-hosted, no key required). */
+ * primary provider isn't actually ready. */
 async function handleProviders(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const config = getModelConfig(deps.userId);
   const configuredProviders = new Set(listProviderKeys(deps.db, deps.userId).map((k) => k.provider));
   const catalogCount = listProviderCatalog().filter((e) => e.id !== "custom").length;
-  const primaryReady = config.primary === "airllm" || configuredProviders.has(config.primary);
+  const primaryReady = configuredProviders.has(config.primary);
   const primaryLine = primaryReady ? config.primary : `${config.primary} (not set -- no working key)`;
   const text =
     `<b>AI Provider</b>\nPrimary: ${primaryLine}\nFallback: ${config.fallback.join(", ") || "none"}\n\n` +
@@ -445,9 +444,7 @@ function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { 
   // entities" error, an unrecognized exception type that fell through to the generic error
   // message. Escaped here defensively so no future catalog note (any provider) can do this again.
   const lines = [`<b>${entry.displayName}</b>`, escapeHtml(entry.notes), ""];
-  if (provider === "airllm") {
-    lines.push("Self-hosted via AIRLLM_BASE_URL -- no stored key needed.");
-  } else if (keys.length === 0) {
+  if (keys.length === 0) {
     lines.push("No keys stored yet -- add one below, or in the admin panel's Provider Keys tab.");
   } else {
     lines.push(`${keys.length}/10 stored key(s):`);
@@ -463,7 +460,7 @@ function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { 
       coloredButton("🗑 Delete", "red", `deletekey:${key.id}`),
     ]);
   }
-  if (provider !== "airllm" && provider !== "custom" && keys.length < 10) {
+  if (provider !== "custom" && keys.length < 10) {
     rows.push([coloredButton("➕ Add key(s)", "blue", `addkey:${provider}`)]);
   }
   rows.push([coloredButton(config.primary === provider ? "✅ Primary provider" : "Set as primary provider", config.primary === provider ? "green" : "blue", `setprimaryprovider:${provider}`)]);
@@ -472,8 +469,8 @@ function providerDetailView(deps: CommandRouterDeps, provider: ProviderName): { 
   // DEFAULT_CONFIG's hardcoded ["deepseek", "claude"] (or whatever was left over after switching
   // primary), with no real UI to change it -- this real toggle button adds/removes THIS provider
   // from the user's own fallback list. Hidden for the current primary (it's already tried first;
-  // being its own fallback would be meaningless) and for airllm (no key to fail over from).
-  if (provider !== config.primary && provider !== "airllm") {
+  // being its own fallback would be meaningless).
+  if (provider !== config.primary) {
     const inFallback = config.fallback.includes(provider);
     rows.push([coloredButton(inFallback ? "✅ In fallback chain" : "Add to fallback chain", inFallback ? "green" : "blue", `togglefallback:${provider}`)]);
   }
@@ -496,7 +493,6 @@ function primaryKeyFor(deps: CommandRouterDeps, provider: ProviderName): StoredP
  * zero visibility here at all). */
 function modelSummaryLine(deps: CommandRouterDeps, provider: ProviderName): string {
   const entry = listProviderCatalog().find((e) => e.id === provider)!;
-  if (provider === "airllm") return `<b>${provider}</b>: fixed <code>${entry.defaultModel}</code> (self-hosted, not user-selectable)`;
   const key = primaryKeyFor(deps, provider);
   if (!key) return `<b>${provider}</b>: not set -- no working key`;
   const chosenModel = key.config.model;
@@ -522,7 +518,6 @@ async function handleModels(deps: CommandRouterDeps, chatId: number, editMessage
     lines.push("", "No fallback provider configured.");
   }
   const rows: ReturnType<typeof coloredButton>[][] = providers
-    .filter((p) => p !== "airllm")
     .map((p) => [coloredButton(`Model for ${p}${p === config.primary ? " (primary)" : ""}`, "blue", `modelfor:${p}`)]);
   await sendOrEditScreen(deps, chatId, lines.join("\n"), withMenuHome(keyboard(rows)), editMessageId);
 }
@@ -537,14 +532,6 @@ const MODEL_PICKER_SELF_DELETE_MS = 20_000;
 
 async function sendModelPickerForProvider(deps: CommandRouterDeps, chatId: number, provider: ProviderName): Promise<void> {
   const entry = listProviderCatalog().find((e) => e.id === provider)!;
-
-  // AirLLM is fixed, self-hosted infrastructure (Qwen3-235B via AIRLLM_BASE_URL) -- there is no
-  // per-key model to pick and no real /models endpoint to fetch (modelsPath is null), so it gets
-  // its own honest, static answer instead of a broken empty fetch/manual-entry flow.
-  if (provider === "airllm") {
-    await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `<b>Model for airllm</b>\nFixed: <code>${entry.defaultModel}</code> (self-hosted via AIRLLM_BASE_URL -- not user-selectable).`, parse_mode: "HTML" }, MODEL_PICKER_SELF_DELETE_MS);
-    return;
-  }
 
   const key = primaryKeyFor(deps, provider);
   if (!key) {

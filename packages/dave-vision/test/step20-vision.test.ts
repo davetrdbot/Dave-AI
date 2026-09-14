@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { AirLLMProvider, DeepSeekProvider, ClaudeProvider, ImageNotSupportedError, type CompletionRequest } from "@dave/brain";
+import { DeepSeekProvider, ClaudeProvider, ImageNotSupportedError, type CompletionRequest } from "@dave/brain";
 import { TranscriptionClient, TranscriptionError } from "@dave/io";
 import { buildImageContentBlock, mediaTypeFromExtension, UnsupportedImageTypeError, ImageTooLargeError } from "../src/image.js";
 import { extractKeyframes, transcribeVideoWithTimestamps, FfmpegError } from "../src/video.js";
@@ -66,16 +66,6 @@ try {
     fetchWasCalled = true;
     throw new Error("should never be called");
   }) as typeof fetch;
-
-  const airllm = new AirLLMProvider("http://localhost:9999");
-  let airllmRefused = false;
-  try {
-    await airllm.generate(imageRequest, 1000);
-  } catch (err) {
-    airllmRefused = err instanceof ImageNotSupportedError;
-  }
-  assert.ok(airllmRefused && !fetchWasCalled, "AirLLM must refuse BEFORE making any network call, not send an image to a text-only endpoint");
-  console.log("    AirLLM (self-hosted Qwen3-235B, text-only) genuinely refuses image content -- no network call made");
 
   const deepseek = new DeepSeekProvider("fake-key");
   let deepseekRefused = false;

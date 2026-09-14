@@ -10,7 +10,7 @@ import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, type Com
 /**
  * Real proof for two things fixed in this pass:
  *  1) the user-reported gap ("providers is missing? it's only airllm and
- *     deepseek and Claude") -- /providers now lists the full 28+AirLLM
+ *     deepseek and Claude") -- /providers now lists the full 28+ provider
  *     catalog and lets you drill into a provider's real stored keys.
  *  2) "It should fetch the models like v1 model so I can select as well"
  *     -- /models now does a real live fetch of a provider's model list
@@ -75,7 +75,7 @@ try {
   const client = new TelegramClient("000000:fake-token-for-transport-mock");
   const deps: CommandRouterDeps = { db, client, userId: OWNER, publicBaseUrl: "https://dave.example.com" };
 
-  console.log("[1] /providers lists the FULL catalog (28+AirLLM), not just 3...");
+  console.log("[1] /providers lists the FULL catalog (28+ providers), not just 3...");
   sentTelegramCalls.length = 0;
   const handled = await dispatchCommand(deps, CHAT_ID, `${OWNER}:${CHAT_ID}`, "/providers");
   assert.equal(handled, true);
@@ -89,8 +89,9 @@ try {
   console.log("\n[2] Tapping a provider opens its REAL detail screen (stored keys + set-primary), does not silently set primary...");
   addProviderKey(db, OWNER, "openai", "my openai key", { apiKey: "sk-real-fake-key" });
   sentTelegramCalls.length = 0;
+  const primaryBefore = getModelConfig(OWNER).primary;
   await dispatchCallback(deps, { id: "cb1", data: "provider:openai", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
-  assert.equal(getModelConfig(OWNER).primary, "airllm", "opening the detail screen must NOT change the stored primary provider");
+  assert.equal(getModelConfig(OWNER).primary, primaryBefore, "opening the detail screen must NOT change the stored primary provider");
   const detailBody = sentTelegramCalls[0].body as { text: string; reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } };
   console.log(`    detail screen text: "${detailBody.text.split("\n")[0]}"`);
   const detailButtons = detailBody.reply_markup.inline_keyboard.flat();

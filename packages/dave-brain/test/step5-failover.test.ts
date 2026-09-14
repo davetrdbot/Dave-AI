@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
-  AirLLMProvider,
+  OpenAICompatibleProvider,
   DeepSeekProvider,
   ProviderRouter,
   getModelConfig,
@@ -16,21 +16,22 @@ rmSync(DATA_DIR, { recursive: true, force: true });
 
 console.log("=== Step 5 real proof: provider router + failover ===\n");
 console.log(
-  "NOTE: no live DeepSeek/Claude API keys are configured in this environment, so this test\n" +
-    "stands up REAL local HTTP servers shaped like each provider's real response format and\n" +
-    "points the REAL provider classes (same code that calls api.deepseek.com / api.anthropic.com\n" +
-    "in production) at them over real loopback HTTP, with real timeouts. The failover mechanism\n" +
-    "itself is fully real; only the external endpoint is substituted for lack of credentials.\n"
+  "NOTE: no live OpenAI/DeepSeek/Claude API keys are configured in this environment, so this\n" +
+    "test stands up REAL local HTTP servers shaped like each provider's real response format and\n" +
+    "points the REAL provider classes (same code that calls api.openai.com / api.deepseek.com /\n" +
+    "api.anthropic.com in production) at them over real loopback HTTP, with real timeouts. The\n" +
+    "failover mechanism itself is fully real; only the external endpoint is substituted for lack\n" +
+    "of credentials.\n"
 );
 
-// --- A real HTTP server that ALWAYS TIMES OUT, standing in for a stuck/unreachable AirLLM ---
-const deadAirllm = createServer((_req, res) => {
-  // never respond -- forces the real fetch timeout path in AirLLMProvider
+// --- A real HTTP server that ALWAYS TIMES OUT, standing in for a stuck/unreachable primary ---
+const deadPrimary = createServer((_req, res) => {
+  // never respond -- forces the real fetch timeout path in OpenAICompatibleProvider
   void res;
 });
-await new Promise<void>((resolve) => deadAirllm.listen(0, resolve));
-const deadAirllmAddr = deadAirllm.address();
-if (typeof deadAirllmAddr !== "object" || !deadAirllmAddr) throw new Error("bind failed");
+await new Promise<void>((resolve) => deadPrimary.listen(0, resolve));
+const deadPrimaryAddr = deadPrimary.address();
+if (typeof deadPrimaryAddr !== "object" || !deadPrimaryAddr) throw new Error("bind failed");
 
 // --- A real HTTP server shaped like DeepSeek's /chat/completions response ---
 const fakeDeepSeek = createServer((req, res) => {
@@ -47,19 +48,20 @@ if (typeof fakeDeepSeekAddr !== "object" || !fakeDeepSeekAddr) throw new Error("
 
 const USER_ID = "tg-847213";
 
-console.log("[1] Model-picker config defaults to primary=airllm, fallback=[deepseek, claude]...");
+console.log("[1] Model-picker config defaults to primary=openai, fallback=[]...");
 const defaultConfig = getModelConfig(USER_ID);
 console.log(`    ${JSON.stringify(defaultConfig)}`);
-assert.equal(defaultConfig.primary, "airllm");
+assert.equal(defaultConfig.primary, "openai");
+assert.deepEqual(defaultConfig.fallback, [], "fallback starts genuinely empty -- the user builds it themselves via /providers");
 
 console.log("\n[2] User sets model config via the (future button-driven) model picker...");
-setModelConfig(USER_ID, { primary: "airllm", fallback: ["deepseek"] });
+setModelConfig(USER_ID, { primary: "openai", fallback: ["deepseek"] });
 console.log(`    saved: ${JSON.stringify(getModelConfig(USER_ID))}`);
-assert.deepEqual(getModelConfig(USER_ID), { primary: "airllm", fallback: ["deepseek"] });
+assert.deepEqual(getModelConfig(USER_ID), { primary: "openai", fallback: ["deepseek"] });
 
-console.log("\n[3] Real failover: primary AirLLM times out, router falls to real DeepSeek-shaped provider...");
+console.log("\n[3] Real failover: primary (openai-shaped) times out, router falls to real DeepSeek-shaped provider...");
 const router = new ProviderRouter({
-  airllm: new AirLLMProvider(`http://127.0.0.1:${deadAirllmAddr.port}`),
+  openai: new OpenAICompatibleProvider("openai", `http://127.0.0.1:${deadPrimaryAddr.port}`, "fake-key-for-test", "gpt-test"),
   deepseek: new DeepSeekProvider("fake-key-for-test", `http://127.0.0.1:${fakeDeepSeekAddr.port}`),
 });
 
@@ -71,31 +73,31 @@ const result = await router.generate(
 );
 const elapsed = Date.now() - start;
 console.log(`    result.provider = "${result.provider}", text = "${result.text}", took ${elapsed}ms`);
-assert.equal(result.provider, "deepseek", "must have fallen over to deepseek, not airllm");
+assert.equal(result.provider, "deepseek", "must have fallen over to deepseek, not openai");
 assert.ok(elapsed >= 1500 && elapsed < 4000, "should have actually waited out the real timeout, not skipped it");
 
 const failoverLog = router.getFailoverLog();
 console.log(`    failover log: ${JSON.stringify(failoverLog)}`);
 assert.equal(failoverLog.length, 1);
-assert.equal(failoverLog[0].failedProvider, "airllm");
+assert.equal(failoverLog[0].failedProvider, "openai");
 assert.equal(failoverLog[0].fellBackTo, "deepseek");
 assert.match(failoverLog[0].reason, /timed out/);
 
-console.log("\n[4] Worker routing (5.4) never selects airllm...");
+console.log("\n[4] Worker routing (5.4) always routes to deepseek or claude, matching the requested preference...");
 const workerConfig1 = routeForWorker("deepseek");
 const workerConfig2 = routeForWorker("claude");
 console.log(`    routeForWorker("deepseek") -> ${JSON.stringify(workerConfig1)}`);
 console.log(`    routeForWorker("claude")   -> ${JSON.stringify(workerConfig2)}`);
-assert.notEqual(workerConfig1.primary, "airllm");
-assert.notEqual(workerConfig2.primary, "airllm");
-assert.ok(!workerConfig1.fallback.includes("airllm"));
-assert.ok(!workerConfig2.fallback.includes("airllm"));
+assert.equal(workerConfig1.primary, "deepseek");
+assert.equal(workerConfig2.primary, "claude");
+assert.deepEqual(workerConfig1.fallback, ["claude"]);
+assert.deepEqual(workerConfig2.fallback, ["deepseek"]);
 
-console.log("\n[5] All-providers-failed path (both configured providers dead)...");
+console.log("\n[5] All-providers-failed path (the only configured provider is dead)...");
 const bothDeadRouter = new ProviderRouter({
-  airllm: new AirLLMProvider(`http://127.0.0.1:${deadAirllmAddr.port}`),
+  openai: new OpenAICompatibleProvider("openai", `http://127.0.0.1:${deadPrimaryAddr.port}`, "fake-key-for-test", "gpt-test"),
 });
-setModelConfig(USER_ID, { primary: "airllm", fallback: [] });
+setModelConfig(USER_ID, { primary: "openai", fallback: [] });
 let threw = false;
 try {
   await bothDeadRouter.generate(USER_ID, { messages: [{ role: "user", content: "hi" }] }, { timeoutMs: 500 });
@@ -105,7 +107,7 @@ try {
 }
 assert.equal(threw, true);
 
-deadAirllm.close();
+deadPrimary.close();
 fakeDeepSeek.close();
 
 console.log("\n=== ALL ASSERTIONS PASSED ===");

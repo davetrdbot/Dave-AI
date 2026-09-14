@@ -95,7 +95,6 @@ export interface CompletionResult {
  * rather than shipping a second, dead implementation.
  */
 export type ProviderName =
-  | "airllm"
   | "deepseek"
   | "claude"
   | "openai"
@@ -191,12 +190,11 @@ async function providerErrorFromResponse(provider: ProviderName, res: Response):
 
 /**
  * Step 20.1: only Claude's real configured model here has vision
- * support -- AirLLM's self-hosted Qwen3-235B (via ai-brain-service) and
- * DeepSeek's configured `deepseek-chat` model are both real, current,
- * text-only endpoints (confirmed via research: DeepSeek's only vision
- * chat model is `deepseek-v4-flash-vision-exp`, an experimental model
- * NOT what's wired up here). Rather than silently sending an image
- * content block to a text-only endpoint and getting a confusing
+ * support -- DeepSeek's configured `deepseek-chat` model is a real,
+ * current, text-only endpoint (confirmed via research: DeepSeek's only
+ * vision chat model is `deepseek-v4-flash-vision-exp`, an experimental
+ * model NOT what's wired up here). Rather than silently sending an
+ * image content block to a text-only endpoint and getting a confusing
  * provider-side error, this is checked and refused up front, honestly.
  */
 export class ImageNotSupportedError extends ProviderError {
@@ -270,46 +268,6 @@ function toOpenAIToolSpecs(tools: CompletionRequest["tools"]): unknown[] | undef
  *  format in this file (OpenAICompatibleProvider, DeepSeek, Cohere all use this exact shape). */
 function toOpenAIToolChoice(toolChoice: CompletionRequest["toolChoice"]): unknown | undefined {
   return toolChoice ? { type: "function", function: { name: toolChoice.name } } : undefined;
-}
-
-/**
- * Step 5.1/5.5: self-hosted AirLLM/Qwen3-235B, called over HTTP from
- * `ai-brain-service` (a separate Python process -- Step 2's rationale:
- * AirLLM is Python-only and disk-heavy, doesn't belong in the Node app).
- * `compression` defaults to '4bit' per Step 5.5.
- */
-export class AirLLMProvider implements Provider {
-  readonly name = "airllm" as const;
-
-  constructor(
-    private readonly baseUrl: string,
-    private readonly compression: "4bit" | "8bit" | "none" = "4bit"
-  ) {}
-
-  async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
-    if (containsImage(req.messages)) throw new ImageNotSupportedError("airllm");
-    const start = Date.now();
-    let res: Response;
-    try {
-      res = await fetchWithTimeout(
-        `${this.baseUrl}/generate`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: req.messages, max_tokens: req.maxTokens, compression: this.compression }),
-        },
-        timeoutMs,
-        signal
-      );
-    } catch (err) {
-      throw new ProviderError("airllm", `request failed/timed out after ${timeoutMs}ms`, err);
-    }
-    if (!res.ok) {
-      throw await providerErrorFromResponse("airllm", res);
-    }
-    const json = (await res.json()) as { text: string };
-    return { text: json.text, provider: "airllm", latencyMs: Date.now() - start };
-  }
 }
 
 /**

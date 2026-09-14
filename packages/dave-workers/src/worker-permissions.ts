@@ -35,7 +35,7 @@ export function toolsForWorkerWithGrants(worker: Worker, availableCatalog: ToolD
   return [...base, ...grantedTools];
 }
 
-/** Step 5.4 already routes workers away from AirLLM -- this just makes that decision reachable per-worker. */
+/** Step 5.4 already routes workers to deepseek/claude only -- this just makes that decision reachable per-worker. */
 export function modelConfigForWorker(_worker: Worker, preferred: "deepseek" | "claude" = "deepseek"): ModelConfig {
   return routeForWorker(preferred);
 }

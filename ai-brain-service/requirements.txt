@@ -1,3 +1,0 @@
-airllm
-fastapi
-uvicorn[standard]

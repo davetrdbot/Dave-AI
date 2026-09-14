@@ -31,7 +31,7 @@ export const DAVE_COMMANDS = [
   { command: "account", description: "💰 View your connected MT5 account and balance" },
   { command: "trades", description: "📈 View and close your real open trades, live" },
   { command: "settings", description: "⚙️ Trading limits, notifications, and preferences" },
-  { command: "providers", description: "🤖 Switch AI provider (28+ providers, AirLLM default)" },
+  { command: "providers", description: "🤖 Switch AI provider (28+ providers)" },
   { command: "models", description: "🧠 Pick which model each provider uses" },
   { command: "connection", description: "🔌 Check EA/MT5 connection status" },
   { command: "ea", description: "📄 Get your personalized MT5 Expert Advisor file" },

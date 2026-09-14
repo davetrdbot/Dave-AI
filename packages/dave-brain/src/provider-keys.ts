@@ -8,7 +8,7 @@ import { ProviderError, type CompletionRequest, type CompletionResult, type Prov
  * Update 3: "up to 20 stored keys per provider with health-check
  * auto-failover" -- a layer BELOW the existing cross-provider
  * ProviderRouter (provider-router.ts). That router fails over from one
- * provider to another (e.g. airllm -> deepseek -> claude); this fails
+ * provider to another (e.g. openai -> deepseek -> claude); this fails
  * over between multiple keys held for the SAME provider (e.g. three
  * OpenAI keys, one rate-limited).
  *
@@ -274,29 +274,6 @@ export async function generateWithKeyFailover(
   notifier?: KeyFailoverNotifier,
   signal?: AbortSignal
 ): Promise<CompletionResult> {
-  // Real bug fixed (Hermes-comparison investigation): "airllm" is documented and presented
-  // EVERYWHERE ELSE in this codebase -- provider-catalog.ts's own notes, and every real Telegram
-  // /providers, /models and provider-detail screen (command-router.ts: "Self-hosted via
-  // AIRLLM_BASE_URL -- no stored key needed", "fixed ... not user-selectable") -- as genuinely
-  // needing NO stored key row at all. But this function (the ONLY real runtime path a chat/tick
-  // request actually takes -- see provider-selection.ts) unconditionally required
-  // `listProviderKeys(...).length > 0` before that, with no airllm exception. Since
-  // provider-router.ts's own DEFAULT_CONFIG is `{ primary: "airllm", fallback: [] }` -- the real
-  // config every brand-new, never-touched-/providers account starts on -- this meant EVERY single
-  // message on a fresh install failed immediately with "no stored keys for provider \"airllm\"",
-  // not because airllm was unreachable or slow, but because the key-failover layer demanded a key
-  // that, by this very provider's own design, was never supposed to exist. Reproduced directly
-  // against the real compiled generateWithKeyFailover with a real DaveDatabase and a real fresh
-  // userId before this fix (see the investigation notes); confirmed fixed after. AirLLM has no
-  // per-user stored keys to fail over between, so it skips the key list entirely and calls the
-  // self-hosted provider once, directly, for the caller's full timeout budget.
-  if (provider === "airllm") {
-    // apiKey is unused by AirLLMProvider (see provider-factory.ts) -- an empty string just
-    // satisfies ProviderKeyConfig's type, it is never sent anywhere.
-    const instance = buildProvider(provider, { apiKey: "" });
-    return instance.generate(req, timeoutMs, signal);
-  }
-
   const keys = listProviderKeys(db, userId, provider);
   if (keys.length === 0) {
     throw new Error(`no stored keys for provider "${provider}"`);
