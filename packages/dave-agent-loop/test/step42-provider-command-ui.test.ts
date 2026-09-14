@@ -141,6 +141,22 @@ try {
   const notConsumed = await tryHandlePendingModelEntry(deps, CHAT_ID, "just chatting with Dave");
   assert.equal(notConsumed, false);
 
+  console.log("\n[10] Real, live bug fixed (user: \"in fireworks whether it ask for model id I can't set\") -- fireworks now genuinely goes through the same real manual-entry flow as openrouter, not the doomed 'Fetch live models' button its wrong models-endpoint path always failed against...\n");
+  addProviderKey(db, OWNER, "fireworks", "fw key", { apiKey: "fw-fake-key" });
+  await dispatchCallback(deps, { id: "cb6", data: "setprimaryprovider:fireworks", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
+  sentTelegramCalls.length = 0;
+  await dispatchCallback(deps, { id: "cb6b", data: "modelfor:fireworks", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
+  const fwManualBody = sentTelegramCalls[0].body as { text: string; reply_markup?: unknown };
+  console.log(`    "${fwManualBody.text.split("\n")[2]}"`);
+  assert.match(fwManualBody.text, /reply with the exact model ID/, "fireworks must genuinely be prompted for manual entry, not shown a fetch button that was always going to fail");
+  assert.ok(!fwManualBody.reply_markup, "fireworks must not get a fetch button -- its real models list lives on an unreachable path");
+
+  const fwConsumed = await tryHandlePendingModelEntry(deps, CHAT_ID, "accounts/fireworks/models/deepseek-v3p1");
+  assert.equal(fwConsumed, true, "the user's reply must genuinely be captured as the real model ID");
+  const fwModel = listProviderKeys(db, OWNER, "fireworks")[0].config.model;
+  console.log(`    stored fireworks model -> "${fwModel}"`);
+  assert.equal(fwModel, "accounts/fireworks/models/deepseek-v3p1", "the real model ID the user typed must genuinely be persisted on the stored key");
+
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {
   globalThis.fetch = realFetch;

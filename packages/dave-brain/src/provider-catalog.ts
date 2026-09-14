@@ -125,7 +125,22 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     aliasOf: "nvidia-nim",
     notes: "Real: Nvidia acquired Lepton AI and folded it into NVIDIA DGX Cloud Lepton -- not a separate API anymore.",
   },
-  fireworks: OPENAI_COMPAT("fireworks", "Fireworks AI", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/gpt-oss-120b", "Models-list lives on a DIFFERENT host path (/v1/accounts/{id}/models) than chat completions -- flagged, not unified here. Default model verified live (real 200 + real chat.completion) Sept 2026 -- the previous default (kimi-k2-instruct-0905) no longer resolves against the account's live model list.", null),
+  // Real, live bug fixed (user: "in fireworks whether it ask for model id I can't set"). The
+  // models-list genuinely lives on a DIFFERENT host path (/v1/accounts/{id}/models, needing an
+  // account id this codebase never collects), not the standard /v1/models the auto-fetch logic
+  // builds -- so "Fetch live models" always failed. Worse than just a failed fetch: manualModelEntry
+  // was never actually set, so command-router.ts's /models handler never took the real manual-entry
+  // branch (the one that calls setPendingManualModelEntry so a reply is genuinely captured as the
+  // model ID) -- even the fetch-callback's own "reply with the model ID instead" fallback text
+  // never arms that same pending state, a real dead end either way. `manualModelEntry: true` (same
+  // real pattern already used for openrouter/orcarouter/huggingface/xpiki below) routes fireworks
+  // through the already-correct manual-entry flow from the start; `null` modelsPath is kept too so
+  // the stale-keyboard defensive fetch path (a provider whose flag changed after a keyboard was
+  // already shown) also reports manualEntryRequired honestly instead of attempting a doomed fetch.
+  fireworks: {
+    ...OPENAI_COMPAT("fireworks", "Fireworks AI", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/gpt-oss-120b", "Models-list lives on a DIFFERENT host path (/v1/accounts/{id}/models) than chat completions -- flagged, manual model entry required. Default model verified live (real 200 + real chat.completion) Sept 2026 -- the previous default (kimi-k2-instruct-0905) no longer resolves against the account's live model list.", null),
+    manualModelEntry: true,
+  },
   hyperbolic: OPENAI_COMPAT("hyperbolic", "Hyperbolic", "https://api.hyperbolic.xyz/v1", "meta-llama/Llama-3.1-405B-Instruct", "OpenAI-compatible, real GET /v1/models confirmed."),
   deepinfra: OPENAI_COMPAT("deepinfra", "DeepInfra", "https://api.deepinfra.com/v1/openai", "meta-llama/Llama-3.3-70B-Instruct", "OpenAI-compatible under /v1/openai/*, real models list confirmed."),
   perplexity: OPENAI_COMPAT("perplexity", "Perplexity", "https://api.perplexity.ai", "sonar-pro", "No /models endpoint exists -- flagged. chat/completions has a stated sunset path toward an Agent API (checked Sept 2026: still live).", null),
