@@ -285,6 +285,101 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     openAICompatible: false,
     notes: "Confirmed NOT OpenAI-shaped -- v2 has its own request/response shape (response.message.content[0].text).",
   },
+  // Research pass, 2026-09-14: 9 new real, currently-operating, OpenAI-compatible providers
+  // added, each verified via that vendor's own live docs before being added (not guessed).
+  // Candidates researched but rejected: Chutes.ai (base URL is genuinely inconsistent across
+  // docs -- a generic https://llm.chutes.ai/v1 vs. per-deployment <user>-<chute>.chutes.ai
+  // subdomains, no single stable base to hardcode); Targon (no live, current documentation
+  // found confirming a real base URL/chat path); 01.AI/Yi (conflicting low-quality sources on
+  // whether the platform is still fully operating after a reported service interruption);
+  // Reka AI (no first-party base URL found -- only reachable via third-party resellers);
+  // Writer/Palmyra (real product, but its real chat endpoint is /v1/chat, not the standard
+  // /chat/completions shape this file's OPENAI_COMPAT factory assumes -- would need a bespoke
+  // non-OpenAI-compatible entry, skipped rather than mislabel it); IBM watsonx.ai (real
+  // OpenAI-compatible Model Gateway exists, but primary auth is IBM Cloud IAM -- hourly-
+  // refreshed bearer tokens obtained via a separate IAM exchange, not a static key used
+  // directly as Authorization: Bearer -- doesn't fit this catalog's simple bearer auth style
+  // without deeper design, skipped rather than misrepresent it).
+  friendli: {
+    ...OPENAI_COMPAT(
+      "friendli",
+      "Friendli AI",
+      "https://api.friendli.ai/serverless/v1",
+      "meta-llama-3.1-8b-instruct",
+      "Confirmed real via docs.friendli.ai/guides/serverless_endpoints/openai_compatibility: Friendli Serverless Endpoints are genuinely OpenAI-SDK-compatible, migrate by swapping base_url + api_key. Open marketplace catalog (Llama, GLM, and others) with no single fixed flagship. No independently-confirmed /v1/models list page found in the docs -- manual model entry, not guessed.",
+      null
+    ),
+    manualModelEntry: true,
+  },
+  siliconflow: OPENAI_COMPAT(
+    "siliconflow",
+    "SiliconFlow",
+    "https://api.siliconflow.cn/v1",
+    "deepseek-ai/DeepSeek-V3",
+    "Confirmed real via docs.siliconflow.com/en/api-reference/models/get-model-list: a real, documented GET /v1/models exists. Fully OpenAI-compatible chat/completions; model ids are vendor-namespaced (e.g. Qwen/Qwen3-8B, deepseek-ai/DeepSeek-V3), confirmed 2026-09-14."
+  ),
+  upstage: {
+    ...OPENAI_COMPAT(
+      "upstage",
+      "Upstage (Solar)",
+      "https://api.upstage.ai/v1",
+      "solar-pro4",
+      "Confirmed real via upstage.ai/blog/en/solar-pro-4 and the Upstage Console docs: chat/completions is genuinely OpenAI-compatible at api.upstage.ai/v1, model id solar-pro4 is Upstage's own current documented flagship (524K context, agentic/coding-focused). No confirmed /v1/models list doc page found -- manual model entry rather than guessing one, confirmed 2026-09-14.",
+      null
+    ),
+    manualModelEntry: true,
+  },
+  venice: OPENAI_COMPAT(
+    "venice",
+    "Venice AI",
+    "https://api.venice.ai/api/v1",
+    "venice-uncensored",
+    "Confirmed real via docs.venice.ai/api-reference/endpoint/models/list (a real, documented List Models endpoint) and docs.venice.ai/api-reference/api-spec: genuinely mirrors the OpenAI API shape at /chat/completions, Bearer auth confirmed (an alternate x402-wallet auth header also exists but Bearer is the documented primary path). Default set to Venice's own distinguishing uncensored model rather than a generic open-weight one, confirmed 2026-09-14.",
+    "/models"
+  ),
+  scaleway: OPENAI_COMPAT(
+    "scaleway",
+    "Scaleway Generative APIs",
+    "https://api.scaleway.ai/v1",
+    "llama-3.3-70b-instruct",
+    "Confirmed real via scaleway.com/en/docs/generative-apis (chat API + models API pages): explicitly documented as a drop-in OpenAI replacement, real GET /v1/models confirmed. Default upgraded from Scaleway's own smaller llama-3.1-8b-instruct default to the more capable llama-3.3-70b-instruct, also real and currently listed, confirmed 2026-09-14.",
+    "/models"
+  ),
+  lambda: OPENAI_COMPAT(
+    "lambda",
+    "Lambda AI (Inference API)",
+    "https://api.lambda.ai/v1",
+    "deepseek-r1",
+    "Confirmed real via docs.lambda.ai/public-cloud/lambda-inference-api/ and lambda.ai/inference-models/deepseek-r1: genuinely OpenAI-compatible chat/completions, real documented GET /v1/models, flat-string model ids (deepseek-r1, llama3.3-70b-instruct-fp8, ...). Confirmed 2026-09-14.",
+    "/models"
+  ),
+  nscale: OPENAI_COMPAT(
+    "nscale",
+    "Nscale Serverless Inference",
+    "https://inference.api.nscale.com/v1",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+    "Confirmed real via docs.nscale.com/docs/ai-services/models: genuinely OpenAI-compatible chat/completions across Llama/Qwen/DeepSeek/GPT-OSS/Mistral, real GET /v1/models for programmatic model discovery. Default model id confirmed live in the docs' own examples, confirmed 2026-09-14.",
+    "/models"
+  ),
+  parasail: OPENAI_COMPAT(
+    "parasail",
+    "Parasail",
+    "https://api.parasail.io/v1",
+    "parasail-deepseek-r1",
+    "Confirmed real via docs.parasail.io/parasail-docs/api-reference/chat-completions: genuinely OpenAI-compatible (official OpenAI-SDK example shown with this exact base_url and model id), real documented GET /v1/models. Confirmed 2026-09-14.",
+    "/models"
+  ),
+  poe: {
+    ...OPENAI_COMPAT(
+      "poe",
+      "Poe API",
+      "https://api.poe.com/v1",
+      "Claude-Sonnet-4.6",
+      "Confirmed real by directly fetching creator.poe.com/docs/external-applications/openai-compatible-api: official, currently-documented OpenAI-compatible chat/completions across every model/bot on Poe (OpenAI, Anthropic, Google, xAI, and community bots), Bearer auth confirmed (Authorization: Bearer $POE_API_KEY). No /v1/models list endpoint documented -- the bot catalog is enormous and partly per-account/community-created, so manual model entry is required (same posture as openrouter/orcarouter), not guessed. Default model id taken directly from the docs' own example list. Confirmed 2026-09-14.",
+      null
+    ),
+    manualModelEntry: true,
+  },
 };
 
 export function resolveProviderAlias(name: ProviderName): ProviderName {

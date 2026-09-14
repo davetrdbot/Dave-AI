@@ -131,6 +131,15 @@ export type ProviderName =
   | "tokenharbor"
   | "kiraai"
   | "xpiki"
+  | "friendli"
+  | "siliconflow"
+  | "upstage"
+  | "venice"
+  | "scaleway"
+  | "lambda"
+  | "nscale"
+  | "parasail"
+  | "poe"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {
@@ -141,11 +150,43 @@ export class ProviderError extends Error {
   constructor(
     public readonly provider: ProviderName,
     message: string,
-    public readonly cause?: unknown
+    public readonly cause?: unknown,
+    /**
+     * Real gap fixed (cross-referenced against a sibling investigation into "gets rate limited
+     * quickly"): a real HTTP 429 response's `Retry-After` header (seconds, or an HTTP-date --
+     * both real, documented forms) was being read nowhere in this codebase -- confirmed via a
+     * full-repo search for "retry-after"/"retryAfter", zero matches outside this fix. Every 429
+     * was treated identically to a generic failure: the key was marked unhealthy and the NEXT
+     * key/provider was tried immediately, with nothing recording how long the provider itself
+     * said to wait before trying THIS key again. That real signal is captured here (undefined
+     * when the provider didn't send one, or on a non-429 error) so provider-keys.ts can honor it
+     * instead of re-trying an already-known-rate-limited key on the very next message.
+     */
+    public readonly retryAfterMs?: number
   ) {
     super(`[${provider}] ${message}`);
     this.name = "ProviderError";
   }
+}
+
+/** Real, standard parse of a real HTTP `Retry-After` header -- either form providers actually
+ *  send: a plain integer number of seconds, or an HTTP-date. Returns undefined for a missing or
+ *  unparseable header rather than guessing. */
+function parseRetryAfterMs(res: Response): number | undefined {
+  const header = res.headers.get("retry-after");
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const dateMs = Date.parse(header);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
+}
+
+/** Shared by every provider class below: builds a real `ProviderError` from a non-ok response,
+ *  carrying the real `Retry-After` value (undefined when absent) so callers can honor it. */
+async function providerErrorFromResponse(provider: ProviderName, res: Response): Promise<ProviderError> {
+  const retryAfterMs = res.status === 429 ? parseRetryAfterMs(res) : undefined;
+  return new ProviderError(provider, `HTTP ${res.status}: ${await res.text()}`, undefined, retryAfterMs);
 }
 
 /**
@@ -264,7 +305,7 @@ export class AirLLMProvider implements Provider {
       throw new ProviderError("airllm", `request failed/timed out after ${timeoutMs}ms`, err);
     }
     if (!res.ok) {
-      throw new ProviderError("airllm", `HTTP ${res.status}: ${await res.text()}`);
+      throw await providerErrorFromResponse("airllm", res);
     }
     const json = (await res.json()) as { text: string };
     return { text: json.text, provider: "airllm", latencyMs: Date.now() - start };
@@ -315,7 +356,7 @@ export class DeepSeekProvider implements Provider {
       throw new ProviderError("deepseek", `request failed/timed out after ${timeoutMs}ms`, err);
     }
     if (!res.ok) {
-      throw new ProviderError("deepseek", `HTTP ${res.status}: ${await res.text()}`);
+      throw await providerErrorFromResponse("deepseek", res);
     }
     const json = (await res.json()) as {
       choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
@@ -419,7 +460,7 @@ export class ClaudeProvider implements Provider {
       throw new ProviderError("claude", `request failed/timed out after ${timeoutMs}ms`, err);
     }
     if (!res.ok) {
-      throw new ProviderError("claude", `HTTP ${res.status}: ${await res.text()}`);
+      throw await providerErrorFromResponse("claude", res);
     }
     const json = (await res.json()) as {
       content: { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[];
@@ -491,7 +532,7 @@ export class OpenAICompatibleProvider implements Provider {
       throw new ProviderError(this.name, `request failed/timed out after ${timeoutMs}ms`, err);
     }
     if (!res.ok) {
-      throw new ProviderError(this.name, `HTTP ${res.status}: ${await res.text()}`);
+      throw await providerErrorFromResponse(this.name, res);
     }
     const json = (await res.json()) as {
       choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
@@ -558,7 +599,7 @@ export class CohereProvider implements Provider {
       throw new ProviderError("cohere", `request failed/timed out after ${timeoutMs}ms`, err);
     }
     if (!res.ok) {
-      throw new ProviderError("cohere", `HTTP ${res.status}: ${await res.text()}`);
+      throw await providerErrorFromResponse("cohere", res);
     }
     const json = (await res.json()) as {
       message: { content: { text: string }[]; tool_calls?: { id: string; function: { name: string; arguments: string } }[] };
@@ -752,7 +793,7 @@ export class BedrockProvider implements Provider {
       throw new ProviderError("bedrock", `request failed/timed out after ${timeoutMs}ms`, err);
     }
     if (!res.ok) {
-      throw new ProviderError("bedrock", `HTTP ${res.status}: ${await res.text()}`);
+      throw await providerErrorFromResponse("bedrock", res);
     }
     const json = (await res.json()) as {
       output: { message: { content: { text?: string; toolUse?: { toolUseId: string; name: string; input: Record<string, unknown> } }[] } };
