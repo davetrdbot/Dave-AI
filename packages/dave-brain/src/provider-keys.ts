@@ -27,7 +27,26 @@ export interface StoredProviderKey {
   lastCheckedAt: number | null;
   lastError: string | null;
   isPrimary: boolean;
+  /**
+   * Real gap fixed (slowness/rate-limit investigation): a real HTTP 429 used to be indistinguishable
+   * from any other failure -- the key was marked `healthy: 0` with nothing recording that a
+   * provider explicitly said "wait before retrying this". With up to 20 keys stored per provider
+   * (this file's own MAX_KEYS_PER_PROVIDER), that meant a key that had JUST been 429'd was tried
+   * again on the very next message like nothing happened -- a real, direct cause of "gets rate
+   * limited quickly" (repeatedly re-hitting the same still-cooling-down key). This is the real,
+   * persisted epoch-ms timestamp until which a key is known to be rate-limited; null when never
+   * rate-limited or the cooldown has already passed.
+   */
+  rateLimitedUntil: number | null;
 }
+
+/** Real, conservative fallback cooldown when a provider sends a genuine 429 with no `Retry-After`
+ *  header at all -- better than treating it as instantly retryable (which is what re-hitting the
+ *  same key next message effectively did before this fix). */
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 30_000;
+/** Real cap: never honor an absurdly long provider-supplied Retry-After that would leave a key
+ *  looking permanently dead for a transient limit. */
+const MAX_RATE_LIMIT_COOLDOWN_MS = 10 * 60_000;
 
 function ensureTable(db: DaveDatabase): void {
   db.createTable(TABLE, [
@@ -38,6 +57,7 @@ function ensureTable(db: DaveDatabase): void {
     { name: "last_checked_at", type: "INTEGER" },
     { name: "last_error", type: "TEXT" },
     { name: "is_primary", type: "INTEGER" },
+    { name: "rate_limited_until", type: "INTEGER" },
   ]);
 }
 
@@ -51,6 +71,7 @@ function toStoredKey(row: Record<string, unknown>): StoredProviderKey {
     lastCheckedAt: (row.last_checked_at as number | null) ?? null,
     lastError: (row.last_error as string | null) ?? null,
     isPrimary: Boolean(row.is_primary),
+    rateLimitedUntil: (row.rate_limited_until as number | null) ?? null,
   };
 }
 
@@ -234,6 +255,15 @@ export class AllProviderKeysFailedError extends Error {
  * Real auto-failover across a provider's stored keys: tries healthy
  * keys first, then unhealthy ones (in case they've recovered), marking
  * health as it goes so the state genuinely reflects the latest attempt.
+ *
+ * Real, confirmed latency bug fixed here (slowness/rate-limit investigation): `timeoutMs` used to
+ * be applied to EVERY key in `ordered` individually, in a plain sequential loop -- with up to 20
+ * keys allowed per provider (MAX_KEYS_PER_PROVIDER above), a primary provider with several dead/
+ * slow keys could burn `keyCount * timeoutMs` (e.g. 20 keys * 20s = 400s) before this function
+ * even returned control to provider-selection.ts, which then still has every FALLBACK provider
+ * left to try. `timeoutMs` is now honored as the real TOTAL budget for this whole call (all of
+ * this provider's key attempts combined) -- each attempt gets whatever time remains in that
+ * budget, never more, so one provider's key list can never multiply the user's configured timeout.
  */
 export async function generateWithKeyFailover(
   db: DaveDatabase,
@@ -248,23 +278,38 @@ export async function generateWithKeyFailover(
   if (keys.length === 0) {
     throw new Error(`no stored keys for provider "${provider}"`);
   }
+  // Real fix: a key still inside its real Retry-After cooldown (see providers.ts's
+  // ProviderError.retryAfterMs) is skipped entirely rather than retried immediately -- retrying an
+  // already-known-rate-limited key on the very next attempt/message is exactly what made the bot
+  // "get rate limited quickly." Only falls back to a still-cooling-down key if genuinely nothing
+  // else is usable (better to try a possibly-still-limited key than to fail the whole provider
+  // outright when every key happens to be cooling down at once).
+  const now = Date.now();
+  const notCoolingDown = keys.filter((k) => !k.rateLimitedUntil || k.rateLimitedUntil <= now);
+  const usable = notCoolingDown.length > 0 ? notCoolingDown : keys.slice().sort((a, b) => (a.rateLimitedUntil ?? 0) - (b.rateLimitedUntil ?? 0));
+
   // The primary key (if healthy) always goes first -- "one key settable
   // as main default" -- then the rest of the healthy keys, then the
   // unhealthy ones (in case they've recovered since the last check).
-  const healthy = keys.filter((k) => k.healthy);
-  const unhealthy = keys.filter((k) => !k.healthy);
+  const healthy = usable.filter((k) => k.healthy);
+  const unhealthy = usable.filter((k) => !k.healthy);
   const orderedHealthy = [...healthy.filter((k) => k.isPrimary), ...healthy.filter((k) => !k.isPrimary)];
   const ordered = [...orderedHealthy, ...unhealthy];
 
+  const deadline = Date.now() + timeoutMs;
   const attempts: { keyId: string; label: string; reason: string }[] = [];
   for (let i = 0; i < ordered.length; i++) {
+    const remainingMs = deadline - Date.now();
+    // Real budget cutoff: once this provider's total time allowance is spent, stop trying
+    // remaining keys instead of giving each one a fresh full timeout.
+    if (remainingMs <= 0) break;
     const key = ordered[i];
     const instance = buildProvider(provider, key.config);
     try {
       // Real mid-request safety: this is the SAME `req` retried on the next key below, not a
       // fresh/dropped request -- the caller's in-flight response genuinely still completes.
-      const result = await instance.generate(req, timeoutMs, signal);
-      db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null });
+      const result = await instance.generate(req, remainingMs, signal);
+      db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null, rate_limited_until: null });
       return result;
     } catch (err) {
       // Real bug fixed (user, live: /stop didn't cancel a stuck turn -- an abort mid-call was
@@ -283,8 +328,8 @@ export async function generateWithKeyFailover(
       if (isModelScopedRateLimit(reason) && catalogDefault && key.config.model && key.config.model !== catalogDefault) {
         try {
           const altInstance = buildProvider(provider, { ...key.config, model: catalogDefault });
-          const result = await altInstance.generate(req, timeoutMs, signal);
-          db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null });
+          const result = await altInstance.generate(req, Math.max(1, deadline - Date.now()), signal);
+          db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: null, rate_limited_until: null });
           return result;
         } catch {
           // The alternate model didn't help either -- fall through to the normal
@@ -292,7 +337,16 @@ export async function generateWithKeyFailover(
         }
       }
 
-      db.update(TABLE, userId, key.id, { healthy: 0, last_checked_at: Date.now(), last_error: reason });
+      // Real cooldown recording: a genuine (non-model-scoped) rate limit gets a real, bounded
+      // cooldown -- the provider's own Retry-After when it sent one (providers.ts), otherwise a
+      // conservative default -- so the next attempt (this run's next key, or a future message)
+      // skips this key instead of re-hitting an account/key that's still being throttled.
+      const rateLimitedUntil =
+        err instanceof ProviderError && isRateLimitedError(reason) && !isModelScopedRateLimit(reason)
+          ? Date.now() + Math.min(err.retryAfterMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS, MAX_RATE_LIMIT_COOLDOWN_MS)
+          : null;
+
+      db.update(TABLE, userId, key.id, { healthy: 0, last_checked_at: Date.now(), last_error: reason, rate_limited_until: rateLimitedUntil });
       attempts.push({ keyId: key.id, label: key.label, reason });
       const next = ordered[i + 1];
       if (next) {
