@@ -50,7 +50,19 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
     name: "model-config" as ProviderName,
     async generate(req: CompletionRequest, defaultTimeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
       const config = getModelConfig(userId);
+      // Real, live bug fixed (user: trade log showed the autonomous loop dying entirely, cycle
+      // after cycle, for over an hour -- root cause was a real, honest finding: the account's
+      // fallback chain is empty by design until the user explicitly configures one (see
+      // provider-router.ts's DEFAULT_CONFIG), so ANY single primary-provider failure (a real 404
+      // bad model, a real 402 billing issue, a real 429 rate limit -- all genuinely different,
+      // unrelated causes seen live) killed the whole cycle outright. airllm is self-hosted and
+      // needs zero stored key/config (generateWithKeyFailover already special-cases it, see the
+      // airllm fix above) -- it costs nothing to guarantee it as a final, last-resort attempt so a
+      // real trading cycle never goes completely dead just because the user's one chosen provider
+      // is temporarily down, without silently overriding what the user actually configured (it's
+      // appended LAST, after every provider they genuinely chose).
       const order = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
+      if (!order.includes("airllm" as ProviderName)) order.push("airllm" as ProviderName);
       const attempts: { provider: ProviderName; reason: string }[] = [];
       for (let p = 0; p < order.length; p++) {
         const provider = order[p];
