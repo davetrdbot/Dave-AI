@@ -214,7 +214,14 @@ try {
   assert.equal(pushResult.message_id, 42);
   assert.equal(capturedPush.chat_id, 847213);
   assert.equal(capturedPush.text, "Heads up: XAUUSD just hit TP.");
-  assert.ok(registryWithPush.has("tg_thinking"), "TELEGRAM_TOOLS must also register once a real telegram client is supplied");
+  assert.ok(registryWithPush.has("send_telegram"), "TELEGRAM_TOOLS must also register once a real telegram client is supplied");
+  // Real bug fixed (user, live, AGAIN: "the tool called it's still send as message"): tg_thinking/
+  // tg_thinking_update/tg_finalize used to be agent-callable tools here, creating a SECOND,
+  // uncoordinated ThinkingIndicator alongside the automatic per-turn one every real chat turn
+  // already gets from withThinkingIndicator -- any time the model called tg_thinking, that second
+  // indicator had no existing message to edit and genuinely sent a brand-new one. Removed for
+  // good; the automatic indicator already covers 100% of the real behavior these provided.
+  assert.ok(!registryWithPush.has("tg_thinking"), "tg_thinking must genuinely be gone -- it duplicated the automatic per-turn indicator and could send a second, orphaned message");
   assert.ok(registryWithPush.has("send_trade_opened_notification"), "NOTIFICATION_TOOLS must also register");
   assert.equal(registryWithPush.list().length, registry.list().length + PUSH_TOOLS.length + TELEGRAM_TOOLS.length + NOTIFICATION_TOOLS.length);
   await new Promise<void>((resolve) => tgServer.close(() => resolve()));

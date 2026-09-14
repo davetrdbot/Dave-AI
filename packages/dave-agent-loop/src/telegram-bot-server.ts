@@ -483,7 +483,7 @@ async function buildInboundContent(
 const registryCache = new Map<string, ToolRegistry>();
 
 export function getOrBuildRegistry(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): ToolRegistry {
-  // Keyed by chat too -- push_message_to_user/tg_thinking etc. bind to a
+  // Keyed by chat too -- push_message_to_user/send_telegram etc. bind to a
   // specific chatId, so a registry built for one chat can't be reused for
   // another, even though both share the same owner account/tools/db.
   const key = `${deps.ownerUserId}:${chatId}`;
