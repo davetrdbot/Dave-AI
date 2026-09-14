@@ -40,6 +40,15 @@ const sentTelegramCalls: Array<{ method: string; body: unknown }> = [];
 const providerModelsResponse: { models: string[] } = { models: ["gpt-real-1", "gpt-real-2", "gpt-real-3"] };
 const openaiEntry = listProviderCatalog().find((e) => e.id === "openai")!;
 const openaiModelsUrl = `${openaiEntry.baseUrl}${openaiEntry.modelsPath}`;
+// Real Fireworks models -- confirmed live 2026-09-14 against the real, public, non-account-scoped
+// GET https://api.fireworks.ai/inference/v1/models (see provider-catalog.ts's fireworks entry for
+// the full curl evidence: real distinct 401s for missing vs. invalid key, vs. clean 404s on
+// neighboring wrong paths -- proving that exact path is real and live, not a guess).
+const fireworksModelsResponse: { models: string[] } = {
+  models: ["accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/deepseek-v3p1", "accounts/fireworks/models/kimi-k2-instruct-0905"],
+};
+const fireworksEntry = listProviderCatalog().find((e) => e.id === "fireworks")!;
+const fireworksModelsUrl = `${fireworksEntry.baseUrl}${fireworksEntry.modelsPath}`;
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: string, init?: RequestInit) => {
@@ -54,6 +63,9 @@ globalThis.fetch = (async (url: string, init?: RequestInit) => {
   }
   if (urlStr === openaiModelsUrl) {
     return new Response(JSON.stringify({ data: providerModelsResponse.models.map((id) => ({ id })) }), { status: 200 });
+  }
+  if (urlStr === fireworksModelsUrl) {
+    return new Response(JSON.stringify({ data: fireworksModelsResponse.models.map((id) => ({ id })) }), { status: 200 });
   }
   return new Response("not found", { status: 404 });
 }) as typeof fetch;
@@ -141,21 +153,26 @@ try {
   const notConsumed = await tryHandlePendingModelEntry(deps, CHAT_ID, "just chatting with Dave");
   assert.equal(notConsumed, false);
 
-  console.log("\n[10] Real, live bug fixed (user: \"in fireworks whether it ask for model id I can't set\") -- fireworks now genuinely goes through the same real manual-entry flow as openrouter, not the doomed 'Fetch live models' button its wrong models-endpoint path always failed against...\n");
+  console.log("\n[10] Correction (user: \"the fireworks to fetch model isn't working it's telling me manual id I even prefer fetch model than manual entry\") -- fireworks now genuinely gets a REAL live fetch-and-pick, not a forced manual-entry prompt, using the real public /v1/models endpoint confirmed live against the actual Fireworks API...\n");
   addProviderKey(db, OWNER, "fireworks", "fw key", { apiKey: "fw-fake-key" });
   await dispatchCallback(deps, { id: "cb6", data: "setprimaryprovider:fireworks", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
   sentTelegramCalls.length = 0;
   await dispatchCallback(deps, { id: "cb6b", data: "modelfor:fireworks", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
-  const fwManualBody = sentTelegramCalls[0].body as { text: string; reply_markup?: unknown };
-  console.log(`    "${fwManualBody.text.split("\n")[2]}"`);
-  assert.match(fwManualBody.text, /reply with the exact model ID/, "fireworks must genuinely be prompted for manual entry, not shown a fetch button that was always going to fail");
-  assert.ok(!fwManualBody.reply_markup, "fireworks must not get a fetch button -- its real models list lives on an unreachable path");
+  const fwModelForBody = sentTelegramCalls[0].body as { text: string; reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } };
+  const fwFetchBtn = fwModelForBody.reply_markup.inline_keyboard.flat().find((b) => b.callback_data === "fetchmodels:fireworks")!;
+  assert.ok(fwFetchBtn, "fireworks must offer a real fetch-live-models button now that its real /v1/models endpoint is confirmed live and reachable");
 
-  const fwConsumed = await tryHandlePendingModelEntry(deps, CHAT_ID, "accounts/fireworks/models/deepseek-v3p1");
-  assert.equal(fwConsumed, true, "the user's reply must genuinely be captured as the real model ID");
+  sentTelegramCalls.length = 0;
+  await dispatchCallback(deps, { id: "cb6c", data: "fetchmodels:fireworks", message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
+  const fwPickerBody = sentTelegramCalls[0].body as { text: string; reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } };
+  const fwModelButtons = fwPickerBody.reply_markup.inline_keyboard.flat();
+  console.log(`    live-fetched fireworks models shown as buttons: ${fwModelButtons.map((b) => b.text).join(", ")}`);
+  assert.deepEqual(fwModelButtons.map((b) => b.text), fireworksModelsResponse.models, "the picker must show the REAL models the real, confirmed-live fireworks /v1/models endpoint (mocked here at its exact real URL) returned -- no manual typing required");
+
+  await dispatchCallback(deps, { id: "cb6d", data: fwModelButtons[1].callback_data, message: { message_id: 1, chat: { id: CHAT_ID } } } as never);
   const fwModel = listProviderKeys(db, OWNER, "fireworks")[0].config.model;
   console.log(`    stored fireworks model -> "${fwModel}"`);
-  assert.equal(fwModel, "accounts/fireworks/models/deepseek-v3p1", "the real model ID the user typed must genuinely be persisted on the stored key");
+  assert.equal(fwModel, fireworksModelsResponse.models[1], "the picked model must be persisted on the real stored key, via real fetch-and-select, not manual entry");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

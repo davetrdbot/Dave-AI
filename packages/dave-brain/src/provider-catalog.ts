@@ -125,22 +125,24 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     aliasOf: "nvidia-nim",
     notes: "Real: Nvidia acquired Lepton AI and folded it into NVIDIA DGX Cloud Lepton -- not a separate API anymore.",
   },
-  // Real, live bug fixed (user: "in fireworks whether it ask for model id I can't set"). The
-  // models-list genuinely lives on a DIFFERENT host path (/v1/accounts/{id}/models, needing an
-  // account id this codebase never collects), not the standard /v1/models the auto-fetch logic
-  // builds -- so "Fetch live models" always failed. Worse than just a failed fetch: manualModelEntry
-  // was never actually set, so command-router.ts's /models handler never took the real manual-entry
-  // branch (the one that calls setPendingManualModelEntry so a reply is genuinely captured as the
-  // model ID) -- even the fetch-callback's own "reply with the model ID instead" fallback text
-  // never arms that same pending state, a real dead end either way. `manualModelEntry: true` (same
-  // real pattern already used for openrouter/orcarouter/huggingface/xpiki below) routes fireworks
-  // through the already-correct manual-entry flow from the start; `null` modelsPath is kept too so
-  // the stale-keyboard defensive fetch path (a provider whose flag changed after a keyboard was
-  // already shown) also reports manualEntryRequired honestly instead of attempting a doomed fetch.
-  fireworks: {
-    ...OPENAI_COMPAT("fireworks", "Fireworks AI", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/gpt-oss-120b", "Models-list lives on a DIFFERENT host path (/v1/accounts/{id}/models) than chat completions -- flagged, manual model entry required. Default model verified live (real 200 + real chat.completion) Sept 2026 -- the previous default (kimi-k2-instruct-0905) no longer resolves against the account's live model list.", null),
-    manualModelEntry: true,
-  },
+  // Correction (user: "the fireworks to fetch model isn't working it's telling me manual id I
+  // even prefer fetch model than manual entry"). The prior fix (manualModelEntry: true) assumed
+  // the ONLY models-list surface was Fireworks' account-scoped Management API
+  // (/v1/accounts/{id}/models, documented at docs.fireworks.ai/api-reference/list-models --
+  // genuinely requires an account id this codebase doesn't collect). That's real, but it isn't
+  // the whole story: Fireworks' separate OpenAI-compatible INFERENCE API
+  // (https://api.fireworks.ai/inference/v1, the same host/base this entry already calls for chat
+  // completions) exposes its own plain, non-account-scoped `GET /v1/models` -- empirically
+  // confirmed live (2026-09-14): `curl https://api.fireworks.ai/inference/v1/models` returns a
+  // real 401 "You must provide an API key" (not a 404), a bogus bearer token returns a distinct
+  // real 401 "The API key you provided is invalid" (proving the backend actually validates the
+  // key against this exact path), and neighboring wrong paths (/v1/modelsxyz, /v1/models/foo)
+  // both cleanly 404 with "Path not found" -- so /v1/models is a real, live, working route, not a
+  // catch-all. This matches the standard OpenAI-compatible convention every other
+  // OPENAI_COMPAT() entry here already relies on (client.models.list() -> GET {baseUrl}/models),
+  // so auto-fetch works with zero extra config -- manualModelEntry is now false again and
+  // modelsPath restored to the generic default.
+  fireworks: OPENAI_COMPAT("fireworks", "Fireworks AI", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/gpt-oss-120b", "OpenAI-compatible inference API. Real, live GET /v1/models confirmed 2026-09-14 (distinct 401s for missing vs. invalid key, vs. clean 404s on neighboring wrong paths) -- auto-fetch works; the separate account-scoped Management API path (/v1/accounts/{id}/models) is a different, unrelated surface this doesn't need. Default model verified live (real 200 + real chat.completion) Sept 2026 -- the previous default (kimi-k2-instruct-0905) no longer resolves against the account's live model list."),
   hyperbolic: OPENAI_COMPAT("hyperbolic", "Hyperbolic", "https://api.hyperbolic.xyz/v1", "meta-llama/Llama-3.1-405B-Instruct", "OpenAI-compatible, real GET /v1/models confirmed."),
   deepinfra: OPENAI_COMPAT("deepinfra", "DeepInfra", "https://api.deepinfra.com/v1/openai", "meta-llama/Llama-3.3-70B-Instruct", "OpenAI-compatible under /v1/openai/*, real models list confirmed."),
   perplexity: OPENAI_COMPAT("perplexity", "Perplexity", "https://api.perplexity.ai", "sonar-pro", "No /models endpoint exists -- flagged. chat/completions has a stated sunset path toward an Agent API (checked Sept 2026: still live).", null),
@@ -375,7 +377,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
       "Poe API",
       "https://api.poe.com/v1",
       "Claude-Sonnet-4.6",
-      "Confirmed real by directly fetching creator.poe.com/docs/external-applications/openai-compatible-api: official, currently-documented OpenAI-compatible chat/completions across every model/bot on Poe (OpenAI, Anthropic, Google, xAI, and community bots), Bearer auth confirmed (Authorization: Bearer $POE_API_KEY). No /v1/models list endpoint documented -- the bot catalog is enormous and partly per-account/community-created, so manual model entry is required (same posture as openrouter/orcarouter), not guessed. Default model id taken directly from the docs' own example list. Confirmed 2026-09-14.",
+      "Re-verified via a full crawl of creator.poe.com/docs (openai-compatible-api, external-application-guide, api-reference) PLUS a real live unauthenticated curl against https://api.poe.com/v1/chat/completions, which returned a real HTTP 400 {error:{type:\"authentication_error\",code:\"missing_api_key\"}} -- proves the base URL/chat path genuinely resolve, not just docs-guessed. Base URL, /chat/completions path, and Bearer auth (Authorization: Bearer $POE_API_KEY) all confirmed byte-for-byte against the docs' own curl example, including the exact default model id \"Claude-Sonnet-4.6\". Real tool-calling IS genuinely supported through this endpoint (docs' own compatibility table: tools/tool_choice/parallel_tool_calls all \"Fully Supported\") -- NOT chat-only, safe for Dave's tool-heavy agent loop. One real, confirmed caveat that matters for tool-calling reliability: the `strict` param is ignored server-side, so a Poe tool_call's JSON arguments are NOT guaranteed to conform to the supplied JSON Schema (may have missing/extra fields) -- callers of this provider should treat parsed tool-call arguments defensively. Other confirmed-real gaps vs vanilla OpenAI: `response_format`/structured outputs (json_schema) is ignored, not honored; audio input is stripped/ignored; only PUBLIC bots are reachable (private bots return an error); image/video/audio bots should be called with stream=false. Rate limit: 500 req/min/user, real Retry-After-compatible 429s (already handled generically by providerErrorFromResponse). No /v1/models list endpoint documented -- the bot catalog is enormous and partly per-account/community-created, so manual model entry is required (same posture as openrouter/orcarouter), not guessed. Confirmed 2026-09-14.",
       null
     ),
     manualModelEntry: true,
