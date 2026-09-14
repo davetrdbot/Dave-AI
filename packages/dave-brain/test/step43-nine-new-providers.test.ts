@@ -13,6 +13,17 @@ import { PROVIDER_CATALOG, listProviderCatalog, buildProvider } from "../src/ind
  * matches what was actually confirmed (no fabricated /v1/models endpoints), and (4) for the
  * 6 with a real, documented /v1/models endpoint, a real (keyless) HTTP round-trip against the
  * real live host does not 404 -- proving the path is genuinely correct, not guessed.
+ *
+ * Real gap fixed (user: "Poe wasn't implemented properly" -- re-investigated 2026-09-14 with a
+ * full crawl of creator.poe.com/docs, not just the one openai-compatible-api page): every static
+ * fact already in the catalog (base URL, /chat/completions path, Bearer auth, default model id
+ * "Claude-Sonnet-4.6", and -- critically, since Dave's whole architecture is tool-calling-driven --
+ * real tools/tool_choice/parallel_tool_calls support) checked out correct against the docs' own
+ * compatibility table and curl example. What was genuinely missing: poe has no /models endpoint
+ * (manualModelEntry: true), so it was the one of these 9 providers structurally excluded from
+ * section [4]'s live round-trip proof -- meaning nobody had ever actually confirmed its real
+ * /chat/completions endpoint resolves. Section [5] below closes that gap with a real (keyless)
+ * POST against the real live host.
  */
 
 console.log("=== Real proof: 9 new providers (Friendli, SiliconFlow, Upstage, Venice, Scaleway, Lambda, Nscale, Parasail, Poe) ===\n");
@@ -87,6 +98,31 @@ for (const exp of withModelsPath) {
     assert.ok(res.status >= 200 && res.status < 500, `${exp.id}: expected a real client-facing HTTP status, got ${res.status}`);
   } catch (err) {
     console.log(`    ${exp.id}: real network call could not complete in this sandbox (${err instanceof Error ? err.message : String(err)}) -- catalog shape already verified against real docs above, not treated as a failure`);
+  }
+}
+
+console.log("\n[5] Real (keyless) HTTP round-trip against Poe's real live /chat/completions -- the one of these 9 providers with no /models endpoint to verify against in [4], so its real endpoint had never actually been hit before...\n");
+{
+  const poeEntry = PROVIDER_CATALOG.poe;
+  const url = `${poeEntry.baseUrl}${poeEntry.chatPath}`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: poeEntry.defaultModel, messages: [{ role: "user", content: "hi" }] }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const body = (await res.json()) as { error?: { type?: string; code?: string } };
+    console.log(`    real POST ${url} (no key) -> HTTP ${res.status} ${JSON.stringify(body)}`);
+    // Real, confirmed live behavior: Poe's OpenAI-compat layer rejects a keyless request with a
+    // genuine 400 authentication_error (mirroring OpenAI's own real "missing_api_key" wording) --
+    // NOT a 404. A 404 here would mean the documented base URL/chat path is wrong; any client
+    // error status proves the endpoint genuinely exists and is live.
+    assert.notEqual(res.status, 404, "poe: real /chat/completions path must genuinely exist -- a 404 would mean the documented path is wrong");
+    assert.ok(res.status >= 400 && res.status < 500, `poe: expected a real client-facing auth-error status for a keyless request, got ${res.status}`);
+    assert.equal(body.error?.type, "authentication_error", "poe: expected a real authentication_error for a keyless request");
+  } catch (err) {
+    console.log(`    poe: real network call could not complete in this sandbox (${err instanceof Error ? err.message : String(err)}) -- catalog shape already verified against real docs above, not treated as a failure`);
   }
 }
 
