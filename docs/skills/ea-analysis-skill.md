@@ -33,6 +33,10 @@ not a bug to paper over.
   right now, and whether that test is a clean rejection (wicked in,
   closed back out) or a real break-through — distinct from `tests`/
   `mitigation_pct` above, which only ever answer "has this been touched."
+  Also returns `resistance`/`support`: classic horizontal S/R levels
+  (real swing-level clusters with 2+ touches), distinct from the
+  SMC-style supply/demand zones above, plus `nearest_resistance`/
+  `nearest_support`.
 - **get_liquidity** — BSL/SSL levels, equal highs/lows, real sweep
   detection, liquidity voids. Where stops are likely resting.
 - **get_order_blocks** — bullish/bearish order blocks, mitigated status,
@@ -44,17 +48,18 @@ not a bug to paper over.
 
 ## Trend & momentum
 
-- **get_trend** — MA/EMA alignment, golden/death cross, bias score. Also
-  returns `smma6`/`smma20`/`smma100` (real smoothed moving averages,
-  distinct from the plain SMA/EMA above) with the same
-  `price_vs_smma*`/`smma_alignment` shape as the regular MAs.
+- **get_trend** — real `bias`/`score` are now SMMA(6,20,100)-driven (the
+  trader's own trend system, #811), not the SMA/EMA stack. Also returns
+  `smma6`/`smma20`/`smma100` with `price_vs_smma*`/`smma_alignment`, plus
+  the SMA20/50/200 and EMA9/21 fields (golden/death cross included) as
+  supplementary context only — they no longer drive bias/score.
 - **get_momentum** — RSI/MACD/Stochastic/CCI/Williams %R blended into one
   bull/bear read.
 - **get_volatility** — ATR, Bollinger Bands, Keltner Channel, expansion/
   contraction, volatility regime (real fix: EA now waits for MT5 to
   sync history on a fresh symbol instead of failing immediately).
-- **get_ichimoku** — full cloud (tenkan/kijun/senkou A+B/chikou), TK
-  cross, signal score.
+- **get_ichimoku** — full cloud (tenkan/kijun/senkou A+B/chikou), signal
+  score (max 5, no `tk_cross` — removed per the trader, #811).
 - **get_regime** — is this symbol trending, ranging, or transitional
   right now, plus a suggested trading style for that regime.
 - **get_divergence** — real RSI/MACD/Stochastic divergence detection,
