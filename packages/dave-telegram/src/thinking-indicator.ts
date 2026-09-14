@@ -87,6 +87,27 @@ export class ThinkingIndicator {
   private progressMessageId: number | undefined;
   private lastEditAt = 0;
   private static readonly EDIT_THROTTLE_MS = 1200;
+  // Real race fixed (user, live: "Dave: 💹 get_trade_history 📡 get_live_state" appeared as two
+  // separate messages instead of one message editing in place). Every real caller invokes
+  // `update()` fire-and-forget (`void indicator.update(...)`, once per tool-call step) -- so when
+  // two tool calls finish close together, a second `update()` could enter
+  // `updateGuaranteedProgressMessage()` before the first call's `sendMessage` had resolved and set
+  // `progressMessageId`. Both saw it as `undefined` (a non-atomic check-then-set), so both sent a
+  // brand-new message. Fixed by synchronously claiming this slot with an in-flight promise BEFORE
+  // the first `await` -- a concurrent call sees the slot already claimed and awaits the SAME
+  // promise instead of racing the `undefined` check.
+  private sendingFirstMessage: Promise<void> | undefined;
+  // Real race fixed, narrower window than the one above: `sendingFirstMessage` only gets set
+  // partway through `update()` (after its own `await sendRichMessageDraft(...)` has already
+  // resolved). Since every real caller invokes `update()` fire-and-forget and never awaits it,
+  // `finalize()` can genuinely run while an `update()` call hasn't even reached that point yet --
+  // `sendingFirstMessage` would still read `undefined`, finalize() would see no progress message
+  // to delete, and the still-in-flight update() would go on to create one moments later with
+  // nothing left to ever clean it up. Every `update()` call registers its own whole-call promise
+  // here synchronously (before any `await` inside it can run), and removes itself when done;
+  // `finalize()` awaits every promise still in this set before deciding whether there's a real
+  // progress message to delete, closing the window completely.
+  private readonly pendingUpdates = new Set<Promise<void>>();
 
   constructor(
     private readonly client: TelegramClient,
@@ -129,9 +150,18 @@ export class ThinkingIndicator {
    * same swallow-and-continue pattern start() already uses: a failed draft update is cosmetic
    * and must never take down the real task.
    */
-  async update(action: ActionType, text: string): Promise<void> {
+  update(action: ActionType, text: string): Promise<void> {
     const rendered = iconize(action, text);
     this.updates.push({ action, text });
+    // Registered synchronously, before any `await` runs -- see the class-level comment on
+    // `pendingUpdates` for why this has to happen here rather than inside the async body below.
+    const task = this.doUpdate(rendered);
+    this.pendingUpdates.add(task);
+    void task.finally(() => this.pendingUpdates.delete(task));
+    return task;
+  }
+
+  private async doUpdate(rendered: string): Promise<void> {
     await this.client
       .sendRichMessageDraft({
         chat_id: this.chatId,
@@ -146,13 +176,23 @@ export class ThinkingIndicator {
    *  must never block the real task, same as the draft call above. */
   private async updateGuaranteedProgressMessage(rendered: string): Promise<void> {
     if (this.progressMessageId === undefined) {
-      try {
-        const sent = await this.client.sendMessage({ chat_id: this.chatId, text: rendered });
-        this.progressMessageId = sent.message_id;
-        this.lastEditAt = Date.now();
-      } catch {
-        // best-effort -- the chat action + draft above are still live even if this fails
+      if (this.sendingFirstMessage === undefined) {
+        // Synchronously claim the slot -- everything up to and including this assignment runs
+        // with no `await` in between, so a concurrent call arriving on the same microtask sees
+        // `sendingFirstMessage` already set and takes the branch below instead of racing in here.
+        this.sendingFirstMessage = (async () => {
+          try {
+            const sent = await this.client.sendMessage({ chat_id: this.chatId, text: rendered });
+            this.progressMessageId = sent.message_id;
+            this.lastEditAt = Date.now();
+          } catch {
+            // best-effort -- the chat action + draft above are still live even if this fails
+          }
+        })();
       }
+      // Either we just started the first send above, or another concurrent call already did --
+      // either way, wait for that SAME in-flight send rather than starting a second one.
+      await this.sendingFirstMessage;
       return;
     }
     const now = Date.now();
@@ -198,6 +238,14 @@ export class ThinkingIndicator {
    */
   async finalize(finalText: string): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    // Same race, different window: a fire-and-forget update() can still be mid-flight (its
+    // sendMessage not yet resolved) when finalize() runs, since real callers never await
+    // update() before returning. Without waiting here, finalize() would see progressMessageId
+    // still undefined, skip the delete, and the in-flight send would set it moments later --
+    // orphaning that message forever with nothing left to clean it up. Waiting on every
+    // still-outstanding update() call (registered synchronously in `pendingUpdates`, so this
+    // catches the call even if it hasn't reached `sendingFirstMessage` yet) closes that window.
+    if (this.pendingUpdates.size > 0) await Promise.all(this.pendingUpdates);
     if (this.progressMessageId !== undefined) {
       await this.client.deleteMessage({ chat_id: this.chatId, message_id: this.progressMessageId }).catch(() => {});
       this.progressMessageId = undefined;
