@@ -917,15 +917,12 @@ string A_Trend(string sym)
    // A_SMMA), so on a genuinely fresh symbol this honestly returns 0 like every other insufficient-
    // history case in this file, not a fabricated number.
    double smma6 = A_SMMA(6), smma20 = A_SMMA(20), smma100 = A_SMMA(100);
-   // Real correction (trader, live strategy build-out): the real bias/score below now come from
-   // SMMA(6,20,100), not the SMA/EMA stack -- the trader's own real trend system. SMA20/50/200 and
-   // EMA9/21 stay in the JSON as supplementary context only; they no longer drive bias/score.
    int score = 0;
-   if(g_aC[0] > smma6)     score++; else score--;
-   if(g_aC[0] > smma20)    score++; else score--;
-   if(g_aC[0] > smma100)   score++; else score--;
-   if(smma6 > smma20)      score++; else score--;
-   if(smma20 > smma100)    score++; else score--;
+   if(g_aC[0] > ma20)  score++; else score--;
+   if(g_aC[0] > ma50)  score++; else score--;
+   if(g_aC[0] > ma200) score++; else score--;
+   if(ema9 > ema21) score++; else score--;
+   if(ma20 > ma50)  score++; else score--;
    string bias = score >= 4 ? "STRONG_BULL" : score >= 2 ? "BULL" : score <= -4 ? "STRONG_BEAR" : score <= -2 ? "BEAR" : "NEUTRAL";
    bool allBull = g_aC[0] > ma20 && ma20 > ma50 && ma50 > ma200;
    bool allBear = g_aC[0] < ma20 && ma20 < ma50 && ma50 < ma200;
@@ -1275,39 +1272,6 @@ string A_Zones(string sym)
      { retestZoneType = "SUPPLY"; retestQuality = g_aC[0] < nearestSupply ? "CLEAN_REJECTION" : "BROKEN_THROUGH"; }
    else if(nearestDemand > 0 && g_aL[0] <= nearestDemand)
      { retestZoneType = "DEMAND"; retestQuality = g_aC[0] > nearestDemand ? "CLEAN_REJECTION" : "BROKEN_THROUGH"; }
-   // Real gap fixed (trader, live strategy build-out): "add support and resistant level" --
-   // classic horizontal S/R, distinct from the SMC-style supply/demand zones above. Reuses the
-   // same real swing-collection + equal-level clustering pattern A_Liquidity already uses for
-   // BSL/SSL (SwingLookback/EqTolerancePips), but reports every real cluster with 2+ touches as
-   // a genuine S/R level (not just exact-equal pairs), split into resistance (above price) and
-   // support (below price).
-   double sh2[], sl2[]; int sh2B[], sl2B[];
-   A_CollectSwings(SwingLookback, 20, sh2, sh2B, sl2, sl2B);
-   double srTol = EqTolerancePips * g_aPip;
-   string resist[], support[];
-   double nearestResistance = 0, nearestSupport = 0;
-   for(int i = 0; i < ArraySize(sh2) && ArraySize(resist) < ZoneMax; i++)
-     {
-      bool used = false;
-      for(int u = 0; u < ArraySize(resist); u++) if(StringFind(resist[u], DoubleToString(sh2[i], g_aDigits)) >= 0) { used = true; break; }
-      if(used) continue;
-      int touches = 0;
-      for(int j = 0; j < ArraySize(sh2); j++) if(MathAbs(sh2[j] - sh2[i]) <= srTol) touches++;
-      if(touches < 2) continue;
-      A_Push(resist, Obj(Jn("level", sh2[i], g_aDigits) + "," + Ji("touches", touches) + "," + Jn("dist_pips", A_Pips(sym, sh2[i] - g_aC[0]), 1)));
-      if((nearestResistance == 0 || sh2[i] < nearestResistance) && sh2[i] > g_aC[0]) nearestResistance = sh2[i];
-     }
-   for(int i = 0; i < ArraySize(sl2) && ArraySize(support) < ZoneMax; i++)
-     {
-      bool used = false;
-      for(int u = 0; u < ArraySize(support); u++) if(StringFind(support[u], DoubleToString(sl2[i], g_aDigits)) >= 0) { used = true; break; }
-      if(used) continue;
-      int touches = 0;
-      for(int j = 0; j < ArraySize(sl2); j++) if(MathAbs(sl2[j] - sl2[i]) <= srTol) touches++;
-      if(touches < 2) continue;
-      A_Push(support, Obj(Jn("level", sl2[i], g_aDigits) + "," + Ji("touches", touches) + "," + Jn("dist_pips", A_Pips(sym, g_aC[0] - sl2[i]), 1)));
-      if((nearestSupport == 0 || sl2[i] > nearestSupport) && sl2[i] < g_aC[0]) nearestSupport = sl2[i];
-     }
    string f[];
    A_Push(f, Jr("supply", "[" + A_Join(sup) + "]"));
    A_Push(f, Jr("demand", "[" + A_Join(dem) + "]"));
@@ -1319,10 +1283,6 @@ string A_Zones(string sym)
    A_Push(f, J("zone_at_price", inZone ? (g_aC[0] >= nearestSupply && nearestSupply > 0 ? "SUPPLY" : "DEMAND") : "NONE"));
    A_Push(f, Jr("strongest_zone", Obj(J("type", strongestType) + "," + Jn("level", strongestLvl, g_aDigits))));
    A_Push(f, Jr("retest", Obj(J("zone_type", retestZoneType) + "," + J("quality", retestQuality))));
-   A_Push(f, Jr("resistance", "[" + A_Join(resist) + "]"));
-   A_Push(f, Jr("support", "[" + A_Join(support) + "]"));
-   A_Push(f, Jr("nearest_resistance", Obj(Jn("level", nearestResistance, g_aDigits) + "," + Jn("dist_pips", A_Pips(sym, nearestResistance - g_aC[0]), 1))));
-   A_Push(f, Jr("nearest_support", Obj(Jn("level", nearestSupport, g_aDigits) + "," + Jn("dist_pips", A_Pips(sym, g_aC[0] - nearestSupport), 1))));
    return Obj(A_Join(f));
   }
 
@@ -1428,10 +1388,9 @@ string A_Ichimoku()
    double top = MathMax(spanA, spanB), bot = MathMin(spanA, spanB);
    double tenkanPrev = (A_HighestHigh(3, 9) + A_LowestLow(3, 9)) / 2.0;
    double kijunPrev  = (A_HighestHigh(3, 26) + A_LowestLow(3, 26)) / 2.0;
-   // Real correction (trader): tk_cross is not needed -- removed from both the score and the
-   // output below. max_score drops from 6 to 5, thresholds rescaled proportionally.
    int score = 0;
    if(g_aC[0] > top)       score++;
+   if(tenkan > kijun)   score++;
    if(spanA > spanB)    score++;
    if(g_aC[0] > tenkan)    score++;
    if(g_aC[0] > kijun)     score++;
@@ -1446,6 +1405,7 @@ string A_Ichimoku()
    A_Push(f, J("price_vs_cloud", g_aC[0] > top ? "ABOVE" : g_aC[0] < bot ? "BELOW" : "INSIDE"));
    A_Push(f, J("price_vs_tenkan", g_aC[0] > tenkan ? "ABOVE" : "BELOW"));
    A_Push(f, J("price_vs_kijun",  g_aC[0] > kijun  ? "ABOVE" : "BELOW"));
+   A_Push(f, J("tk_cross", tenkan > kijun ? "BULL" : "BEAR"));
    A_Push(f, Jn("tenkan_slope", (tenkan - tenkanPrev) / MathMax(g_aPip, 1e-10), 2));
    A_Push(f, Jn("kijun_slope",  (kijun - kijunPrev) / MathMax(g_aPip, 1e-10), 2));
    A_Push(f, J("chikou_vs_price", g_anb > 26 && chikou > g_aC[26] ? "ABOVE" : "BELOW"));
@@ -1454,11 +1414,11 @@ string A_Ichimoku()
    A_Push(f, Jb("kijun_support", g_aC[0] > kijun && MathAbs(g_aC[0]-kijun) < A_ATR(14)));
    A_Push(f, Jb("kijun_resistance", g_aC[0] < kijun && MathAbs(g_aC[0]-kijun) < A_ATR(14)));
    A_Push(f, Jb("kumo_twist", (spanA > spanB) != ((tenkanPrev + kijunPrev) / 2.0 > spanB)));
-   A_Push(f, J("signal", score >= 4 ? "STRONG_BULL" : score == 3 ? "BULL" : score == 1 ? "BEAR" : score == 0 ? "STRONG_BEAR" : "NEUTRAL"));
-   A_Push(f, Ji("score", score)); A_Push(f, Ji("max_score", 5));
+   A_Push(f, J("signal", score >= 5 ? "STRONG_BULL" : score >= 4 ? "BULL" : score <= 1 ? "STRONG_BEAR" : score <= 2 ? "BEAR" : "NEUTRAL"));
+   A_Push(f, Ji("score", score)); A_Push(f, Ji("max_score", 6));
    A_Push(f, Jn("dist_tenkan_pips", (g_aC[0] - tenkan) / MathMax(g_aPip, 1e-10), 1));
    A_Push(f, Jn("dist_kijun_pips",  (g_aC[0] - kijun) / MathMax(g_aPip, 1e-10), 1));
-   A_Push(f, Jb("all_conditions_bull", score == 5));
+   A_Push(f, Jb("all_conditions_bull", score == 6));
    A_Push(f, Jb("all_conditions_bear", score == 0));
    return Obj(A_Join(f));
   }
