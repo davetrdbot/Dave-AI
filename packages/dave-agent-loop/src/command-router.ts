@@ -187,20 +187,37 @@ function appendMenuHome(kb: ReturnType<typeof keyboard>): ReturnType<typeof keyb
  * Now that specific, expected case is a silent success; only a GENUINE edit failure (message too
  * old, deleted, no permission) falls back to a new message.
  */
+/**
+ * Real, live bug fixed (user, live: TelegramError "message is too long" thrown from exactly this
+ * call chain -- handleLastAnalysis -> sendOrEditScreen -> editOrSend -- confirmed via the real
+ * Railway stack trace). These two functions are the shared rendering path for EVERY screen in this
+ * file (menus, /trades, /settings, /last_analysis, ...) -- none of them were ever chunked, so any
+ * screen whose real text happens to grow past Telegram's 4096-char limit crashed outright instead
+ * of degrading gracefully. Fixing it once here protects every screen that calls through here, not
+ * just the one that happened to trip it first. The common short-text case is completely unaffected
+ * (chunkForTelegram returns a single-element array, so behavior is byte-for-byte identical to
+ * before this fix) -- only a genuinely long screen now sends its overflow as real follow-up plain
+ * messages instead of crashing, with the real reply_markup buttons kept on the first chunk (the one
+ * that's actually edited/replaced on a refresh) so the screen stays interactive.
+ */
 async function editOrSend(client: TelegramClient, params: { chat_id: number | string; message_id: number; text: string; parse_mode?: "HTML"; reply_markup?: ReturnType<typeof keyboard> }): Promise<void> {
+  const chunks = chunkForTelegram(params.text);
   try {
-    await client.editMessageText(params);
+    await client.editMessageText({ ...params, text: chunks[0], reply_markup: params.reply_markup });
   } catch (err) {
     if (err instanceof TelegramError && /message is not modified/i.test(err.message)) return;
-    await client.sendMessage({ chat_id: params.chat_id, text: params.text, parse_mode: params.parse_mode, reply_markup: params.reply_markup });
+    await client.sendMessage({ chat_id: params.chat_id, text: chunks[0], parse_mode: params.parse_mode, reply_markup: params.reply_markup });
   }
+  for (const chunk of chunks.slice(1)) await client.sendMessage({ chat_id: params.chat_id, text: chunk, parse_mode: params.parse_mode });
 }
 
 async function sendOrEditScreen(deps: CommandRouterDeps, chatId: number, text: string, reply_markup: ReturnType<typeof keyboard> | undefined, editMessageId?: number): Promise<void> {
   if (editMessageId) {
     await editOrSend(deps.client, { chat_id: chatId, message_id: editMessageId, text, parse_mode: "HTML", reply_markup });
   } else {
-    await deps.client.sendMessage({ chat_id: chatId, text, parse_mode: "HTML", reply_markup });
+    const chunks = chunkForTelegram(text);
+    await deps.client.sendMessage({ chat_id: chatId, text: chunks[0], parse_mode: "HTML", reply_markup });
+    for (const chunk of chunks.slice(1)) await deps.client.sendMessage({ chat_id: chatId, text: chunk, parse_mode: "HTML" });
   }
 }
 

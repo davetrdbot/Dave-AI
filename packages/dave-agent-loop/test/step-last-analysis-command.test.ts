@@ -82,6 +82,40 @@ try {
   assert.match(screen, /H1: 44 endpoint key/, "the real endpoint key count for the other received timeframe must be shown");
   assert.match(screen, /KB/, "payload size must be formatted as KB");
 
+  console.log("\n[2b] The /last_analysis SUMMARY screen itself (not the raw-JSON button) genuinely chunks instead of crashing when it grows past 4096 chars -- real, live bug fixed (user, live: TelegramError \"message is too long\" thrown from exactly this call chain -- handleLastAnalysis -> sendOrEditScreen -> editOrSend, confirmed via the real Railway stack trace)...\n");
+  // Real endpoint names (not placeholders) across all 6 real timeframes -- this is genuinely what
+  // triggered the real production crash: the verbose listing of 44 real (longer) endpoint names
+  // across 6 real timeframes, not the 2-timeframe/short-name case in [2] above.
+  const realEndpointKeys = [
+    "price", "structure", "zones", "liquidity", "order_blocks", "inducement", "premium_discount",
+    "trend", "momentum", "volatility", "ichimoku", "regime", "divergence",
+    "volume", "orderflow", "tape", "tape_flow", "market_profile",
+    "fibonacci", "pivots", "levels", "gann", "swing", "fractal",
+    "candles", "patterns", "harmonic", "elliott", "ict", "wyckoff",
+    "session", "news", "macro", "correlation", "strength", "heatmap", "sentiment", "seasonality",
+    "confluence", "risk_metrics", "spread_analysis", "mean_reversion", "synthetic", "backtest",
+  ];
+  const allTimeframes = ["M1", "M3", "M5", "M15", "H1", "H4"];
+  for (let i = 0; i < 5; i++) {
+    recordAnalysisFetch(OWNER, {
+      symbol: `SYMBOL_${i}`,
+      timeframesRequested: allTimeframes,
+      timeframesReceived: allTimeframes,
+      endpointKeysPerTimeframe: Object.fromEntries(allTimeframes.map((tf) => [tf, realEndpointKeys])),
+      totalPayloadBytes: 50_000,
+      fetchedAt: Date.now(),
+      rawSuite: {},
+    });
+  }
+  sentMessages.length = 0;
+  await dispatchCommand(deps, CHAT_ID, `${OWNER}:${CHAT_ID}`, "/last_analysis");
+  console.log(`    real number of Telegram messages sent for the /last_analysis screen: ${sentMessages.length}`);
+  assert.ok(sentMessages.length >= 2, "a screen exceeding 4096 chars must genuinely be split into 2+ real messages, not crash");
+  for (const chunk of sentMessages) assert.ok(chunk.length <= 4096, "every real chunk must respect Telegram's 4096-char limit");
+  const reconstructedScreen = sentMessages.join("");
+  for (let i = 0; i < 5; i++) assert.ok(reconstructedScreen.includes(`SYMBOL_${i}`), `real entry for SYMBOL_${i} must genuinely be present, not truncated`);
+  console.log("    confirmed: a genuinely long /last_analysis screen chunks into multiple real messages instead of crashing, nothing lost");
+
   console.log("\n[3] The 'Show raw JSON' button is genuinely wired (callback_data analysisdebug:raw) on that screen...\n");
   // sendMessage doesn't carry reply_markup through our fetch mock's `text`-only capture, so
   // confirm the button via the real callback dispatch path instead (below) -- the actual proof
