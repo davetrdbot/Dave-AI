@@ -27,6 +27,7 @@ export const CORE_TOOL_NAMES: string[] = [
   // Meta -- always available regardless of provider tool-count limits.
   "ask_user",
   "search_tools",
+  "get_tool_catalog",
   "recall_memory",
   "push_message_to_user",
 

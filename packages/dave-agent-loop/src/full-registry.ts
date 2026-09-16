@@ -32,6 +32,7 @@ import type { Worker } from "@dave/workers";
 import type { OrderRequest } from "@dave/trading";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage } from "./trade-notifications.js";
 import { recordAnalysisFetch } from "./analysis-debug-store.js";
+import { createGetToolCatalogTool } from "./tool-catalog.js";
 
 /**
  * Update 11 (post-Update-9 follow-up): "you actually forgot to give
@@ -375,6 +376,14 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
       execute: async (args: Record<string, unknown>) => ({ matches: registry.search(args.query as string) }),
     },
   ]);
+
+  // Discretionary harness improvement: a real, structured, model-callable complement to
+  // search_tools -- Dave's whole categorized tool catalog (name + description per tool, grouped
+  // the same way docs/skills/full-tool-catalog.md is) in one call, instead of only ever finding
+  // tools it already knows roughly how to search for. Registered LAST for the same reason as
+  // search_tools above -- it reads `registry` by reference and reflects every real tool
+  // registered above it, including this one and search_tools themselves.
+  registry.register([createGetToolCatalogTool(registry)]);
 
   // Update 13/10: seed (or re-seed in place) the permanent "how do I use
   // myself" skills -- the internal tool docs (E2B/EA-webhook/R_Feed) and

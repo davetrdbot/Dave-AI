@@ -83,7 +83,7 @@ try {
     MCP_MANAGER_TOOLS.length +
     FIRECRAWL_TOOLS.length +
     FEEDBACK_TOOLS.length + // Step 18 re-verification: record_skip/record_hypothesis/record_observation/etc, now genuinely wired into the registry
-    2; // +1 ask_user, +1 search_tools (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
+    3; // +1 ask_user, +1 search_tools, +1 get_tool_catalog (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
 
@@ -104,6 +104,7 @@ try {
     "list_pair_groups", "create_or_update_pair_group", "delete_pair_group", "get_active_pair_group", // dave-trading pair groups
     "record_skip", "record_hypothesis", "record_observation", // dave-feedback (Step 18 re-verification)
     "ask_user",
+    "get_tool_catalog", // discretionary harness improvement: the structured complement to search_tools
   ];
   for (const name of mustHave) assert.ok(registry.has(name), `registry must genuinely have "${name}"`);
   console.log(`    spot-checked ${mustHave.length} tools spanning every single package: all genuinely present`);

@@ -27,10 +27,12 @@ try {
   const e2bDoc = readInternalToolDoc("e2b-sandbox");
   const eaDoc = readInternalToolDoc("ea-webhook");
   const analysisDoc = readInternalToolDoc("ea-analysis");
+  const catalogDoc = readInternalToolDoc("full-tool-catalog");
   assert.ok(e2bDoc.includes("gRPC"), "the E2B doc must genuinely explain the real gRPC-vs-REST limit");
   assert.ok(eaDoc.includes("heartbeat"), "the EA webhook doc must genuinely explain the real heartbeat round trip");
   assert.ok(analysisDoc.includes("get_ict") && analysisDoc.includes("get_all_analysis") && analysisDoc.includes("46"), "item 5: the analysis doc must genuinely teach all 46 real endpoints, not a subset");
-  console.log(`    e2b-sandbox-skill.md: ${e2bDoc.length} bytes; ea-webhook-skill.md: ${eaDoc.length} bytes; ea-analysis-skill.md: ${analysisDoc.length} bytes`);
+  assert.ok(catalogDoc.includes("trade_execute") && catalogDoc.includes("search_tools") && catalogDoc.includes("get_tool_catalog"), "the full-tool-catalog doc must genuinely cover trading tools plus the self-discovery tools");
+  console.log(`    e2b-sandbox-skill.md: ${e2bDoc.length} bytes; ea-webhook-skill.md: ${eaDoc.length} bytes; ea-analysis-skill.md: ${analysisDoc.length} bytes; full-tool-catalog.md: ${catalogDoc.length} bytes`);
 
   // --- [2] Tool-to-topic mapping is real and specific ---
   console.log("\n[2] Real tool-to-doc-topic mapping...\n");
@@ -86,12 +88,13 @@ try {
   // --- [5] Permanent skills: the docs seeded as real, undeletable per-user skills ---
   console.log("\n[5] The real docs seeded as PERMANENT per-user skills (list_skills shows them, deletion refused)...\n");
   const seeded = seedInternalToolDocSkills(OWNER);
-  assert.equal(seeded.length, 3, "e2b-sandbox, ea-webhook, and ea-analysis (item 5: all 46 endpoints taught as a real skill)");
+  assert.equal(seeded.length, 4, "e2b-sandbox, ea-webhook, ea-analysis (all 46 endpoints), and full-tool-catalog (the complete real tool list)");
   assert.ok(seeded.every((s) => s.permanent === true));
   const names = listSkills(OWNER).map((s) => s.name);
   assert.ok(names.includes("How to use: e2b-sandbox"));
   assert.ok(names.includes("How to use: ea-webhook"));
   assert.ok(names.includes("How to use: ea-analysis"));
+  assert.ok(names.includes("How to use: full-tool-catalog"));
   console.log(`    real permanent skills seeded: ${seeded.map((s) => s.name).join(", ")}`);
 
   let permErr = false;
@@ -109,8 +112,8 @@ try {
     reseeded.map((s) => s.id).sort(),
     seeded.map((s) => s.id).sort()
   );
-  assert.equal(listSkills(OWNER).filter((s) => s.name.startsWith("How to use:")).length, 3, "must never duplicate on re-seed");
-  console.log("    same 3 skill ids after re-seeding -- no duplicates created");
+  assert.equal(listSkills(OWNER).filter((s) => s.name.startsWith("How to use:")).length, 4, "must never duplicate on re-seed");
+  console.log("    same 4 skill ids after re-seeding -- no duplicates created");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

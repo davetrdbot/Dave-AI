@@ -28,7 +28,7 @@ import { createSkill, listSkills, updateSkillContent, type Skill } from "./skill
  */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export type InternalToolDocTopic = "e2b-sandbox" | "ea-webhook" | "ea-analysis";
+export type InternalToolDocTopic = "e2b-sandbox" | "ea-webhook" | "ea-analysis" | "full-tool-catalog";
 
 const DOC_PATHS: Record<InternalToolDocTopic, string> = {
   "e2b-sandbox": join(__dirname, "..", "..", "..", "docs", "skills", "e2b-sandbox-skill.md"),
@@ -39,6 +39,15 @@ const DOC_PATHS: Record<InternalToolDocTopic, string> = {
   // these are read-only market-data calls, not a risky/easy-to-misuse mechanism, so it's seeded
   // as real reference material Dave can consult, not a hard gate on every analysis call.
   "ea-analysis": join(__dirname, "..", "..", "..", "docs", "skills", "ea-analysis-skill.md"),
+  // Trader-requested follow-up: "teach Dave its FULL tool catalog, not just the curated
+  // always-loaded subset." Same real mechanism as ea-analysis above -- a genuine repo doc,
+  // seeded as a permanent per-user skill so `list_skills` returns its full real content (not a
+  // summary). Not recall-gated: it's a pure reference doc, never a risky/easy-to-misuse tool
+  // itself. Kept in sync with the real registry by docs/skills/full-tool-catalog.md's own
+  // content (every name/description pulled from the actual registered tool definitions) and by
+  // the get_tool_catalog tool (dave-agent-loop/src/tool-catalog.ts), which returns the same
+  // categorized data programmatically at runtime instead of as a doc string.
+  "full-tool-catalog": join(__dirname, "..", "..", "..", "docs", "skills", "full-tool-catalog.md"),
 };
 
 /**
@@ -100,7 +109,7 @@ const SKILL_NAME_PREFIX = "How to use: ";
  * not just a file on disk nobody's skill list ever mentions.
  */
 export function seedInternalToolDocSkills(userId: string): Skill[] {
-  const topics: InternalToolDocTopic[] = ["e2b-sandbox", "ea-webhook", "ea-analysis"];
+  const topics: InternalToolDocTopic[] = ["e2b-sandbox", "ea-webhook", "ea-analysis", "full-tool-catalog"];
   return topics.map((topic) => {
     const name = `${SKILL_NAME_PREFIX}${topic}`;
     const content = readInternalToolDoc(topic);
