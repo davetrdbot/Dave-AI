@@ -1,6 +1,8 @@
 import type { DaveDatabase } from "@dave/db";
 import type { Provider, ToolSpec } from "@dave/brain";
 import type { TradeExecutor, OrderRequest, OrderType, RiskSettings } from "@dave/trading";
+import { getActiveStrategySkillId } from "@dave/trading";
+import { getSkill } from "@dave/skills";
 import {
   getRiskSettings,
   getActiveGroupInfo,
@@ -647,6 +649,27 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
 
   const selfPause = getSelfPause(userId);
 
+  // Real gap fixed (the trader: "the bot shouldn't compromise when a skill is added by reviewing
+  // other endpoints"): the <active_strategy_skill> block built in live-context.ts was only ever
+  // reaching the interactive chat path -- this autonomous tick builds its own contextLines and
+  // never called it, so a skill marked active had zero effect on real autonomous decisions,
+  // silently defeating strict-adherence the moment /start_trading was running. Same real lookup,
+  // same "no active skill -> no block, trading.md's own judgment governs" behavior as the
+  // interactive path -- this never blocks or slows a trade, it only shapes which endpoints/
+  // timeframes the decision below is allowed to lean on.
+  let activeStrategySkillLine: string | null = null;
+  const activeSkillId = getActiveStrategySkillId(userId);
+  if (activeSkillId) {
+    const activeSkill = getSkill(userId, activeSkillId);
+    if (activeSkill) {
+      activeStrategySkillLine = [
+        `ACTIVE STRATEGY SKILL: "${activeSkill.name}" -- follow this explicitly for this decision. Use only the timeframes, endpoints, and signals this strategy actually calls for -- do NOT supplement it with other tools, timeframes, or indicators "just to be safe". That is not extra diligence, it is silently trading a different strategy than the one the user activated. This does not change whether you trade -- it only changes what you're allowed to base the decision on.`,
+        activeSkill.description ? `Summary: ${activeSkill.description}` : null,
+        `Full instructions: ${activeSkill.content}`,
+      ].filter((l): l is string => l !== null).join("\n");
+    }
+  }
+
   const contextLines = [
     `SYMBOL: ${symbol}`,
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
@@ -679,6 +702,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     spreadNewsRiskLine,
     formatRecentDecisions(userId),
     selfAwareAlertLine,
+    activeStrategySkillLine,
   ].filter((line): line is string => line !== null);
 
   const tool = buildDecisionTool(risk);
