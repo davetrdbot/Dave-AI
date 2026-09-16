@@ -1,7 +1,7 @@
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
-import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE } from "@dave/trading";
-import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, createEaAnalysisSource } from "@dave/ea-bridge";
+import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness } from "@dave/trading";
+import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
@@ -10,7 +10,7 @@ import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
 import { PAIR_GROUP_TOOLS } from "@dave/trading";
-import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS } from "@dave/workers";
+import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS, BACKGROUND_CHECK_TOOLS, type BackgroundCheck } from "@dave/workers";
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS, MEMORY_EXTRA_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
@@ -27,6 +27,7 @@ import { FEEDBACK_TOOLS, logTrade } from "@dave/feedback";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { createAskUserTool } from "./ask-user.js";
 import { runWorkerTask } from "./worker-loop.js";
+import { startBackgroundCheckPolling, stopBackgroundCheckPolling, rearmActiveBackgroundChecks } from "./background-check-loop.js";
 import type { Worker } from "@dave/workers";
 import type { OrderRequest } from "@dave/trading";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage } from "./trade-notifications.js";
@@ -88,6 +89,25 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
       return {
         ...tool,
         execute: async (args: Record<string, unknown>) => {
+          // Real pre-trade account-awareness gate (prompts/trading.md "Account awareness"):
+          // before any real trade -- interactive/manual calls included, not just the autonomous
+          // tick -- check live balance, leverage, and open positions against a real EA snapshot
+          // when one is available, and refuse to place the order if the account is already
+          // over-leveraged or (when the user has set one) at the max-open-trades ceiling. Thrown
+          // back to the MODEL as a tool error, same pattern as AutoModeRequiresComputedValueError,
+          // never silently skipped and never a question posed to the user.
+          const accountSnapshot = getLastKnownAccountSnapshot(deps.userId);
+          if (accountSnapshot) {
+            const { positions } = getLastKnownState(deps.userId);
+            const risk = getRiskSettings(deps.userId);
+            const awareness = evaluateAccountAwareness(
+              { balance: accountSnapshot.balance, freeMargin: accountSnapshot.freeMargin, leverage: accountSnapshot.leverage, openPositionsCount: positions.length },
+              { maxOpenTrades: risk.maxOpenTrades }
+            );
+            if (!awareness.ok) {
+              throw new Error(`Cannot place this trade -- account awareness gate blocked it: ${awareness.reason}`);
+            }
+          }
           const result = (await tool.execute(args)) as Record<string, unknown>;
           const order = args as unknown as OrderRequest;
           const confidence = args.confidence as number | undefined;
@@ -266,6 +286,39 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
     };
   });
   registry.register(subagentTools);
+
+  // Background checks: same real "creates a bookkeeping record in dave-workers, dave-agent-loop
+  // wraps it to actually run" split as create_subagent above, and for the same reason (needs a
+  // live Telegram client + a real AgentLoop to poll with). start_background_check's base tool
+  // already wrote the real record by the time this wrapper runs -- it just arms the real poller
+  // on top. stop_background_check's base tool already flipped the record to "stopped" -- this
+  // wrapper just tears down the real timer to match.
+  const backgroundCheckLoopDeps = deps.telegram ? { db: deps.db, ownerUserId: deps.userId, analysis: analysisSource, executor: deps.executor, client: deps.telegram.client, chatId: deps.telegram.chatId } : undefined;
+  const backgroundCheckTools = adaptTools(BACKGROUND_CHECK_TOOLS, ownerCtx).map((tool): AgentTool => {
+    if (tool.name === "start_background_check") {
+      return {
+        ...tool,
+        execute: async (args: Record<string, unknown>) => {
+          const check = (await tool.execute(args)) as BackgroundCheck;
+          if (backgroundCheckLoopDeps) startBackgroundCheckPolling(backgroundCheckLoopDeps, check);
+          return check;
+        },
+      };
+    }
+    if (tool.name === "stop_background_check") {
+      return {
+        ...tool,
+        execute: async (args: Record<string, unknown>) => {
+          const result = await tool.execute(args);
+          stopBackgroundCheckPolling(args.checkId as string);
+          return result;
+        },
+      };
+    }
+    return tool;
+  });
+  registry.register(backgroundCheckTools);
+
   registry.register(adaptTools(MEMORY_TOOLS, { actorId: deps.userId }));
   registry.register(adaptTools(MEMORY_EXTRA_TOOLS, { actorId: deps.userId }));
   registry.register(adaptTools(MEMORY_WRITE_TOOLS, { actorId: deps.userId }));
@@ -348,6 +401,12 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   // registry build spins up on its own.
   wireWebhookAutomations(deps.db, deps.userId, automationDispatch);
   wireEntityAutomations(deps.db, deps.userId, automationDispatch);
+
+  // Real restart-survival for background checks: re-arms every still-active check's real poller
+  // against this fresh process/registry build -- same "no persistence of its own needed, just
+  // re-register on boot" reasoning scheduled-trigger.ts already documents for cron triggers
+  // (expiresAt is a real wall-clock timestamp, recomputed fresh, not something that needs saving).
+  if (backgroundCheckLoopDeps) rearmActiveBackgroundChecks(backgroundCheckLoopDeps);
 
   return registry;
 }

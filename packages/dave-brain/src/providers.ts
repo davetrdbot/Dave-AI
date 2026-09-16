@@ -271,6 +271,83 @@ function toOpenAIToolChoice(toolChoice: CompletionRequest["toolChoice"]): unknow
 }
 
 /**
+ * Real bug fixed (user, with real pasted proof: raw
+ * `<|toolcallssectionbegin|><|toolcallbegin|>call06f079ade1a8495e8511f748<|toolcallargumentbegin|>{}<|toolcallend|><|toolcallssectionend|>`
+ * leaked straight into a live Telegram message). Some open-weight models served through a generic
+ * OpenAI-compatible `/chat/completions` endpoint (this class's own 9-provider expansion, commit
+ * 98cd706, added several -- Moonshot/Kimi, Baseten and Fireworks all serve Kimi-K2-family models,
+ * which use this exact templated tool-call marker family) emit tool calls as inline TEXT tokens in
+ * `message.content` instead of populating the structured `message.tool_calls` field, for a real
+ * chat-template mismatch or a real model misfire. Before this fix, `message.content` was returned
+ * to the user completely verbatim -- there was no code anywhere in this repo that looked for this
+ * pattern, structured field or not.
+ *
+ * The real, documented Kimi-K2 tool-call template (and the minor `toolcalls...` variant confirmed
+ * live in the trader's paste, which drops the underscores the documented template uses) is:
+ *   <|tool_calls_section_begin|>
+ *     <|tool_call_begin|> functions.NAME:INDEX <|tool_call_argument_begin|> {...json...} <|tool_call_end|>
+ *     ... (repeatable)
+ *   <|tool_calls_section_end|>
+ * Matched with underscores optional so both the documented shape and the trader's real underscore-
+ * less variant (and any other close cousin from another provider using the same family of chat
+ * template) are caught by the same regex, not just this one exact string.
+ *
+ * Real, honest limits of what gets parsed into an actual ToolCall (option (a) from the fix): a
+ * segment is only turned into a real, executable ToolCall when BOTH a real function name (the
+ * `functions.NAME:INDEX` shape) and real, valid JSON arguments are present -- exactly the trader's
+ * own real paste has NEITHER (the header is a bare opaque id, `call06f079...`, with no `functions.`
+ * name at all, so which real tool was meant is genuinely unrecoverable here). For that case (and
+ * any other segment the model emitted with a name/arguments shape too malformed to trust), this
+ * falls back to (b): the raw tokens are stripped from the user-visible text and, if nothing else
+ * from the model survives, replaced with one honest, non-technical sentence -- never raw tokens,
+ * and never a silently dropped tool call pretending nothing happened.
+ */
+const TOOL_CALL_MARKER_RE = /<\|tool_?calls?_?section_?begin\|>([\s\S]*?)<\|tool_?calls?_?section_?end\|>/gi;
+const TOOL_CALL_SEGMENT_RE = /<\|tool_?call_?begin\|>([\s\S]*?)<\|tool_?call_?argument_?begin\|>([\s\S]*?)<\|tool_?call_?end\|>/gi;
+const TOOL_CALL_NAME_RE = /functions\.([a-zA-Z0-9_-]+)(?::\d+)?/;
+
+export function stripInlineToolCallMarkers(content: string): { text: string; toolCalls?: ToolCall[] } {
+  if (!content.includes("tool_call") && !content.includes("toolcall")) return { text: content };
+  const parsedCalls: ToolCall[] = [];
+  let sawMalformedSegment = false;
+  const text = content
+    .replace(TOOL_CALL_MARKER_RE, (_full, sectionBody: string) => {
+      let matchedAny = false;
+      // Reset lastIndex -- TOOL_CALL_SEGMENT_RE is a shared module-level /g regex.
+      TOOL_CALL_SEGMENT_RE.lastIndex = 0;
+      let segMatch: RegExpExecArray | null;
+      while ((segMatch = TOOL_CALL_SEGMENT_RE.exec(sectionBody)) !== null) {
+        matchedAny = true;
+        const [, header, rawArgs] = segMatch;
+        const nameMatch = TOOL_CALL_NAME_RE.exec(header.trim());
+        let parsedArgs: Record<string, unknown> | undefined;
+        try {
+          const val = JSON.parse(rawArgs.trim() || "{}");
+          if (val && typeof val === "object" && !Array.isArray(val)) parsedArgs = val as Record<string, unknown>;
+        } catch {
+          // malformed JSON -- fall through to the malformed-segment path below
+        }
+        if (nameMatch && parsedArgs !== undefined) {
+          parsedCalls.push({ id: header.trim() || `inline-${parsedCalls.length}`, name: nameMatch[1], arguments: parsedArgs });
+        } else {
+          // No recoverable function name (e.g. the trader's real paste -- a bare opaque id with no
+          // `functions.NAME` at all) and/or unparseable arguments: genuinely can't be turned into a
+          // real, executable tool call, so it's dropped rather than guessed at.
+          sawMalformedSegment = true;
+        }
+      }
+      // Even a section with no segments matching the inner shape (or empty) must still never
+      // leak its own raw markers -- if it wasn't parsed, it's at minimum removed.
+      if (!matchedAny) sawMalformedSegment = true;
+      return "";
+    })
+    .trim();
+  if (parsedCalls.length === 0 && !sawMalformedSegment) return { text: content };
+  const finalText = text.length > 0 ? text : sawMalformedSegment && parsedCalls.length === 0 ? "The model attempted a malformed tool call." : text;
+  return { text: finalText, toolCalls: parsedCalls.length > 0 ? parsedCalls : undefined };
+}
+
+/**
  * Step 5.2: DeepSeek AI as a configured, switchable fallback provider.
  *
  * Real bug fixed (user, live-diagnosed with real pasted keys against the real production tool
@@ -321,14 +398,23 @@ export class DeepSeekProvider implements Provider {
       usage?: { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number };
     };
     const message = json.choices[0].message;
-    const toolCalls = message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
+    let toolCalls = message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
+    // Same real gap as OpenAICompatibleProvider (see stripInlineToolCallMarkers) -- DeepSeek's
+    // wire shape is the same generic OpenAI `/chat/completions` shape, so a model behind it can
+    // emit the same raw inline tool-call tokens instead of populating `tool_calls`.
+    let text = message.content ?? "";
+    if ((!toolCalls || toolCalls.length === 0) && text) {
+      const stripped = stripInlineToolCallMarkers(text);
+      text = stripped.text;
+      if (stripped.toolCalls) toolCalls = stripped.toolCalls;
+    }
     // Real DeepSeek "context caching" -- automatic, no cache_control needed on
     // this API; a real cache hit shows up as a nonzero prompt_cache_hit_tokens
     // in the response usage. DeepSeek doesn't separately report a "creation"
     // count the way Anthropic does (caching there is automatic/implicit), so
     // that field is honestly 0 rather than guessed.
     const cacheUsage = json.usage ? { cacheCreationInputTokens: 0, cacheReadInputTokens: json.usage.prompt_cache_hit_tokens ?? 0 } : undefined;
-    return { text: message.content ?? "", provider: "deepseek", latencyMs: Date.now() - start, toolCalls, cacheUsage };
+    return { text, provider: "deepseek", latencyMs: Date.now() - start, toolCalls, cacheUsage };
   }
 }
 
@@ -497,7 +583,18 @@ export class OpenAICompatibleProvider implements Provider {
       usage?: { prompt_tokens_details?: { cached_tokens?: number }; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
     const message = json.choices[0].message;
-    const toolCalls = message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
+    let toolCalls = message.tool_calls?.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || "{}") }));
+    // Real bug fixed: some models served through this generic OpenAI-compatible shape (Kimi-K2
+    // family among them -- see stripInlineToolCallMarkers's own comment) never populate the
+    // structured `tool_calls` field above at all -- they emit the tool call as raw text tokens
+    // inline in `content` instead. Only consulted when the structured field came back genuinely
+    // empty, so a provider that's doing this correctly is never touched.
+    let text = message.content ?? "";
+    if ((!toolCalls || toolCalls.length === 0) && text) {
+      const stripped = stripInlineToolCallMarkers(text);
+      text = stripped.text;
+      if (stripped.toolCalls) toolCalls = stripped.toolCalls;
+    }
     // Real, provider-agnostic prompt-caching read: OpenAI's own automatic
     // caching (no cache_control needed -- kicks in for long enough shared
     // prefixes) reports a real cached-token count at
@@ -514,7 +611,7 @@ export class OpenAICompatibleProvider implements Provider {
       json.usage?.prompt_tokens !== undefined && json.usage?.completion_tokens !== undefined
         ? { promptTokens: json.usage.prompt_tokens, completionTokens: json.usage.completion_tokens, totalTokens: json.usage.total_tokens ?? json.usage.prompt_tokens + json.usage.completion_tokens }
         : undefined;
-    return { text: message.content ?? "", provider: this.name, latencyMs: Date.now() - start, toolCalls, cacheUsage, tokenUsage };
+    return { text, provider: this.name, latencyMs: Date.now() - start, toolCalls, cacheUsage, tokenUsage };
   }
 }
 

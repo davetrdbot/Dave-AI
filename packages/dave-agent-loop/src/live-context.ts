@@ -1,6 +1,7 @@
-import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, type RiskMode } from "@dave/trading";
+import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, type RiskMode } from "@dave/trading";
 import { getConfidenceSettings } from "@dave/trading";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
+import { getSkill } from "@dave/skills";
 import type { ContentBlock } from "@dave/brain";
 
 /**
@@ -61,7 +62,30 @@ export function buildLiveSettingsBlock(userId: string): string {
     "",
     "These are the user's REAL, currently-saved settings, read fresh this turn -- never ask the user to re-confirm a value shown above, and never claim one isn't set when it's listed here.",
   ];
-  return lines.join("\n");
+
+  // Part 2 (skill scoping): a skill marked active by set_active_strategy_skill (or the Telegram
+  // Trading Mode -> Trading Skills picker, same underlying store) is surfaced here, every turn,
+  // as the real analysis lens for this cycle -- never something the model has to remember to go
+  // fetch with get_active_strategy_skill on its own. Absent one, no block is added at all, and
+  // prompts/trading.md's own default judgment/analysis-lens language governs instead -- there is
+  // deliberately no "ask the user which strategy to use" path anywhere in this build.
+  const activeSkillId = getActiveStrategySkillId(userId);
+  if (activeSkillId) {
+    const skill = getSkill(userId, activeSkillId);
+    if (skill) {
+      lines.push(
+        "",
+        "<active_strategy_skill>",
+        `ACTIVE STRATEGY SKILL: "${skill.name}" -- follow this explicitly for every trade decision this turn. Use only the timeframes, endpoints, and signals this strategy actually calls for -- do NOT supplement it with other tools, timeframes, or indicators (e.g. adding M5 when it only calls for M1/M3, or pulling in EMA/Gann-fan levels it never mentions) "just to be safe". That is not extra diligence, it is silently trading a different strategy than the one the user activated.`,
+        skill.description ? `Summary: ${skill.description}` : "",
+        "Full instructions:",
+        skill.content,
+        "</active_strategy_skill>"
+      );
+    }
+  }
+
+  return lines.filter((l) => l !== "").join("\n");
 }
 
 /** Prepends the live settings block to a real user turn -- text or content-block (image) shape. */

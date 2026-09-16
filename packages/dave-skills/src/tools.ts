@@ -1,6 +1,7 @@
-import { createSkill, listSkills, deleteSkill } from "./skill-store.js";
+import { createSkill, listSkills, deleteSkill, getSkill } from "./skill-store.js";
 import { installSkillFromGithub } from "./github-install.js";
 import { installSkillsFromJsonl } from "./jsonl-install.js";
+import { getActiveStrategySkillId, setActiveStrategySkill, clearActiveStrategySkill } from "@dave/trading";
 
 /**
  * Update 10: skills management as real agent tools -- "basically what
@@ -48,6 +49,39 @@ export const SKILL_TOOLS: ToolDefinition[] = [
     description: "Install one or more skills from .jsonl content the user sent -- one skill per line.",
     parameters: { type: "object", properties: { jsonlContent: { type: "string" }, sourceLabel: { type: "string" } }, required: ["jsonlContent"] },
     execute: async (args, ctx) => installSkillsFromJsonl(ctx.userId, args.jsonlContent as string, (args.sourceLabel as string) ?? "uploaded .jsonl"),
+  },
+  {
+    name: "set_active_strategy_skill",
+    description:
+      "Mark one of your skills as the active trading strategy. Skills are trading-strategy-only (which timeframes/tools/signals to use and when) -- once active, that skill's instructions become the real analysis lens for every trade cycle, followed explicitly (see prompts/trading.md's 'Trading-strategy skills'), replacing your own default judgment until cleared. Only call this when the user explicitly tells you to activate a specific skill -- never pick or switch a strategy on your own, and never ask the user to choose one; if they haven't told you to activate anything, leave whatever is already active (or nothing) alone.",
+    parameters: { type: "object", properties: { skillId: { type: "string" } }, required: ["skillId"] },
+    execute: async (args, ctx) => {
+      const skillId = args.skillId as string;
+      const skill = getSkill(ctx.userId, skillId);
+      if (!skill) throw new Error(`No skill "${skillId}" found -- call list_skills to see real, valid ids.`);
+      setActiveStrategySkill(ctx.userId, skillId);
+      return { ok: true, activeStrategySkillId: skillId, name: skill.name };
+    },
+  },
+  {
+    name: "clear_active_strategy_skill",
+    description: "Clear the active trading-strategy skill. With none active, trading falls back to your own genuine judgment (prompts/trading.md's default analysis lens) -- no strategy is ever required.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => {
+      clearActiveStrategySkill(ctx.userId);
+      return { ok: true };
+    },
+  },
+  {
+    name: "get_active_strategy_skill",
+    description: "Get whichever skill is currently marked as the active trading strategy, if any.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => {
+      const skillId = getActiveStrategySkillId(ctx.userId);
+      if (!skillId) return { active: false };
+      const skill = getSkill(ctx.userId, skillId);
+      return { active: true, skillId, name: skill?.name, description: skill?.description };
+    },
   },
   {
     name: "delete_skill",

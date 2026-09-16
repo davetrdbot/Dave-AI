@@ -12,7 +12,7 @@ import { FIRECRAWL_TOOLS } from "@dave/firecrawl";
 import { TRADING_TOOLS } from "@dave/trading";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
-import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS } from "@dave/workers";
+import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, BACKGROUND_CHECK_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
@@ -61,6 +61,7 @@ try {
     SKILL_TOOLS.length +
     E2B_TOOLS.length +
     SUBAGENT_TOOLS.length +
+    BACKGROUND_CHECK_TOOLS.length +
     MEMORY_TOOLS.length +
     MEMORY_EXTRA_TOOLS.length +
     MEMORY_WRITE_TOOLS.length +
@@ -95,6 +96,7 @@ try {
     "list_skills", "install_skill_from_github", // dave-skills
     "create_e2b_sandbox", // dave-e2b
     "create_subagent", "retire_subagent", // dave-workers subagent tools
+    "start_background_check", "list_background_checks", "get_background_check", "stop_background_check", // dave-workers background-check tools
     "recall_memory", // dave-memory
     "remember_user_fact", "remember_note", "remember_adaptability_note", // dave-memory write-tools (item 11)
     "get_lovable_mcp_settings", "set_lovable_mcp_settings", // dave-lovable-mcp settings
@@ -215,13 +217,17 @@ try {
   assert.equal(capturedPush.chat_id, 847213);
   assert.equal(capturedPush.text, "Heads up: XAUUSD just hit TP.");
   assert.ok(registryWithPush.has("send_telegram"), "TELEGRAM_TOOLS must also register once a real telegram client is supplied");
-  // Real bug fixed (user, live, AGAIN: "the tool called it's still send as message"): tg_thinking/
-  // tg_thinking_update/tg_finalize used to be agent-callable tools here, creating a SECOND,
-  // uncoordinated ThinkingIndicator alongside the automatic per-turn one every real chat turn
-  // already gets from withThinkingIndicator -- any time the model called tg_thinking, that second
-  // indicator had no existing message to edit and genuinely sent a brand-new one. Removed for
-  // good; the automatic indicator already covers 100% of the real behavior these provided.
-  assert.ok(!registryWithPush.has("tg_thinking"), "tg_thinking must genuinely be gone -- it duplicated the automatic per-turn indicator and could send a second, orphaned message");
+  // Explicit trader reversal (confirmed live) of the 1b21a73 removal: tg_thinking/
+  // tg_thinking_update/tg_finalize are agent-callable tools again. The real bug 1b21a73 fixed was
+  // never "these tools must not exist" -- it was that telegram-bot-server.ts's runAgentTurn ALSO
+  // wrapped every turn in its own automatic ThinkingIndicator (withThinkingIndicator), so any time
+  // the model called tg_thinking it raced a second, uncoordinated indicator and could send a
+  // duplicate/orphaned message. That automatic wrapper is gone now (see runAgentTurn) -- these
+  // three tools are the ONLY path that can create/update/finalize an indicator, so there is no
+  // second indicator left to race against.
+  assert.ok(registryWithPush.has("tg_thinking"), "tg_thinking must be registered -- Dave decides for itself when to narrate a multi-step task");
+  assert.ok(registryWithPush.has("tg_thinking_update"), "tg_thinking_update must be registered alongside tg_thinking");
+  assert.ok(registryWithPush.has("tg_finalize"), "tg_finalize must be registered alongside tg_thinking");
   assert.ok(registryWithPush.has("send_trade_opened_notification"), "NOTIFICATION_TOOLS must also register");
   assert.equal(registryWithPush.list().length, registry.list().length + PUSH_TOOLS.length + TELEGRAM_TOOLS.length + NOTIFICATION_TOOLS.length);
   await new Promise<void>((resolve) => tgServer.close(() => resolve()));

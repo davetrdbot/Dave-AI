@@ -21,7 +21,9 @@ import {
   getAnalysisConfig,
   filterSuiteToConfig,
   getTwoStepTradingEnabled,
+  getSequentialThinkingEnabled,
   isForexSymbol,
+  evaluateAccountAwareness,
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -45,6 +47,7 @@ import { loadSystemPrompt } from "./system-prompt.js";
 import { consultJournal } from "./journal-agent.js";
 import { consultFlo } from "./flo-agent.js";
 import { computeMtfAlignment, computeMtfConfluenceScore, computeBasketCurrencyRisk, computeSpreadNewsRisk } from "./mtf-confluence.js";
+import { runSequentialThinking } from "./sequential-thinking.js";
 
 /**
  * Real replacement for the autonomous cycle's open-ended agentic tool-calling loop, modeled
@@ -221,7 +224,16 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
     },
     requestedNextReason: { type: "string", description: "the real reason for requestedNextSymbol -- required alongside it to mean anything" },
   };
-  const required = ["action", "reason"];
+  // Real, confirmed bug fixed (user, live: the bot placed a trade at a literal 0% confidence --
+  // "what's the point of placing the market then"). Root cause: `confidence` sat in `properties`
+  // but was never in `required`, unlike lots/sl/tp above, so the model could (and did) omit it,
+  // and the call site's `decision.confidence ?? 0` then silently treated "the model gave no real
+  // confidence" as "the model is 0% confident", which auto-fires under the default
+  // autoApproveBelowThreshold=true policy exactly like a real, deliberate low score would. Making
+  // it required here is the primary fix (same precedent as the `lots` fix above); the call site
+  // also independently hard-blocks a missing/invalid confidence as defense in depth, since a
+  // model can still return a malformed/missing value despite the schema.
+  const required = ["action", "reason", "confidence"];
   if (risk.lotMode !== "on") required.push("lots");
   if (risk.slMode !== "off") properties.sl = { type: "number" };
   if (risk.slMode === "auto") required.push("sl");
@@ -422,6 +434,13 @@ export interface RunTickDeps {
    *  an in-flight tick's network call, not just something nothing was ever listening to. Optional
    *  so every existing caller/test that doesn't wire it up keeps working unchanged. */
   signal?: AbortSignal;
+  /** Part 3: real per-thought progress from the optional sequential-thinking pass (see
+   *  sequential-thinking.ts), when getSequentialThinkingEnabled(userId) is on. The caller
+   *  (telegram-bot-server.ts's runAutonomousTradingCycle) wires this to the SAME tg_thinking_update
+   *  mechanism from Part 1 (tools.ts's activeIndicators) -- never a separate indicator. Optional;
+   *  autonomous cycles are silent by default (per IDENTITY.md's "trade quietly"), so this is a
+   *  no-op in the normal case where no chat indicator happens to be open. */
+  onSequentialThinkingProgress?: (text: string) => void;
 }
 
 /** Real, plain trace of every tick -- there is no other way to see what the bot is actually
@@ -433,7 +452,7 @@ function logTick(userId: string, line: string): void {
 }
 
 export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome> {
-  const { userId, db, executor, provider, signal } = deps;
+  const { userId, db, executor, provider, signal, onSequentialThinkingProgress } = deps;
 
   ensureGroupsUsable(userId);
   if (!isWithinSelectedSession(userId)) {
@@ -474,6 +493,21 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   if (risk.maxOpenTrades !== undefined && positions.length >= risk.maxOpenTrades) {
     logTick(userId, `no trade -- at max open trades (${positions.length}/${risk.maxOpenTrades})`);
     return { action: "NONE", notable: false };
+  }
+
+  // Real pre-trade account-awareness gate (prompts/trading.md "Account awareness"): even when the
+  // user hasn't set a maxOpenTrades ceiling, don't let the autonomous cycle keep opening positions
+  // into an account that's already over-leveraged -- checked with whatever real snapshot the EA
+  // has last reported, before the expensive multi-timeframe analysis fetch below.
+  if (account) {
+    const awareness = evaluateAccountAwareness(
+      { balance: account.balance, freeMargin: account.freeMargin, leverage: account.leverage, openPositionsCount: positions.length },
+      { maxOpenTrades: risk.maxOpenTrades }
+    );
+    if (!awareness.ok) {
+      logTick(userId, `no trade -- account awareness gate: ${awareness.reason}`);
+      return { action: "NONE", notable: false };
+    }
   }
 
   const openSymbols = new Set(positions.map((p) => p.symbol.toUpperCase()));
@@ -678,6 +712,26 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     } catch {
       logTick(userId, `${symbol}: unparseable model response -- raw text: ${genResult.text.slice(0, 300)}`);
       return null;
+    }
+  }
+
+  // Part 3: sequential thinking, opt-in, scoped ONLY to this one final trade decision -- never
+  // for CONSULT_JOURNAL/REQUEST_CANDLES follow-up re-decisions below (that would multiply an
+  // already-bounded extra round trip into an unbounded one), and never for general chat. Real
+  // cost/latency tradeoff (see sequential-thinking.ts's own header comment): up to
+  // MAX_SEQUENTIAL_THOUGHTS extra real model calls before the decision itself, so this only runs
+  // when the user has explicitly turned it on (getSequentialThinkingEnabled, OFF by default).
+  if (getSequentialThinkingEnabled(userId)) {
+    logTick(userId, `${symbol}: sequential thinking enabled -- running a bounded reasoning pass before deciding`);
+    const { thoughts, summary } = await runSequentialThinking({
+      provider,
+      systemPrompt: buildSystemPrompt(),
+      contextLines,
+      onProgress: onSequentialThinkingProgress,
+    });
+    if (summary) {
+      logTick(userId, `${symbol}: sequential thinking produced ${thoughts.length} real thought(s)`);
+      contextLines.push(summary);
     }
   }
 
@@ -997,6 +1051,11 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     // well-formed even if the model omits it; 28 chars is comfortably inside MT5's real
     // broker-enforced comment limit.
     comment: `Dave:${decision.confidence ?? "?"}% ${decision.strategyTag ?? "setup"}`.slice(0, 28).trimEnd(),
+    // Real gap fixed (user, live: wants the SAME full reasoning that reaches Telegram to also
+    // reach MT5 itself as a real push notification, not just the short `comment` above). The EA
+    // truncates this to fit SendNotification's real ~255-char push limit and sends it in full via
+    // SendMail -- see ea/DaveEA.mq5's "open" handler / NotifyTradeEvent.
+    pushMessage: decision.reason,
   };
   if (order.lots <= 0) {
     logTick(userId, `${symbol}: ${action} rejected -- no valid lot size (lot mode=${risk.lotMode}, model gave lots=${decision.lots ?? "none"})`);
@@ -1062,7 +1121,21 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     }
   }
 
-  const confidence = decision.confidence ?? 0;
+  // Real, confirmed bug fixed (user, live: a trade fired at a literal 0% confidence -- "what's
+  // the point of placing the market then"). `decision.confidence ?? 0` used to silently treat a
+  // missing/unparseable confidence exactly like a real, deliberate 0% score, which then sailed
+  // through evaluateConfidenceGate and auto-fired under the default autoApproveBelowThreshold=true
+  // policy. `confidence` is now required on the decision tool's schema (see buildDecisionTool
+  // above) as the primary fix, but this is defense in depth for a model that still returns a
+  // missing/malformed value anyway -- same early-reject-and-SKIP pattern as the "no valid lot
+  // size" check above, never a silent stand-in score. A genuine low confidence (e.g. a real 15%)
+  // is unaffected -- this only rejects a missing/non-numeric value, not a real low number.
+  if (typeof decision.confidence !== "number" || !Number.isFinite(decision.confidence)) {
+    logTick(userId, `${symbol}: ${action} rejected -- no valid confidence score was given`);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no valid confidence score given" });
+    return { action: "NONE", notable: false };
+  }
+  const confidence = decision.confidence;
   const reason = decision.reason ?? "";
 
   // Real feature ("Two-step trading" -- a second, independent AI, Flo, approves or declines every

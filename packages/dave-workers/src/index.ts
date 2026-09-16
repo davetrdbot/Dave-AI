@@ -9,3 +9,4 @@ export * from "./tool-request-tools.js";
 export * from "./subagent-tools.js";
 export * from "./journal-store.js";
 export * from "./journal-tools.js";
+export * from "./background-check-tools.js";

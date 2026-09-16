@@ -4,13 +4,12 @@ import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, withThinkingIndicator, markdownToTelegramHtml, chunkForTelegram, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, chunkForTelegram, getActiveIndicator, clearActiveIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
-import { classifyToolAction } from "./action-classifier.js";
 import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
-import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
+import { AgentLoop, type AgentRunResult } from "./agent-loop.js";
 import { runAutonomousTick } from "./autonomous-tick.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
@@ -31,6 +30,7 @@ import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
 import { friendlyErrorMessage } from "./error-messages.js";
 import { withLiveContext } from "./live-context.js";
+import { isJsonlSkillFile, installSkillsFromJsonl } from "@dave/skills";
 
 /** Real gap fixed (user: "the auto-trading loop is too chatty"): a cycle only ever reports back
  *  when one of these genuinely fired -- tied to real, verifiable tool-call outcomes, not to
@@ -138,59 +138,98 @@ async function runAgentTurn(
   // setting, `/stop`, and `/reset`). This tracks the turn so those commands can genuinely cancel
   // it (see turn-abort.ts) instead of only flipping flags nothing in this call ever checked.
   const abortController = beginTurn(deps.ownerUserId);
+  // Real reversal (explicit trader instruction, confirmed live): tg_thinking/tg_thinking_update/
+  // tg_finalize are agent-callable tools again (see @dave/telegram's tools.ts) -- Dave decides
+  // for itself, per IDENTITY.md, when a task is worth narrating live. To avoid reintroducing the
+  // exact duplicate/orphaned-message bug 1b21a73 fixed, this is now the ONLY place that ever
+  // sends the turn's plain final message -- there is no automatic `withThinkingIndicator` wrapper
+  // running alongside it anymore. If the model called tg_thinking this turn, `getActiveIndicator`
+  // finds the real indicator it opened and this finalizes THAT one; otherwise there was never an
+  // indicator at all and the final answer just sends as a normal message, exactly as if this
+  // feature didn't exist for that turn.
+  const sendFinal = async (finalText: string): Promise<void> => {
+    const indicator = getActiveIndicator(chatId);
+    if (indicator) {
+      await indicator.finalize(finalText);
+      clearActiveIndicator(chatId);
+      return;
+    }
+    for (const chunk of chunkForTelegram(finalText)) {
+      await client.sendMessage({ chat_id: chatId, text: chunk, parse_mode: "HTML" });
+    }
+  };
   try {
-    let finalResult: AgentRunResult | undefined;
-    await withThinkingIndicator(client, chatId, async (indicator) => {
-      const onStep = (step: AgentStep) => void indicator.update(classifyToolAction(step.toolName), step.toolName);
-      let result: AgentRunResult;
-      if (pendingQuestion && pendingToolCallId) {
-        clearPendingQuestion(deps.ownerUserId);
-        result = await loop.resume(
-          { status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] },
-          messageText as string,
-          { onStep, signal: abortController.signal }
-        );
-      } else {
-        history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent) });
-        result = await loop.run(history, { onStep, signal: abortController.signal });
-      }
-      saveConversationHistory(deps.db, historyKey, result.history);
-      finalResult = result;
-      if (result.status === "aborted") {
-        // Real, plain visibility into the exact bug this closes (user, live: "/stop didn't work,
-        // still showing typing") -- confirms in the logs that an abort genuinely reached and
-        // stopped the loop, not just "processing forever" with nothing to check.
-        console.log(`[turn-abort] ${deps.ownerUserId}: turn genuinely stopped (reason=${result.reason})`);
-        return { result: undefined, finalText: "⏹️ Stopped -- that turn was cancelled." };
-      }
+    let finalResult: AgentRunResult;
+    if (pendingQuestion && pendingToolCallId) {
+      clearPendingQuestion(deps.ownerUserId);
+      finalResult = await loop.resume(
+        { status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] },
+        messageText as string,
+        { signal: abortController.signal }
+      );
+    } else {
+      history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent) });
+      finalResult = await loop.run(history, { signal: abortController.signal });
+    }
+    saveConversationHistory(deps.db, historyKey, finalResult.history);
+    if (finalResult.status === "aborted") {
+      // Real, plain visibility into the exact bug this closes (user, live: "/stop didn't work,
+      // still showing typing") -- confirms in the logs that an abort genuinely reached and
+      // stopped the loop, not just "processing forever" with nothing to check.
+      console.log(`[turn-abort] ${deps.ownerUserId}: turn genuinely stopped (reason=${finalResult.reason})`);
+      await sendFinal("⏹️ Stopped -- that turn was cancelled.");
+    } else {
       // Real bug fixed (user: "sometimes it shows (no text) like this everytime"): a turn that
       // ends with tool calls but no closing remark from the model (common after a purely
       // action-driven turn, e.g. placing a trade with nothing left to say) used to literally send
       // the placeholder string "(no text)" as if it were Dave's real reply -- looked exactly like
       // a bug because it was one. A real, minimal, honest completion signal instead.
-      const rawFinalText = result.status === "done" ? result.text || "✅ Done." : result.question.question;
-      const finalText = markdownToTelegramHtml(rawFinalText);
-      return { result: undefined, finalText };
-    });
+      const rawFinalText = finalResult.status === "done" ? finalResult.text || "✅ Done." : finalResult.question.question;
+      await sendFinal(markdownToTelegramHtml(rawFinalText));
+    }
     // Real gap fixed (item 7: "inline-button-based questions Dave asks aren't being
     // received/processed correctly") -- ask_user previously had no way to offer clickable
     // choices at all. When the paused question carries real options, send them as real inline
     // buttons (askuser:<toolCallId>:<index>) in a follow-up message; tapping one is handled
     // below in the real callback_query path, resuming the SAME paused loop exactly like a typed
     // answer would.
-    if (finalResult?.status === "awaiting_user" && finalResult.question.options && finalResult.question.options.length > 0) {
+    if (finalResult.status === "awaiting_user" && finalResult.question.options && finalResult.question.options.length > 0) {
       const options = finalResult.question.options;
       const toolCallId = finalResult.toolCallId;
       const rows = options.map((opt, i) => [{ text: opt, callback_data: `askuser:${toolCallId}:${i}` }]);
       await client.sendMessage({ chat_id: chatId, text: "Tap an option:", reply_markup: { inline_keyboard: rows } });
     }
-    if (finalResult?.status !== "aborted") sendTransientTokenUsage(client, chatId, finalResult?.tokenUsage);
+    if (finalResult.status !== "aborted") sendTransientTokenUsage(client, chatId, finalResult.tokenUsage);
   } catch (err) {
-    await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) });
+    // Safety net (explicit spec: an orphaned "thinking..." message must never survive an error
+    // path either) -- if tg_thinking opened a real indicator before this turn blew up, finalize
+    // it with the error text instead of leaving it stuck; otherwise send the error as a normal
+    // message like before.
+    await sendFinal(friendlyErrorMessage(err)).catch(async () => {
+      await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) }).catch(() => {});
+    });
   } finally {
     endTurn(deps.ownerUserId, abortController);
     clearBusy(deps.ownerUserId);
+    // Final safety net: whatever happened above, never let a turn end with a live indicator still
+    // tracked for this chat -- a bug in one of the paths above must not leave "thinking..." stuck
+    // in the chat forever with nothing left to clean it up.
+    await ensureNoOrphanedIndicator(client, chatId);
   }
+}
+
+/** Exported for tests, and used above as runAgentTurn's own last-resort safety net: finalizes and
+ *  clears any `ThinkingIndicator` still tracked for this chat (tools.ts's `activeIndicators`).
+ *  Real-world case this closes: tg_thinking opened an indicator, then the turn threw before ever
+ *  reaching tg_finalize (a provider error, an unrelated tool exception, an abort) -- without this,
+ *  that "thinking..." message would sit in the chat forever with nothing left to edit or delete
+ *  it. Returns whether an orphaned indicator was actually found and cleaned up. */
+export async function ensureNoOrphanedIndicator(client: TelegramClient, chatId: number, fallbackText = "⚠️ Lost track of that task -- please try again."): Promise<boolean> {
+  const leftover = getActiveIndicator(chatId);
+  if (!leftover) return false;
+  await leftover.finalize(fallbackText).catch(() => {});
+  clearActiveIndicator(chatId);
+  return true;
 }
 
 /**
@@ -393,7 +432,18 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
   // into its own provider.generate() call.
   const tickAbortController = beginTurn(deps.ownerUserId);
   try {
-    const outcome = await runAutonomousTick({ userId: deps.ownerUserId, db: deps.db, executor: deps.executor, provider, signal: tickAbortController.signal });
+    const outcome = await runAutonomousTick({
+      userId: deps.ownerUserId,
+      db: deps.db,
+      executor: deps.executor,
+      provider,
+      signal: tickAbortController.signal,
+      // Part 3: sequential-thinking progress (when the user has it on) goes through the SAME
+      // tg_thinking_update mechanism from Part 1, never a separate indicator. Autonomous cycles
+      // stay silent by default (IDENTITY.md's "trade quietly"), so this is a real no-op unless a
+      // live indicator already happens to be open for this chat.
+      onSequentialThinkingProgress: (text) => void getActiveIndicator(chatId)?.update("trade", text),
+    });
     logCycle(deps.ownerUserId, `decision: ${outcome.action}${outcome.symbol ? ` ${outcome.symbol}` : ""}${outcome.notable ? " (notable)" : ""}${outcome.message ? ` -- ${outcome.message.replace(/\n/g, " | ")}` : ""}`);
     // Real, live fix (user: the trade-placed message's reason is now the model's full, real,
     // untruncated reasoning, not a summary -- a rare pathologically long one could exceed
@@ -441,7 +491,7 @@ function inboxDir(ownerUserId: string): string {
  * caller can bail out for this update without also invoking the agent
  * loop on nothing.
  */
-async function buildInboundContent(
+export async function buildInboundContent(
   client: TelegramClient,
   message: TelegramMessage,
   ownerUserId: string,
@@ -468,6 +518,23 @@ async function buildInboundContent(
     const filename = message.document.file_name ?? `${message.document.file_unique_id}`;
     const savedPath = join(inboxDir(ownerUserId), filename);
     writeFileSync(savedPath, bytes);
+    // Real gap fixed (jsonl-install.ts's own doc: "I can send it .jsonl it will automatically
+    // detect it as skill" -- confirmed there was no actual call site anywhere; installing a
+    // skill from an uploaded .jsonl required the MODEL to decide to call
+    // install_skills_from_jsonl, which it wasn't reliably doing). A .jsonl upload is detected and
+    // installed right here, in the real inbound-file path, before the model ever sees the turn --
+    // same real behavior as voice/photo, which are already handled without the model's help.
+    if (isJsonlSkillFile(filename)) {
+      const result = installSkillsFromJsonl(ownerUserId, bytes.toString("utf8"), filename);
+      const installedNames = result.installed.map((s) => `"${s.name}"`).join(", ");
+      const errorLines = result.errors.map((e) => `line ${e.line}: ${e.message}`).join("; ");
+      return (
+        `[.jsonl skill file "${filename}" received and auto-installed]` +
+        (result.installed.length > 0 ? ` Installed ${result.installed.length} skill(s): ${installedNames}.` : " No skills installed.") +
+        (result.errors.length > 0 ? ` Errors: ${errorLines}.` : "") +
+        ` Tell the user what was installed (and any errors) -- do not call install_skills_from_jsonl yourself, this file is already installed.`
+      );
+    }
     const isImage = /\.(png|jpe?g|gif|webp)$/i.test(filename);
     if (isImage) {
       const block = buildImageContentBlock(bytes, filename);

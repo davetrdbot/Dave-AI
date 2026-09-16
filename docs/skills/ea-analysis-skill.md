@@ -88,8 +88,8 @@ not a bug to paper over.
 
 ## Patterns & setups
 
-- **get_candles** — the last 10 real candles with body/wick ratios, gap
-  and imbalance detection.
+- **get_candles** — 20 candles + the present forming candle, with
+  body/wick ratios, gap and imbalance detection.
 - **get_patterns** — candlestick pattern recognition (engulfing, stars,
   hammers, dojis, ...) with a strongest-pattern call and reliability. Also
   returns `institutional_candle`: a real composite signal (large body +

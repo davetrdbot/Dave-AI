@@ -19,6 +19,7 @@ export * from "./trailing-runtime.js";
 export * from "./extra-tools.js";
 export * from "./trading-session-config.js";
 export * from "./confidence-gate.js";
+export * from "./account-awareness.js";
 export * from "./pending-confidence-entry.js";
 export * from "./settings-log.js";
 export * from "./market-hours.js";

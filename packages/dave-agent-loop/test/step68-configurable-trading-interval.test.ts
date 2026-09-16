@@ -9,14 +9,14 @@ import { startTelegramBotServer } from "../src/telegram-bot-server.js";
 import { getTradingLoopIntervalMinutes, isAutonomousTradingRunning, stopAutonomousTradingLoop, DEFAULT_TRADING_LOOP_MINUTES } from "../src/trading-loop.js";
 
 /**
- * Real gap fixed, then real behavior change (user, in live distress: "the agent should be
- * analyzing every 1 min compulsory it must place trade" -- a hard requirement, not "make it
- * configurable"). The autonomous cadence is now FIXED at 1 minute for every user -- a typed
- * "/start_trading <n>" for any n != 1 is honestly refused (the real 1-1 bounds), never silently
- * accepted at a slower cadence. Proves this end to end via real webhook POSTs.
+ * Real behavior, confirmed by the trader: the autonomous cadence defaults to 5 minutes and is
+ * genuinely user-configurable via "/start_trading <minutes>" down to 1 minute (or up to 60) when
+ * they want a faster/slower scan. A prior session had briefly locked this to a mandatory
+ * 1-minute cadence for everyone; the trader explicitly reverted that -- this test proves the
+ * real, current end-to-end behavior via real webhook POSTs.
  */
 
-console.log("=== Real proof: the autonomous trading cadence is genuinely fixed at 1 minute, not user-configurable ===\n");
+console.log("=== Real proof: the autonomous trading cadence defaults to 5 min and is genuinely user-configurable ===\n");
 
 const workDir = mkdtempSync(join(tmpdir(), "dave-trading-interval-"));
 process.chdir(workDir);
@@ -63,32 +63,39 @@ try {
     return (sentMessages.filter((m) => m.method === "sendMessage").at(-1)?.body as { text: string }).text;
   }
 
-  console.log(`[1] Default cadence is genuinely ${DEFAULT_TRADING_LOOP_MINUTES} minute(s) -- compulsory, before anything is configured...`);
+  console.log(`[1] Default cadence is genuinely ${DEFAULT_TRADING_LOOP_MINUTES} minute(s) before anything is configured...`);
   assert.equal(getTradingLoopIntervalMinutes(OWNER), DEFAULT_TRADING_LOOP_MINUTES);
-  assert.equal(DEFAULT_TRADING_LOOP_MINUTES, 1, "the compulsory cadence must genuinely be 1 minute");
+  assert.equal(DEFAULT_TRADING_LOOP_MINUTES, 5, "the default cadence must genuinely be 5 minutes");
 
-  console.log("\n[2] Plain '/start_trading' genuinely starts at the compulsory 1-minute cadence...");
+  console.log("\n[2] Plain '/start_trading' genuinely starts at the real 5-minute default...");
   sentMessages.length = 0;
   await postText("/start_trading");
-  assert.equal(getTradingLoopIntervalMinutes(OWNER), 1);
+  assert.equal(getTradingLoopIntervalMinutes(OWNER), 5);
   assert.equal(isAutonomousTradingRunning(OWNER), true);
+  console.log(`    "${lastText()}"`);
+  assert.match(lastText(), /every 5 min/);
+
+  console.log("\n[3] '/start_trading 1' genuinely lowers the cadence to the fastest user-settable value...");
+  sentMessages.length = 0;
+  await postText("/start_trading 1");
+  assert.equal(getTradingLoopIntervalMinutes(OWNER), 1, "the user must genuinely be able to speed the cadence up to 1 minute");
+  assert.equal(isAutonomousTradingRunning(OWNER), true, "must still be running, now re-armed at the new cadence");
   console.log(`    "${lastText()}"`);
   assert.match(lastText(), /every 1 min/);
 
-  console.log("\n[3] '/start_trading 10' is genuinely REFUSED -- the cadence is no longer user-configurable...");
+  console.log("\n[4] '/start_trading 2' genuinely re-arms at 2 minutes...");
   sentMessages.length = 0;
-  await postText("/start_trading 10");
-  assert.equal(getTradingLoopIntervalMinutes(OWNER), 1, "the real compulsory cadence must never be overwritten");
-  assert.equal(isAutonomousTradingRunning(OWNER), true, "must still be running at the compulsory cadence, not stopped");
+  await postText("/start_trading 2");
+  assert.equal(getTradingLoopIntervalMinutes(OWNER), 2);
   console.log(`    "${lastText()}"`);
-  assert.match(lastText(), /between 1 and 1/);
+  assert.match(lastText(), /every 2 min/);
 
-  console.log("\n[4] An out-of-bounds value is likewise genuinely refused...");
+  console.log("\n[5] An out-of-bounds value is genuinely refused, and the prior real value is left untouched...");
   sentMessages.length = 0;
   await postText("/start_trading 99999");
-  assert.equal(getTradingLoopIntervalMinutes(OWNER), 1, "an invalid value must NOT overwrite the real compulsory cadence");
+  assert.equal(getTradingLoopIntervalMinutes(OWNER), 2, "an invalid value must NOT overwrite the last real, valid cadence");
   console.log(`    "${lastText()}"`);
-  assert.match(lastText(), /between 1 and 1/);
+  assert.match(lastText(), /between 1 and 60/);
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

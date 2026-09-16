@@ -431,6 +431,42 @@ try {
     assert.equal(summarizeReason(overLong).endsWith("…"), true, "summarizeReason must still cap and ellipsize a genuinely over-length single \"sentence\"");
   }
 
+  console.log("\n[9] Real bug fixed (user, live: a trade fired at a literal 0% confidence -- \"what's the point of placing the market then\"). A decision missing `confidence` must be hard-rejected, never silently treated as a real 0% and auto-approved, even with autoApproveBelowThreshold=true and a low threshold...\n");
+  {
+    const OWNER9 = "user-autonomous-tick-9";
+    upsertGroup(OWNER9, { id: "majors", name: "Majors", symbols: ["EURCHF"] });
+    setActiveGroup(OWNER9, "majors");
+    setRiskMode(OWNER9, "sl", "off");
+    setRiskMode(OWNER9, "tp", "off");
+    setRiskMode(OWNER9, "lot", "on", 0.01);
+    setConfidenceThreshold(OWNER9, 1);
+    setAutoApproveBelowThreshold(OWNER9, true);
+
+    const placed: string[] = [];
+    const executor: TradeExecutor = {
+      openOrder: async (o) => { placed.push(o.symbol); return { ticket: "T" }; },
+      modifyOrder: async () => {}, closePosition: async () => ({ closedLots: 0, remainingLots: 0 }),
+      deletePendingOrder: async () => {}, listOpenPositions: async () => [], listPendingOrders: async () => [],
+    };
+    const ea = startSimulatedEa(OWNER9, { EURCHF: { bid: 0.95, ask: 0.9502 } });
+    // Real tool call with `confidence` genuinely omitted -- exactly what coerceDecision produces
+    // when the model's JSON leaves the field out or returns something non-numeric for it.
+    const { provider, calls } = mockToolProvider([{ action: "BUY", symbol: "EURCHF", reason: "malformed decision, no real confidence given" }]);
+    try {
+      const outcome = await runAutonomousTick({ userId: OWNER9, db, executor, provider });
+      console.log(`    real outcome: ${JSON.stringify(outcome)}, real orders placed: ${JSON.stringify(placed)}`);
+      assert.equal(outcome.action, "NONE", "a missing-confidence decision must be discarded as a real SKIP, never proceed as a trade");
+      assert.equal(placed.length, 0, "a missing-confidence decision must NEVER auto-fire, even with autoApproveBelowThreshold=true and a threshold of 1%");
+      assert.equal(listPendingTradeApprovals(OWNER9).length, 0, "it must not even queue for approval -- it's a malformed decision, not a real low score");
+
+      const schema = calls[0].tools![0].parameters as { required: string[] };
+      assert.ok(schema.required.includes("confidence"), "confidence must be REQUIRED on the decision tool's schema -- the model must not be able to omit it in the first place");
+      console.log(`    real schema.required: ${JSON.stringify(schema.required)}`);
+    } finally {
+      await ea.stop();
+    }
+  }
+
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {
   globalThis.fetch = realFetch;

@@ -7,7 +7,8 @@
   "types": "lib/index.d.ts",
   "dependencies": {
     "@dave/brain": "workspace:*",
-    "@dave/memory": "workspace:*"
+    "@dave/memory": "workspace:*",
+    "@dave/trading": "workspace:*"
   },
   "exports": {
     ".": "./lib/index.js"

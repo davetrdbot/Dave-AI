@@ -69,6 +69,8 @@ import {
   setSelfPauseEnabled,
   getTwoStepTradingEnabled,
   setTwoStepTradingEnabled,
+  getSequentialThinkingEnabled,
+  setSequentialThinkingEnabled,
   getAnalysisConfig,
   resetAnalysisConfigToAll,
   toggleTimeframe,
@@ -985,6 +987,13 @@ function riskSettingsKeyboard(userId: string) {
   // default (getTwoStepTradingEnabled's own real default).
   const twoStepEnabled = getTwoStepTradingEnabled(userId);
   const twoStepLabel = `Two-step trading (Flo reviews every trade): ${twoStepEnabled ? "On" : "Off"}`;
+  // Real feature (Part 3: sequential thinking, scoped to the autonomous tick's final trade
+  // decision only): a bounded extra reasoning pass -- adapted from the MCP "sequential-thinking"
+  // reference technique -- run before the decision tool call. Same direct on/off toggle-row
+  // pattern as two-step trading above, OFF by default: it genuinely costs extra real tokens and
+  // latency per decision, so it's an explicit opt-in, not something silently turned on for you.
+  const sequentialThinkingEnabled = getSequentialThinkingEnabled(userId);
+  const sequentialThinkingLabel = `Sequential thinking on trade decisions (slower, costs more): ${sequentialThinkingEnabled ? "On" : "Off"}`;
   return appendMenuHome(
     settingsScreen(
       [
@@ -1008,6 +1017,7 @@ function riskSettingsKeyboard(userId: string) {
         [{ label: maxDailyLossLabel, callbackData: "proposelimit:maxDailyLossPct", active: false }],
         [{ label: selfPauseLabel, callbackData: "toggleselfpause", active: selfPauseEnabled }],
         [{ label: twoStepLabel, callbackData: "toggletwostep", active: twoStepEnabled }],
+        [{ label: sequentialThinkingLabel, callbackData: "togglesequentialthinking", active: sequentialThinkingEnabled }],
       ],
       "settings:top"
     )
@@ -1658,6 +1668,12 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       setTwoStepTradingEnabled(deps.userId, !enabled);
       ackText = `Two-step trading ${!enabled ? "enabled" : "disabled"}`;
       await confirm(`Two-step trading (Flo reviews every trade): ${!enabled ? "On" : "Off"}`);
+      await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
+    } else if (data === "togglesequentialthinking") {
+      const enabled = getSequentialThinkingEnabled(deps.userId);
+      setSequentialThinkingEnabled(deps.userId, !enabled);
+      ackText = `Sequential thinking ${!enabled ? "enabled" : "disabled"}`;
+      await confirm(`Sequential thinking on trade decisions (slower, costs more): ${!enabled ? "On" : "Off"}`);
       await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
     } else if (data === "settings:risk") {
       ackText = undefined;

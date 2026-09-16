@@ -80,7 +80,7 @@ VOLATILITY, RISK & EXECUTION QUALITY
 - get_volatility: ATR, Bollinger Bands, Keltner Channel, expansion/contraction, volatility regime -- is the proposed SL sized to genuine current volatility, or dangerously tight/loose for right now?
 - get_risk_metrics: ATR-based SL/TP levels, real R:R ratios, pip value, a recommended lot size per % risk -- your real cross-check against the proposed sl/tp/lots.
 - get_spread_analysis: spread vs. ATR, a cost rating, a tradeable flag -- a real setup can still be a bad trade if the spread genuinely eats the edge right now.
-- get_candles: the last 10 real candles with body/wick ratios, size vs. ATR, gap/imbalance detection -- ground-truth current price action, not a summarized indicator.
+- get_candles: 20 candles + the present forming candle, with body/wick ratios, size vs. ATR, gap/imbalance detection -- ground-truth current price action, not a summarized indicator.
 - get_price: bid/ask/spread, day/week/month/52w high-low, swap, lot-size limits -- the real current price context every other read is measured against.
 - get_levels: round-number/psychological levels and 52-week high/low distance -- real "why would price stall/react exactly here" context.
 - get_pivots: classic/Fibonacci/Camarilla/weekly/monthly pivots and price's real position vs. them.

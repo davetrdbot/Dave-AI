@@ -100,7 +100,7 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
   analysisTool("get_volume", "volume", "volume analysis (current vs average, bull/bear volume delta, spikes/climax)"),
   analysisTool("get_ichimoku", "ichimoku", "Ichimoku Cloud (tenkan/kijun/senkou A+B/chikou, cloud position, TK cross, signal score)"),
   analysisTool("get_fibonacci", "fibonacci", "Fibonacci retracement/extension levels, nearest level, OTE zone, golden-ratio bounce"),
-  analysisTool("get_candles", "candles", "the last 10 real candles with body/wick ratios, size vs ATR, gap and imbalance detection"),
+  analysisTool("get_candles", "candles", "20 candles + the present forming candle, with body/wick ratios, size vs ATR, gap and imbalance detection"),
   analysisTool("get_patterns", "patterns", "candlestick pattern recognition (single/double/triple patterns, strongest pattern, bias, reliability)"),
   analysisTool("get_ict", "ict", "ICT concepts (FVG/iFVG, order blocks, breaker blocks, killzones, silver bullet, Judas swing, AMD phase, OTE zone)"),
   analysisTool("get_wyckoff", "wyckoff", "Wyckoff phase analysis (accumulation/distribution/markup, spring/UTAD events, effort-vs-result)"),

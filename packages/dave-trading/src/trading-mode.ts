@@ -46,3 +46,23 @@ export function setTradingMode(userId: string, mode: TradingMode, lockedSkillId?
 export function resetTradingModeForUser(userId: string): void {
   rmSync(path(userId), { force: true });
 }
+
+/**
+ * Part 2 (skill scoping): thin, clearly-named wrappers around the mode above, for the "active
+ * trading strategy" concept -- a skill (from @dave/skills) marked as the one real strategy Dave
+ * follows right now. Same storage, same "auto" fallback, just named for what it actually means to
+ * a caller that doesn't care about the underlying mode/lockedSkillId shape. No separate file, no
+ * second source of truth -- setting or clearing the active strategy IS setting the trading mode.
+ */
+export function getActiveStrategySkillId(userId: string): string | undefined {
+  const state = getTradingMode(userId);
+  return state.mode === "trading-skills" ? state.lockedSkillId : undefined;
+}
+
+export function setActiveStrategySkill(userId: string, skillId: string): void {
+  setTradingMode(userId, "trading-skills", skillId);
+}
+
+export function clearActiveStrategySkill(userId: string): void {
+  setTradingMode(userId, "auto");
+}

@@ -78,8 +78,22 @@ export class EaTradeExecutor implements TradeExecutor {
     return randomBytes(8).toString("hex");
   }
 
-  async openOrder(order: { symbol: string; type: string; lots: number; price?: number; sl?: number; tp?: number; comment?: string }): Promise<{ ticket: string }> {
-    const command: EaCommand = { id: this.newCommandId(), action: "open", symbol: order.symbol, type: order.type, lots: order.lots, price: order.price, sl: order.sl, tp: order.tp, comment: order.comment };
+  async openOrder(order: { symbol: string; type: string; lots: number; price?: number; sl?: number; tp?: number; comment?: string; pushMessage?: string }): Promise<{ ticket: string }> {
+    const command: EaCommand = {
+      id: this.newCommandId(),
+      action: "open",
+      symbol: order.symbol,
+      type: order.type,
+      lots: order.lots,
+      price: order.price,
+      sl: order.sl,
+      tp: order.tp,
+      comment: order.comment,
+      // Real gap fixed (user, live): the full trade reasoning, same text Telegram gets -- the EA's
+      // own "open" command handler truncates this to fit SendNotification's real push-notification
+      // limit, and sends it in full to SendMail. See ea/DaveEA.mq5 NotifyTradeEvent.
+      pushMessage: order.pushMessage,
+    };
     enqueueCommand(this.userId, command);
     const result = await this.awaitResult(command);
     if (!result.ticket) throw new Error(`EA reported success for open command ${command.id} but returned no ticket`);

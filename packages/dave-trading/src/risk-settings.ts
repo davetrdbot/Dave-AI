@@ -224,6 +224,31 @@ export function setTwoStepTradingEnabled(userId: string, enabled: boolean): void
   writeFileSync(path, JSON.stringify({ enabled }, null, 2), "utf8");
 }
 
+// --- Sequential thinking (trade decisions only): an adapted version of the MCP
+// "sequential-thinking" reference server's technique (numbered, revisable reasoning steps) run
+// as a bounded extra pass before the autonomous tick's final trade decision -- see
+// dave-agent-loop's sequential-thinking.ts. OFF by default -- an explicit opt-in, same
+// file-backed boolean pattern as two-step trading above, because it genuinely costs extra real
+// tokens/latency per decision (several extra model round trips) for a trade quality improvement
+// that not every user wants to pay for. ---
+
+function sequentialThinkingEnabledPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "sequential-thinking-enabled.json");
+}
+
+export function getSequentialThinkingEnabled(userId: string): boolean {
+  const path = sequentialThinkingEnabledPath(userId);
+  if (!existsSync(path)) return false;
+  return (JSON.parse(readFileSync(path, "utf8")) as { enabled: boolean }).enabled;
+}
+
+export function setSequentialThinkingEnabled(userId: string, enabled: boolean): void {
+  const path = sequentialThinkingEnabledPath(userId);
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, JSON.stringify({ enabled }, null, 2), "utf8");
+}
+
 /** Item 8 (/reset "config/settings back to defaults"): deletes the underlying files so
  * getRiskSettings/getAutoApprovalEnabled's own real fallback defaults take over -- no hardcoded
  * default duplicated here that could drift from those functions' own definition of "default". */
@@ -232,6 +257,7 @@ export function resetRiskSettingsForUser(userId: string): void {
   rmSync(autoApprovalPath(userId), { force: true });
   rmSync(pendingLimitPath(userId), { force: true });
   rmSync(twoStepTradingEnabledPath(userId), { force: true });
+  rmSync(sequentialThinkingEnabledPath(userId), { force: true });
 }
 
 export interface SettingsChangeDecision {

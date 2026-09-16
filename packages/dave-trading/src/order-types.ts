@@ -22,6 +22,15 @@ export interface OrderRequest {
    *  labeled inside MT5, not just in this bot's own logs. Keep short: MT5's real, broker-enforced
    *  comment length limit means a long string would just get silently cut by the terminal anyway. */
   comment?: string;
+  /** Real gap fixed (user, live: the trade-placed push notification's FULL reasoning -- the same
+   *  text Telegram gets via buildTradePlacedMessage/trade-notifications.ts -- never reached MT5
+   *  itself, only the short `comment` above did). Passed through to the EA's "open" command as a
+   *  separate field and used for SendNotification/SendMail, NOT for CTrade's `comment` argument
+   *  (that one has its own real, much shorter broker-enforced limit and stays as-is). Unlike
+   *  `comment`, this is deliberately NOT pre-truncated here -- the EA decides how much of it fits
+   *  a genuine push notification (SendNotification's own real ~255-char limit) vs. an email
+   *  (effectively unbounded), so truncation happens once, at the point that actually needs it. */
+  pushMessage?: string;
 }
 
 export type EntryPriceResolution =

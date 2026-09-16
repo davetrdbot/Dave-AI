@@ -256,6 +256,23 @@ export class ThinkingIndicator {
     }
   }
 
+  /**
+   * Real gap fixed: the counterpart to `finalize()` for the failure path -- see the
+   * `withThinkingIndicator` catch block's comment for the real bug this closes (a permanently
+   * orphaned progress message read by the trader as a live "still thinking" contradiction when it
+   * was really just a stale leftover from before a hard provider failure). Deletes the same real
+   * guaranteed-visible progress message `finalize()` would have deleted, after waiting on any
+   * still-in-flight `update()` calls the same way `finalize()` does -- but sends no final text,
+   * since the caller is about to send its own real error message instead.
+   */
+  async cleanupOnFailure(): Promise<void> {
+    if (this.pendingUpdates.size > 0) await Promise.all([...this.pendingUpdates].map((p) => p.catch(() => {})));
+    if (this.progressMessageId !== undefined) {
+      await this.client.deleteMessage({ chat_id: this.chatId, message_id: this.progressMessageId }).catch(() => {});
+      this.progressMessageId = undefined;
+    }
+  }
+
   stop(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
   }
@@ -277,6 +294,20 @@ export async function withThinkingIndicator<T>(
     const { result, finalText } = await task(indicator);
     await indicator.finalize(finalText);
     return result;
+  } catch (err) {
+    // Real bug fixed (trader, live: saw "⚠️ All configured providers failed: upstage (request
+    // failed)" as a genuine new message while the bot STILL visibly showed its last "💹 checking
+    // what's open"-style progress message, looking exactly like a live contradiction -- bot
+    // "failed" and "still working" at once. It wasn't a race: when `task(indicator)` throws (a
+    // hard provider failure deep in the agent loop, well after `indicator.update()` had already
+    // sent/edited a real, persisted progress message), that exception skipped straight past
+    // `indicator.finalize()` above -- the only place that ever deletes the progress message. The
+    // `finally` below only ever stopped the heartbeat interval, never touched the progress
+    // message, so it was silently orphaned in the chat forever: a real, permanently stale leftover
+    // from BEFORE the failure, not a live "still thinking" state. The trader was reading a corpse.
+    // Cleaned up here, on every hard failure, before the error message is sent by the caller.
+    await indicator.cleanupOnFailure();
+    throw err;
   } finally {
     indicator.stop();
   }

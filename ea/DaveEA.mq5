@@ -35,7 +35,12 @@
 
 input string WebhookURL     = "{{WEBHOOK_URL}}";
 input string EaToken        = "{{TOKEN}}"; // embedded in WebhookURL's path -- kept here for logging/diagnostics only
-input int    PushSeconds    = 120;   // periodic state-push cadence (user: "the ea tick should be sending every 2min" -- default 120s)
+// Real, live change (user: wants the full-report push as fast as possible). Default is now 1s --
+// MT5's EventSetTimer() has a real, practical floor around 1 second; there is no sub-second/ms
+// timer in the MT5 API, so 1 is the fastest this can genuinely be set to (faking ms precision
+// here would just be a lie -- OnTick() below is the real per-tick path for anything that needs
+// to be faster than this).
+input int    PushSeconds    = 1;     // periodic state-push cadence (default 1s -- EventSetTimer's real floor)
 input bool   EnablePush     = true;  // Step 11.2: MT5 push notification on open/close/error
 input bool   EnableEmail    = true;  // Step 11.2: email on open/close/error
 input int    MagicNumber    = 88001; // ported from the reference DAVE.mq5 -- tags every order this EA places
@@ -49,7 +54,7 @@ CTrade trade;
 // Item 5 real gap fixed: PushSeconds is a compiled-in `input` (read-only at runtime) -- this
 // mirrors it into a real mutable global so a "set_push_interval" command can change the EA's
 // actual push/heartbeat cadence live, without requiring a recompile or restart.
-int g_pushIntervalSeconds = 120;
+int g_pushIntervalSeconds = 1;
 
 //+------------------------------------------------------------------+
 //| Broker symbol resolver -- ported from the reference DAVE.mq5.     |
@@ -157,8 +162,26 @@ void OnTimer()
    PushReportAndExecuteCommands();
   }
 
+// Real, light addition (open-trade/price monitoring cadence, faster than any timer): -1 means
+// "not observed yet" so the very first real tick after EA start never fires a spurious push.
+int g_lastKnownPositionsTotal = -1;
+
 void OnTick()
   {
+   // OnTick() fires on every genuine MT5 price tick -- faster than EventSetTimer's real floor
+   // (PushSeconds, now 1s). This deliberately does NOT call the full, expensive
+   // PushReportAndExecuteCommands() on every tick -- on a fast-ticking symbol that would hammer
+   // the webhook and just duplicate the timer's own job for no benefit. The one cheap, local,
+   // real check that's worth doing here: has the actual number of open positions changed since
+   // the last tick (a genuine SL/TP hit, a manual close/open in the terminal, or an order this
+   // EA itself just placed)? If so, push one report immediately instead of waiting up to
+   // PushSeconds for the next scheduled one -- position/price state reaches Dave the instant it
+   // genuinely changes, without adding any network cost in the far more common case where
+   // nothing changed between ticks.
+   int total = PositionsTotal();
+   if(g_lastKnownPositionsTotal >= 0 && total != g_lastKnownPositionsTotal)
+      PushReportAndExecuteCommands();
+   g_lastKnownPositionsTotal = total;
   }
 
 //+------------------------------------------------------------------+
@@ -517,6 +540,13 @@ void ExecuteOneCommand(string obj)
       // Dave's own internal log) -- passed through as CTrade's real trailing comment argument so
       // the order is visibly labeled inside the terminal, not just in the bot's own history.
       string comment = JsonGetString(obj, "comment");
+      // Real gap fixed (user, live: wants the SAME full reasoning that reaches Telegram to also
+      // reach MT5 itself as a real push notification/email -- not just the short `comment` above,
+      // which has its own separate, much tighter broker-enforced length limit). This is a
+      // SEPARATE field, never used as the CTrade comment argument -- only passed to
+      // NotifyTradeEvent below, which truncates it for SendNotification's real ~255-char push
+      // limit but sends it in full via SendMail.
+      string pushMessage = JsonGetString(obj, "pushMessage");
       bool ok = false;
       // Real bug fixed here: this used to only ever call trade.Buy/trade.Sell
       // (always market price, ignoring the "price" field entirely), so the 4
@@ -531,8 +561,8 @@ void ExecuteOneCommand(string obj)
       else if(type == "sell_stop") { price = EnforcePendingPrice(symbol, type, price); ok = trade.SellStop(lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment); }
       ulong ticket = ok ? trade.ResultOrder() : 0;
       AppendResult(id, ok, ok ? "opened" : ("failed: " + trade.ResultRetcodeDescription()), ok ? IntegerToString((int)ticket) : "");
-      if(ok) NotifyTradeEvent("Opened " + type + " " + DoubleToString(lots, 2) + " " + symbol);
-      else NotifyTradeEvent("FAILED to open " + type + " " + symbol + ": " + trade.ResultRetcodeDescription());
+      if(ok) NotifyTradeEvent("Opened " + type + " " + DoubleToString(lots, 2) + " " + symbol, pushMessage);
+      else NotifyTradeEvent("FAILED to open " + type + " " + symbol + ": " + trade.ResultRetcodeDescription(), pushMessage);
      }
    else if(action == "modify")
      {
@@ -590,7 +620,10 @@ void ExecuteOneCommand(string obj)
       // requested from Dave's /connection settings screen. Clamped to a sane real range so a bad
       // value can never make the EA hammer the webhook or effectively stop reporting.
       int seconds = (int)JsonGetNumber(obj, "seconds", g_pushIntervalSeconds);
-      if(seconds < 3) seconds = 3;
+      // Floor is 1, matching EventSetTimer()'s own real practical floor (and the compiled default
+      // above) -- was 3 when the compiled default was still 120; keeping a stricter runtime floor
+      // than the default itself made no sense.
+      if(seconds < 1) seconds = 1;
       if(seconds > 300) seconds = 300;
       EventKillTimer();
       g_pushIntervalSeconds = seconds;
@@ -1512,7 +1545,10 @@ string A_Candles()
   {
    double atr = A_ATR(14);
    string arr[];
-   for(int i = 0; i < MathMin(10, g_anb); i++)
+   // Real, live change (user: wants the last 20 closed candles PLUS the current forming candle,
+   // not just 10). g_aC[0]/g_aO[0]/etc is always the current (still-forming) bar -- i=0..20 is
+   // that forming candle plus the 20 fully-closed candles before it, 21 total.
+   for(int i = 0; i < MathMin(21, g_anb); i++)
      {
       double body = MathAbs(g_aC[i] - g_aO[i]);
       double rng  = MathMax(g_aH[i] - g_aL[i], g_aPoint);
@@ -2723,12 +2759,34 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr)
 //| notifications enabled with a MetaQuotes ID in the terminal;        |
 //| SendMail requires email configured in Tools > Options > Email.     |
 //+------------------------------------------------------------------+
-void NotifyTradeEvent(string message)
+// Real gap fixed (user, live: wants the SAME full trade reasoning that reaches Telegram to also
+// reach MT5 itself as a real push notification/email, not just the short trade-comment string).
+// `fullReasoning` is optional (close/error events currently don't pass one) and, when present, is
+// appended to the short `message` -- NOT used in place of it, so the direction/symbol/lots at the
+// front of `message` always survive truncation below.
+void NotifyTradeEvent(string message, string fullReasoning = "")
   {
-   Print("Dave EA: ", message);
+   Print("Dave EA: ", message, (StringLen(fullReasoning) > 0 ? " | " + fullReasoning : ""));
    if(EnablePush)
-      SendNotification(message);
+     {
+      // Real MT5 constraint: SendNotification's push body is capped at roughly 255 characters by
+      // the MetaQuotes push service -- there is no real way around this, so a combined string
+      // longer than that is truncated here, sensibly: `message` (direction/symbol/lots, or the
+      // failure reason) is always kept in full at the front, and only the reasoning's own
+      // trailing detail is cut, never the message itself.
+      string pushText = message;
+      if(StringLen(fullReasoning) > 0)
+        {
+         string combined = message + " - " + fullReasoning;
+         pushText = StringLen(combined) > 255 ? StringSubstr(combined, 0, 252) + "..." : combined;
+        }
+      SendNotification(pushText);
+     }
    if(EnableEmail)
-      SendMail("Dave EA trade event", message);
+     {
+      // Email has no equivalent real length constraint -- send the reasoning in full.
+      string emailBody = StringLen(fullReasoning) > 0 ? message + "\n\n" + fullReasoning : message;
+      SendMail("Dave EA trade event", emailBody);
+     }
   }
 //+------------------------------------------------------------------+
