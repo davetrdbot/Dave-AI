@@ -172,10 +172,20 @@ export class PatchNotApprovedError extends Error {
 }
 
 /**
- * The actual real-file write. Structurally gated: throws before ever
- * calling `writeFile` unless status is genuinely "tested" AND the given
- * approval request is genuinely "approved". `writeFile` is injected so
- * this module never hardcodes where "the real file" lives.
+ * Real bug fixed (bug-hunting pass): `approvalId` was only checked for
+ * `status === "approved"` -- it was never checked to actually BE the
+ * approval for THIS patch. Any already-approved approval request for a
+ * completely unrelated change (an old tool-creation approval, a decoy
+ * "rename a variable" patch the user genuinely said yes to) could be
+ * replayed here to unlock applying a different, unrelated tested patch
+ * -- e.g. a real change to risk limits or the circuit breaker -- that the
+ * user never actually saw or approved. `ApprovalRequest` has no
+ * `patchId` field (it's a generic gate shared by patches, tool creation
+ * and strategy changes), so the correlation this codebase already relies
+ * on elsewhere (both call sites -- proposeNewTool/requestToolCreationApproval
+ * and the plain patch flow -- always request approval with the exact same
+ * `description`/`reason` as the patch itself; step17's own test does the
+ * same) is now enforced here too, not just followed by convention.
  */
 export async function applyPatchToFile(
   db: DaveDatabase,
@@ -190,7 +200,9 @@ export async function applyPatchToFile(
   if (patch.status !== "tested") throw new PatchNotTestedError(patchId);
 
   const approval = getApproval(db, ownerUserId, approvalId);
-  if (!approval || approval.status !== "approved") throw new PatchNotApprovedError(patchId);
+  if (!approval || approval.status !== "approved" || approval.description !== patch.description || approval.reason !== patch.reason) {
+    throw new PatchNotApprovedError(patchId);
+  }
 
   writeFile(patch.newContent);
   db.update(TABLE, ownerUserId, patchId, { status: "applied" satisfies PatchStatus });

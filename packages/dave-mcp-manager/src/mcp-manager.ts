@@ -68,7 +68,17 @@ export async function mcpConnect(userId: string, serverUrl: string, token?: stri
     throw new McpConnectionError(serverUrl, err);
   }
 
-  const discovered = await client.listTools();
+  // Real leak this closes: if the handshake above succeeds but listTools()
+  // then fails, the socket is genuinely open but was never stored in `live`
+  // -- there would be no connection id to call mcpDisconnect with, so it
+  // would stay open for the life of the process. Close it before rethrowing.
+  let discovered: Awaited<ReturnType<typeof client.listTools>>;
+  try {
+    discovered = await client.listTools();
+  } catch (err) {
+    await client.close().catch(() => {});
+    throw new McpConnectionError(serverUrl, err);
+  }
   const tools: McpToolSummary[] = discovered.tools.map((t) => ({ name: t.name, description: t.description }));
 
   const id = randomBytes(6).toString("hex");
