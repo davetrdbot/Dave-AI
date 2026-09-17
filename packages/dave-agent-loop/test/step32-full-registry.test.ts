@@ -218,17 +218,15 @@ try {
   assert.equal(capturedPush.chat_id, 847213);
   assert.equal(capturedPush.text, "Heads up: XAUUSD just hit TP.");
   assert.ok(registryWithPush.has("send_telegram"), "TELEGRAM_TOOLS must also register once a real telegram client is supplied");
-  // Explicit trader reversal (confirmed live) of the 1b21a73 removal: tg_thinking/
-  // tg_thinking_update/tg_finalize are agent-callable tools again. The real bug 1b21a73 fixed was
-  // never "these tools must not exist" -- it was that telegram-bot-server.ts's runAgentTurn ALSO
-  // wrapped every turn in its own automatic ThinkingIndicator (withThinkingIndicator), so any time
-  // the model called tg_thinking it raced a second, uncoordinated indicator and could send a
-  // duplicate/orphaned message. That automatic wrapper is gone now (see runAgentTurn) -- these
-  // three tools are the ONLY path that can create/update/finalize an indicator, so there is no
-  // second indicator left to race against.
-  assert.ok(registryWithPush.has("tg_thinking"), "tg_thinking must be registered -- Dave decides for itself when to narrate a multi-step task");
-  assert.ok(registryWithPush.has("tg_thinking_update"), "tg_thinking_update must be registered alongside tg_thinking");
-  assert.ok(registryWithPush.has("tg_finalize"), "tg_finalize must be registered alongside tg_thinking");
+  // Third reversal (the trader, live, explicit: "hardcode this ... instead of the bot calling it
+  // it's already hardcoded"). The model-callable tg_thinking/tg_thinking_update/tg_finalize tools
+  // from the second reversal never got called reliably even after being promoted into
+  // CORE_TOOL_NAMES -- back to 1b21a73's original shape: no model-callable indicator tools at
+  // all, telegram-bot-server.ts's runAgentTurn drives the SAME ThinkingIndicator automatically off
+  // real AgentStep tool-call events (see describeStep/onStep there), zero AI decision involved.
+  assert.ok(!registryWithPush.has("tg_thinking"), "tg_thinking must NOT be registered -- the indicator is automatic now, not model-callable");
+  assert.ok(!registryWithPush.has("tg_thinking_update"), "tg_thinking_update must NOT be registered");
+  assert.ok(!registryWithPush.has("tg_finalize"), "tg_finalize must NOT be registered");
   assert.ok(registryWithPush.has("send_trade_opened_notification"), "NOTIFICATION_TOOLS must also register");
   assert.equal(registryWithPush.list().length, registry.list().length + PUSH_TOOLS.length + TELEGRAM_TOOLS.length + NOTIFICATION_TOOLS.length);
   await new Promise<void>((resolve) => tgServer.close(() => resolve()));

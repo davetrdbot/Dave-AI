@@ -16,7 +16,8 @@ import { runAutonomousTick } from "../src/autonomous-tick.js";
  * settings toggle (OFF by default -- the existing single-call decision path is completely
  * unaffected until the user explicitly turns it on), and that its real per-thought progress
  * reaches the caller via onSequentialThinkingProgress -- the same callback
- * telegram-bot-server.ts wires to tg_thinking_update's mechanism, never a separate indicator.
+ * telegram-bot-server.ts wires to the automatic ThinkingIndicator's update() mechanism, never a
+ * separate indicator.
  */
 
 console.log("=== Real proof: sequential thinking is genuinely wired into (and gated ahead of) the tick's real trade decision ===\n");
@@ -153,7 +154,7 @@ async function main() {
     assert.equal(tickCalls, 1, "still exactly one real decision call -- the pass adds context, it doesn't replace the decision");
     assert.equal(placedOrders.length, 1, "the real trade must still fire normally once the decision is made");
     assert.equal(outcome.action, "BUY");
-    assert.equal(progress.length, 2, "real per-thought progress must reach the caller's callback -- the same one wired to tg_thinking_update");
+    assert.equal(progress.length, 2, "real per-thought progress must reach the caller's callback -- the same one wired to the automatic ThinkingIndicator's update()");
     assert.ok(progress[0].includes("real reasoning step 1"));
     console.log(`    confirmed: thoughtCalls=${thoughtCalls} (real pass ran), tickCalls=${tickCalls} (decision unchanged), progress events=${progress.length}`);
     await ea.stop();

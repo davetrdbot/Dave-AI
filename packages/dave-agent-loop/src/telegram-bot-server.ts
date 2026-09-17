@@ -4,12 +4,12 @@ import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, chunkForTelegram, getActiveIndicator, clearActiveIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, chunkForTelegram, getActiveIndicator, setActiveIndicator, clearActiveIndicator, withThinkingIndicator, type ActionType, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyError } from "@dave/vision";
 import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
-import { AgentLoop, type AgentRunResult } from "./agent-loop.js";
+import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
 import { runAutonomousTick } from "./autonomous-tick.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
@@ -103,6 +103,25 @@ function sendTransientTokenUsage(client: TelegramClient, chatId: number, usage: 
     .catch(() => {});
 }
 
+/** Third reversal (the trader, live, explicit: "hardcode this so instead of the bot calling it
+ *  it's already hardcoded" -- the model-callable tg_thinking/tg_thinking_update/tg_finalize tools
+ *  never got called reliably even after being promoted into CORE_TOOL_NAMES, so the trader wants
+ *  zero AI decision in whether the live progress indicator shows). Derives a real icon+text pair
+ *  straight from the AgentStep the loop already hands back after every real tool call -- no model
+ *  cooperation required, matches the exact `AgentStep { toolName, arguments, result, isError }`
+ *  shape agent-loop.ts's own `onStep` callback fires with. */
+function describeStep(step: AgentStep): { action: ActionType; text: string } {
+  const name = step.toolName;
+  if (step.isError) return { action: "code", text: `${name} failed` };
+  if (name.startsWith("get_") || name === "find_setup" || name === "hunt_for_setup") return { action: "api", text: `Checking ${name.replace(/^get_/, "")}` };
+  if (name.startsWith("trade_") || name === "modify_sl_tp" || name === "remove_sl_tp" || name === "partial_close" || name === "full_close") return { action: "trade", text: `${name.replace(/_/g, " ")}` };
+  if (name.startsWith("recall_") || name.startsWith("remember_") || name.startsWith("session_") || name === "tencent_memory") return { action: "memory", text: `${name.replace(/_/g, " ")}` };
+  if (name.startsWith("db_")) return { action: "database", text: `${name.replace(/_/g, " ")}` };
+  if (name.startsWith("create_subagent") || name.startsWith("list_subagents") || name === "retire_subagent") return { action: "worker", text: `${name.replace(/_/g, " ")}` };
+  if (name.startsWith("tg_") || name === "send_telegram") return { action: "output", text: `${name.replace(/_/g, " ")}` };
+  return { action: "input", text: `${name.replace(/_/g, " ")}` };
+}
+
 /** The real, shared agent-turn path -- both a normal incoming message AND the "Pause and do it
  * myself" delegation button run through this exact function, so there is no second, divergent
  * way a message actually gets processed. Brackets the real run with setBusy()/clearBusy() so a
@@ -138,55 +157,54 @@ async function runAgentTurn(
   // setting, `/stop`, and `/reset`). This tracks the turn so those commands can genuinely cancel
   // it (see turn-abort.ts) instead of only flipping flags nothing in this call ever checked.
   const abortController = beginTurn(deps.ownerUserId);
-  // Real reversal (explicit trader instruction, confirmed live): tg_thinking/tg_thinking_update/
-  // tg_finalize are agent-callable tools again (see @dave/telegram's tools.ts) -- Dave decides
-  // for itself, per IDENTITY.md, when a task is worth narrating live. To avoid reintroducing the
-  // exact duplicate/orphaned-message bug 1b21a73 fixed, this is now the ONLY place that ever
-  // sends the turn's plain final message -- there is no automatic `withThinkingIndicator` wrapper
-  // running alongside it anymore. If the model called tg_thinking this turn, `getActiveIndicator`
-  // finds the real indicator it opened and this finalizes THAT one; otherwise there was never an
-  // indicator at all and the final answer just sends as a normal message, exactly as if this
-  // feature didn't exist for that turn.
-  const sendFinal = async (finalText: string): Promise<void> => {
-    const indicator = getActiveIndicator(chatId);
-    if (indicator) {
-      await indicator.finalize(finalText);
-      clearActiveIndicator(chatId);
-      return;
-    }
-    for (const chunk of chunkForTelegram(finalText)) {
-      await client.sendMessage({ chat_id: chatId, text: chunk, parse_mode: "HTML" });
-    }
-  };
   try {
-    let finalResult: AgentRunResult;
-    if (pendingQuestion && pendingToolCallId) {
-      clearPendingQuestion(deps.ownerUserId);
-      finalResult = await loop.resume(
-        { status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] },
-        messageText as string,
-        { signal: abortController.signal }
-      );
-    } else {
-      history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent) });
-      finalResult = await loop.run(history, { signal: abortController.signal });
-    }
-    saveConversationHistory(deps.db, historyKey, finalResult.history);
-    if (finalResult.status === "aborted") {
-      // Real, plain visibility into the exact bug this closes (user, live: "/stop didn't work,
-      // still showing typing") -- confirms in the logs that an abort genuinely reached and
-      // stopped the loop, not just "processing forever" with nothing to check.
-      console.log(`[turn-abort] ${deps.ownerUserId}: turn genuinely stopped (reason=${finalResult.reason})`);
-      await sendFinal("⏹️ Stopped -- that turn was cancelled.");
-    } else {
-      // Real bug fixed (user: "sometimes it shows (no text) like this everytime"): a turn that
-      // ends with tool calls but no closing remark from the model (common after a purely
-      // action-driven turn, e.g. placing a trade with nothing left to say) used to literally send
-      // the placeholder string "(no text)" as if it were Dave's real reply -- looked exactly like
-      // a bug because it was one. A real, minimal, honest completion signal instead.
-      const rawFinalText = finalResult.status === "done" ? finalResult.text || "✅ Done." : finalResult.question.question;
-      await sendFinal(markdownToTelegramHtml(rawFinalText));
-    }
+    // Third reversal (see describeStep's comment above): the live progress indicator is now
+    // ALWAYS shown for the duration of the real turn -- zero AI decision in whether it appears,
+    // matching thinking-indicator.ts's own "9.1" design the automatic wrapper originally shipped
+    // with. `setActiveIndicator` registers this exact instance so autonomous-tick.ts's
+    // sequential-thinking progress hook (which reads via `getActiveIndicator`) keeps working
+    // unchanged, and `onStep` (agent-loop.ts's real per-tool-call callback) drives live updates
+    // from genuine tool-call events instead of a model tool-call that may never come.
+    const finalResult = await withThinkingIndicator<AgentRunResult>(client, chatId, async (indicator) => {
+      setActiveIndicator(chatId, indicator);
+      const onStep = (step: AgentStep): void => {
+        const { action, text } = describeStep(step);
+        void indicator.update(action, text);
+      };
+      let result: AgentRunResult;
+      if (pendingQuestion && pendingToolCallId) {
+        clearPendingQuestion(deps.ownerUserId);
+        result = await loop.resume(
+          { status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] },
+          messageText as string,
+          { signal: abortController.signal, onStep }
+        );
+      } else {
+        history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent) });
+        result = await loop.run(history, { signal: abortController.signal, onStep });
+      }
+      saveConversationHistory(deps.db, historyKey, result.history);
+
+      let finalText: string;
+      if (result.status === "aborted") {
+        // Real, plain visibility into the exact bug this closes (user, live: "/stop didn't work,
+        // still showing typing") -- confirms in the logs that an abort genuinely reached and
+        // stopped the loop, not just "processing forever" with nothing to check.
+        console.log(`[turn-abort] ${deps.ownerUserId}: turn genuinely stopped (reason=${result.reason})`);
+        finalText = "⏹️ Stopped -- that turn was cancelled.";
+      } else {
+        // Real bug fixed (user: "sometimes it shows (no text) like this everytime"): a turn that
+        // ends with tool calls but no closing remark from the model (common after a purely
+        // action-driven turn, e.g. placing a trade with nothing left to say) used to literally send
+        // the placeholder string "(no text)" as if it were Dave's real reply -- looked exactly like
+        // a bug because it was one. A real, minimal, honest completion signal instead.
+        const rawFinalText = result.status === "done" ? result.text || "✅ Done." : result.question.question;
+        finalText = markdownToTelegramHtml(rawFinalText);
+      }
+      return { result, finalText };
+    });
+    clearActiveIndicator(chatId);
+
     // Real gap fixed (item 7: "inline-button-based questions Dave asks aren't being
     // received/processed correctly") -- ask_user previously had no way to offer clickable
     // choices at all. When the paused question carries real options, send them as real inline
@@ -201,13 +219,12 @@ async function runAgentTurn(
     }
     if (finalResult.status !== "aborted") sendTransientTokenUsage(client, chatId, finalResult.tokenUsage);
   } catch (err) {
-    // Safety net (explicit spec: an orphaned "thinking..." message must never survive an error
-    // path either) -- if tg_thinking opened a real indicator before this turn blew up, finalize
-    // it with the error text instead of leaving it stuck; otherwise send the error as a normal
-    // message like before.
-    await sendFinal(friendlyErrorMessage(err)).catch(async () => {
-      await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) }).catch(() => {});
-    });
+    // withThinkingIndicator already ran indicator.cleanupOnFailure() (deletes the real progress
+    // message without sending final text) before rethrowing -- an orphaned "thinking..." message
+    // must never survive an error path, and now it can't, whether or not this specific run ever
+    // called a tool at all.
+    clearActiveIndicator(chatId);
+    await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) }).catch(() => {});
   } finally {
     endTurn(deps.ownerUserId, abortController);
     clearBusy(deps.ownerUserId);

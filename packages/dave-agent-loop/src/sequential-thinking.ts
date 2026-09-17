@@ -79,11 +79,11 @@ export interface RunSequentialThinkingDeps {
   /** The same real context (symbol, price, account state, full analysis suite, etc) the final
    *  decision call itself will see -- the thinking pass reasons over the real data, not a summary. */
   contextLines: string[];
-  /** Real per-thought progress callback -- the caller wires this to the SAME `tg_thinking_update`
-   *  mechanism from Part 1 (tools.ts's activeIndicators), never a separate indicator. During a
-   *  silent autonomous cycle there is normally no active indicator at all, so this is a safe
-   *  no-op in the common case -- it only does anything if the user happens to have a live
-   *  indicator open on this chat already. */
+  /** Real per-thought progress callback -- the caller wires this to the SAME automatic
+   *  `ThinkingIndicator` mechanism the real chat turn itself uses (tools.ts's activeIndicators),
+   *  never a separate indicator. During a silent autonomous cycle there is normally no active
+   *  indicator at all, so this is a safe no-op in the common case -- it only does anything if the
+   *  user happens to have a live chat turn's indicator open on this chat already. */
   onProgress?: (text: string) => void;
   maxThoughts?: number;
   timeoutMs?: number;

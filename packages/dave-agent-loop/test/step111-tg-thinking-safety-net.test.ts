@@ -1,17 +1,13 @@
 import assert from "node:assert/strict";
-import { TelegramClient, TELEGRAM_TOOLS, getActiveIndicator } from "@dave/telegram";
+import { TelegramClient, getActiveIndicator, setActiveIndicator, ThinkingIndicator } from "@dave/telegram";
 import { ensureNoOrphanedIndicator } from "../src/telegram-bot-server.js";
 
-console.log("=== Step 111 real proof: an indicator opened by tg_thinking but never finalized ===");
-console.log("=== (e.g. an exception mid-turn) is cleaned up by the safety net, never orphaned ===\n");
+console.log("=== Step 111 real proof (updated for the third reversal -- the automatic wrapper, not a ===");
+console.log("=== model-callable tool, now owns the indicator): one left registered mid-turn but never ===");
+console.log("=== finalized (e.g. an exception before withThinkingIndicator's own finalize runs) is ===");
+console.log("=== cleaned up by the safety net, never orphaned ===\n");
 
-function findTool(name: string) {
-  const tool = TELEGRAM_TOOLS.find((t) => t.name === name);
-  if (!tool) throw new Error(`tool ${name} missing`);
-  return tool;
-}
-
-console.log("[1] tg_thinking opens a real indicator, then the turn 'crashes' before tg_finalize is ever called...\n");
+console.log("[1] The automatic wrapper registers a real indicator, then the turn 'crashes' before it's ever finalized...\n");
 const calls: { method: string; body: Record<string, unknown> }[] = [];
 const chatId = 424242;
 const fakeClient = {
@@ -34,8 +30,11 @@ const fakeClient = {
   },
 } as unknown as TelegramClient;
 
-await findTool("tg_thinking").execute({ text: "Placing the trade..." }, { client: fakeClient, chatId });
-assert.ok(getActiveIndicator(chatId), "tg_thinking must have left a real, tracked indicator behind");
+const indicator = new ThinkingIndicator(fakeClient, chatId);
+await indicator.start();
+await indicator.update("trade", "Placing the trade...");
+setActiveIndicator(chatId, indicator);
+assert.ok(getActiveIndicator(chatId), "the automatic wrapper must have left a real, tracked indicator behind");
 
 // Simulate exactly what runAgentTurn's `finally` block does on any exit path (success, abort, or
 // -- the real case this closes -- a hard exception mid-turn that never reached tg_finalize).

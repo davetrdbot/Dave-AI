@@ -438,9 +438,10 @@ export interface RunTickDeps {
   signal?: AbortSignal;
   /** Part 3: real per-thought progress from the optional sequential-thinking pass (see
    *  sequential-thinking.ts), when getSequentialThinkingEnabled(userId) is on. The caller
-   *  (telegram-bot-server.ts's runAutonomousTradingCycle) wires this to the SAME tg_thinking_update
-   *  mechanism from Part 1 (tools.ts's activeIndicators) -- never a separate indicator. Optional;
-   *  autonomous cycles are silent by default (per IDENTITY.md's "trade quietly"), so this is a
+   *  (telegram-bot-server.ts's runAutonomousTradingCycle) wires this to the SAME automatic
+   *  `ThinkingIndicator` mechanism a real chat turn uses (tools.ts's activeIndicators) -- never a
+   *  separate indicator. Optional; autonomous cycles are silent by default (per IDENTITY.md's
+   *  "trade quietly"), so this is a
    *  no-op in the normal case where no chat indicator happens to be open. */
   onSequentialThinkingProgress?: (text: string) => void;
 }

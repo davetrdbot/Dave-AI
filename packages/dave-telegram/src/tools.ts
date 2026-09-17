@@ -24,33 +24,33 @@ export interface TelegramToolDefinition {
   execute: (args: Record<string, unknown>, ctx: TelegramToolContext) => Promise<unknown>;
 }
 
-// Reinstated (explicit trader reversal of the 1b21a73 removal, confirmed live): tg_thinking/
-// tg_thinking_update/tg_finalize are model-callable again. 1b21a73's real bug was never "these
-// tools shouldn't exist" -- it was that they raced against a SECOND, automatic indicator
-// (`withThinkingIndicator`/`runAgentTurn` in telegram-bot-server.ts) that every chat turn also
-// got, with zero AI decision involved. Two independent `ThinkingIndicator` instances per turn is
-// what produced the duplicate/orphaned message, not the model-callable tools themselves.
-//
-// The trader wants exactly this back: Dave decides for itself, per IDENTITY.md guidance, when a
-// task is worth narrating -- not every turn gets an indicator automatically. Fixed for real this
-// time by removing the OTHER side of the race instead: `withThinkingIndicator` is no longer
-// called automatically by runAgentTurn (see telegram-bot-server.ts) -- these three tools are now
-// the ONLY path that can ever create/update/finalize a `ThinkingIndicator`. If the model never
-// calls `tg_thinking`, no indicator is created at all, and the turn's final answer just sends as
-// a plain message, exactly as before this feature existed.
-//
-// One indicator per active turn/chat, enforced here via `activeIndicators` (keyed by chatId, same
-// as the original pre-1b21a73 shape) -- a second `tg_thinking` call in the same turn (e.g. the
-// model narrating a new phase of a long task) is treated as an update on the SAME indicator
-// rather than creating a second one, so it can never race or duplicate.
+// Second explicit reversal (the trader, live, after confirming the model-callable version simply
+// never got called reliably: "if they is a way you can hardcode this so instead of the bot
+// calling it it's already hardcoded"). Back to a single, automatic mechanism -- no model
+// tool-calls involved at all this time, closing the exact same "the model has to remember to
+// call it" gap that made image generation and other discovery-gated tools invisible in practice.
+// tg_thinking/tg_thinking_update/tg_finalize are REMOVED again (matching 1b21a73's original fix),
+// and telegram-bot-server.ts's runAgentTurn now drives `withThinkingIndicator` automatically,
+// deriving live progress text from real AgentStep tool-call events -- zero AI decision in whether
+// or when it shows, same "9.1" design thinking-indicator.ts's own withThinkingIndicator doc
+// already describes. `activeIndicators` stays (renamed intent, same map) so the automatic
+// wrapper can register itself here too -- sequential-thinking's onSequentialThinkingProgress hook
+// (autonomous-tick.ts) already reads through `getActiveIndicator`, no change needed on that side.
 const activeIndicators = new Map<number, ThinkingIndicator>();
 
 /** Real safety net (telegram-bot-server.ts's runAgentTurn calls this on every turn's exit path,
- *  success/abort/error alike): if the model opened an indicator via tg_thinking but never reached
- *  tg_finalize (an exception mid-turn, a forgotten close, etc), this is how the caller finds it to
- *  clean it up rather than leaving a "thinking..." message stuck in the chat forever. */
+ *  success/abort/error alike): if the automatic wrapper's indicator somehow never got finalized
+ *  (an exception mid-turn, etc), this is how the caller finds it to clean it up rather than
+ *  leaving a "thinking..." message stuck in the chat forever. */
 export function getActiveIndicator(chatId: number): ThinkingIndicator | undefined {
   return activeIndicators.get(chatId);
+}
+
+/** Registers the automatic wrapper's own indicator so other real code paths (sequential-thinking's
+ *  progress hook) can find and update the SAME instance via getActiveIndicator, rather than each
+ *  turn's indicator being invisible outside telegram-bot-server.ts. */
+export function setActiveIndicator(chatId: number, indicator: ThinkingIndicator): void {
+  activeIndicators.set(chatId, indicator);
 }
 
 /** Clears the tracked indicator for a chat without touching Telegram -- call after the caller has
@@ -60,56 +60,6 @@ export function clearActiveIndicator(chatId: number): void {
 }
 
 export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
-  {
-    name: "tg_thinking",
-    description:
-      "Open a live 'thinking...' indicator in the chat, describing what you're about to do (e.g. 'Scanning 8 pairs for a setup'). " +
-      "Use only for multi-step work the user is actively waiting on -- not every message, never during silent autonomous cycles. " +
-      "Calling this again in the same turn just updates the same indicator, it never opens a second one.",
-    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-    execute: async (args, ctx) => {
-      const text = args.text as string;
-      const existing = activeIndicators.get(ctx.chatId);
-      if (existing) {
-        // Already have a live indicator for this chat/turn -- treat a second tg_thinking as an
-        // update rather than opening a duplicate one (see the class-level comment above).
-        await existing.update("worker", text);
-        return { ok: true, reused: true };
-      }
-      const indicator = new ThinkingIndicator(ctx.client, ctx.chatId);
-      activeIndicators.set(ctx.chatId, indicator);
-      await indicator.start();
-      await indicator.update("worker", text);
-      return { ok: true };
-    },
-  },
-  {
-    name: "tg_thinking_update",
-    description: "Update the live thinking indicator's text to show your real next step (e.g. 'Checking XAUUSD H4 structure...'). Requires tg_thinking to have been called first this turn.",
-    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-    execute: async (args, ctx) => {
-      const indicator = activeIndicators.get(ctx.chatId);
-      if (!indicator) throw new Error("no active thinking indicator for this chat -- call tg_thinking first");
-      await indicator.update("worker", args.text as string);
-      return { ok: true };
-    },
-  },
-  {
-    name: "tg_finalize",
-    description: "Replace the thinking indicator with your real final response. Requires tg_thinking to have been called first this turn.",
-    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-    execute: async (args, ctx) => {
-      const indicator = activeIndicators.get(ctx.chatId);
-      if (!indicator) throw new Error("no active thinking indicator for this chat -- call tg_thinking first");
-      // Real gap fixed (item 2, "raw HTML tags visible to the user"): finalize() sends real HTML
-      // via sendMessage's parse_mode: "HTML" -- text reaching it must already be real converted
-      // HTML, same as every other real final-answer path (telegram-bot-server.ts), not raw
-      // markdown/model-written tags.
-      await indicator.finalize(markdownToTelegramHtml(args.text as string));
-      activeIndicators.delete(ctx.chatId);
-      return { ok: true };
-    },
-  },
   {
     name: "send_telegram",
     description: "Send a plain real Telegram message.",
