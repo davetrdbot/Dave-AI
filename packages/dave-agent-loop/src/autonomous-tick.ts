@@ -26,6 +26,7 @@ import {
   getSequentialThinkingEnabled,
   isForexSymbol,
   evaluateAccountAwareness,
+  ALL_ANALYSIS_TIMEFRAMES,
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -85,10 +86,18 @@ import { runSequentialThinking } from "./sequential-thinking.js";
 /** Real multi-timeframe set requested per symbol, per tick -- see the real reason at this
  *  constant's one call site below: the EA's "all" endpoint computes against a single timeframe
  *  only, so genuine multi-timeframe alignment means genuinely asking more than once. User's
- *  explicit spec: M1/M3/M5 for the scalper's short-term read, M15/H1 for the mid-term picture,
- *  H4 for the sniper's higher-timeframe context -- all six genuinely confirmed supported by the
- *  EA's own TimeframeFromString (ea/DaveEA.mq5). */
-const ANALYSIS_TIMEFRAMES = ["M1", "M3", "M5", "M15", "H1", "H4"] as const;
+ *  original spec: M1/M3/M5 for the scalper's short-term read, M15/H1 for the mid-term picture,
+ *  H4 for the sniper's higher-timeframe context -- all genuinely confirmed supported by the EA's
+ *  own TimeframeFromString (ea/DaveEA.mq5).
+ *
+ *  Real bug fixed (live Railway logs, the trader's real account: every cycle all day SKIPping at
+ *  0% confidence -- "Active strategy is HTF Top-Down Pullback, which requires a complete
+ *  D1->H4->H1->M15->M5 flow"): this used to be its own hand-duplicated array that never had D1 in
+ *  it at all -- a strategy skill added AFTER this constant was written needed a timeframe this
+ *  default fetch could never supply, no matter how the analysis config was set. Now imported from
+ *  dave-trading's own single real source (ALL_ANALYSIS_TIMEFRAMES, analysis-config.ts) instead of
+ *  a second hand-copied list that could drift out of sync with it again exactly like this. */
+const ANALYSIS_TIMEFRAMES = ALL_ANALYSIS_TIMEFRAMES;
 
 const TRADE_ACTIONS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
 type TradeAction = (typeof TRADE_ACTIONS)[number];

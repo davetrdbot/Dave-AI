@@ -378,8 +378,19 @@ export function peekQueue(userId: string): EaCommand[] {
  * per poll; anything past the cap stays queued for the EA's next poll (a few seconds later, per
  * its own PushSeconds heartbeat), so a big group scan spreads itself across a couple of ticks
  * instead of demanding the EA process the whole thing serially in one.
+ *
+ * Real bug fixed, found live: this cap used to be exactly 6, which happened to match
+ * autonomous-tick.ts's own real per-symbol multi-timeframe suite size (M1/M3/M5/M15/H1/H4) --
+ * coincidentally fitting in one poll, not by design. Adding D1 (a real, previously-missing
+ * timeframe the trader's active HTF strategy skill genuinely requires -- see analysis-config.ts)
+ * made that suite 7 timeframes, so the 7th always overflowed into an extra full EA-poll round
+ * trip -- turning one real analysis call into two full heartbeat cycles' worth of latency, up to
+ * several real minutes slower, confirmed live. Raised with headroom so a single symbol's own full
+ * real multi-timeframe suite always fits in one poll -- the original batch-scan problem this cap
+ * fixes only shows up across MANY symbols at once, which a single symbol's timeframe count was
+ * never actually testing.
  */
-const MAX_ANALYZE_COMMANDS_PER_POLL = 6;
+const MAX_ANALYZE_COMMANDS_PER_POLL = 10;
 
 /** Real fact of the EA<->Dave contract: commands are drained (removed) the moment they're handed back in a response, not left for double-delivery. */
 function drainQueue(userId: string): EaCommand[] {

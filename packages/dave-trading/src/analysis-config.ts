@@ -7,8 +7,20 @@ import { dirname, join } from "node:path";
  * default button to send all"). Defaults to sending everything (matches today's real behavior,
  * confirmed correct against the user's own original spec) -- a user only ever narrows this
  * deliberately, never accidentally.
+ *
+ * Real bug fixed (found by pulling today's live Railway logs, the trader's real production
+ * account: every single autonomous cycle all day decided SKIP at 0% confidence with the exact
+ * same reason -- "Active strategy is HTF Top-Down Pullback, which requires a complete
+ * D1->H4->H1->M15->M5 flow before any entry"). D1 was missing from this list entirely, even
+ * though the EA genuinely supports it (confirmed: `"D1" -> PERIOD_D1` in DaveEA.mq5's real
+ * TimeframeFromString) and the trader's own active strategy skill explicitly requires it as the
+ * anchor of its top-down read. Worse, `setCustomTimeframes` below silently DROPS any timeframe
+ * not in this list -- so a real attempt (by the model, scoping itself to what the active skill
+ * needs) to request D1 alongside H4/H1/M15/M5 would silently lose D1 with no error, which is
+ * almost certainly how this account's scope ended up narrowed the way it did. Added so D1 is a
+ * real, requestable, never-silently-dropped timeframe.
  */
-export const ALL_ANALYSIS_TIMEFRAMES = ["M1", "M3", "M5", "M15", "H1", "H4"] as const;
+export const ALL_ANALYSIS_TIMEFRAMES = ["D1", "H4", "H1", "M15", "M5", "M3", "M1"] as const;
 
 /** The real, authoritative list of "all"-endpoint analysis categories -- matches the endpoint id
  *  each analysisTool() entry in dave-ea-bridge/src/tools.ts registers (the second constructor

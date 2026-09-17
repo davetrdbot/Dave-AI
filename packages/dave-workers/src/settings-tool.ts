@@ -172,7 +172,7 @@ export const SETTINGS_TOOLS: ToolDefinition[] = [
   },
   {
     name: "set_analysis_timeframes",
-    description: "Narrow which real timeframes (from M1/M3/M5/M15/H1/H4) get_all_analysis fetches, switching scope to 'custom'.",
+    description: "Narrow which real timeframes (from D1/H4/H1/M15/M5/M3/M1) get_all_analysis fetches, switching scope to 'custom'.",
     parameters: { type: "object", required: ["userId", "timeframes"], properties: { userId: { type: "string" }, timeframes: { type: "array", items: { type: "string" } } } },
     execute: async (args) => setCustomTimeframes(args.userId as string, args.timeframes as string[]),
   },
