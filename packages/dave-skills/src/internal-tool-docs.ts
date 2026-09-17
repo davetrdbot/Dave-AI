@@ -28,7 +28,7 @@ import { createSkill, listSkills, updateSkillContent, type Skill } from "./skill
  */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export type InternalToolDocTopic = "e2b-sandbox" | "ea-webhook" | "ea-analysis" | "full-tool-catalog";
+export type InternalToolDocTopic = "e2b-sandbox" | "ea-webhook" | "ea-analysis" | "full-tool-catalog" | "workspace";
 
 const DOC_PATHS: Record<InternalToolDocTopic, string> = {
   "e2b-sandbox": join(__dirname, "..", "..", "..", "docs", "skills", "e2b-sandbox-skill.md"),
@@ -48,6 +48,14 @@ const DOC_PATHS: Record<InternalToolDocTopic, string> = {
   // the get_tool_catalog tool (dave-agent-loop/src/tool-catalog.ts), which returns the same
   // categorized data programmatically at runtime instead of as a doc string.
   "full-tool-catalog": join(__dirname, "..", "..", "..", "docs", "skills", "full-tool-catalog.md"),
+  // Trader-requested: "workspace.md teaching the bot his structure and how it was wired." Same
+  // real mechanism as full-tool-catalog above -- a genuine repo doc (the prompt-tier
+  // relationship, the live-context mechanism, a real end-to-end decision-cycle walkthrough, and
+  // the real user-settings surface), seeded as a permanent skill rather than folded into
+  // IDENTITY.md, which would bloat every single system-prompt load with content only needed
+  // occasionally. Deliberately NOT a duplicate of IDENTITY.md/trading.md/full-tool-catalog.md --
+  // it's the map between them, not another copy of what they already teach in depth.
+  workspace: join(__dirname, "..", "..", "..", "docs", "skills", "workspace.md"),
 };
 
 /**
@@ -109,7 +117,7 @@ const SKILL_NAME_PREFIX = "How to use: ";
  * not just a file on disk nobody's skill list ever mentions.
  */
 export function seedInternalToolDocSkills(userId: string): Skill[] {
-  const topics: InternalToolDocTopic[] = ["e2b-sandbox", "ea-webhook", "ea-analysis", "full-tool-catalog"];
+  const topics: InternalToolDocTopic[] = ["e2b-sandbox", "ea-webhook", "ea-analysis", "full-tool-catalog", "workspace"];
   return topics.map((topic) => {
     const name = `${SKILL_NAME_PREFIX}${topic}`;
     const content = readInternalToolDoc(topic);

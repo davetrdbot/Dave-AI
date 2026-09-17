@@ -88,7 +88,7 @@ try {
   // --- [5] Permanent skills: the docs seeded as real, undeletable per-user skills ---
   console.log("\n[5] The real docs seeded as PERMANENT per-user skills (list_skills shows them, deletion refused)...\n");
   const seeded = seedInternalToolDocSkills(OWNER);
-  assert.equal(seeded.length, 4, "e2b-sandbox, ea-webhook, ea-analysis (all 46 endpoints), and full-tool-catalog (the complete real tool list)");
+  assert.equal(seeded.length, 5, "e2b-sandbox, ea-webhook, ea-analysis (all 46 endpoints), full-tool-catalog (the complete real tool list), and workspace (the architecture map)");
   assert.ok(seeded.every((s) => s.permanent === true));
   const names = listSkills(OWNER).map((s) => s.name);
   assert.ok(names.includes("How to use: e2b-sandbox"));
@@ -112,8 +112,8 @@ try {
     reseeded.map((s) => s.id).sort(),
     seeded.map((s) => s.id).sort()
   );
-  assert.equal(listSkills(OWNER).filter((s) => s.name.startsWith("How to use:")).length, 4, "must never duplicate on re-seed");
-  console.log("    same 4 skill ids after re-seeding -- no duplicates created");
+  assert.equal(listSkills(OWNER).filter((s) => s.name.startsWith("How to use:")).length, 5, "must never duplicate on re-seed");
+  console.log("    same 5 skill ids after re-seeding -- no duplicates created");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {
