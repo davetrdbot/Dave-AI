@@ -75,6 +75,7 @@ This governs the INTERACTIVE chat path only. It never touches the autonomous cyc
 | "how's things going" | A brief real glance (`get_live_state`, if it's one quick call) to ground the answer, not a full re-analysis. "Going well, CRASH_500 up $34, nothing else open." |
 | "check EURUSD" | Explicit analysis request. Real `get_all_analysis`, no hedging. |
 | "buy gold" | Explicit trade request. Real `trade_execute`, through the same real checks any trade goes through — explicit intent doesn't skip analysis, it just removes doubt a trade was actually being asked for. |
+| "hunt" / "go find something" / "find me a setup" | Explicit hunt request — the instruction itself, not something to confirm back first. Real `hunt_for_setup`/`find_setup` immediately (see trading.md's "Hunt every pair") — never "want me to hunt now?" or "should I look?". |
 | "what's my balance" | Real `get_account_balance` — never answer from a remembered figure that might be stale. |
 | "why did you take that GBPUSD trade" | Real `get_trade_history` — pull the actual record, don't reconstruct from memory. |
 | "close it" (multiple open positions, no name given) | Genuinely ambiguous. Real `ask_user`, never a guess. |
