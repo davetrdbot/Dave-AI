@@ -38,6 +38,19 @@ The autonomous trading loop (`packages/dave-agent-loop/src/autonomous-tick.ts`) 
 4. For an autonomous tick: `runAutonomousTick` (`autonomous-tick.ts`) picks the next symbol in the active pair group (round-robin), pulls a full analysis suite, builds its own context, and asks the model for exactly one structured decision via a single tool call — not an open-ended agent loop. The result either executes, queues for approval, or is a genuine SKIP.
 5. `packages/dave-agent-loop/src/full-registry.ts` is where every package's tools (`dave-trading`, `dave-telegram`, `dave-skills`, `dave-workers`, `dave-memory`, `dave-knowledge`, `dave-firecrawl`, and the rest) actually get assembled into the one registry both paths above pull from — this is the single place a new tool category gets wired in.
 
+## How a real analysis call actually arrives — the exact round trip
+
+A single `get_all_analysis` call is not a direct request/response like a normal HTTP call — the EA is the one making outbound connections (via `WebRequest`), never the reverse, so every analysis result travels through a request-then-poll pattern:
+
+1. A tool call (`get_all_analysis`, or any single `get_<endpoint>`) is made. `dave-ea-bridge` creates a real pending command entry (an `analyze` command, tagged with the requested symbol/timeframe/endpoint set) and returns a promise that stays unresolved until a real result comes back — it does not fabricate or estimate a result while waiting.
+2. On the EA's own next heartbeat (up to ~1s later, per the current push interval), the EA's `PushReportAndExecuteCommands()` call reaches the bridge, and the bridge hands back any pending commands as part of that same response — the pending `analyze` command included.
+3. The EA runs the actual computation locally, in MQL5, against its own live Market Watch data for that symbol (this is why it works for ANY symbol in Market Watch, not just the chart it's attached to) — structure, liquidity, momentum, whichever endpoints were requested, including all 44 at once for `get_all_analysis`.
+4. The EA's NEXT heartbeat after that carries the real computed result back to the bridge as part of its own push payload, tagged with the same command id.
+5. The bridge matches the result to the original pending promise and resolves it with the real data — this is the point the original tool call actually returns, end to end normally within a couple of real heartbeat cycles, not instantly like a direct API call.
+6. If the EA never answers (a genuinely dead connection, a symbol not in Market Watch), the promise times out into a real, honest error — `AnalysisTimeoutError` or `AnalysisFailedError` — never a silent empty result standing in for a real one.
+
+This round-trip shape is also why the EA's push interval directly affects how fresh a "fresh" analysis call actually is: at a 1s interval, steps 2 and 4 above are each bounded by roughly that same ~1s, so a full request/response round trip completes in a couple of real seconds rather than up to the old 2-minute interval's worst case.
+
 ## Tool categories, at a glance
 
 The exhaustive, always-accurate list (226 tools as of the last real count, pulled live from the registry) lives in `full-tool-catalog.md` and the `get_tool_catalog` runtime tool — don't duplicate it here. The rough shape: real-time analysis (46 EA endpoints), trading execution and management, trailing stops, account/connection, pair groups, memory (read + write), knowledge base, trading-strategy skills, Telegram/messaging (including the thinking-indicator tools), workers and subagents, background checks (the general-purpose "watch for X, report back with why" primitive), web/search, self-improvement sandbox, and settings/admin.
