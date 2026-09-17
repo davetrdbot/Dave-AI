@@ -135,6 +135,15 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
     execute: async (args, ctx) => ctx.client.sendDocument({ chat_id: ctx.chatId, document: args.fileIdOrUrl as string, caption: args.caption as string | undefined }),
   },
   {
+    name: "tg_send_photo",
+    description:
+      "Send a real image to the user as an inline Telegram photo (not a generic document/file). " +
+      "Use this to hand off the result of generate_image (Lovable MCP) -- pass its returned `url` straight through here so the user actually sees the picture, " +
+      "instead of just a text link. There is no automatic forwarding: you must call this yourself after generate_image returns.",
+    parameters: { type: "object", properties: { fileIdOrUrl: { type: "string" }, caption: { type: "string" } }, required: ["fileIdOrUrl"] },
+    execute: async (args, ctx) => ctx.client.sendPhoto({ chat_id: ctx.chatId, photo: args.fileIdOrUrl as string, caption: args.caption as string | undefined }),
+  },
+  {
     name: "tg_send_poll",
     description: "Send a real Telegram poll.",
     parameters: { type: "object", properties: { question: { type: "string" }, options: { type: "array", items: { type: "string" } } }, required: ["question", "options"] },

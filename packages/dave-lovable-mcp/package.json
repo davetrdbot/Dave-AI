@@ -9,6 +9,9 @@
     "@dave/db": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
+  "devDependencies": {
+    "zod": "^4.0.0"
+  },
   "exports": {
     ".": "./lib/index.js"
   }

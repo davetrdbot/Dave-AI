@@ -28,11 +28,29 @@ export interface ToolDefinition {
 export const PROVIDER_TOOLS: ToolDefinition[] = [
   {
     name: "list_providers",
-    description: "List every known LLM provider (built-in catalog + your own custom providers), so you know what's available before adding a key or creating a new one.",
+    description:
+      "List every known LLM provider (built-in catalog + your own custom providers), so you know what's available before adding a key or creating a new one. " +
+      "Also surfaces the separate Lovable MCP image-generation capability (not an LLM chat provider -- it's a scoped, image-only MCP server, configured via get_lovable_mcp_settings/set_lovable_mcp_settings and used via generate_image), so it isn't missed just because it isn't in the LLM provider catalog.",
     parameters: { type: "object", properties: {} },
     execute: async (_args, ctx) => ({
       builtIn: listProviderCatalog().map((p) => ({ id: p.id, displayName: p.displayName, openAICompatible: p.openAICompatible })),
       custom: listCustomProviders(ctx.db, ctx.userId).map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, model: p.model })),
+      // Real fix (settings audit item 2): Lovable MCP is deliberately NOT a fake catalog entry --
+      // it's image-only (no chat/completions-shaped endpoint an add_provider_key flow could use),
+      // scoped by lovable-mcp-client.ts to ONLY ever call `generate_image`. It's listed here as a
+      // separate, clearly-labeled category so it stays discoverable instead of hidden -- the user
+      // configures it via get_lovable_mcp_settings/set_lovable_mcp_settings (also in /settings ->
+      // "Lovable MCP (Image AI)") and uses it via the generate_image tool, not add_provider_key.
+      otherAiCapabilities: [
+        {
+          id: "lovable-mcp",
+          displayName: "Lovable MCP (image generation)",
+          kind: "image-generation",
+          settingsTools: ["get_lovable_mcp_settings", "set_lovable_mcp_settings"],
+          useTool: "generate_image",
+          notes: "Not an LLM chat provider -- a real, user-configured Lovable MCP server reached over the standard MCP protocol, scoped to image generation only.",
+        },
+      ],
     }),
   },
   {

@@ -194,6 +194,48 @@ try {
   assert.deepEqual(pickAction, { action: "pick", provider: "elevenlabs", voiceId: "eleven-voice-real-id" });
   console.log("    every real button's callback_data round-trips through parseVoiceCallback correctly");
 
+  // --- [3d] Real bug fixed: a genuinely-configured provider's real failure must never be masked
+  // by a fallback provider merely being unconfigured ("ElevenLabs configured but doesn't
+  // actually return voice") ---
+  console.log("\n[3d] A real, specific failure from the ACTIVE configured provider must surface honestly, not get masked by an unconfigured fallback...\n");
+  setVoiceEnabled(db, OWNER, true);
+  setActiveProvider(db, OWNER, "elevenlabs");
+  setVoiceId(db, OWNER, "elevenlabs", "eleven-voice-real-id");
+  // Fish Audio is genuinely NOT configured for this user (no voice id set at all) -- the real,
+  // common shape of "I only ever set up ElevenLabs".
+  const dbNoFish = new DaveDatabase(join(workDir, "dave-no-fish.db"));
+  setVoiceEnabled(dbNoFish, OWNER, true);
+  setActiveProvider(dbNoFish, OWNER, "elevenlabs");
+  setVoiceId(dbNoFish, OWNER, "elevenlabs", "eleven-voice-real-id");
+  assert.equal(getVoiceSettings(dbNoFish, OWNER).fishVoiceId, null, "fish-audio must genuinely be unconfigured for this scenario");
+
+  // Real ElevenLabs failure (e.g. an expired/invalid key, a real 401) -- genuinely attempted, genuinely fails.
+  global.fetch = (async (url: string) => {
+    if (url.toString().includes("api.elevenlabs.io")) {
+      return new Response("invalid_api_key: real ElevenLabs auth failure", { status: 401 });
+    }
+    throw new Error("fish-audio must never even be reached -- it has no voice id configured, so it must be skipped, not attempted");
+  }) as unknown as typeof fetch;
+
+  const failingEleven = new ElevenLabsClient("bad-key");
+  let surfacedError: unknown;
+  try {
+    await synthesizeSpeech(fish, failingEleven, dbNoFish, OWNER, "test");
+  } catch (err) {
+    surfacedError = err;
+  }
+  global.fetch = realFetch;
+
+  assert.ok(surfacedError instanceof TtsError, `expected the REAL ElevenLabs TtsError to surface, got: ${surfacedError instanceof Error ? surfacedError.constructor.name + ": " + surfacedError.message : String(surfacedError)}`);
+  assert.equal((surfacedError as TtsError).provider, "elevenlabs", "the surfaced error must genuinely name the provider that was actually tried and actually failed");
+  assert.equal((surfacedError as TtsError).status, 401);
+  assert.ok(
+    !(surfacedError as Error).message.includes("no voice ID configured for fish-audio"),
+    "the real ElevenLabs failure must NOT be masked by fish-audio's mere unconfigured-fallback message"
+  );
+  console.log(`    real ElevenLabs failure surfaced honestly: "${(surfacedError as Error).message}" -- never masked by fish-audio's unrelated "not configured" skip`);
+  dbNoFish.close();
+
   // --- [4] Voice INPUT: transcription of a user-sent voice note, confirmed still working (Step 15.2) ---
   console.log("\n[4] Voice INPUT: transcription still genuinely wired and working (Step 15.2)...\n");
   const fakeVoiceBytes = Buffer.from("fake ogg opus bytes representing a real voice note");

@@ -111,6 +111,16 @@ export async function synthesizeSpeech(
   const order: TtsProviderName[] = settings.activeProvider === "fish-audio" ? ["fish-audio", "elevenlabs"] : ["elevenlabs", "fish-audio"];
 
   let lastError: unknown;
+  // Real bug fixed (user: "ElevenLabs configured but doesn't actually return voice"): a provider
+  // that was genuinely CALLED and genuinely failed (bad voice id, expired key, quota, etc.) had
+  // its real, specific error silently overwritten by a later provider merely being SKIPPED for
+  // having no voice ID configured at all -- e.g. the user's properly-configured ElevenLabs call
+  // fails with a real, useful ElevenLabs error, then the loop falls through to Fish Audio (never
+  // set up at all), which only ever produces "no voice ID configured for fish-audio" -- and THAT
+  // generic, unconfigured-fallback message is what ends up thrown/shown, completely masking the
+  // real reason the user's actually-configured provider failed. A genuine attempt's real error
+  // now always wins over a mere "wasn't even configured" skip reason.
+  let lastAttemptError: unknown;
   for (const [i, provider] of order.entries()) {
     const voiceId = provider === "fish-audio" ? settings.fishVoiceId : settings.elevenlabsVoiceId;
     if (!voiceId) {
@@ -122,9 +132,11 @@ export async function synthesizeSpeech(
       return { ...result, provider, usedFallback: i > 0 };
     } catch (err) {
       lastError = err;
+      lastAttemptError = err;
     }
   }
-  throw lastError instanceof Error ? lastError : new TtsError(settings.activeProvider, 0, "both providers failed");
+  const finalError = lastAttemptError ?? lastError;
+  throw finalError instanceof Error ? finalError : new TtsError(settings.activeProvider, 0, "both providers failed");
 }
 
 export class NoTtsKeyError extends Error {

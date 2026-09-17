@@ -6,7 +6,7 @@ import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
 import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, chunkForTelegram, getActiveIndicator, clearActiveIndicator, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
-import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover } from "@dave/vision";
+import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyError } from "@dave/vision";
 import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop, type AgentRunResult } from "./agent-loop.js";
@@ -23,7 +23,7 @@ import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBus
 import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
-import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
+import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingLovableMcpEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
 import { isAutonomousTradingEnabled, setAutonomousTradingEnabled, setAutonomousExecutionEnabled, isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
@@ -546,6 +546,22 @@ export async function buildInboundContent(
   return undefined;
 }
 
+/**
+ * Real bug fixed (user: "Dave doesn't ask for a Groq API key" when a voice note comes in). This
+ * used to always send the same generic "couldn't process that attachment" line for every
+ * `buildInboundContent` failure -- which swallowed `NoGroqKeyError`'s own specific, actionable
+ * message ("add one on the Credentials tab (or via add_provider_key)") -- exactly the same
+ * "no stored keys" honest-message pattern already used for LLM providers
+ * (error-messages.ts's `friendlyErrorMessage`), just never wired up here. A missing Groq key now
+ * surfaces that real, specific prompt instead of a dead end; any other genuine failure (an
+ * unsupported image format, Telegram's own file download failing) still gets the honest generic
+ * fallback rather than a raw, confusing internal error string.
+ */
+export function attachmentErrorMessage(err: unknown): string {
+  if (err instanceof NoGroqKeyError) return `⚠️ ${err.message}`;
+  return "⚠️ Couldn't process that attachment. Try again in a moment.";
+}
+
 /** Real, persistent per-chat registry + loop cache -- rebuilding a full 130+-tool registry on every single message would be wasteful. */
 const registryCache = new Map<string, ToolRegistry>();
 
@@ -797,6 +813,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         if (await tryHandlePendingActivePairEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingConfidenceEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingFirecrawlKeyEntry(routerDeps, chatId, message.text)) return;
+        if (await tryHandlePendingLovableMcpEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingMcpServerEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingPushIntervalEntry(routerDeps, chatId, message.text)) return;
         // Item 11: a typed "yes"/"no" answering a real pending settings-change approval is
@@ -840,7 +857,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
           // itself failing -- must tell the user why, not silently drop
           // the message or crash the process.
           console.error("[telegram-bot-server] failed to process attachment:", err);
-          await client.sendMessage({ chat_id: chatId, text: "⚠️ Couldn't process that attachment. Try again in a moment." });
+          await client.sendMessage({ chat_id: chatId, text: attachmentErrorMessage(err) });
           return;
         }
       }

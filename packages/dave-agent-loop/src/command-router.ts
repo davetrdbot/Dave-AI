@@ -103,6 +103,7 @@ import {
 import { getWriteApprovalSetting, setWriteApprovalSetting, resetUserMemory, clearMemoryTiers } from "@dave/memory";
 import { addE2BKey, listE2BKeys, removeE2BKey, setPendingE2BKeyEntry, getPendingE2BKeyEntry } from "@dave/e2b";
 import { addFirecrawlKey, listFirecrawlKeys, removeFirecrawlKey, setPendingFirecrawlKeyEntry, getPendingFirecrawlKeyEntry } from "@dave/firecrawl";
+import { getLovableMcpSettings, setLovableMcpSettings, setPendingLovableMcpEntry, getPendingLovableMcpEntry } from "@dave/lovable-mcp";
 import { mcpConnect, listMcpServerConfigs, addMcpServerConfig, removeMcpServerConfig, InvalidMcpServerUrlError } from "@dave/mcp-manager";
 import { setPendingMcpServerEntry, getPendingMcpServerEntry } from "./pending-mcp-server-entry.js";
 import {
@@ -678,6 +679,7 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Trading Session", "blue", "settings:session")],
       [coloredButton("Confidence Rate", "blue", "settings:confidence")],
       [coloredButton("Firecrawl Keys", "blue", "settings:firecrawl"), coloredButton("MCP Servers", "blue", "settings:mcp")],
+      [coloredButton("Lovable MCP (Image AI)", "blue", "settings:lovable")],
       [coloredButton("Analysis Scope", "blue", "settings:analysis")],
     ])
   );
@@ -945,6 +947,45 @@ function firecrawlKeyboard(deps: CommandRouterDeps): { text: string; reply_marku
   ]);
   if (keys.length < 10) rows.push([coloredButton("➕ Add key", "blue", "firecrawlkey:add")]);
   return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
+}
+
+/** Real gap fixed (settings audit item 3): get_lovable_mcp_settings/set_lovable_mcp_settings
+ *  (dave-lovable-mcp/settings-tools.ts) and the ONLY Lovable capability, `generate_image`
+ *  (dave-lovable-mcp/tools.ts, a real MCP client call), previously had no /settings surface --
+ *  only reachable if the model happened to call the tool itself. Same real
+ *  DB-backed settings (lovable-settings.ts) the admin panel already used, now reachable from
+ *  /settings too, mirroring the Firecrawl/E2B/MCP-servers keyboards above. */
+function lovableMcpKeyboard(deps: CommandRouterDeps): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const settings = getLovableMcpSettings(deps.db, deps.userId);
+  const lines = [
+    "<b>Lovable MCP (Image AI)</b>",
+    "Powers the generate_image tool -- the ONLY Lovable MCP capability Dave can reach (text/voice on that server are deliberately never exposed).",
+    "",
+    `URL: ${settings.url ?? "not set"}`,
+    `Token: ${settings.token ? "set" : "not set"}`,
+  ];
+  const rows: ReturnType<typeof coloredButton>[][] = [
+    [coloredButton(settings.url ? "Update URL" : "Set URL", "blue", "lovablemcp:seturl")],
+    [coloredButton(settings.token ? "Rotate token" : "Set token", "blue", "lovablemcp:settoken")],
+  ];
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
+}
+
+/** Same next-message capture pattern as tryHandlePendingFirecrawlKeyEntry/TtsKeyEntry above. */
+export async function tryHandlePendingLovableMcpEntry(deps: CommandRouterDeps, chatId: number, text: string): Promise<boolean> {
+  const field = getPendingLovableMcpEntry(deps.db, deps.userId);
+  if (!field) return false;
+  setPendingLovableMcpEntry(deps.db, deps.userId, null);
+  const current = getLovableMcpSettings(deps.db, deps.userId);
+  const value = text.trim();
+  if (field === "url") {
+    setLovableMcpSettings(deps.db, deps.userId, { url: value, token: current.token });
+    await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ Lovable MCP URL saved.` });
+  } else {
+    setLovableMcpSettings(deps.db, deps.userId, { url: current.url, token: value });
+    await sendSelfDeletingMessage(deps.client, { chat_id: chatId, text: `✅ Lovable MCP token saved.` });
+  }
+  return true;
 }
 
 /** Real gap fixed (user: "add provision for mcps you added that to the code but you haven't
@@ -1985,6 +2026,18 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       await renderInPlace(view.text, view.reply_markup);
     } else if (data.startsWith("firecrawlkey:noop:")) {
       ackText = undefined;
+    } else if (data === "settings:lovable") {
+      ackText = undefined;
+      const view = lovableMcpKeyboard(deps);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "lovablemcp:seturl") {
+      setPendingLovableMcpEntry(deps.db, deps.userId, "url");
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Reply with your Lovable MCP server URL as your next message." });
+    } else if (data === "lovablemcp:settoken") {
+      setPendingLovableMcpEntry(deps.db, deps.userId, "token");
+      ackText = undefined;
+      if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: "Reply with your Lovable MCP token as your next message." });
     } else if (data === "settings:mcp") {
       ackText = undefined;
       const view = mcpServersKeyboard(deps);

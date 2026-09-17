@@ -135,6 +135,7 @@ export const TOOL_CATALOG_CATEGORIES: Record<string, string[]> = {
     "tg_rich_message",
     "tg_edit_message",
     "tg_send_file",
+    "tg_send_photo",
     "tg_send_poll",
     "pin_message",
     "unpin_message",

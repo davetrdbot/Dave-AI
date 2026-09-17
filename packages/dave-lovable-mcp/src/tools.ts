@@ -31,7 +31,9 @@ export class LovableMcpNotConfiguredError extends Error {
 export const LOVABLE_TOOLS: ToolDefinition[] = [
   {
     name: "generate_image",
-    description: "Generate an image from a text prompt via the user's configured Lovable MCP server. This is the ONLY Lovable MCP capability exposed to you -- text generation and voice synthesis on that same server are deliberately never reachable through this tool.",
+    description:
+      "Generate an image from a text prompt via the user's configured Lovable MCP server. This is the ONLY Lovable MCP capability exposed to you -- text generation and voice synthesis on that same server are deliberately never reachable through this tool. " +
+      "Returns a real image URL, but does NOT deliver it to the chat itself -- call tg_send_photo with the returned `url` afterward so the user actually sees the image, not just a link.",
     parameters: {
       type: "object",
       properties: {

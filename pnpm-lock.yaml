@@ -249,6 +249,10 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.5.4)
+    devDependencies:
+      zod:
+        specifier: ^4.0.0
+        version: 4.5.4
 
   packages/dave-mcp-manager:
     dependencies:

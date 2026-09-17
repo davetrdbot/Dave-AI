@@ -113,7 +113,11 @@ export function startBackgroundCheckPolling(deps: BackgroundCheckLoopDeps, check
       // auto-expire and tell the user, rather than polling forever unnoticed.
       if (Date.now() >= current.expiresAt) {
         const finished = finalizeBackgroundCheck(deps.ownerUserId, current.id, "expired", `Timed out after ${Math.round(current.maxDurationMs / 60_000)} minute(s) without the condition being met.`);
-        await notifyUser(deps, finished, "⏰ Background check timed out", finished.outcome ?? "");
+        // finalizeBackgroundCheck is idempotent against an already-terminal check (e.g. a
+        // concurrent stop_background_check landed first) -- only notify if THIS call is what
+        // actually finalized it, otherwise a message announcing "timed out" would contradict a
+        // status the user (or another tick) already set.
+        if (finished.status === "expired") await notifyUser(deps, finished, "⏰ Background check timed out", finished.outcome ?? "");
         return true;
       }
 
@@ -122,7 +126,13 @@ export function startBackgroundCheckPolling(deps: BackgroundCheckLoopDeps, check
         recordBackgroundCheckTick(deps.ownerUserId, current.id);
         if (tick.met) {
           const finished = finalizeBackgroundCheck(deps.ownerUserId, current.id, "met", tick.summary);
-          await notifyUser(deps, finished, "✅ Background check condition met", tick.summary);
+          // Real race fixed: stop_background_check can finalize this check to "stopped" while
+          // this tick (already in flight) is mid-run. finalizeBackgroundCheck correctly refuses
+          // to overwrite that terminal state, but without this guard the check below still fired
+          // an unconditional "condition met" notification, directly contradicting the user's own
+          // stop -- they'd stop a check and then immediately get told it succeeded anyway. Only
+          // notify when this call is genuinely what finalized it.
+          if (finished.status === "met") await notifyUser(deps, finished, "✅ Background check condition met", tick.summary);
           return true;
         }
         return false;
