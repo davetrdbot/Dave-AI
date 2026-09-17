@@ -64,7 +64,7 @@ export default function AdminPage() {
         {tab === "db" && <DatabasePanel userId={userId} />}
         {tab === "mcp" && <McpPanel userId={userId} />}
         {tab === "credentials" && <CredentialsPanel userId={userId} />}
-        {tab === "settings" && <SettingsPanel />}
+        {tab === "settings" && <SettingsPanel userId={userId} />}
       </main>
     </>
   );
@@ -869,7 +869,7 @@ function SimpleKeysCard({ api, title, apiPath }: { userId: string; api: ReturnTy
 
 // --- Settings: real EA + sandbox status checks (14.1; item 5: DAVEMA retirement -- the EA
 // connection is the real market-data dependency now, not the retired external DAVEMA API) ---
-function SettingsPanel() {
+function SettingsPanel({ userId }: { userId: string }) {
   const [ea, setEa] = useState<any>(null);
   const [sandbox, setSandbox] = useState<any>(null);
 
@@ -883,23 +883,131 @@ function SettingsPanel() {
   }, []);
 
   return (
-    <div className="card">
-      <h2>System Status</h2>
-      <div className="row" style={{ gap: 24 }}>
-        <div>
-          MT5/EA bridge:{" "}
-          <span className={`badge ${ea ? (ea.connected ? "ok" : "bad") : "warn"}`}>
-            {ea ? (ea.connected ? "connected" : ea.lastSeenAt === null ? "never connected" : "disconnected") : "checking"}
-          </span>
+    <>
+      <div className="card">
+        <h2>System Status</h2>
+        <div className="row" style={{ gap: 24 }}>
+          <div>
+            MT5/EA bridge:{" "}
+            <span className={`badge ${ea ? (ea.connected ? "ok" : "bad") : "warn"}`}>
+              {ea ? (ea.connected ? "connected" : ea.lastSeenAt === null ? "never connected" : "disconnected") : "checking"}
+            </span>
+          </div>
+          <div>
+            Sandbox:{" "}
+            <span className={`badge ${sandbox ? (sandbox.reachable ? "ok" : "warn") : "warn"}`}>
+              {sandbox ? (sandbox.reachable ? "confined" : "degraded (unconfined)") : "checking"}
+            </span>
+          </div>
         </div>
-        <div>
-          Sandbox:{" "}
-          <span className={`badge ${sandbox ? (sandbox.reachable ? "ok" : "warn") : "warn"}`}>
-            {sandbox ? (sandbox.reachable ? "confined" : "degraded (unconfined)") : "checking"}
-          </span>
-        </div>
+        <div className="stat-note">Telegram, Green API, and AI provider credentials are set on the Credentials tab. This panel only reports connection health.</div>
       </div>
-      <div className="stat-note">Telegram, Green API, and AI provider credentials are set on the Credentials tab. This panel only reports connection health.</div>
+      <TradingLoopPanel userId={userId} />
+    </>
+  );
+}
+
+// --- Autonomous Trading: real scan-interval control + confidence auto-approve visibility ---
+// (the trader, live: "add a feature for every 1 min to analyze" -- a real UI control, not just
+// Telegram's /start_trading <minutes>; and separately: "the bot was even ask me to approve a
+// trade... a sniper entry and a normal entry" -- traced to confidence-gate.ts's
+// autoApproveBelowThreshold, which defaults ON but had no visible way to check its current live
+// value without digging through /settings on Telegram).
+function TradingLoopPanel({ userId }: { userId: string }) {
+  const api = useApi(userId);
+  const [loop, setLoop] = useState<any>(null);
+  const [minutes, setMinutes] = useState(5);
+  const [confidence, setConfidence] = useState<any>(null);
+  const [threshold, setThresholdInput] = useState(70);
+  const [savedNote, setSavedNote] = useState("");
+
+  const reload = useCallback(() => {
+    api("/api/trading-loop").then((c) => {
+      setLoop(c);
+      setMinutes(c.intervalMinutes);
+    });
+    api("/api/confidence-settings").then((c) => {
+      setConfidence(c);
+      setThresholdInput(c.threshold);
+    });
+  }, [api]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const saveInterval = async (value: number) => {
+    const result = await api("/api/trading-loop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ intervalMinutes: value }) });
+    if (result.ok) {
+      setSavedNote(`Scan interval set to every ${value} min -- takes effect on the next scheduled cycle.`);
+      reload();
+    } else {
+      setSavedNote(`Error: ${result.error}`);
+    }
+  };
+
+  const toggleAutoApprove = async (enabled: boolean) => {
+    await api("/api/confidence-settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ autoApproveBelowThreshold: enabled }) });
+    reload();
+  };
+
+  const saveThreshold = async () => {
+    const result = await api("/api/confidence-settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threshold }) });
+    if (!result.ok) setSavedNote(`Error: ${result.error}`);
+    reload();
+  };
+
+  return (
+    <div className="card">
+      <h2>Autonomous Trading</h2>
+      <div className="row" style={{ marginBottom: 10, gap: 8 }}>
+        <span>Scan every</span>
+        {[1, 2, 5, 15].map((m) => (
+          <button key={m} className={`btn secondary${minutes === m ? " active" : ""}`} onClick={() => { setMinutes(m); void saveInterval(m); }}>
+            {m} min
+          </button>
+        ))}
+        <input
+          type="number"
+          min={loop?.min ?? 1}
+          max={loop?.max ?? 60}
+          value={minutes}
+          onChange={(e) => setMinutes(Number(e.target.value))}
+          style={{ width: 70 }}
+        />
+        <button className="btn secondary" onClick={() => saveInterval(minutes)}>
+          Save
+        </button>
+      </div>
+      {loop && (
+        <div className="stat-note">
+          Current: every {loop.intervalMinutes} min. Persisted intent: autonomous trading {loop.enabled ? "ON" : "OFF"}, execution {loop.executionEnabled ? "normal" : "watch-only (sniper-tier asks only)"} --
+          set via Telegram's /start_trading and /stop_trading. A running loop picks up a new interval on its very next tick automatically, no restart needed.
+        </div>
+      )}
+
+      <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid #2a2a2a" }} />
+
+      <div className="row" style={{ marginBottom: 10, gap: 8 }}>
+        <span>Confidence threshold:</span>
+        <input type="number" min={0} max={100} value={threshold} onChange={(e) => setThresholdInput(Number(e.target.value))} style={{ width: 70 }} />
+        <span>%</span>
+        <button className="btn secondary" onClick={saveThreshold}>
+          Save
+        </button>
+      </div>
+      <div className="row" style={{ marginBottom: 10, gap: 8 }}>
+        <span>Auto-approve trades below threshold:</span>
+        <span className={`badge ${confidence?.autoApproveBelowThreshold ? "ok" : "warn"}`}>{confidence?.autoApproveBelowThreshold ? "ON -- fires immediately" : "OFF -- queues for your approval"}</span>
+        <button className="btn secondary" onClick={() => toggleAutoApprove(!confidence?.autoApproveBelowThreshold)}>
+          {confidence?.autoApproveBelowThreshold ? "Turn off" : "Turn on"}
+        </button>
+      </div>
+      <div className="stat-note">
+        When this is OFF, every trade below your confidence threshold (including a genuinely high-conviction "sniper" one, if its score still lands under the threshold) queues for a real approve/decline
+        instead of firing on its own -- this is very likely what's behind seeing approval prompts you didn't expect. Default is ON.
+      </div>
+      {savedNote && <div className="stat-note">{savedNote}</div>}
     </div>
   );
 }

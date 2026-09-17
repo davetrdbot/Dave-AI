@@ -215,6 +215,11 @@ button.btn {
   cursor: pointer;
   font-size: 13px;
 }
+button.btn.secondary.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #06090f;
+  font-weight: 700;
+}
 button.btn.secondary {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text);
