@@ -126,7 +126,7 @@ import {
 } from "@dave/brain";
 import { getReport as getCircuitBreakerReport, formatTripReport, getInterruptState } from "@dave/safety";
 import { getTodaysWinRateSummary } from "@dave/feedback";
-import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes, setAutonomousTradingIntervalMinutes } from "./trading-loop.js";
+import { isAutonomousTradingRunning, getTradingLoopIntervalMinutes, setAutonomousTradingIntervalMinutes, DEFAULT_TRADING_LOOP_MINUTES } from "./trading-loop.js";
 import { getProviderTimeoutConfig, setPrimaryTimeoutSeconds, setFallbackTimeoutSeconds } from "./provider-timeout-config.js";
 import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
@@ -867,16 +867,39 @@ function eaTokenKeyboard(userId: string): { text: string; reply_markup: ReturnTy
  * repeating scan loop, not a musical cadence -- every user-facing string below says "loop"/"scan
  * interval" instead. "Auto" (user: "the interval to analyze it can be set to auto") resets to the
  * real system default (DEFAULT_TRADING_LOOP_MINUTES) rather than requiring the user to remember or
- * pick a specific number. */
+ * pick a specific number.
+ *
+ * Real bug fixed (the trader, live, furious: real Telegram screenshot showed "Scan loop interval:
+ * every 5 min (compulsory -- not user-adjustable)" with literally zero buttons on the screen).
+ * This function's own doc comment above describes a real button-based picker, but the actual
+ * returned keyboard was `keyboard([])` -- empty -- and the status line hardcoded "compulsory," a
+ * stale leftover from an EARLIER, already-reverted phase (trading-loop-config.ts's own comment:
+ * "a prior change had briefly locked this to a mandatory 1-minute cadence for everyone... the
+ * trader has since confirmed the default should go back to... adjustable"). The real
+ * `tradinginterval:<minutes>` callback handler a few hundred lines below was ALWAYS there, fully
+ * wired to the real setAutonomousTradingIntervalMinutes() -- it just had no buttons pointing at
+ * it. Added real preset buttons (matching the confidence/timeout keyboards' own pattern) plus the
+ * honest, current status text.
+ */
 function tradingIntervalKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
   const current = getTradingLoopIntervalMinutes(userId);
   const running = isAutonomousTradingRunning(userId);
   const lines = [
     "<b>Autonomous Trading</b>",
     `Status: ${running ? "▶️ Running" : "⏸️ Off"}`,
-    `Scan loop interval: every ${current} min (compulsory -- not user-adjustable)`,
+    `Scan loop interval: every ${current} min`,
+    "",
+    "Tap a preset, or type /start_trading <minutes> for any value from 1 to 60.",
   ];
-  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard([]), "settings:top") };
+  const presets = [1, 2, 5, 15, 30, 60];
+  const rows: ReturnType<typeof coloredButton>[][] = [];
+  for (let i = 0; i < presets.length; i += 3) {
+    rows.push(
+      presets.slice(i, i + 3).map((m) => coloredButton(m === current ? `✅ ${m} min` : `${m} min`, m === current ? "green" : "neutral", `tradinginterval:${m}`))
+    );
+  }
+  rows.push([coloredButton(`Auto (${DEFAULT_TRADING_LOOP_MINUTES} min default)`, "neutral", `tradinginterval:${DEFAULT_TRADING_LOOP_MINUTES}`)]);
+  return { text: lines.join("\n"), reply_markup: withMenuHome(keyboard(rows), "settings:top") };
 }
 
 /** NOTIFICATIONS section: real push toggle (genuinely gates the alert-sending tools in
