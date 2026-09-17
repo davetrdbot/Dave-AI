@@ -889,7 +889,7 @@ function tradingIntervalKeyboard(userId: string): { text: string; reply_markup: 
     `Status: ${running ? "▶️ Running" : "⏸️ Off"}`,
     `Scan loop interval: every ${current} min`,
     "",
-    "Tap a preset, or type /start_trading <minutes> for any value from 1 to 60.",
+    "Tap a preset, or use /start_trading N for any value from 1 to 60.",
   ];
   const presets = [1, 2, 5, 15, 30, 60];
   const rows: ReturnType<typeof coloredButton>[][] = [];
