@@ -15,18 +15,26 @@ import { getTradingLoopIntervalMs, getTradingLoopIntervalMinutes, setTradingLoop
  * Real gap fixed (the trader, explicit: add a real UI control in the admin panel for the scan
  * interval): the admin panel runs as its own real child process (see provider-router.ts's own
  * comment on this same architectural fact) -- it can never reach this in-memory `activeIntervals`
- * map to force a live re-arm the way /start_trading <minutes> does in-process. A single
- * self-rescheduling setTimeout (instead of a setInterval armed once with a captured interval)
- * reads the real persisted cadence FRESH before every tick, so a change written to the shared
- * config file from EITHER process -- the admin panel's new interval control, or Telegram's
- * /start_trading <minutes> -- takes effect on the very next tick, cross-process, with no explicit
- * re-arm call required. setAutonomousTradingIntervalMinutes below still exists for the case where
- * a user wants it to apply sooner than the current wait would otherwise allow (a genuine early
- * re-arm, not just "eventually correct").
+ * map to force a live re-arm the way /start_trading <minutes> does in-process.
+ *
+ * Real bug fixed, found by LIVE verification, not just reasoning about the code: a first version
+ * of this fix used a single self-rescheduling setTimeout that re-read the interval before
+ * scheduling each NEXT wait -- which sounds like "picks up a change on the very next tick," but a
+ * live test proved otherwise: a config change made mid-wait never touches the setTimeout handle
+ * that's ALREADY armed with the stale interval, so it only actually took effect after that entire
+ * stale wait finished (up to the old interval's full length -- e.g. a 60-minute stale wait truly
+ * eats a full 60 minutes before a 1-minute change lands). Replaced with a short, fixed-cadence
+ * poll (`POLL_MS`): every real cycle only fires once at least `getTradingLoopIntervalMs()` has
+ * genuinely elapsed since the last one, re-read fresh on every single poll tick -- so a change
+ * from EITHER process (the admin panel's file write, or Telegram's /start_trading <minutes>) is
+ * live within one poll window, not "after however long the old interval happened to be."
  */
 
-const activeIntervals = new Map<string, ReturnType<typeof setTimeout>>();
+const POLL_MS = 5_000;
+const activeIntervals = new Map<string, ReturnType<typeof setInterval>>();
 const activeRunners = new Map<string, () => Promise<void>>();
+const lastRunAt = new Map<string, number>();
+const cycleInFlight = new Set<string>();
 
 export { DEFAULT_TRADING_LOOP_MINUTES, MIN_TRADING_LOOP_MINUTES, MAX_TRADING_LOOP_MINUTES, InvalidTradingLoopIntervalError, getTradingLoopIntervalMinutes, setTradingLoopIntervalMinutes } from "./trading-loop-config.js";
 
@@ -34,36 +42,33 @@ export function isAutonomousTradingRunning(ownerUserId: string): boolean {
   return activeIntervals.has(ownerUserId);
 }
 
-/** Schedules the NEXT tick only, reading the real persisted interval fresh right before doing so
- *  -- never a fixed cadence captured once at start. `overrideMs`, when given, is honored for just
- *  this one scheduling call (a one-shot start-up override); every call after that always reads
- *  the live config. */
-function scheduleNextTick(ownerUserId: string, runCycle: () => Promise<void>, overrideMs?: number): void {
-  const intervalMs = overrideMs ?? getTradingLoopIntervalMs(ownerUserId);
-  const handle = setTimeout(() => {
-    void (async () => {
-      if (!activeIntervals.has(ownerUserId)) return; // stopped while this tick was scheduled
-      if (!isTradingHalted(ownerUserId)) {
-        try {
-          await runCycle();
-        } catch (err) {
-          console.error(`[trading-loop] autonomous cycle threw for ${ownerUserId}:`, err);
-        }
-      }
-      if (activeIntervals.has(ownerUserId)) scheduleNextTick(ownerUserId, runCycle);
-    })();
-  }, intervalMs);
-  activeIntervals.set(ownerUserId, handle);
+/** Runs the real cycle if (and only if) genuinely due -- reads the live interval fresh on every
+ *  single poll tick, so a persisted config change (from any process) is observed within one
+ *  `POLL_MS` window, never bound to whatever the previous interval happened to be. Guards against
+ *  a cycle that runs longer than the configured interval firing a second overlapping call. */
+function pollTick(ownerUserId: string, runCycle: () => Promise<void>): void {
+  if (isTradingHalted(ownerUserId)) return;
+  if (cycleInFlight.has(ownerUserId)) return; // previous cycle still running -- never overlap
+  const due = (lastRunAt.get(ownerUserId) ?? 0) + getTradingLoopIntervalMs(ownerUserId);
+  if (Date.now() < due) return; // not due yet
+  lastRunAt.set(ownerUserId, Date.now());
+  cycleInFlight.add(ownerUserId);
+  void runCycle()
+    .catch((err) => console.error(`[trading-loop] autonomous cycle threw for ${ownerUserId}:`, err))
+    .finally(() => cycleInFlight.delete(ownerUserId));
 }
 
 /** Returns false (no-op) if a loop is already running for this user -- /start_trading twice
- * must not stack two intervals. Uses the user's own configured cadence (trading-loop-config.ts)
- * unless intervalMs is explicitly overridden for this one start-up tick. */
+ * must not stack two intervals. `startAtMs`, when given, back-dates `lastRunAt` so the FIRST real
+ * cycle fires sooner/later than a full interval from now (used by the explicit re-arm below);
+ * omit for the normal case (first real cycle fires after one full interval, same as before). */
 export function startAutonomousTradingLoop(ownerUserId: string, runCycle: () => Promise<void>, intervalMs?: number): boolean {
   if (activeIntervals.has(ownerUserId)) return false;
   startTradingLoop(ownerUserId);
   activeRunners.set(ownerUserId, runCycle);
-  scheduleNextTick(ownerUserId, runCycle, intervalMs);
+  lastRunAt.set(ownerUserId, Date.now() - (intervalMs !== undefined ? getTradingLoopIntervalMs(ownerUserId) - intervalMs : 0));
+  const handle = setInterval(() => pollTick(ownerUserId, runCycle), POLL_MS);
+  activeIntervals.set(ownerUserId, handle);
   return true;
 }
 
@@ -72,27 +77,25 @@ export function startAutonomousTradingLoop(ownerUserId: string, runCycle: () => 
 export function stopAutonomousTradingLoop(ownerUserId: string): boolean {
   const handle = activeIntervals.get(ownerUserId);
   if (!handle) return false;
-  clearTimeout(handle);
+  clearInterval(handle);
   activeIntervals.delete(ownerUserId);
   activeRunners.delete(ownerUserId);
+  lastRunAt.delete(ownerUserId);
+  cycleInFlight.delete(ownerUserId);
   resumeTradingLoop(ownerUserId);
   return true;
 }
 
 /**
  * Real, live cadence change -- persists the new interval AND, if the loop is currently running,
- * re-arms it with the new cadence immediately (tearing down the pending tick and rescheduling)
- * rather than waiting out whatever's left of the OLD wait first. Cross-process changes (the admin
- * panel writing the same config file directly) don't need this -- scheduleNextTick already reads
- * fresh every tick -- this is only for "make it apply right now, in THIS process."
+ * makes the NEXT poll tick treat it as immediately due (rather than waiting for
+ * `lastRunAt + newInterval`, which could still be a real wait if the old interval was long and
+ * little time has passed since the last real cycle). Genuinely fires within one `POLL_MS` window.
+ * Cross-process changes (the admin panel writing the same config file directly) don't need this
+ * call at all -- pollTick already re-reads the live interval every single poll.
  */
 export function setAutonomousTradingIntervalMinutes(ownerUserId: string, minutes: number): number {
   const applied = setTradingLoopIntervalMinutes(ownerUserId, minutes);
-  const runner = activeRunners.get(ownerUserId);
-  if (runner) {
-    const handle = activeIntervals.get(ownerUserId);
-    if (handle) clearTimeout(handle);
-    scheduleNextTick(ownerUserId, runner, applied * 60_000);
-  }
+  if (activeRunners.has(ownerUserId)) lastRunAt.set(ownerUserId, 0);
   return applied;
 }
