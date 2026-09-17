@@ -27,11 +27,30 @@ export function classifyProviderError(reason: string): string {
   if (/insufficient_quota|quota exceeded|exceeded your current quota|out of credit|billing|payment required|\b402\b/i.test(reason)) return "out of credit/quota";
   if (/\b429\b|rate.?limit(ed)?\b|too many requests/i.test(reason)) return "rate limited";
   if (/\b401\b|invalid.{0,20}api.?key|unauthorized|incorrect api key/i.test(reason)) return "invalid API key";
+  if (/\b403\b|forbidden/i.test(reason)) return "forbidden (check key permissions)";
   if (/\b404\b|model.{0,20}not found|function.{0,20}not found/i.test(reason)) return "model/endpoint not found";
+  // Real gap fixed (the trader, live, real pasted proof: "upstage (request failed)" -- a real
+  // HTTP 400/422 fell all the way through every classified case above into the generic fallback,
+  // which told the trader nothing they could act on). A 400/422 almost always means the request
+  // itself was malformed for that provider (wrong model id, an unsupported field/parameter) --
+  // worth its own real label rather than looking identical to an unclassifiable network blip.
+  if (/\b400\b|\b422\b|bad request|invalid.{0,20}request|unprocessable/i.test(reason)) return "bad request -- check the configured model id/parameters";
   if (/timed out|timeout|ETIMEDOUT|abort/i.test(reason)) return "timed out";
   if (/ECONNRESET|ECONNREFUSED|fetch failed|network|ENOTFOUND/i.test(reason)) return "connection issue";
   if (/\b5\d\d\b|internal server error|service unavailable|bad gateway/i.test(reason)) return "server error";
   return "request failed";
+}
+
+/** Shared by every place that reports a provider failure to the user (this module's own
+ *  AllConfiguredProvidersFailedError rendering below, and provider-selection.ts's live
+ *  onKeySwitch/onProviderExhausted notices): a recognized classification stays a clean short
+ *  label, but the unclassified "request failed" fallback -- which told the trader nothing
+ *  actionable in the real "upstage (request failed)" report -- is replaced with a genuine
+ *  (truncated) snippet of the actual endpoint reason instead. */
+export function describeProviderFailure(reason: string): string {
+  const classification = classifyProviderError(reason);
+  if (classification !== "request failed") return classification;
+  return reason.replace(/^\[[^\]]+\]\s*/, "").slice(0, 140);
 }
 /**
  * Real gap fixed: the previous failover behavior threw only the LAST provider's error (e.g. "no
@@ -66,7 +85,7 @@ export function friendlyErrorMessage(err: unknown): string {
     // key-switch/provider-switch notice (provider-selection.ts) already told the user moments ago.
     const parts = err.attempts.map((a) => {
       const noStoredKeys = /no stored keys for provider "([^"]+)"/.exec(a.reason);
-      return `${a.provider} (${noStoredKeys ? "no working keys" : classifyProviderError(a.reason)})`;
+      return `${a.provider} (${noStoredKeys ? "no working keys" : describeProviderFailure(a.reason)})`;
     });
     return `⚠️ All configured providers failed: ${parts.join(", ")}. Check /providers.`;
   }

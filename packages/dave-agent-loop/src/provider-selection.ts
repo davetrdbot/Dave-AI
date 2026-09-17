@@ -1,7 +1,7 @@
 import type { DaveDatabase } from "@dave/db";
 import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName } from "@dave/brain";
 import { getProviderTimeoutMs, MAX_TIMEOUT_SECONDS } from "./provider-timeout-config.js";
-import { AllConfiguredProvidersFailedError, classifyProviderError } from "./error-messages.js";
+import { AllConfiguredProvidersFailedError, classifyProviderError, describeProviderFailure } from "./error-messages.js";
 
 /** A real, conservative emergency trim -- well under any known provider's real tool-count cap,
  *  used only as a last-resort defensive retry (see the "too many tools" catch below). Dynamic
@@ -80,11 +80,11 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
             timeoutMs,
             {
               onKeySwitch: async ({ reason }) => {
-                await notify(`⚠️ ${provider} key issue (${classifyProviderError(reason)}) — trying next key`);
+                await notify(`⚠️ ${provider} key issue (${describeProviderFailure(reason)}) — trying next key`);
               },
               onProviderExhausted: async ({ reason }) => {
                 attempts.push({ provider, reason });
-                if (hasNextProvider) await notify(`⚠️ ${provider} unavailable (${classifyProviderError(reason)}) — switching provider`);
+                if (hasNextProvider) await notify(`⚠️ ${provider} unavailable (${describeProviderFailure(reason)}) — switching provider`);
               },
             },
             signal
