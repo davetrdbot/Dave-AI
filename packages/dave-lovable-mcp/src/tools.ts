@@ -32,7 +32,7 @@ export const LOVABLE_TOOLS: ToolDefinition[] = [
   {
     name: "generate_image",
     description:
-      "Generate an image from a text prompt via the user's configured Lovable MCP server. This is the ONLY Lovable MCP capability exposed to you -- text generation and voice synthesis on that same server are deliberately never reachable through this tool. " +
+      "Generate an image from a text prompt via the user's configured Lovable MCP server. " +
       "Returns a real image URL, but does NOT deliver it to the chat itself -- call tg_send_photo with the returned `url` afterward so the user actually sees the image, not just a link.",
     parameters: {
       type: "object",
@@ -55,6 +55,24 @@ export const LOVABLE_TOOLS: ToolDefinition[] = [
         style: args.style as string | undefined,
         transparentBackground: args.transparentBackground as boolean | undefined,
       });
+    },
+  },
+  {
+    name: "lovable_ai_agent",
+    description:
+      "Real, independent AI text call via the user's configured Lovable MCP server -- a second AI capability separate from your own configured LLM provider, real and callable, not a stub. " +
+      "Use for a genuine second opinion, or when the user specifically asks to use their Lovable AI rather than you directly.",
+    parameters: {
+      type: "object",
+      properties: { prompt: { type: "string" } },
+      required: ["prompt"],
+    },
+    execute: async (args, ctx) => {
+      const settings = getLovableMcpSettings(ctx.db, ctx.userId);
+      if (!settings.url || !settings.token) throw new LovableMcpNotConfiguredError();
+      const client = new LovableMcpImageClient(settings.url, settings.token);
+      await client.connect();
+      return { response: await client.callAiAgent(args.prompt as string) };
     },
   },
 ];

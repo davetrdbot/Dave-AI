@@ -80,19 +80,19 @@ try {
   assert.ok(refused);
   console.log("    genuinely refuses to generate an image without a real successful connection first");
 
-  // --- [3] Scoping: architecturally, ONLY image creation is reachable through this client ---
-  console.log("\n[3] Real architectural scoping -- only generateImage() exists, no generic tool-call escape hatch...\n");
+  // --- [3] Scoping: image creation AND the real lovable_ai_agent text tool are reachable;
+  // generate_voice deliberately isn't (dave-notifications already has its own real TTS path) ---
+  console.log("\n[3] Real, explicit scoping -- generateImage() and callAiAgent() exist, generate_voice deliberately doesn't...\n");
   const proto = Object.getOwnPropertyNames(LovableMcpImageClient.prototype);
   const publicMethods = proto.filter((m) => m !== "constructor" && !m.startsWith("_") && m !== "requireClient");
-  assert.deepEqual(publicMethods.sort(), ["connect", "generateImage"].sort());
-  console.log(`    LovableMcpImageClient's entire public surface: ${publicMethods.join(", ")} -- no path to lovable_ai_agent or generate_voice exists in this class at all`);
+  assert.deepEqual(publicMethods.sort(), ["callAiAgent", "connect", "generateImage"].sort());
+  console.log(`    LovableMcpImageClient's entire public surface: ${publicMethods.join(", ")} -- no path to generate_voice exists in this class`);
 
-  // --- [4] Agent tool: real, scoped, config-driven ---
-  console.log("\n[4] Real agent-callable tool -- config-driven, not a hardcoded server...\n");
-  assert.equal(LOVABLE_TOOLS.length, 1);
-  assert.equal(LOVABLE_TOOLS[0].name, "generate_image");
-  assert.ok(LOVABLE_TOOLS[0].description.toLowerCase().includes("only"));
-  console.log(`    exactly 1 tool exposed: "${LOVABLE_TOOLS[0].name}"`);
+  // --- [4] Agent tools: real, config-driven ---
+  console.log("\n[4] Real agent-callable tools -- config-driven, not a hardcoded server...\n");
+  assert.equal(LOVABLE_TOOLS.length, 2);
+  assert.deepEqual(LOVABLE_TOOLS.map((t) => t.name).sort(), ["generate_image", "lovable_ai_agent"]);
+  console.log(`    tools exposed: ${LOVABLE_TOOLS.map((t) => t.name).join(", ")}`);
 
   console.log("\n[4b] Tool genuinely refuses to run before Settings are configured for THIS user...\n");
   const dbPath2 = join(workDir, "dave2.db");

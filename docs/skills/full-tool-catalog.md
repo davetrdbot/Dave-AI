@@ -13,9 +13,9 @@ structured list, programmatically, in one call). This doc is the
 human/semantic reference — `get_tool_catalog` is the same data as a callable
 tool.
 
-Counts: 226 tools are registered for every user; +23 more (`push_message_to_user`
+Counts: 227 tools are registered for every user; +20 more (`push_message_to_user`
 plus the rest of Telegram/notifications) register only once a live Telegram
-client is wired in for that chat — 249 max. Only ~63 are sent to the model by
+client is wired in for that chat — 247 max. Only ~63 are sent to the model by
 default per request (a real per-provider tool-count cap), which is exactly
 why this doc and `search_tools`/`get_tool_catalog` exist.
 
@@ -147,9 +147,6 @@ freeMargin/leverage standalone.
 
 ## Telegram / messaging
 
-- `tg_thinking` — open a live "thinking..." indicator describing what you're about to do
-- `tg_thinking_update` — update the indicator's text as you move through steps
-- `tg_finalize` — replace the indicator with your real final response
 - `send_telegram` — send a plain message
 - `tg_rich_message` — send a rich-formatted (HTML tables/blockquotes) message
 - `tg_edit_message` — edit a previously-sent message
@@ -235,6 +232,7 @@ freeMargin/leverage standalone.
 - `get_confidence_settings` / `set_confidence_threshold` / `set_auto_approve_below_threshold` — trade confidence gating
 - `get_lovable_mcp_settings` / `set_lovable_mcp_settings` — Lovable MCP URL/token
 - `generate_image` — generate an image via the user's configured Lovable MCP server
+- `lovable_ai_agent` — real, independent AI text call via that same Lovable MCP server, a second AI capability separate from your own configured LLM provider
 
 ## Providers (LLM keys)
 

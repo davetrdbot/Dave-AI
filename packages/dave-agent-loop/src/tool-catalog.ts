@@ -128,9 +128,6 @@ export const TOOL_CATALOG_CATEGORIES: Record<string, string[]> = {
     "delete_skill",
   ],
   "Telegram & messaging": [
-    "tg_thinking",
-    "tg_thinking_update",
-    "tg_finalize",
     "send_telegram",
     "tg_rich_message",
     "tg_edit_message",
@@ -231,6 +228,7 @@ export const TOOL_CATALOG_CATEGORIES: Record<string, string[]> = {
     "get_lovable_mcp_settings",
     "set_lovable_mcp_settings",
     "generate_image",
+    "lovable_ai_agent",
   ],
   "Providers (LLM keys)": [
     "list_providers",
