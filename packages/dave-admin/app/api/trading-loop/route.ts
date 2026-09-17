@@ -76,9 +76,22 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get("userId") ?? "default";
-  const body = (await req.json()) as { intervalMinutes: number };
+  const body = (await req.json()) as { intervalMinutes?: number; enabled?: boolean };
+
+  // Allow setting the persisted enabled flag directly -- useful to re-arm auto-resume
+  // after a manual /stop without having to open Telegram. The in-memory loop itself
+  // only starts when the bot process boots or receives /start_trading; this just sets
+  // the flag so the NEXT boot auto-resumes instead of staying off.
+  if (typeof body.enabled === "boolean") {
+    const path = enabledFlagPath(userId, "autonomous-trading-enabled");
+    const dir = dirname(path);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(path, JSON.stringify(body.enabled), "utf8");
+    return NextResponse.json({ ok: true, enabled: body.enabled });
+  }
+
   const minutes = body.intervalMinutes;
-  if (!Number.isInteger(minutes) || minutes < MIN_TRADING_LOOP_MINUTES || minutes > MAX_TRADING_LOOP_MINUTES) {
+  if (minutes === undefined || !Number.isInteger(minutes) || minutes < MIN_TRADING_LOOP_MINUTES || minutes > MAX_TRADING_LOOP_MINUTES) {
     return NextResponse.json({ ok: false, error: `Trading loop interval must be a whole number of minutes between ${MIN_TRADING_LOOP_MINUTES} and ${MAX_TRADING_LOOP_MINUTES} (got ${minutes}).` }, { status: 400 });
   }
   const path = configPath(userId);

@@ -93,7 +93,7 @@ export const TOOL_CATALOG_CATEGORIES: Record<string, string[]> = {
     "list_trailing_positions",
     "process_price_tick",
   ],
-  "Account & connection": ["mt5_account", "run_selftest", "get_onboarding_status", "get_pairing_status", "get_goal_config"],
+  "Account & connection": ["mt5_account", "run_selftest", "get_onboarding_status", "get_pairing_status"],
   "Pair groups & scope": [
     "list_pair_groups",
     "create_or_update_pair_group",

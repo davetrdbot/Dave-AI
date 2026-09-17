@@ -985,8 +985,11 @@ function TradingLoopPanel({ userId }: { userId: string }) {
       </div>
       {loop && (
         <div className="stat-note">
-          Current: every {loop.intervalMinutes} min. Persisted intent: autonomous trading {loop.enabled ? "ON" : "OFF"}, execution {loop.executionEnabled ? "normal" : "watch-only (sniper-tier asks only)"} --
-          set via Telegram's /start_trading and /stop_trading. A running loop picks up a new interval on its very next tick automatically, no restart needed.
+          Current: every {loop.intervalMinutes} min. Persisted intent: autonomous trading {loop.enabled ? "ON" : "OFF"}, execution {loop.executionEnabled ? "normal" : "watch-only (sniper-tier asks only)"}.
+          A running loop picks up a new interval on its very next tick automatically, no restart needed.
+          {!loop.enabled && (
+            <span> Loop is OFF — use Telegram <b>/start_trading</b> to start it, or <button className="btn secondary" style={{ marginLeft: 8, padding: "2px 10px" }} onClick={async () => { await api("/api/trading-loop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: true }) }); reload(); setSavedNote("Loop intent set to ON — will auto-resume on next restart."); }}>Set ON for next restart</button></span>
+          )}
         </div>
       )}
       {loop?.lastCycle && (

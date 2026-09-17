@@ -327,14 +327,22 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
     // now turning it back on. Capture whether execution was actually enabled BEFORE flipping it,
     // so the reply can tell a genuine "already fully on" apart from "was paused, now resumed."
     const wasExecutionEnabled = isAutonomousExecutionEnabled(deps.ownerUserId);
-    const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId));
+    // Real bug fixed: pass 0 as intervalMs on a fresh start so the FIRST real cycle fires within
+    // the next poll tick (~5s) instead of waiting the full configured interval -- a user who just
+    // sent /start_trading expects activity to start, not a blank minute of silence.
+    const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId), wasAlreadyRunning ? undefined : 0);
     // Real bug fixed (user, live: autonomous trading silently stops on every deploy/restart --
     // startAutonomousTradingLoop's setInterval is purely in-memory, no persistence, no resume).
     // Persists the user's real standing intent so a boot-time resume (see the bottom of
     // startTelegramBotServer below) can genuinely re-arm this after a restart, not leave the
     // user to notice the silence and manually retype /start_trading every time.
     setAutonomousTradingEnabled(deps.ownerUserId, true);
-    setAutonomousExecutionEnabled(deps.ownerUserId, true);
+    // Only re-enable execution when genuinely starting or resuming -- not on a bare interval
+    // update while the loop was already running with execution explicitly paused, which would
+    // silently undo the user's /stop_trading without saying so.
+    if (!wasAlreadyRunning || !wasExecutionEnabled) {
+      setAutonomousExecutionEnabled(deps.ownerUserId, true);
+    }
     const interval = getTradingLoopIntervalMinutes(deps.ownerUserId);
     let replyText: string;
     if (started) {

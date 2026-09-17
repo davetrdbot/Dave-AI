@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE_DIR = join(__dirname, "..", "..", "..", "memory");
 
-const MEMORY_FILES = ["MEMORY.md", "USER.md", "ADAPTABILITY.md", "goal.yaml"] as const;
+const MEMORY_FILES = ["MEMORY.md", "USER.md", "ADAPTABILITY.md"] as const;
 type MemoryFile = (typeof MEMORY_FILES)[number];
 
 /**
@@ -32,7 +32,6 @@ export interface FrozenSnapshot {
   readonly memory: string;
   readonly user: string;
   readonly adaptability: string;
-  readonly goal: string;
 }
 
 /**
@@ -72,8 +71,6 @@ function filePath(userId: string, file: MemoryFile): string {
  * restart or manual replay). Never touches a goal.yaml that's been genuinely customized -- only
  * an exact match against the known-empty placeholder marker is replaced.
  */
-const EMPTY_GOAL_PLACEHOLDER_MARKER = "# Empty placeholder. This file is never authored by Claude/Dave.";
-
 export function ensureUserMemory(userId: string): void {
   const dir = userDir(userId);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -82,11 +79,6 @@ export function ensureUserMemory(userId: string): void {
     const template = existsSync(templatePath(file)) ? readFileSync(templatePath(file), "utf8") : "";
     if (!existsSync(dest)) {
       writeFileSync(dest, template, "utf8");
-    } else if (file === "goal.yaml") {
-      const current = readFileSync(dest, "utf8");
-      if (current.trim() === "" || current.includes(EMPTY_GOAL_PLACEHOLDER_MARKER)) {
-        writeFileSync(dest, template, "utf8");
-      }
     }
   }
 }
@@ -123,7 +115,6 @@ export function loadFrozenSnapshot(userId: string): FrozenSnapshot {
     memory: read("MEMORY.md"),
     user: read("USER.md"),
     adaptability: read("ADAPTABILITY.md"),
-    goal: read("goal.yaml"),
   });
 }
 

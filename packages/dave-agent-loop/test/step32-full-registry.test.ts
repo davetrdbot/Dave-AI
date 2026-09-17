@@ -313,10 +313,6 @@ try {
   assert.ok(Array.isArray(selftest.checks) && selftest.checks.length >= 4);
   console.log(`    run_selftest: ${selftest.checks.map((c: any) => `${c.name}=${c.ok}`).join(", ")}`);
 
-  const goalConfig: any = await registry.execute("get_goal_config", {});
-  assert.equal(typeof goalConfig.goal, "string");
-  console.log(`    get_goal_config: real goal.yaml read (${goalConfig.goal.length} chars)`);
-
   const onboarding: any = await registry.execute("get_onboarding_status", {});
   assert.equal(onboarding.userId, OWNER);
   console.log(`    get_onboarding_status: real bootstrap state -> ${onboarding.state}`);
