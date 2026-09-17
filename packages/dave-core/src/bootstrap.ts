@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { appendAdaptability, appendUserFact } from "@dave/memory";
 
@@ -40,6 +40,22 @@ function saveProgress(progress: BootstrapProgress): void {
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(path, JSON.stringify(progress, null, 2), "utf8");
+}
+
+/**
+ * Real bug fixed (the trader, live: reset the bot, then reported bootstrap "doesn't work again").
+ * BootstrapFlow's own progress ("complete" once onboarding finished) lives in a separate file
+ * that /reset's wipe never touched -- so even though USER.md/ADAPTABILITY.md (the actual name/
+ * style memory bootstrap wrote) were genuinely wiped, the state machine itself stayed stuck on
+ * "complete" forever, and `handleMessage` short-circuits immediately whenever state is
+ * "not-started" OR "complete" -- so a real reset never got Dave to introduce itself again. This
+ * is the missing piece: delete the progress file entirely (not just set it to "not-started",
+ * since the caller then calls start() to actually re-open it, and a stale file with old
+ * name/styleNote fields serves no purpose once erased).
+ */
+export function resetBootstrapProgress(userId: string): void {
+  const path = progressPath(userId);
+  if (existsSync(path)) rmSync(path);
 }
 
 /**

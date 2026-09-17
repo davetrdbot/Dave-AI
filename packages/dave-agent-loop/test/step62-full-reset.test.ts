@@ -9,6 +9,7 @@ import { setRiskMode, setTradingMode, setTrailingStopConfig, upsertGroup, setAct
 import { setWriteApprovalSetting, getWriteApprovalSetting, ensureUserMemory, appendUserFact, recordTurn, extractAtoms, recordScenario, getConversation, getAtoms, getScenarios } from "@dave/memory";
 import { setVoiceEnabled, getVoiceSettings, setPushEnabled, getNotificationSettings } from "@dave/notifications";
 import { addProviderKey, listProviderKeys } from "@dave/brain";
+import { BootstrapFlow } from "@dave/core";
 import { saveConversationHistory, loadConversationHistory } from "../src/conversation-store.js";
 import { dispatchCommand, dispatchCallback, type CommandRouterDeps } from "../src/command-router.js";
 
@@ -148,11 +149,21 @@ try {
   assert.equal(keysAfter.length, 1);
   assert.equal(keysAfter[0].config.apiKey, "sk-real-fake-should-survive");
 
-  console.log("\n[7] /menu's real UI is automatically sent after the wipe, so the user lands somewhere useful...");
+  // Real bug fixed (the trader, live: reset, then bootstrap "doesn't work again"). BootstrapFlow's
+  // own "complete" state lived in a file the wipe never touched, so Dave never re-introduced
+  // itself after a reset even though its memory of the user was genuinely gone. A real reset this
+  // thorough means onboarding itself starts over, not a /menu dump -- landing on a fresh "hey, I
+  // just came online" is the real "starting fresh" experience, matching pairing's own first-run flow.
+  console.log("\n[7] Bootstrap genuinely re-triggers after the wipe -- Dave re-introduces itself instead of dumping a stale /menu...");
   console.log(`    real messages sent during the wipe: ${sentMessages.map((m) => m.text.split("\n")[0]).join(" | ")}`);
-  const menuMessage = sentMessages.find((m) => m.text.includes("Menu"));
-  assert.ok(menuMessage, "a real /menu UI message must be sent automatically after the wipe");
-  assert.ok((menuMessage!.reply_markup as { inline_keyboard: unknown[] } | undefined)?.inline_keyboard, "it must be the real inline-keyboard menu, not plain text");
+  const openingMessage = sentMessages.find((m) => m.text.includes("I just came online"));
+  assert.ok(openingMessage, "bootstrap's real opening message must be sent automatically after the wipe");
+  const nameQuestion = sentMessages.find((m) => m.text === "What should I call you?");
+  assert.ok(nameQuestion, "bootstrap's real first question must genuinely follow, re-opening onboarding");
+
+  console.log("\n[8] The real bootstrap progress file is genuinely reset, not just its in-memory state...");
+  const freshProgress = new BootstrapFlow({ send: async () => {} }).getProgress(OWNER);
+  assert.equal(freshProgress.state, "awaiting-name", "a real reset must leave bootstrap genuinely re-opened, not stuck on its old 'complete' state");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

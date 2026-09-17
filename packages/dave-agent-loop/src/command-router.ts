@@ -132,6 +132,7 @@ import { listWorkers } from "@dave/workers";
 import { clearConversationHistory } from "./conversation-store.js";
 import { friendlyErrorMessage } from "./error-messages.js";
 import { getRecentAnalysisFetches, type AnalysisDebugEntry } from "./analysis-debug-store.js";
+import { BootstrapFlow, resetBootstrapProgress, type Transport } from "@dave/core";
 
 /**
  * Real gap fixed (A2/A3): onUpdate had zero command router -- every
@@ -427,9 +428,19 @@ async function handleProviders(deps: CommandRouterDeps, chatId: number, editMess
   const catalogCount = listProviderCatalog().filter((e) => e.id !== "custom").length;
   const primaryReady = configuredProviders.has(config.primary);
   const primaryLine = primaryReady ? config.primary : `${config.primary} (not set -- no working key)`;
+  // Real gap fixed (the trader, live: "even the ai from the mcp is not in the provider"). Lovable
+  // MCP is genuinely NOT a chat/completions provider (no primary/fallback slot makes sense for
+  // it), so it deliberately isn't a fake catalog entry above -- but that also meant this real,
+  // human-facing screen never mentioned it at all, even though it's a real, separate AI
+  // capability (image generation) the user configures. Honestly surfaced here instead of hidden.
+  const lovable = getLovableMcpSettings(deps.db, deps.userId);
+  const lovableLine = lovable.url
+    ? `Lovable MCP (image generation): configured${lovable.token ? "" : " -- no token set"}`
+    : "Lovable MCP (image generation): not configured -- /settings → Lovable MCP";
   const text =
     `<b>AI Provider</b>\nPrimary: ${primaryLine}\nFallback: ${config.fallback.join(", ") || "none"}\n\n` +
-    `${catalogCount} providers available. Tap a provider to see its keys:`;
+    `${catalogCount} providers available. Tap a provider to see its keys:\n\n` +
+    `<b>Other AI capabilities</b>\n${lovableLine}`;
   await sendOrEditScreen(deps, chatId, text, providersKeyboard(config.primary, configuredProviders, config.fallback), editMessageId);
 }
 
@@ -1306,8 +1317,16 @@ async function performFullReset(deps: CommandRouterDeps, chatId: number, history
   clearConversationHistory(deps.db, `${deps.userId}:autonomous:${chatId}`);
   resetUserMemory(deps.userId);
   clearMemoryTiers(deps.userId);
+  // Real bug fixed (the trader, live: reset the chat, then bootstrap "doesn't work again").
+  // BootstrapFlow's own "complete" state lived in a file /reset never touched, so even though
+  // USER.md/ADAPTABILITY.md (the actual name/style it wrote) were genuinely wiped, the state
+  // machine stayed stuck on "complete" and Dave never re-introduced itself. A reset this
+  // thorough -- the user's own explicit spec is "reset the bot like a brand new" -- means
+  // onboarding itself starts over too, not just the memory it produced.
+  resetBootstrapProgress(deps.userId);
   await deps.client.sendMessage({ chat_id: chatId, text: "✅ Full reset complete -- every conversation thread and every memory record are genuinely gone. Your settings, API keys, and EA pairing token are untouched. Starting fresh." });
-  await handleMenu(deps, chatId);
+  const bootstrapTransport: Transport = { send: async (_userId, text) => { await deps.client.sendMessage({ chat_id: chatId, text }); } };
+  await new BootstrapFlow(bootstrapTransport).start(deps.userId);
 }
 
 /** Real fix (spec: "3-4 real examples" of conversational use + mention /stop and /panic).
