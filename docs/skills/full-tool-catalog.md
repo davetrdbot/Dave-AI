@@ -13,9 +13,9 @@ structured list, programmatically, in one call). This doc is the
 human/semantic reference — `get_tool_catalog` is the same data as a callable
 tool.
 
-Counts: ~225 tools are registered for every user; +23 more (`push_message_to_user`
+Counts: 226 tools are registered for every user; +23 more (`push_message_to_user`
 plus the rest of Telegram/notifications) register only once a live Telegram
-client is wired in for that chat — 248 max. Only ~63 are sent to the model by
+client is wired in for that chat — 249 max. Only ~63 are sent to the model by
 default per request (a real per-provider tool-count cap), which is exactly
 why this doc and `search_tools`/`get_tool_catalog` exist.
 
