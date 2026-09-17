@@ -43,6 +43,21 @@ function readEnabledFlag(userId: string, name: "autonomous-trading-enabled" | "a
   return JSON.parse(readFileSync(path, "utf8")) === true;
 }
 
+// Real gap fixed (a dedicated investigation subagent, the trader's "why isn't it trading"
+// report): every autonomous-cycle skip reason (EA disconnected, circuit breaker, drawdown,
+// a pending question, busy-state, a plain model SKIP) used to reach ONLY a server-side
+// console.log -- see autonomous-cycle-status.ts's own comment for the real fix that persists it.
+// Same self-contained cross-process file convention as the rest of this route.
+function lastCycleOutcomePath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, "last-cycle-outcome.json");
+}
+
+function readLastCycleOutcome(userId: string): { ts: number; reason: string } | null {
+  const path = lastCycleOutcomePath(userId);
+  if (!existsSync(path)) return null;
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
 export async function GET(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get("userId") ?? "default";
   return NextResponse.json({
@@ -55,6 +70,7 @@ export async function GET(req: NextRequest) {
     // what actually survives a restart and is genuinely useful to show here.
     enabled: readEnabledFlag(userId, "autonomous-trading-enabled", false),
     executionEnabled: readEnabledFlag(userId, "autonomous-execution-enabled", true),
+    lastCycle: readLastCycleOutcome(userId),
   });
 }
 

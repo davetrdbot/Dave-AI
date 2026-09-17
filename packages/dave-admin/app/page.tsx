@@ -934,6 +934,10 @@ function TradingLoopPanel({ userId }: { userId: string }) {
 
   useEffect(() => {
     reload();
+    // Real live visibility: "last cycle" is only useful if it actually updates while this card
+    // is open, not just on first load -- same 15s poll BalanceCard already uses.
+    const id = setInterval(reload, 15000);
+    return () => clearInterval(id);
   }, [reload]);
 
   const saveInterval = async (value: number) => {
@@ -983,6 +987,11 @@ function TradingLoopPanel({ userId }: { userId: string }) {
         <div className="stat-note">
           Current: every {loop.intervalMinutes} min. Persisted intent: autonomous trading {loop.enabled ? "ON" : "OFF"}, execution {loop.executionEnabled ? "normal" : "watch-only (sniper-tier asks only)"} --
           set via Telegram's /start_trading and /stop_trading. A running loop picks up a new interval on its very next tick automatically, no restart needed.
+        </div>
+      )}
+      {loop?.lastCycle && (
+        <div className="stat-note">
+          Last cycle ({new Date(loop.lastCycle.ts).toLocaleTimeString()}): {loop.lastCycle.reason}
         </div>
       )}
 

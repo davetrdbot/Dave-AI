@@ -29,6 +29,7 @@ import { isAutonomousTradingEnabled, setAutonomousTradingEnabled, setAutonomousE
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
 import { friendlyErrorMessage } from "./error-messages.js";
+import { recordCycleOutcome } from "./autonomous-cycle-status.js";
 import { withLiveContext } from "./live-context.js";
 import { isJsonlSkillFile, installSkillsFromJsonl } from "@dave/skills";
 
@@ -191,7 +192,12 @@ async function runAgentTurn(
         // still showing typing") -- confirms in the logs that an abort genuinely reached and
         // stopped the loop, not just "processing forever" with nothing to check.
         console.log(`[turn-abort] ${deps.ownerUserId}: turn genuinely stopped (reason=${result.reason})`);
-        finalText = "⏹️ Stopped -- that turn was cancelled.";
+        // Real gap fixed (traced via a dedicated investigation subagent, the trader's "low
+        // response" report): a genuine deadline hit (the turn was still honestly working, just
+        // took longer than the overall budget) used to show the EXACT same text as a real
+        // user-initiated /stop -- reading like Dave stopped for no reason, when it actually timed
+        // out on real work. Distinct, honest text for each real cause.
+        finalText = result.reason === "deadline" ? "⏹️ That took longer than I could keep going on this turn -- try again, or ask for something narrower." : "⏹️ Stopped -- that turn was cancelled.";
       } else {
         // Real bug fixed (user: "sometimes it shows (no text) like this everytime"): a turn that
         // ends with tool calls but no closing remark from the model (common after a purely
@@ -373,12 +379,17 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
  * included). Per IDENTITY.md's "trade quietly" rule, this sends NOTHING to the user unless the
  * model's own final text is real content -- a bare "NOTHING_TO_REPORT" sentinel (or empty text)
  * means a normal, quiet cycle where nothing needed saying, and is swallowed here, never sent. */
-/** Real, plain visibility into every cycle -- the user has no other way to see why the bot
- *  isn't placing trades than this stdout trace (Railway's own log tail). Every gate that used
- *  to return silently now says so, and every real decision from autonomous-tick.ts gets logged
- *  too (see runAutonomousTick's own log call at the bottom of this function). */
+/** Real gap fixed (a dedicated investigation subagent, the trader's "why isn't it trading"
+ *  report): this used to ONLY reach a server-side console.log -- the comment above used to admit
+ *  outright that "the user has no other way to see why" than Railway's own log tail. Every gate
+ *  that returns through this function (EA disconnected, circuit breaker, drawdown, a pending
+ *  question, busy-state, and every real decision from autonomous-tick.ts) now ALSO persists via
+ *  autonomous-cycle-status.ts, so the admin panel's Autonomous Trading card can show the real,
+ *  current answer -- not just the log. The console.log line stays too, for anyone who does have
+ *  log access. */
 function logCycle(userId: string, reason: string): void {
   console.log(`[autonomous-tick] ${userId}: ${reason}`);
+  recordCycleOutcome(userId, reason);
 }
 
 /** See the real bug this fixes at its one call site below (getPendingQuestion gate). */
@@ -471,6 +482,7 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
     if (outcome.message) for (const chunk of chunkForTelegram(outcome.message)) await client.sendMessage({ chat_id: chatId, text: chunk });
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
+    recordCycleOutcome(deps.ownerUserId, `cycle threw: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     endTurn(deps.ownerUserId, tickAbortController);
     clearAutonomousBusy(deps.ownerUserId);

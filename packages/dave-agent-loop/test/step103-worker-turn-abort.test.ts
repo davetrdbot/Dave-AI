@@ -114,8 +114,8 @@ async function main() {
 
   await runPromise;
   const elapsed = Date.now() - started;
-  console.log(`    runWorkerTask resolved after ${elapsed}ms (AgentLoop's own default overall deadline is ~240000ms)`);
-  assert.ok(elapsed < 5_000, `must resolve promptly from the real early cancel, nowhere near the ~4 minute default deadline (took ${elapsed}ms)`);
+  console.log(`    runWorkerTask resolved after ${elapsed}ms (AgentLoop's own default overall deadline is ~600000ms)`);
+  assert.ok(elapsed < 5_000, `must resolve promptly from the real early cancel, nowhere near the ~10 minute default deadline (took ${elapsed}ms)`);
 
   console.log("\n[3] The worker's own run genuinely observed the cancel and reported it, rather than crashing on an unhandled 'aborted' status...");
   const stoppedMsg = telegramMessages.find((t) => t.toLowerCase().includes("stopped") || t.toLowerCase().includes("cancel"));

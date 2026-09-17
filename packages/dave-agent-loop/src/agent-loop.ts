@@ -70,8 +70,20 @@ export class MaxStepsExceededError extends Error {
  * step cap (`maxSteps ?? Infinity`, a deliberate earlier fix) had no ceiling on its TOTAL
  * duration. This is that real, separate ceiling: generous enough for a genuine multi-tool-call
  * turn with real EA round trips, but never truly unbounded.
+ *
+ * Real bug fixed (traced via a dedicated investigation subagent, the trader's "low response"
+ * report): 4 minutes was NOT actually generous enough for what its own comment above claims.
+ * `get_all_analysis` (dave-ea-bridge's `analysis-request.ts`) has its own real, honest default
+ * timeout of 5 minutes, sized for the EA's two-heartbeat worst case -- a SINGLE analysis call can
+ * legitimately take longer than this turn's entire old budget, before a provider call or a second
+ * tool call even happens. A completely real, honest, in-progress turn (nothing hung, nothing
+ * actually broken) would silently hit this deadline and collapse to the terse, content-free
+ * "Stopped -- that turn was cancelled" message -- which reads exactly like "low response": a long
+ * wait for nothing. Raised to comfortably clear one worst-case analysis round trip plus real room
+ * for the rest of a genuine hunt -> analyze -> execute -> report turn, while staying a real,
+ * bounded ceiling, not unbounded.
  */
-const DEFAULT_OVERALL_TURN_TIMEOUT_MS = 4 * 60_000;
+const DEFAULT_OVERALL_TURN_TIMEOUT_MS = 10 * 60_000;
 
 /** Combines two optional AbortSignals into one that fires the instant EITHER does. Needed so the
  *  overall-deadline timer (below) can genuinely cut off a call already in flight -- not just stop
