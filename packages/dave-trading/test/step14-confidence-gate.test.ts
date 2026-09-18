@@ -8,6 +8,7 @@ import {
   setAutoApproveBelowThreshold,
   evaluateConfidenceGate,
   listPendingTradeApprovals,
+  ConfidenceRequiredError,
   takePendingTradeApproval,
   TradeApprovalNotFoundError,
   InvalidConfidenceThresholdError,
@@ -117,10 +118,27 @@ try {
   assert.throws(() => setConfidenceThreshold(USER_ID, -5), InvalidConfidenceThresholdError);
   console.log("    genuinely refused -- InvalidConfidenceThresholdError");
 
-  console.log("\n[10] No confidence passed at all -> trade_execute behaves exactly as before (no gate involved)...\n");
-  const noConfResult = (await tradeExecuteTool.execute({ symbol: "NZDUSD", type: "sell", lots: 0.1 }, ctx)) as { ticket: string; confidence?: number };
-  assert.equal(noConfResult.ticket, "T-NZDUSD");
-  assert.equal(noConfResult.confidence, undefined, "no confidence field should appear when none was passed");
+  console.log("\n[10] No confidence passed at all -> the order is REFUSED, never placed ungated...\n");
+  // This case previously asserted the opposite -- that omitting confidence placed the order with
+  // "no gate involved". That was the bug: `confidence` was not a required parameter, so leaving
+  // one optional field out bypassed the user's approval threshold entirely and fired a live
+  // order. Note that merely defaulting a missing value to 0 does NOT fix it either, because
+  // evaluateConfidenceGate short-circuits on autoApproveBelowThreshold, which DEFAULTS TO TRUE --
+  // 0 would sail straight through. The real fix is to refuse, so the model must supply a genuine
+  // score; the user's threshold is a safety control, not a suggestion.
+  await assert.rejects(
+    () => tradeExecuteTool.execute({ symbol: "NZDUSD", type: "sell", lots: 0.1 }, ctx),
+    ConfidenceRequiredError,
+    "omitting confidence must refuse the order outright, never place it ungated"
+  );
+  const beforeCount = listPendingTradeApprovals(USER_ID).length;
+  await assert.rejects(
+    () => tradeExecuteTool.execute({ symbol: "NZDUSD", type: "sell", lots: 0.1, confidence: "high" as unknown as number }, ctx),
+    ConfidenceRequiredError,
+    "a malformed confidence must be refused too -- a schema cannot stop a model returning nonsense"
+  );
+  assert.equal(listPendingTradeApprovals(USER_ID).length, beforeCount, "a refused order must not leave a phantom pending approval behind");
+  console.log("    confirmed: a missing or malformed confidence refuses the order outright, and queues nothing");
 
   console.log("\n[11] /reset genuinely clears confidence settings + pending approvals back to defaults...\n");
   resetConfidenceSettingsForUser(USER_ID);

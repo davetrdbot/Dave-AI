@@ -246,7 +246,10 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(LOVABLE_SETTINGS_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(VOICE_SETTINGS_TOOLS, dbOnlyCtx));
   registry.register(adaptTools(PAIR_GROUP_TOOLS, { userId: deps.userId }));
-  registry.register(adaptTools(SETTINGS_TOOLS, tradingCtx)); // ctx unused by these tools -- args carry userId directly
+  // These now genuinely use ctx.userId. They used to require the model to pass `userId` in args
+  // -- an id it is never told, so it invented one and every settings write silently landed under
+  // a hallucinated key while still returning ok:true. See settings-tool.ts's header.
+  registry.register(adaptTools(SETTINGS_TOOLS, tradingCtx));
   registry.register(adaptTools(DAVE_TOOL_REQUEST_TOOLS, ownerCtx));
   registry.register(adaptTools(SKILL_TOOLS, skillCtx));
   registry.register(adaptTools(E2B_TOOLS, dbOnlyCtx));

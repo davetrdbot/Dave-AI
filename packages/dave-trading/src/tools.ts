@@ -48,6 +48,24 @@ export class AutoModeRequiresComputedValueError extends Error {
   }
 }
 
+/**
+ * Real money-safety bug fixed: trade_execute's confidence approval gate was bypassable simply by
+ * omitting `confidence`, which was not a required parameter. Thrown back to the MODEL as a tool
+ * error (never surfaced to the user as a question), same pattern as
+ * AutoModeRequiresComputedValueError above, so it retries with a real number rather than a live
+ * order going out completely ungated.
+ */
+export class ConfidenceRequiredError extends Error {
+  constructor(symbol: string) {
+    super(
+      `trade_execute on ${symbol} requires your own real assessed confidence (0-100) for this specific setup. ` +
+        `It was missing or not a valid number, so the order was NOT placed. The user's confidence threshold is a real ` +
+        `safety control -- an order can never skip it by leaving confidence out. Retry with a genuine confidence score.`
+    );
+    this.name = "ConfidenceRequiredError";
+  }
+}
+
 export interface ToolContext {
   userId: string;
   analysis: AnalysisSource;
@@ -102,7 +120,7 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       "rather than a ticket when that happens.",
     parameters: {
       type: "object",
-      required: ["symbol", "type", "lots"],
+      required: ["symbol", "type", "lots", "confidence"],
       properties: {
         symbol: { type: "string" },
         type: { type: "string", enum: ["buy", "sell", "buy_limit", "sell_limit", "buy_stop", "sell_stop"] },
@@ -194,16 +212,26 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         }
       }
       // Real bug fixed (bug-hunt pass, money-safety): this used to be
-      // `if (typeof confidence === "number")` -- and `confidence` is NOT in this tool's required
-      // list. So omitting one optional field skipped the user's approval gate entirely and fired
-      // a live order immediately, whatever threshold they had set. The same class of hole
-      // autonomous-tick.ts already closed on its own decision schema (see its `required` comment:
-      // a missing confidence must never be treated as a pass). Treated as 0 -- no stated
-      // confidence is the least confident a call can be, so it gates rather than bypasses.
-      const gatedConfidence = typeof confidence === "number" ? confidence : 0;
-      const gate = evaluateConfidenceGate(ctx.userId, order, gatedConfidence, reason as string | undefined);
+      // `if (typeof confidence === "number")`, and `confidence` was NOT in this tool's required
+      // list -- so omitting one optional field skipped the user's approval gate entirely and
+      // fired a live order immediately, whatever threshold they had set.
+      //
+      // Note the first attempt at this fix was wrong and the existing step14 test caught it:
+      // defaulting a missing confidence to 0 does NOT close the hole, because
+      // evaluateConfidenceGate short-circuits on `settings.autoApproveBelowThreshold`, which
+      // DEFAULTS TO TRUE -- so 0 would sail straight through and fire anyway. This is the same
+      // remedy autonomous-tick.ts already chose for the identical hole in its own decision schema:
+      // make confidence genuinely required, AND hard-refuse a missing/invalid value here as
+      // defense in depth, since a model can always return something malformed regardless of what
+      // the schema says. Refused back to the MODEL as a tool error (never surfaced to the user as
+      // a question), exactly like AutoModeRequiresComputedValueError above, so it retries with a
+      // real number instead of a live order going out ungated.
+      if (typeof confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 100) {
+        throw new ConfidenceRequiredError(order.symbol);
+      }
+      const gate = evaluateConfidenceGate(ctx.userId, order, confidence, reason as string | undefined);
       if (gate.needsApproval) {
-        return { needsApproval: true, pendingId: gate.pendingId, confidence: gatedConfidence, threshold: gate.threshold };
+        return { needsApproval: true, pendingId: gate.pendingId, confidence, threshold: gate.threshold };
       }
       const result = await tradeExecute(ctx.executor, order);
       return typeof confidence === "number" ? { ...result, confidence } : result;
