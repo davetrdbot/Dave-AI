@@ -20,6 +20,7 @@ import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTrad
 import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState, waitForBusyToClear } from "./busy-state.js";
+import { eaConnectionAlert, cycleErrorAlert, clearCycleErrorAlert } from "./health-alerts.js";
 import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
@@ -403,7 +404,28 @@ function logCycle(userId: string, reason: string): void {
 /** See the real bug this fixes at its one call site below (getPendingQuestion gate). */
 const MAX_PENDING_QUESTION_AGE_MS = 15 * 60_000;
 
+/**
+ * Real bug fixed (the trader: "find bugs this bot"). The cycle's only error handling was
+ * trading-loop.ts's `.catch(err => console.error(...))` -- so an expired/out-of-credit provider
+ * key, a rate limit, or any other throw meant EVERY cycle died into a Railway log while the loop
+ * still looked perfectly alive. The owner had no way to learn their bot had stopped trading
+ * entirely. This wrapper is the alerting half; the inner function below is unchanged. Dedup and
+ * the once-an-hour repeat for an ONGOING identical failure live in health-alerts.ts, so a
+ * permanently broken key reminds rather than spams, and a genuinely new failure still gets
+ * through immediately.
+ */
 export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
+  try {
+    await runAutonomousTradingCycleInner(deps, client, chatId);
+    clearCycleErrorAlert(deps.ownerUserId);
+  } catch (err) {
+    console.error(`[autonomous-tick] ${deps.ownerUserId}: cycle threw:`, err);
+    const alert = cycleErrorAlert(deps.ownerUserId, err);
+    if (alert) void client.sendMessage({ chat_id: chatId, text: alert }).catch(() => undefined);
+  }
+}
+
+async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
   if (isTradingHalted(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- trading halted (/stop, /panic, or a tripped safety gate)");
   if (getBusyState(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- a real user turn is already in flight");
   if (getAutonomousBusyState(deps.ownerUserId)) return logCycle(deps.ownerUserId, "skipped -- the previous autonomous cycle is still running");
@@ -429,7 +451,21 @@ export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, cli
     logCycle(deps.ownerUserId, `pending question is stale (asked ${Math.round(ageMs / 60_000)}m ago, never answered) -- proceeding with autonomous trading anyway`);
   }
   const eaStatus = getEaConnectionStatus(deps.ownerUserId);
-  if (!eaStatus.connected) return logCycle(deps.ownerUserId, "skipped -- EA is not connected, no live data to analyze");
+  // Real bug fixed (the trader: "find bugs this bot"). This gate silently returned -- so when MT5
+  // went offline (PC asleep, internet dropped, terminal closed, EA detached), Dave stopped hunting
+  // completely and the owner was never told. On a bot trading real money that's the worst failure
+  // shape there is: it looks alive, it has been dead for hours, and the only way to find out was
+  // to run /status by hand. Edge-triggered via health-alerts.ts, so an EA that stays offline is
+  // reported ONCE, not once per cycle.
+  if (!eaStatus.connected) {
+    const alert = eaConnectionAlert(deps.ownerUserId, false, eaStatus.secondsSinceLastSeen);
+    if (alert) void client.sendMessage({ chat_id: chatId, text: alert }).catch(() => undefined);
+    return logCycle(deps.ownerUserId, "skipped -- EA is not connected, no live data to analyze");
+  }
+  // The recovery edge. onConnect in main.ts covers a genuine 6-minute-gap reconnect; this covers
+  // the ordinary case where the EA was briefly marked offline and is simply reporting again.
+  const recovered = eaConnectionAlert(deps.ownerUserId, true, eaStatus.secondsSinceLastSeen);
+  if (recovered) void client.sendMessage({ chat_id: chatId, text: recovered }).catch(() => undefined);
   try {
     assertNotTripped(deps.db, deps.ownerUserId);
   } catch (err) {

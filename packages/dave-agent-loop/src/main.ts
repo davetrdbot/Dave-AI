@@ -3,13 +3,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
-import { EaBridge, DynamicTradeExecutor } from "@dave/ea-bridge";
+import { EaBridge, DynamicTradeExecutor, setEaPushInterval } from "@dave/ea-bridge";
 import { createHiddenWebhookServer } from "@dave/memory";
 import { startWatchdog, startHeartbeatLoop } from "@dave/safety";
 import { getTelegramCredentials, type TelegramClient } from "@dave/telegram";
 import { startTelegramBotServer } from "./telegram-bot-server.js";
 import { getPrimaryChatId } from "./primary-chat.js";
-import { buildClosedTradeMessage, buildManualCloseMessage } from "./trade-notifications.js";
+import { buildClosedTradeMessage, buildManualCloseMessage, buildManualModifyMessage, buildWatchdogAlertMessage } from "./trade-notifications.js";
+import { eaConnectionAlert } from "./health-alerts.js";
 import { logClosedTrade } from "@dave/feedback";
 import { loadSystemPrompt } from "./system-prompt.js";
 
@@ -142,6 +143,10 @@ export function resolveDataRoot(env: NodeJS.ProcessEnv, cwd: string): string {
   return env.DAVE_DATA_ROOT ?? env.RAILWAY_VOLUME_MOUNT_PATH ?? cwd;
 }
 
+/** Kept in sync by hand with ea/DaveEA.mq5's own compiled `PushSeconds` input -- see the boot-time
+ *  re-assert below for why the source value alone was never enough to actually take effect. */
+const DESIRED_EA_PUSH_SECONDS = 8;
+
 export async function main(): Promise<void> {
   // Resolved once, here, before any store is ever read, so it's never dependent on a manually-
   // configured env var again -- falls all the way back to process.cwd() (the pre-fix behavior)
@@ -174,22 +179,48 @@ export async function main(): Promise<void> {
   const heartbeatPath = process.env.HEARTBEAT_PATH ?? join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "heartbeat.json");
   const heartbeat = startHeartbeatLoop(heartbeatPath, 5000);
   const watchdog = startWatchdog({ heartbeatPath, timeoutMs: 30_000, pollIntervalMs: 5000 });
+
+  // Declared before the watchdog handler below (and before the EaBridge handlers further down)
+  // because every one of them reads it at FIRE time, not at construction time -- an event that
+  // lands before Telegram is paired is silently skipped rather than crashing.
+  let telegramClient: TelegramClient | undefined;
+  const alertOwner = (text: string): void => {
+    const chatId = telegramClient && getPrimaryChatId(db, ownerUserId);
+    if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
+  };
+
   watchdog.onEvent((event) => {
     console.error(`[watchdog] ${event.type}`, event);
-    // Best-effort alert -- if Telegram itself is what's down, there's
-    // nowhere to send this; the console line (captured by Railway's
-    // own log aggregation) is the fallback channel either way.
+    // Real gap fixed (the trader: "find bugs this bot"): this handler's own comment used to
+    // describe a "best-effort alert" that was never actually written -- the watchdog genuinely
+    // detected that Dave's core process had stopped responding, and then told nobody but a
+    // Railway log. The console line stays as the fallback for when Telegram itself is what's
+    // down; this is the alert that was always supposed to accompany it.
+    alertOwner(buildWatchdogAlertMessage(event.type, event.type === "down" ? event.staleness : undefined));
   });
 
   // Real gap fixed (user, with real screenshots of the live bot as proof: "a hardcoded message
   // to send when a trade is closed"): dave-ea-bridge already parses real closed-position/manual-
   // close data off every real EA report -- these events just never had a live Telegram client to
-  // notify. `telegramClient` is set once tryStartTelegram() (below) genuinely succeeds; the
-  // handlers read it (and the real persisted primary chat) at FIRE time, not at construction
-  // time, so a trade closing before Telegram is paired is silently skipped rather than crashing.
-  let telegramClient: TelegramClient | undefined;
+  // notify. `telegramClient` (declared above, with the watchdog that also needs it) is set once
+  // tryStartTelegram() (below) genuinely succeeds; the handlers read it (and the real persisted
+  // primary chat) at FIRE time, not at construction time, so a trade closing before Telegram is
+  // paired is silently skipped rather than crashing.
   const eaBridge = new EaBridge({
-    onConnect: (userId) => console.log(`[ea] connected: ${userId}`),
+    // Real gap fixed (the trader: "find bugs this bot"): ea-webhook.ts's isNewConnection and
+    // CONNECTION_GAP_MS exist specifically to detect the EA coming (back) online -- and this
+    // handler threw that detection away on a console.log, so the owner was never told their MT5
+    // had reconnected. Routed through the same edge-triggered alert state as the disconnect
+    // notice in telegram-bot-server.ts, so the pair can never double-report one transition.
+    onConnect: (userId) => {
+      console.log(`[ea] connected: ${userId}`);
+      const message = eaConnectionAlert(userId, true, 0);
+      if (message) alertOwner(message);
+    },
+    onManualModify: (userId, modification) => {
+      const chatId = telegramClient && getPrimaryChatId(db, userId);
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualModifyMessage(modification) });
+    },
     onClosedPosition: (userId, closed) => {
       // Real gap fixed (user: "implement journal of the day that's win rate and others"): the
       // SAME real closed-position data the hardcoded Telegram message is built from is now also
@@ -203,6 +234,17 @@ export async function main(): Promise<void> {
       if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualCloseMessage(position) });
     },
   });
+
+  // Real bug fixed (the trader, live, after a long and entirely avoidable confusion: the EA's
+  // compiled PushSeconds default said one thing while the actually-running MT5 terminal was on a
+  // completely different value). Root cause: set_push_interval is a RUNTIME override that persists
+  // on a live terminal until that terminal restarts -- so editing (or reverting) the .mq5 source
+  // changes nothing about what's running right now, and the two silently drift apart with no way
+  // for the owner to tell. A 120s live override outlived its own source revert this way and cost
+  // real minutes per analysis cycle, with some timeframe requests hitting their full 5-minute
+  // timeout. Re-asserting the intended interval here, on every boot, makes the source the single
+  // source of truth: the EA picks it up on its next poll, no recompile and no admin action needed.
+  setEaPushInterval(ownerUserId, DESIRED_EA_PUSH_SECONDS);
 
   const adminProcess = spawnAdminPanel(dirname(dbPath));
 

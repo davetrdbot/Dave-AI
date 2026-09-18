@@ -1,4 +1,4 @@
-import type { EaClosedPosition, EaPosition } from "@dave/ea-bridge";
+import type { EaClosedPosition, EaPosition, ManualModification } from "@dave/ea-bridge";
 import type { OrderRequest } from "@dave/trading";
 
 /**
@@ -35,6 +35,34 @@ export function buildClosedTradeMessage(closed: EaClosedPosition): string {
  *  factual notice rather than guessing a number. */
 export function buildManualCloseMessage(position: EaPosition): string {
   return `🔔 ${position.symbol} (ticket #${position.ticket}) was closed manually in MT5 -- Dave didn't trigger this.`;
+}
+
+/**
+ * Real gap fixed (the trader: "find bugs this bot"): manual-modify-detector.ts genuinely detects an
+ * SL/TP the trader moved by hand in MT5, EaBridge genuinely re-emits it as onManualModify -- and
+ * main.ts never wired that event to anything at all, so it reached no one. Same factual,
+ * non-LLM shape as the manual-close notice above. Already edge-triggered upstream (the detector
+ * only fires on a real value CHANGE against the previous report), so this cannot repeat for an
+ * unchanged level no matter how often the EA reports.
+ */
+export function buildManualModifyMessage(modification: ManualModification): string {
+  const label = modification.field.toUpperCase();
+  const from = modification.oldValue === undefined || modification.oldValue === 0 ? "none" : String(modification.oldValue);
+  const to = modification.newValue === undefined || modification.newValue === 0 ? "none" : String(modification.newValue);
+  return `🔧 ${modification.symbol} (ticket #${modification.ticket}): ${label} changed manually in MT5 -- ${from} → ${to}. Dave didn't trigger this, but he'll respect it from here.`;
+}
+
+/**
+ * The real forked liveness watchdog (main.ts's startWatchdog) detecting that this bot process has
+ * stopped writing its own heartbeat -- i.e. Dave is hung or dying. main.ts used to log this to the
+ * console and nothing else, under a comment that described a "best-effort alert" which was never
+ * written. Sent from the watchdog's own separate process channel, so it can still reach the trader
+ * when the main loop itself is the thing that's stuck.
+ */
+export function buildWatchdogAlertMessage(eventType: string, stalenessMs?: number): string {
+  if (eventType === "recovered") return "🟢 Dave's core process is responding again.";
+  const stale = stalenessMs === undefined ? "" : ` (no sign of life for ${Math.round(stalenessMs / 1000)}s)`;
+  return `🚨 Dave's core process has stopped responding${stale} -- autonomous trading is NOT running right now. It usually restarts itself; if this doesn't clear shortly, check the host.`;
 }
 
 /**
