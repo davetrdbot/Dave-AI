@@ -14,13 +14,14 @@ import { runAutonomousTick } from "./autonomous-tick.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic, isTradingHalted, assertNotTripped, CircuitBreakerTrippedError } from "@dave/safety";
-import { getEaConnectionStatus } from "@dave/ea-bridge";
+import { getEaConnectionStatus, createEaAnalysisSource } from "@dave/ea-bridge";
 import { enforceDrawdownLimit } from "./drawdown-guard.js";
 import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes } from "./trading-loop.js";
 import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState, waitForBusyToClear } from "./busy-state.js";
 import { eaConnectionAlert, cycleErrorAlert, clearCycleErrorAlert } from "./health-alerts.js";
+import { startWatchSweep } from "./watch-sweep.js";
 import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt, collapseQueuedMessages } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
@@ -1009,6 +1010,21 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       console.error(`[trading-loop] autonomous trading was enabled for ${deps.ownerUserId} but no primary chat is known yet -- cannot resume until the user messages Dave at least once`);
     }
   }
+
+  // Dave's own background checks (mark_level / check_marked_levels / cancel_marked_level). Started
+  // unconditionally rather than only alongside autonomous trading: a marked level is Dave watching
+  // something for the trader, and it should keep watching whether or not the hunting loop happens
+  // to be on. Survives restarts because the watches themselves are persisted -- this only re-arms
+  // the timer that evaluates them.
+  startWatchSweep({
+    userId: deps.ownerUserId,
+    analysis: createEaAnalysisSource(deps.ownerUserId),
+    notify: async (text) => {
+      const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
+      if (chatId === undefined) return;
+      await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
+    },
+  });
 
   return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}`, client };
 }

@@ -9,6 +9,7 @@ import { getRiskSettings } from "./risk-settings.js";
 import { getSettingsLog } from "./settings-log.js";
 import { derivePipSize } from "./pip-size.js";
 import { assessRiskRewardForUser, getMinRiskReward, setMinRiskReward } from "./risk-reward-guard.js";
+import { createWatch, listActiveWatches, cancelWatch, type WatchKind } from "./background-watch.js";
 
 /**
  * Agentic tool exposure. Real gap this fills: everything in this
@@ -268,6 +269,46 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       const result = await tradeExecute(ctx.executor, order);
       return typeof confidence === "number" ? { ...result, confidence } : result;
     },
+  },
+  {
+    name: "mark_level",
+    description:
+      "Start a real BACKGROUND check that runs on its own and alerts you when a price level is hit -- use this to mark a key level, " +
+      "or to watch for price reaching a target or breaking a direction, instead of re-analysing the same symbol over and over. " +
+      "It keeps running after this turn ends. `reason` is REQUIRED and is handed straight back to you when it fires, so write the " +
+      "actual thesis (what the level is and why it matters) -- a level that triggers hours from now is useless without it. " +
+      "Use check_marked_levels to see what's still pending and cancel_marked_level to stop one.",
+    parameters: {
+      type: "object",
+      required: ["symbol", "kind", "level", "reason"],
+      properties: {
+        symbol: { type: "string" },
+        kind: { type: "string", enum: ["price_at_or_above", "price_at_or_below"], description: "whether you're waiting for price to reach UP to the level or DOWN to it" },
+        level: { type: "number", description: "the real price level to watch" },
+        reason: { type: "string", description: "your own real thesis -- what this level is and what you'd do if price gets there" },
+      },
+    },
+    execute: async (args, ctx) =>
+      createWatch(ctx.userId, {
+        symbol: args.symbol as string,
+        kind: args.kind as WatchKind,
+        level: args.level as number,
+        reason: args.reason as string,
+      }),
+  },
+  {
+    name: "check_marked_levels",
+    description:
+      "List your own background checks that are still pending -- what you're waiting on, at what level, and the reason you set each one. " +
+      "Check this before marking a new level so you don't stack duplicates on the same thing.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => ({ pending: listActiveWatches(ctx.userId) }),
+  },
+  {
+    name: "cancel_marked_level",
+    description: "Stop one of your pending background checks by id (from check_marked_levels) -- e.g. the thesis behind it no longer holds.",
+    parameters: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
+    execute: async (args, ctx) => cancelWatch(ctx.userId, args.id as string),
   },
   {
     name: "get_min_risk_reward",
