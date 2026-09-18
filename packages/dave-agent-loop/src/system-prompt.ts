@@ -17,8 +17,19 @@ import { join } from "node:path";
  * import cycle. main.ts's own loadSystemPrompt is kept as a thin
  * re-export for backward compatibility.
  */
+// Real gap fixed (an investigation subagent, live: the autonomous cycle calls
+// buildSystemPrompt()/loadSystemPrompt() up to 3x per tick -- the initial decision plus a
+// possible post-CONSULT_JOURNAL and post-REQUEST_CANDLES re-decision -- and this used to do 5
+// synchronous readFileSync calls EVERY single time, none of them ever memoized. That's up to 15
+// blocking disk reads per tick, on the one event loop that also serves the EA webhook, the
+// Telegram webhook, and every LLM call, for content that cannot change without a redeploy
+// (prompts/*.md and SYSTEM_PROMPT are both fixed at process start). Computed once per process
+// and reused.
+let cachedSystemPrompt: string | undefined;
+
 export function loadSystemPrompt(): string {
-  if (process.env.SYSTEM_PROMPT) return process.env.SYSTEM_PROMPT;
+  if (cachedSystemPrompt !== undefined) return cachedSystemPrompt;
+  if (process.env.SYSTEM_PROMPT) return (cachedSystemPrompt = process.env.SYSTEM_PROMPT);
   const promptsDir = join(process.cwd(), "prompts");
   const files = ["SOUL.md", "IDENTITY.md", "SECURITY.md", "trading.md", "BOOTSTRAP.md"];
   const sections = files.flatMap((file) => {
@@ -29,6 +40,5 @@ export function loadSystemPrompt(): string {
       return [];
     }
   });
-  if (sections.length === 0) return "You are Dave, an autonomous trading assistant.";
-  return sections.join("\n\n---\n\n");
+  return (cachedSystemPrompt = sections.length === 0 ? "You are Dave, an autonomous trading assistant." : sections.join("\n\n---\n\n"));
 }
