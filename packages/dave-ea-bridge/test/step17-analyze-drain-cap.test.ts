@@ -10,7 +10,9 @@ import { createEaWebhookServer, getOrCreateEaWebhook, enqueueCommand, type EaCom
  * whole drained command batch serially in ONE blocking tick -- handing it a big burst of
  * "analyze" commands at once meant it fell behind on all of them together. This proves the real
  * bridge-side half of the fix: drainQueue() now caps how many "analyze" commands go out per
- * poll (MAX_ANALYZE_COMMANDS_PER_POLL = 6), leaving the rest genuinely queued for the EA's next
+ * poll (MAX_ANALYZE_COMMANDS_PER_POLL = 10, raised from the original 6 once D1 joined the real
+ * per-symbol timeframe suite -- a single symbol's own full 7-timeframe read must always clear in
+ * one poll), leaving the rest genuinely queued for the EA's next
  * poll -- while trade commands (open/modify/close/delete_pending) are NEVER capped or delayed by
  * a pending scan, since those are latency-sensitive and rare.
  */
@@ -39,18 +41,18 @@ async function main() {
   const base = `http://127.0.0.1:${address.port}`;
 
   try {
-    console.log("[1] Enqueue 10 real 'analyze' commands (a big group scan) plus 2 real trade commands...\n");
-    for (let i = 0; i < 10; i++) {
+    console.log("[1] Enqueue 14 real 'analyze' commands (a big group scan) plus 2 real trade commands...\n");
+    for (let i = 0; i < 14; i++) {
       enqueueCommand(USER, { id: `analyze-${i}`, action: "analyze", endpoint: "confluence", symbol: `SYM${i}`, timeframe: "H1" });
     }
     enqueueCommand(USER, { id: "trade-open-1", action: "open", symbol: "EURUSD", type: "buy", lots: 0.1 });
     enqueueCommand(USER, { id: "trade-close-1", action: "close", ticket: "12345" });
 
-    console.log("[2] The first real poll returns AT MOST 6 analyze commands, but BOTH trade commands, uncapped...\n");
+    console.log("[2] The first real poll returns AT MOST 10 analyze commands, but BOTH trade commands, uncapped...\n");
     const first = await heartbeat(base, hook.path);
     const firstAnalyze = first.commands.filter((c) => c.action === "analyze");
     const firstTrades = first.commands.filter((c) => c.action !== "analyze");
-    assert.ok(firstAnalyze.length <= 6, `expected at most 6 analyze commands in one poll, got ${firstAnalyze.length}`);
+    assert.ok(firstAnalyze.length <= 10, `expected at most 10 analyze commands in one poll, got ${firstAnalyze.length}`);
     assert.equal(firstTrades.length, 2, "trade commands must never be capped or delayed behind a scan");
     console.log(`    real first poll: ${firstAnalyze.length} analyze + ${firstTrades.length} trade command(s) (trade commands never held back)`);
 
@@ -58,8 +60,8 @@ async function main() {
     const second = await heartbeat(base, hook.path);
     const secondAnalyze = second.commands.filter((c) => c.action === "analyze");
     const totalAnalyzeSeen = firstAnalyze.length + secondAnalyze.length;
-    assert.equal(totalAnalyzeSeen, 10, `all 10 analyze commands must genuinely be delivered across polls, saw ${totalAnalyzeSeen}`);
-    console.log(`    real second poll: ${secondAnalyze.length} more analyze command(s) -- ${totalAnalyzeSeen}/10 delivered total across 2 real polls`);
+    assert.equal(totalAnalyzeSeen, 14, `all 14 analyze commands must genuinely be delivered across polls, saw ${totalAnalyzeSeen}`);
+    console.log(`    real second poll: ${secondAnalyze.length} more analyze command(s) -- ${totalAnalyzeSeen}/14 delivered total across 2 real polls`);
 
     console.log("\n=== ALL ASSERTIONS PASSED ===");
   } finally {
