@@ -32,8 +32,8 @@ assert.equal(beforeSettings.slMode, "off");
 
 const proposeTool = SETTINGS_TOOLS.find((t) => t.name === "propose_settings_change")!;
 const proposal = (await proposeTool.execute(
-  { userId: USER_ID, field: "sl", mode: "on", value: 20, reason: "Volatility is up -- tightening SL protects the account." },
-  {} as any
+  { field: "sl", mode: "on", value: 20, reason: "Volatility is up -- tightening SL protects the account." },
+  { userId: USER_ID } as any
 )) as any;
 assert.equal(proposal.applied, false);
 assert.ok(proposal.pendingId);
@@ -62,7 +62,7 @@ console.log(`    real decline honored: slMode still ${getRiskSettings(USER_ID).s
 
 // --- [5] User approves a second, separate proposal -- change genuinely applies ---
 console.log("\n[5] A second proposal -- user APPROVES this time, change genuinely applies...\n");
-const proposal2 = (await proposeTool.execute({ userId: USER_ID, field: "sl", mode: "on", value: 15, reason: "Even tighter after another volatility spike." }, {} as any)) as any;
+const proposal2 = (await proposeTool.execute({ field: "sl", mode: "on", value: 15, reason: "Even tighter after another volatility spike." }, { userId: USER_ID } as any)) as any;
 assert.notEqual(proposal2.pendingId, proposal.pendingId);
 const approved = approveSettingsChange(USER_ID, proposal2.pendingId);
 assert.equal(approved.slMode, "on");
@@ -72,12 +72,12 @@ console.log(`    real approval applied: ${JSON.stringify({ slMode: approved.slMo
 // --- [6] Auto-approval ON -- Dave's proposal now applies immediately, no pending queue entry ---
 console.log("\n[6] User turns auto-approval ON -- Dave's next proposal applies immediately, no button round trip...\n");
 const setAutoTool = SETTINGS_TOOLS.find((t) => t.name === "set_auto_approval")!;
-await setAutoTool.execute({ userId: USER_ID, enabled: true }, {} as any);
+await setAutoTool.execute({ enabled: true }, { userId: USER_ID } as any);
 const getAutoTool = SETTINGS_TOOLS.find((t) => t.name === "get_auto_approval")!;
-const autoState = (await getAutoTool.execute({ userId: USER_ID }, {} as any)) as any;
+const autoState = (await getAutoTool.execute({}, { userId: USER_ID } as any)) as any;
 assert.equal(autoState.enabled, true);
 
-const proposal3 = (await proposeTool.execute({ userId: USER_ID, field: "tp", mode: "on", value: 40, reason: "Locking in more profit given the trend strength." }, {} as any)) as any;
+const proposal3 = (await proposeTool.execute({ field: "tp", mode: "on", value: 40, reason: "Locking in more profit given the trend strength." }, { userId: USER_ID } as any)) as any;
 assert.equal(proposal3.applied, true);
 assert.equal(proposal3.settings.tpMode, "on");
 assert.equal(proposal3.settings.tpValue, 40);
@@ -98,7 +98,7 @@ console.log("    still requires its own explicit approval call to actually apply
 console.log("\n[8] OnModeRequiresValueError still enforced through propose_settings_change...\n");
 let threw = false;
 try {
-  await proposeTool.execute({ userId: USER_ID, field: "lot", mode: "on", reason: "no value given" }, {} as any);
+  await proposeTool.execute({ field: "lot", mode: "on", reason: "no value given" }, { userId: USER_ID } as any);
 } catch (err) {
   threw = err instanceof OnModeRequiresValueError;
 }

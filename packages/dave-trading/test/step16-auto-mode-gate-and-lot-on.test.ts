@@ -43,7 +43,7 @@ async function main() {
   setRiskMode(AUTO_USER, "sl", "auto");
   const ctx: ToolContext = { userId: AUTO_USER, analysis: analysisWithPrice, executor };
   await assert.rejects(
-    () => tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1 }, ctx),
+    () => tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, confidence: 80 }, ctx),
     (err: unknown) => {
       assert.ok(err instanceof AutoModeRequiresComputedValueError, "must genuinely throw the typed auto-mode error, not silently proceed");
       assert.match((err as Error).message, /never ask the user/i, "the error must genuinely instruct the model to never ask the user");
@@ -57,13 +57,13 @@ async function main() {
   setRiskMode(AUTO_TP_USER, "tp", "auto");
   const ctxTp: ToolContext = { userId: AUTO_TP_USER, analysis: analysisWithPrice, executor };
   await assert.rejects(
-    () => tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, sl: 1.095 }, ctxTp),
+    () => tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, sl: 1.095, confidence: 80 }, ctxTp),
     AutoModeRequiresComputedValueError
   );
   console.log("    real rejection confirmed for tpMode='auto' too");
 
   console.log("\n[3] Auto mode never blocks a call where the model DID compute real sl/tp itself...\n");
-  const result = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, sl: 1.095, tp: 1.11 }, ctx)) as { ticket: string };
+  const result = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, sl: 1.095, tp: 1.11, confidence: 80 }, ctx)) as { ticket: string };
   assert.equal(result.ticket, "T-1");
   console.log("    real trade genuinely placed once the model supplied its own computed sl/tp");
 
@@ -71,7 +71,7 @@ async function main() {
   const ON_USER = "user-on-1";
   setRiskMode(ON_USER, "sl", "on", 20);
   const ctxOn: ToolContext = { userId: ON_USER, analysis: analysisWithPrice, executor };
-  const onResult = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1 }, ctxOn)) as { ticket: string };
+  const onResult = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, confidence: 80 }, ctxOn)) as { ticket: string };
   assert.equal(onResult.ticket, "T-1");
   console.log("    real 'on' mode still auto-applies its pip-distance value exactly as before -- no regression");
 

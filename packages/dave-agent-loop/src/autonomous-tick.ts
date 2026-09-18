@@ -12,6 +12,7 @@ import {
   tradeExecute,
   tradeExecuteWithMarginRetry,
   derivePipSize,
+  assessRiskRewardForUser,
 
   InsufficientMarginError,
   ABSOLUTE_MIN_LOTS,
@@ -1270,6 +1271,23 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       symbol,
       notable: true,
       message: buildTradeApprovalRequestMessage(order, confidence, gate.threshold, [marketConversionNote, summarizeReason(reason)].filter(Boolean).join(" -- ")),
+    };
+  }
+
+  // Real bug fixed (the trader, live, pointing at his own chart): Dave placed a VOL_80 BUY whose
+  // STOP was wider than its TARGET -- risking 3,941 points to gain 3,759, a 0.95:1 risk:reward
+  // that needs a >51% win rate just to break even. Nothing in this codebase had ever checked the
+  // stop against the target, nor that either sits on the correct side of the entry. See
+  // risk-reward-guard.ts.
+  const rr = assessRiskRewardForUser(userId, order, order.price ?? referencePrice);
+  if (!rr.ok) {
+    logTick(userId, `${symbol}: ${action} rejected -- ${rr.reason}`);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `bad risk structure: ${rr.reason}` });
+    return {
+      action: "NONE",
+      symbol,
+      notable: true,
+      message: `⚠️ Skipped ${symbol} -- ${rr.reason}.\n\nI had a ${decisionAction} read at ${confidence}% confidence, but I won't place a trade whose stop costs more than its target pays.`,
     };
   }
 

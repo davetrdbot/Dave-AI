@@ -165,18 +165,51 @@ export function markdownToTelegramHtml(text: string): string {
   // Underline: ++text++.
   working = working.replace(/\+\+(.+?)\+\+/g, "<u>$1</u>");
   // Italic: single *text* or _text_ (after bold's ** is already consumed above).
-  working = working.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, "<i>$1</i>").replace(/(?<!_)_([^_\n]+?)_(?!_)/g, "<i>$1</i>");
+  //
+  // Real bug fixed (the trader, live, asking to check italics -- and this was mangling nearly
+  // every message the bot sent). The old `_` rule was `(?<!_)_([^_\n]+?)_(?!_)`, which happily
+  // matched ACROSS two unrelated snake_case words. Proven against real log text:
+  //
+  //   "VOL_10 shows premium_discount bias"  ->  "VOL<i>10 shows premium</i>discount bias"
+  //
+  // The underscores were deleted and the text between them italicised. This bot is the worst
+  // possible case for that rule: every symbol it trades is snake_case (VOL_80, CRASH_200,
+  // BOOM_100, STORM_500) and so is its entire analysis vocabulary (premium_discount, tape_flow,
+  // spread_pips, risk_metrics, mean_reversion), so any two on one line mangled everything between
+  // them.
+  //
+  // Fixed the way CommonMark itself handles this: `_` does NOT create emphasis intra-word. The
+  // delimiters must sit against a non-word boundary, which leaves snake_case identifiers alone
+  // while `_italic_` as real prose still works. Both delimiters also now refuse an adjacent
+  // space, so "a * b * c" and "_ spaced _" stop being misread as emphasis.
+  working = working
+    .replace(/(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)/g, "<i>$1</i>")
+    .replace(/(^|[^A-Za-z0-9_])_(?!\s)([^_\n]+?)(?<!\s)_(?![A-Za-z0-9_])/g, "$1<i>$2</i>");
   // Headings: leading #'s -> a bold line (Telegram HTML has no native heading tag).
   working = working.replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>");
   // Bullet lists: leading "- " or "* " at line start -> a real bullet.
   working = working.replace(/^[ \t]*[-*][ \t]+(?!\*)/gm, "• ");
 
+  // Blockquotes: `>`/`>>` at line start is only real blockquote syntax once escapeHtml has turned
+  // it into `&gt;`/`&gt;&gt;`, so this runs after escaping and after the inline formatting above
+  // (so bold/italic already applied inside a quoted line survives intact).
+  //
+  // Real bug fixed (the trader, live, asking to check quote handling): this used to run AFTER the
+  // placeholder splice below, which meant it also scanned the RESTORED content of fenced code
+  // blocks. A code block whose line starts with ">" -- a shell prompt, a diff, quoted output, all
+  // extremely common -- had that line wrapped in <blockquote> tags that crossed the <pre>
+  // boundary, producing genuinely malformed, interleaved HTML:
+  //
+  //   <pre>&gt; npm install\n<blockquote>done</pre></blockquote>
+  //
+  // Telegram rejects that outright with a 400 "can't parse entities", so the WHOLE message was
+  // silently lost -- the same real failure shape already seen live in this system's own logs.
+  // Running before the splice keeps code-block contents hidden behind their placeholders, where
+  // no line-start rule can reach inside them.
+  working = convertBlockquoteLines(working);
+
   // Splice the pre-rendered code/table/link blocks back in (their HTML must not be re-escaped).
   working = working.replace(/ PLACEHOLDER(\d+) /g, (_m, idx: string) => placeholders[Number(idx)]);
-
-  // Blockquotes: run last, on the fully-formatted text -- `>`/`>>` at line start is only real
-  // blockquote syntax once escapeHtml has turned it into `&gt;`/`&gt;&gt;`.
-  working = convertBlockquoteLines(working);
 
   return working;
 }

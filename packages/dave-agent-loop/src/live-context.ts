@@ -1,5 +1,5 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, type RiskMode } from "@dave/trading";
-import { getConfidenceSettings } from "@dave/trading";
+import { getConfidenceSettings, getMinRiskReward } from "@dave/trading";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill } from "@dave/skills";
 import { loadFrozenSnapshot } from "@dave/memory";
@@ -33,6 +33,7 @@ export function buildLiveSettingsBlock(userId: string): string {
   const tradingMode = getTradingMode(userId);
   const confidence = getConfidenceSettings(userId);
   const autoApproval = getAutoApprovalEnabled(userId);
+  const minRiskReward = getMinRiskReward(userId);
   const ea = getEaConnectionStatus(userId);
   const account = getLastKnownAccountSnapshot(userId);
 
@@ -56,6 +57,9 @@ export function buildLiveSettingsBlock(userId: string): string {
     `Trading session: ${session}`,
     `Trading mode: ${tradingMode.mode}${tradingMode.lockedSkillId ? ` (locked to skill ${tradingMode.lockedSkillId})` : ""}`,
     `Confidence threshold: ${confidence.threshold}% (auto-approve below threshold: ${confidence.autoApproveBelowThreshold ? "on" : "off"})`,
+    // Surfaced every turn for the same reason as every other setting in this block: a floor the
+    // model cannot see is a floor it will keep tripping over. Settable via set_min_risk_reward.
+    `Minimum risk:reward: ${minRiskReward}:1 (a trade whose stop risks more than its target pays is refused)`,
     `Auto-approval of your own proposed changes: ${autoApproval ? "on" : "off"}`,
     `EA connection: ${ea.connected ? "connected" : "not connected"}`,
     accountLine,

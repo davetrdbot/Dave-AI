@@ -127,7 +127,10 @@ assert.match(emptyEntry, /No reasoning was recorded/);
 console.log("\n[5] Workers have real settings tools -- same permission Dave has, not locked out...");
 console.log(`    settings tools: ${SETTINGS_TOOLS.map((t) => t.name).join(", ")}`);
 const setRiskTool = SETTINGS_TOOLS.find((t) => t.name === "set_risk_mode")!;
-const result = await setRiskTool.execute({ userId: USER_ID, field: "sl", mode: "on", value: 30 }, {} as any);
+// The owner now comes from ctx, not from args. Passing it in args was the real bug: the model is
+// never told the user's id, so it invented one and every settings write silently landed under a
+// hallucinated key while still returning ok:true.
+const result = await setRiskTool.execute({ field: "sl", mode: "on", value: 30 }, { userId: USER_ID } as any);
 console.log(`    worker called set_risk_mode through the tool -> ${JSON.stringify(result)}`);
 assert.deepEqual(result, { ok: true });
 const { getRiskSettings } = await import("@dave/trading");

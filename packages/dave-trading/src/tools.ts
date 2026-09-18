@@ -8,6 +8,7 @@ import { evaluateConfidenceGate } from "./confidence-gate.js";
 import { getRiskSettings } from "./risk-settings.js";
 import { getSettingsLog } from "./settings-log.js";
 import { derivePipSize } from "./pip-size.js";
+import { assessRiskRewardForUser, getMinRiskReward, setMinRiskReward } from "./risk-reward-guard.js";
 
 /**
  * Agentic tool exposure. Real gap this fills: everything in this
@@ -63,6 +64,22 @@ export class ConfidenceRequiredError extends Error {
         `safety control -- an order can never skip it by leaving confidence out. Retry with a genuine confidence score.`
     );
     this.name = "ConfidenceRequiredError";
+  }
+}
+
+/**
+ * Real bug fixed (the trader's own live chart): a placed order whose STOP was wider than its
+ * TARGET -- risking 3,941 points to gain 3,759. Refused back to the model, same pattern as the
+ * other typed tool errors here, so it re-computes its levels rather than sending a structurally
+ * losing order to the broker.
+ */
+export class BadRiskStructureError extends Error {
+  constructor(symbol: string, reason: string) {
+    super(
+      `trade_execute on ${symbol} was NOT placed: ${reason}. Recompute your stop and target so the trade ` +
+        `stands to gain at least as much as it risks, with both levels on the correct side of the entry, then retry.`
+    );
+    this.name = "BadRiskStructureError";
   }
 }
 
@@ -162,6 +179,9 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       // invents a value for "auto" mode (that's a strategy judgment call, not this module's to
       // make) or when no live quote is reachable -- it stays honestly unset, visible to the user
       // in the real placement confirmation ("SL: not set") rather than silently guessed.
+      // Hoisted so the risk-structure check further down can still see a real entry price even
+      // when the SL/TP auto-fill block below did not need to run.
+      let referencePriceForRisk: number | undefined = order.price;
       if (order.sl === undefined || order.tp === undefined) {
         const risk = getRiskSettings(ctx.userId);
         // Item 3 real bug fixed (user: "when SL/TP mode is set to Auto, Dave must calculate and
@@ -190,6 +210,7 @@ export const TRADING_TOOLS: ToolDefinition[] = [
           // No live quote -- sl/tp stay honestly unset below, never guessed.
         }
         if (referencePrice === undefined) referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
+        referencePriceForRisk = referencePrice;
         if (referencePrice !== undefined) {
           const direction = order.type === "buy" || order.type === "buy_limit" || order.type === "buy_stop" ? 1 : -1;
           // Real bug fixed (bug-hunt pass) -- the SECOND copy of the hardcoded-pip bug. The same
@@ -226,6 +247,17 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       // the schema says. Refused back to the MODEL as a tool error (never surfaced to the user as
       // a question), exactly like AutoModeRequiresComputedValueError above, so it retries with a
       // real number instead of a live order going out ungated.
+      // Same risk-structure guard the autonomous path enforces -- see risk-reward-guard.ts. A
+      // stop wider than its target, or either level on the wrong side of entry, is refused back
+      // to the MODEL as a tool error so it re-computes, rather than a structurally losing order
+      // going to the broker.
+      {
+        const entry = order.price ?? referencePriceForRisk;
+        if (entry !== undefined) {
+          const rr = assessRiskRewardForUser(ctx.userId, order, entry);
+          if (!rr.ok) throw new BadRiskStructureError(order.symbol, rr.reason ?? "risk structure is invalid");
+        }
+      }
       if (typeof confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 100) {
         throw new ConfidenceRequiredError(order.symbol);
       }
@@ -236,6 +268,22 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       const result = await tradeExecute(ctx.executor, order);
       return typeof confidence === "number" ? { ...result, confidence } : result;
     },
+  },
+  {
+    name: "get_min_risk_reward",
+    description:
+      "Get the user's own minimum risk:reward floor -- the ratio a trade's target must pay relative to what its stop risks. " +
+      "A trade below this is refused rather than placed. 1 means 'never risk more than the trade stands to gain'.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => ({ minRiskReward: getMinRiskReward(ctx.userId) }),
+  },
+  {
+    name: "set_min_risk_reward",
+    description:
+      "Set the user's minimum risk:reward floor (e.g. 1 for even money, 2 to require a trade to pay double what it risks). " +
+      "Applies to every trade from then on, both your autonomous cycles and direct trade_execute calls.",
+    parameters: { type: "object", required: ["minRiskReward"], properties: { minRiskReward: { type: "number" } } },
+    execute: async (args, ctx) => setMinRiskReward(ctx.userId, args.minRiskReward as number),
   },
   {
     name: "trade_modify",

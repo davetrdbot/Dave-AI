@@ -66,7 +66,8 @@ async function main() {
   const analysisWithPrice: AnalysisSource = { get: async () => ({ bid: 1.1, ask: 1.1002, close: 1.1001 }) };
   const ctx: ToolContext = { userId: TRADER, analysis: analysisWithPrice, executor };
   const tradeExecuteTool = TRADING_TOOLS.find((t) => t.name === "trade_execute")!;
-  const result = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1 }, ctx)) as { ticket: string };
+  // confidence is genuinely required now -- omitting it used to bypass the approval gate entirely.
+  const result = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, confidence: 80 }, ctx)) as { ticket: string };
   assert.equal(result.ticket, "T-1");
   assert.ok(openedOrder, "the order must genuinely have reached the executor");
   assert.ok(openedOrder!.sl !== undefined, "SL must genuinely be set from the user's real risk settings, not left blank");
@@ -76,7 +77,7 @@ async function main() {
   console.log(`    real order sent to the executor: ${JSON.stringify(openedOrder)}`);
 
   console.log("\n[5] An explicit sl/tp the model DOES pass is never overridden by the risk-settings default...\n");
-  const explicitResult = (await tradeExecuteTool.execute({ symbol: "GBPUSD", type: "sell", lots: 0.1, sl: 1.5, tp: 1.3 }, ctx)) as { ticket: string };
+  const explicitResult = (await tradeExecuteTool.execute({ symbol: "GBPUSD", type: "sell", lots: 0.1, sl: 1.5, tp: 1.3, confidence: 80 }, ctx)) as { ticket: string };
   assert.equal(explicitResult.ticket, "T-1");
   assert.equal(openedOrder!.sl, 1.5, "an explicit sl must win over the real risk-settings default");
   assert.equal(openedOrder!.tp, 1.3, "an explicit tp must win over the real risk-settings default");
@@ -84,7 +85,7 @@ async function main() {
   console.log("\n[6] 'off' mode (the real default) genuinely leaves SL/TP unset -- never invents one...\n");
   const OFF_USER = "user-off-1";
   const ctxOff: ToolContext = { userId: OFF_USER, analysis: analysisWithPrice, executor };
-  const offResult = (await tradeExecuteTool.execute({ symbol: "USDJPY", type: "buy", lots: 0.1 }, ctxOff)) as { ticket: string };
+  const offResult = (await tradeExecuteTool.execute({ symbol: "USDJPY", type: "buy", lots: 0.1, confidence: 80 }, ctxOff)) as { ticket: string };
   assert.equal(offResult.ticket, "T-1");
   assert.equal(openedOrder!.sl, undefined, "'off' mode must never fabricate an SL");
   assert.equal(openedOrder!.tp, undefined, "'off' mode must never fabricate a TP");
