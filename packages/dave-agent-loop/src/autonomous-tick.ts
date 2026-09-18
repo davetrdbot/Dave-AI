@@ -11,6 +11,7 @@ import {
   queueTradeForApproval,
   tradeExecute,
   tradeExecuteWithMarginRetry,
+  derivePipSize,
   InsufficientMarginError,
   ABSOLUTE_MIN_LOTS,
   tradeModify,
@@ -1100,11 +1101,30 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     return { action: "NONE", notable: false };
   }
 
-  const pip = 0.0001;
+  // Real bug fixed (the trader: "find bugs in my code"). This was a hardcoded `const pip = 0.0001`
+  // driving BOTH the fixed-pip SL and the fixed-pip TP below. That is only right for 4-digit forex
+  // and is catastrophically wrong for this trader's entire watchlist -- synthetic indices priced in
+  // the hundreds of thousands, where a 40-pip TP resolved to 0.004 away from entry (i.e. AT the
+  // entry price, closing instantly for nothing minus spread) and a 15-pip SL resolved to 0.0015,
+  // which the ATR check below would reject on every single trade. Derived per symbol from the EA's
+  // own numbers instead -- see pip-size.ts. undefined means it genuinely could not be established,
+  // and the fixed-pip branches below refuse rather than fall back to a number that would be wrong
+  // by orders of magnitude.
+  const pip = derivePipSize(priceInfo);
   const direction = action === "BUY" || action === "BUY_LIMIT" || action === "BUY_STOP" ? 1 : -1;
   const decisionAction = action === "BUY" || action === "BUY_LIMIT" || action === "BUY_STOP" ? "BUY" : "SELL";
   if (decision.sl !== undefined) order.sl = decision.sl;
   else if (risk.slMode === "on" && risk.slValue !== undefined && referencePrice > 0) {
+    if (pip === undefined) {
+      logTick(userId, `${symbol}: ${action} rejected -- can't establish this symbol's real pip size, so a fixed ${risk.slValue}-pip SL can't be placed safely`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "pip size for this symbol could not be established" });
+      return {
+        action: "NONE",
+        symbol,
+        notable: true,
+        message: `⚠️ Skipped ${symbol} -- I couldn't work out this symbol's real pip size from the EA's data, and your SL is set to a fixed ${risk.slValue} pips. I won't guess that: on this instrument a wrong pip size would put the stop essentially at the entry price.`,
+      };
+    }
     const candidateSl = referencePrice - direction * risk.slValue * pip;
     if (atr > 0 && isSlTooTight(referencePrice, candidateSl, atr)) {
       logTick(userId, `${symbol}: ${action} rejected -- the user's fixed ${risk.slValue}-pip SL is too tight relative to current ATR ${atr}`);
@@ -1118,8 +1138,22 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     return { action: "NONE", notable: false };
   }
   if (decision.tp !== undefined) order.tp = decision.tp;
-  else if (risk.tpMode === "on" && risk.tpValue !== undefined && referencePrice > 0) order.tp = referencePrice + direction * risk.tpValue * pip;
-  else if (risk.tpMode === "auto") {
+  else if (risk.tpMode === "on" && risk.tpValue !== undefined && referencePrice > 0) {
+    // Same refusal as the SL branch above, and this is the path that had NO guard at all: with the
+    // old hardcoded pip, a fixed TP on a six-figure-priced synthetic landed essentially at the
+    // entry price, so the trade would open and close again immediately for a spread-sized loss.
+    if (pip === undefined) {
+      logTick(userId, `${symbol}: ${action} rejected -- can't establish this symbol's real pip size, so a fixed ${risk.tpValue}-pip TP can't be placed safely`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "pip size for this symbol could not be established" });
+      return {
+        action: "NONE",
+        symbol,
+        notable: true,
+        message: `⚠️ Skipped ${symbol} -- I couldn't work out this symbol's real pip size from the EA's data, and your TP is set to a fixed ${risk.tpValue} pips. I won't guess that: on this instrument a wrong pip size would put the target essentially at the entry price, closing the trade instantly for a spread-sized loss.`,
+      };
+    }
+    order.tp = referencePrice + direction * risk.tpValue * pip;
+  } else if (risk.tpMode === "auto") {
     logTick(userId, `${symbol}: ${action} rejected -- TP mode is auto but the model didn't compute one`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "TP mode is auto but the model didn't compute one" });
     return { action: "NONE", notable: false };
