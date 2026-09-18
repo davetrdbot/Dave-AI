@@ -10,6 +10,9 @@ import {
   evaluateConfidenceGate,
   queueTradeForApproval,
   tradeExecute,
+  tradeExecuteWithMarginRetry,
+  InsufficientMarginError,
+  ABSOLUTE_MIN_LOTS,
   tradeModify,
   partialClose,
   fullClose,
@@ -1235,7 +1238,37 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     };
   }
 
-  const placed = await tradeExecute(executor, order);
+  // Real bug fixed (the trader, live: the very first trade Dave ever tried to place died here
+  // with the broker's "failed: not enough money", taking the whole cycle down with it -- and
+  // would have repeated on every good setup, so a bot analysing perfectly could never actually
+  // trade). Steps the size down until the broker accepts, and tells the trader plainly when the
+  // account genuinely can't carry the trade at all. See margin-aware-execute.ts.
+  let placed: Awaited<ReturnType<typeof tradeExecuteWithMarginRetry>>;
+  try {
+    placed = await tradeExecuteWithMarginRetry(executor, order);
+  } catch (err) {
+    if (err instanceof InsufficientMarginError) {
+      logTick(userId, `${symbol}: ${action} rejected -- ${err.message}`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "account cannot afford this trade at any lot size" });
+      return {
+        action: "NONE",
+        symbol,
+        notable: true,
+        message:
+          `⚠️ Couldn't place ${symbol} -- your account can't afford it at any size.\n\n` +
+          `I found a real ${decisionAction} setup (${confidence}% confidence) and tried down to ${ABSOLUTE_MIN_LOTS} lots, ` +
+          `but the broker refused every size for margin. Your free margin is too low for this symbol right now -- ` +
+          `close something, top up, or switch to a cheaper instrument.`,
+      };
+    }
+    throw err;
+  }
+  const reducedSizeNote = placed.reducedForMargin
+    ? `\n\n📉 Size reduced to ${placed.placedLots} lots (I wanted ${placed.requestedLots}) -- that's the largest your free margin allowed.`
+    : "";
+  if (placed.reducedForMargin) {
+    logTick(userId, `${symbol}: placed at a reduced ${placed.placedLots} lots (wanted ${placed.requestedLots}) -- broker refused the larger size for margin`);
+  }
   try {
     logTrade(db, userId, {
       ticket: placed.ticket,
@@ -1264,8 +1297,9 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     // sendMessage call in telegram-bot-server.ts chunks this via the shared chunkForTelegram
     // utility, so a rare pathologically long reason still sends in full across multiple messages
     // rather than failing on Telegram's real 4096-char limit or being silently shortened here.
-    message: [buildTradePlacedMessage(order, placed.ticket, confidence), marketConversionNote, floNote, `📋 Why: ${reason || "no reason given"}`]
-      .filter((line): line is string => line !== null)
-      .join("\n\n"),
+    message:
+      [buildTradePlacedMessage({ ...order, lots: placed.placedLots }, placed.ticket, confidence), marketConversionNote, floNote, `📋 Why: ${reason || "no reason given"}`]
+        .filter((line): line is string => line !== null)
+        .join("\n\n") + reducedSizeNote,
   };
 }

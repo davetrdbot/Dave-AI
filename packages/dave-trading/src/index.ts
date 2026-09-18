@@ -8,6 +8,7 @@ export * from "./pair-groups.js";
 export * from "./breakeven-trailing.js";
 export * from "./trade-executor.js";
 export * from "./trade-execute.js";
+export * from "./margin-aware-execute.js";
 export * from "./trading-mode.js";
 export * from "./skills.js";
 export * from "./mt5-accounts.js";
