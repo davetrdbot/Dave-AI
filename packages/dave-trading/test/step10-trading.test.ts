@@ -284,7 +284,9 @@ assert.equal(toolScanResult.groupName, "Synthetics");
 
 console.log("\n[10b] Calling trade_execute through the manifest actually reaches the executor...");
 const tradeExecuteTool = TRADING_TOOLS.find((t) => t.name === "trade_execute")!;
-const toolOpenResult = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.2 }, ctx)) as { ticket: string };
+// confidence is genuinely required now -- omitting it used to bypass the user's approval gate
+// entirely and fire a live order, so the tool refuses rather than placing one ungated.
+const toolOpenResult = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.2, confidence: 80 }, ctx)) as { ticket: string };
 console.log(`    result via tool call: ${JSON.stringify(toolOpenResult)}`);
 assert.equal(toolOpenResult.ticket, "TOOL-EURUSD");
 
