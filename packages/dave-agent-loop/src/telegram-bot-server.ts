@@ -22,7 +22,7 @@ import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } fr
 import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState, waitForBusyToClear } from "./busy-state.js";
 import { eaConnectionAlert, cycleErrorAlert, clearCycleErrorAlert } from "./health-alerts.js";
 import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
-import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt } from "./delegation.js";
+import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt, collapseQueuedMessages } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingLovableMcpEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
@@ -772,9 +772,12 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
             if (!wait.cleared) {
               console.warn(`[delegate:pause] ${deps.ownerUserId}: proceeding without confirmed clear after ${wait.waitedMs}ms -- see waitForBusyToClear warning above`);
             }
-            for (const item of queue) {
-              const historyKeyForPending = `${deps.ownerUserId}:${item.chatId}`;
-              await runAgentTurn(deps, client, item.chatId, historyKeyForPending, item.text, item.text);
+            // See collapseQueuedMessages in delegation.ts for the real bug this fixes: a
+            // separate full agent turn per queued message, which is how three messages sent
+            // minutes apart became three back-to-back turns that each re-answered from scratch.
+            for (const collapsed of collapseQueuedMessages(queue)) {
+              const historyKeyForPending = `${deps.ownerUserId}:${collapsed.chatId}`;
+              await runAgentTurn(deps, client, collapsed.chatId, historyKeyForPending, collapsed.text, collapsed.text);
             }
           }
           return;

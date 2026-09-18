@@ -16,6 +16,45 @@ export interface PendingDelegation {
   chatId: number;
 }
 
+/**
+ * Real bug fixed (the trader, live, with his own timeline: "hi" around 10:11, "trade" around
+ * 10:21, "pending" around 10:22 -- "it likes send all of that to the bot which is not good", and
+ * the bot then "kept on repeating what he just sent"). The delegate:pause handler used to run a
+ * SEPARATE full agent turn per queued message, so three messages sent minutes apart fired three
+ * complete turns back to back, each re-reading the same history and re-answering from scratch.
+ * That is exactly how one trade question produced four near-identical essays.
+ *
+ * A person coming back to three missed messages answers them ONCE, together. This collapses the
+ * backlog per chat, preserving the original send order, so the caller runs one turn per chat
+ * instead of one per message.
+ */
+export interface CollapsedDelegation {
+  chatId: number;
+  /** The single prompt to run -- the message verbatim when there is only one, so a lone queued
+   *  message is never wrapped in backlog scaffolding it does not need. */
+  text: string;
+  /** How many real messages this represents, for the caller's own acknowledgement copy. */
+  count: number;
+}
+
+export function collapseQueuedMessages(queue: PendingDelegation[]): CollapsedDelegation[] {
+  const byChat = new Map<number, string[]>();
+  for (const item of queue) {
+    const existing = byChat.get(item.chatId);
+    if (existing) existing.push(item.text);
+    else byChat.set(item.chatId, [item.text]);
+  }
+  return [...byChat.entries()].map(([chatId, texts]) => ({
+    chatId,
+    count: texts.length,
+    text:
+      texts.length === 1
+        ? texts[0]
+        : `While you were busy I sent you these, in this order -- answer them together in ONE reply, don't repeat yourself once per message:\n` +
+          texts.map((t, i) => `${i + 1}. ${t}`).join("\n"),
+  }));
+}
+
 function delegationPath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, "pending-delegation.json");
 }

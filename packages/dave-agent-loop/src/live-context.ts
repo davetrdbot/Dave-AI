@@ -1,4 +1,4 @@
-import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, type RiskMode } from "@dave/trading";
+import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
 import { getConfidenceSettings, getMinRiskReward } from "@dave/trading";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill } from "@dave/skills";
@@ -24,6 +24,30 @@ function modeLabel(mode: RiskMode, value?: number): string {
   if (mode === "off") return "off";
   if (mode === "auto") return "auto";
   return `on (${value})`;
+}
+
+/**
+ * Real bug fixed (the trader, live, after watching Dave reason about "~16:00 UTC" with no way to
+ * actually know: "the bot doesn't know time"). Confirmed by grep: `new Date()` appeared only in
+ * internal market-hours and self-pause checks -- nothing ever put the current time into the
+ * model's context, so every statement Dave made about the time, the session, or how long a trade
+ * had been running was a guess.
+ *
+ * Sessions here are the codebase's OWN windows (TRADING_SESSION_WINDOWS_UTC), not a second
+ * hardcoded list that could drift from the gate that actually blocks trading.
+ */
+function openSessionsNow(now: Date): string[] {
+  const hour = now.getUTCHours();
+  return Object.entries(TRADING_SESSION_WINDOWS_UTC)
+    .filter(([, w]) => (w.startHour <= w.endHour ? hour >= w.startHour && hour < w.endHour : hour >= w.startHour || hour < w.endHour))
+    .map(([name]) => name);
+}
+
+export function buildClockLine(now: Date = new Date()): string {
+  const iso = now.toISOString();
+  const day = now.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
+  const open = openSessionsNow(now);
+  return `NOW: ${iso} (${day}, UTC) | sessions open right now: ${open.length > 0 ? open.join(", ") : "none"}`;
 }
 
 export function buildLiveSettingsBlock(userId: string): string {
@@ -52,6 +76,9 @@ export function buildLiveSettingsBlock(userId: string): string {
 
   const lines = [
     "<current_settings>",
+    // First line of the block on purpose: Dave had no clock at all, and everything below
+    // (sessions, how long a position has run, whether a level is stale) is time-relative.
+    buildClockLine(),
     `SL: ${modeLabel(risk.slMode, risk.slValue)} | TP: ${modeLabel(risk.tpMode, risk.tpValue)} | Lot: ${modeLabel(risk.lotMode, risk.lotValue)}`,
     pairLine,
     `Trading session: ${session}`,
