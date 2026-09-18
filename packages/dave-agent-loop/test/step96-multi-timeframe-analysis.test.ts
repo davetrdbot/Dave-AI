@@ -89,17 +89,17 @@ try {
   try {
     await runAutonomousTick({ userId: OWNER, db, executor, provider });
 
-    const EXPECTED_TIMEFRAMES = ["D1", "M1", "M3", "M5", "M15", "H1", "H4"];
+    const EXPECTED_TIMEFRAMES = ["M1", "M3", "M5", "M15", "H1", "H4"];
     console.log(`[1] The EA genuinely received a separate real "analyze" command for each of the user's specified timeframes...\n`);
     console.log(`    real timeframes requested from the EA: ${JSON.stringify(ea.requestedTimeframes)}`);
-    assert.deepEqual([...ea.requestedTimeframes].sort(), [...EXPECTED_TIMEFRAMES].sort(), "must genuinely request D1/M1/M3/M5/M15/H1/H4 as seven separate real EA commands, not one H1-only call");
+    assert.deepEqual([...ea.requestedTimeframes].sort(), [...EXPECTED_TIMEFRAMES].sort(), "must genuinely request M1/M3/M5/M15/H1/H4 as six separate real EA commands, not one H1-only call");
 
-    console.log(`\n[2] The model's own context genuinely contains all seven real timeframes' data, not just one...\n`);
+    console.log(`\n[2] The model's own context genuinely contains all six real timeframes' data, not just one...\n`);
     const userMessage = calls[0].messages.find((m) => m.role === "user")!.content as string;
     for (const tf of EXPECTED_TIMEFRAMES) {
       assert.ok(userMessage.includes(`"${tf}"`), `the real merged context sent to the model must genuinely include real "${tf}" data`);
     }
-    console.log(`    confirmed: the real context the model receives genuinely carries all seven real timeframes, not a single-timeframe read mislabeled "all timeframes"`);
+    console.log(`    confirmed: the real context the model receives genuinely carries all six real timeframes, not a single-timeframe read mislabeled "all timeframes"`);
   } finally {
     await ea.stop();
   }

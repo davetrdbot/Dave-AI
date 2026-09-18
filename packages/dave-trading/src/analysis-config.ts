@@ -8,19 +8,18 @@ import { dirname, join } from "node:path";
  * confirmed correct against the user's own original spec) -- a user only ever narrows this
  * deliberately, never accidentally.
  *
- * Real bug fixed (found by pulling today's live Railway logs, the trader's real production
- * account: every single autonomous cycle all day decided SKIP at 0% confidence with the exact
- * same reason -- "Active strategy is HTF Top-Down Pullback, which requires a complete
- * D1->H4->H1->M15->M5 flow before any entry"). D1 was missing from this list entirely, even
- * though the EA genuinely supports it (confirmed: `"D1" -> PERIOD_D1` in DaveEA.mq5's real
- * TimeframeFromString) and the trader's own active strategy skill explicitly requires it as the
- * anchor of its top-down read. Worse, `setCustomTimeframes` below silently DROPS any timeframe
- * not in this list -- so a real attempt (by the model, scoping itself to what the active skill
- * needs) to request D1 alongside H4/H1/M15/M5 would silently lose D1 with no error, which is
- * almost certainly how this account's scope ended up narrowed the way it did. Added so D1 is a
- * real, requestable, never-silently-dropped timeframe.
+ * Real bug fixed and reverted (the trader, live: "I'm not a day trader, wtf does it have to do
+ * with day"). D1 was added here believing it was a real gap -- the trader's own installed HTF
+ * Top-Down Pullback strategy skill anchors on D1, and every cycle was SKIPping because of it. But
+ * that reasoning missed the trader's own EARLIER, explicit, deliberate spec for this exact list
+ * (commit 4b9efe6: "the user specified the full real set -- M1, M3, M5, M15, H1, H4"), which has
+ * no D1 in it on purpose. The trader does not day-trade and never asked for a daily candle in the
+ * default analysis suite. Reverted back to that original explicit set -- if the trader ever
+ * deliberately locks into the HTF strategy skill (trading-mode.ts, currently "auto" for this
+ * account, not locked to it), D1 support can be reconsidered then, as its own explicit decision,
+ * not assumed back in as a "missing" default.
  */
-export const ALL_ANALYSIS_TIMEFRAMES = ["D1", "H4", "H1", "M15", "M5", "M3", "M1"] as const;
+export const ALL_ANALYSIS_TIMEFRAMES = ["H4", "H1", "M15", "M5", "M3", "M1"] as const;
 
 /** The real, authoritative list of "all"-endpoint analysis categories -- matches the endpoint id
  *  each analysisTool() entry in dave-ea-bridge/src/tools.ts registers (the second constructor

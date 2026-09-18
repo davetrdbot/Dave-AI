@@ -10,10 +10,9 @@ import { createEaWebhookServer, getOrCreateEaWebhook, enqueueCommand, type EaCom
  * whole drained command batch serially in ONE blocking tick -- handing it a big burst of
  * "analyze" commands at once meant it fell behind on all of them together. This proves the real
  * bridge-side half of the fix: drainQueue() now caps how many "analyze" commands go out per
- * poll (MAX_ANALYZE_COMMANDS_PER_POLL = 10, raised from the original 6 once D1 joined the real
- * per-symbol timeframe suite -- a single symbol's own full 7-timeframe read must always clear in
- * one poll), leaving the rest genuinely queued for the EA's next
- * poll -- while trade commands (open/modify/close/delete_pending) are NEVER capped or delayed by
+ * poll (MAX_ANALYZE_COMMANDS_PER_POLL = 10, raised from the original 6 for headroom -- a single
+ * symbol's own full timeframe read should always clear in one poll), leaving the rest genuinely
+ * queued for the EA's next poll -- while trade commands (open/modify/close/delete_pending) are NEVER capped or delayed by
  * a pending scan, since those are latency-sensitive and rare.
  */
 
