@@ -948,7 +948,13 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     clearAutonomousBusy(deps.ownerUserId);
     const resumeChatId = getPrimaryChatId(deps.db, deps.ownerUserId);
     if (resumeChatId !== undefined) {
-      const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, resumeChatId));
+      // Real gap fixed (a dedicated investigation subagent, live: boot-resume never passed the
+      // `intervalMs=0` fire-immediately override that /start_trading already uses for a fresh
+      // start -- see that call below). Without it, `lastRunAt` starts at `Date.now()` and the
+      // first cycle after every single redeploy silently waits out a full configured interval
+      // before firing at all, right when the user most wants live confirmation the loop survived
+      // the restart. Fires the first cycle immediately instead, same as /start_trading does.
+      const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, resumeChatId), 0);
       if (started) {
         void client.sendMessage({ chat_id: resumeChatId, text: "🔄 Resumed autonomous trading after a restart -- I'm back to actively scanning." }).catch(() => undefined);
       }
