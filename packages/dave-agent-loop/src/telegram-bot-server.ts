@@ -527,6 +527,14 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
     recordCycleOutcome(deps.ownerUserId, `cycle threw: ${err instanceof Error ? err.message : String(err)}`);
+    // Real bug fixed, caught LIVE within minutes of shipping the outer alert wrapper: this inner
+    // catch already existed and swallowed the error here, so it never reached that wrapper and no
+    // alert was ever sent. Proved by a real failed trade -- Dave found a genuine BOOM_100 setup at
+    // 62% confidence, the broker rejected it with "not enough money", and the owner was told
+    // nothing at all. This is the catch that actually sees a failing cycle, so this is where the
+    // alert has to live. Same edge-triggered dedup, so a repeating failure still can't spam.
+    const alert = cycleErrorAlert(deps.ownerUserId, err);
+    if (alert) await client.sendMessage({ chat_id: chatId, text: alert }).catch(() => undefined);
   } finally {
     endTurn(deps.ownerUserId, tickAbortController);
     clearAutonomousBusy(deps.ownerUserId);
