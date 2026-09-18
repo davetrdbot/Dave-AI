@@ -934,6 +934,18 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   // genuinely re-arm it here, at boot, against the last chat we know they actually messaged from
   // (primary-chat.ts) -- and tell them it happened, so a restart is never silently invisible.
   if (isAutonomousTradingEnabled(deps.ownerUserId)) {
+    // Real bug fixed (user, live: three straight "previous autonomous cycle is still running"
+    // skips after this exact resume block ran, one full minute apart, with zero real cycles
+    // executing -- confirmed via Railway logs on the deploy that shipped this same file). Root
+    // cause: busy-autonomous.json is written to the persistent volume, so a process that gets
+    // killed mid-cycle by a deploy leaves it behind. The NEXT process reads that stale record
+    // here, at boot, and treats it as a real in-flight cycle -- even though the process that set
+    // it no longer exists and nothing else in this fresh process could possibly have started one
+    // yet. It used to only self-heal after MAX_AUTONOMOUS_BUSY_AGE_MS (6 minutes), so every
+    // redeploy cost up to 6 minutes of a fully alive loop producing zero decisions. A fresh boot
+    // can never have a real autonomous cycle already in flight from before it existed, so clear it
+    // unconditionally right here, before the loop is re-armed.
+    clearAutonomousBusy(deps.ownerUserId);
     const resumeChatId = getPrimaryChatId(deps.db, deps.ownerUserId);
     if (resumeChatId !== undefined) {
       const started = startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, resumeChatId));
