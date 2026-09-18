@@ -2,6 +2,7 @@ import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTrading
 import { getConfidenceSettings } from "@dave/trading";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill } from "@dave/skills";
+import { loadFrozenSnapshot } from "@dave/memory";
 import type { ContentBlock } from "@dave/brain";
 
 /**
@@ -85,7 +86,54 @@ export function buildLiveSettingsBlock(userId: string): string {
     }
   }
 
+  // Real bug fixed (the trader, explicit: "don't forget to check the memory"). Dave's memory was
+  // write-only in practice. remember_user_fact / remember_note / remember_adaptability_note all
+  // genuinely persist to disk, and prompts/BOOTSTRAP.md tells the model those saves are
+  // mandatory -- but loadFrozenSnapshot had exactly two callers: the recall_memory TOOL and a
+  // selftest. Nothing loaded memory into the system prompt or into any turn, so "remember I hate
+  // XAUUSD" was saved and then never seen again unless the model spontaneously chose to call
+  // recall_memory first.
+  //
+  // That is precisely the bug this module's own header describes for settings ("the bot keeps
+  // asking about these as if they were never set... unless the model happens to call the right
+  // get_* tool every single turn, which it doesn't reliably do"), so it gets the same, already
+  // proven fix: read fresh every turn, ride on the user message rather than the cached system
+  // prompt. The frozen snapshot is character-budgeted at the store (FROZEN_PAIR_CHAR_BUDGET), so
+  // this cannot grow without bound the way an unbudgeted append would.
+  const memory = safeLoadMemory(userId);
+  if (memory) {
+    lines.push(
+      "",
+      "<remembered>",
+      memory,
+      "</remembered>",
+      "",
+      "This is what you have genuinely remembered about this user, loaded fresh this turn. Treat it as already known -- never ask them to repeat something recorded here, and never claim you don't remember it.",
+    );
+  }
+
   return lines.filter((l) => l !== "").join("\n");
+}
+
+/**
+ * Memory must never be able to take down a turn. The store reads real files that this process has
+ * genuinely crashed mid-write before, so a truncated or corrupt one is a real possibility -- a
+ * trading cycle failing because a note file is malformed would be a strictly worse bug than the
+ * one this fixes.
+ */
+function safeLoadMemory(userId: string): string | undefined {
+  try {
+    const snapshot = loadFrozenSnapshot(userId);
+    const sections = [
+      snapshot.memory?.trim() ? `MEMORY.md:\n${snapshot.memory.trim()}` : "",
+      snapshot.user?.trim() ? `USER.md:\n${snapshot.user.trim()}` : "",
+      snapshot.adaptability?.trim() ? `ADAPTABILITY.md:\n${snapshot.adaptability.trim()}` : "",
+    ].filter(Boolean);
+    return sections.length > 0 ? sections.join("\n\n") : undefined;
+  } catch (err) {
+    console.error(`[live-context] could not load memory for ${userId} -- continuing without it:`, err);
+    return undefined;
+  }
 }
 
 /** Prepends the live settings block to a real user turn -- text or content-block (image) shape. */
