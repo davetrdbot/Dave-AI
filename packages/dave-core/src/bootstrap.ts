@@ -136,8 +136,8 @@ export class BootstrapFlow {
         // (prompts/trading.md) is now built in, not something the user has to hand over first.
         await this.transport.send(
           userId,
-          `Got it, ${name}. I'll keep "${style}" in mind. I already know how to trade -- talk to ` +
-            `me normally from here, or just tell me to go hunt for a setup.`
+          `Got it, ${name}. I'll keep "${style}" in mind. I'm already scanning the markets — ` +
+            `I'll come to you when I find something real worth trading.`
         );
         return true;
       }
