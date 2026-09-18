@@ -89,7 +89,15 @@ export function wireFeedbackLoop(deps: FeedbackLoopDeps): WiredFeedbackLoop {
   });
 
   registerWeeklyExportCron(deps.db, deps.ownerUserId, exportRoot, (result) => {
-    void sendToPrimaryChat(deps, composeExportMessage(result), "weekly export");
+    // Real bug fixed (bug-hunt pass): the lone unguarded fire-and-forget in this file -- the two
+    // sibling crons either side of it correctly await inside async handlers. sendToPrimaryChat
+    // awaits a real Telegram call that rejects on a network blip, a 429, or "message is too
+    // long", and this fires from inside a node-cron callback with no caller frame to absorb it:
+    // an unhandled rejection, which Node turns into a process-killing uncaught exception on a
+    // live trading bot, over a weekly export message.
+    void sendToPrimaryChat(deps, composeExportMessage(result), "weekly export").catch((err) => {
+      console.error(`[feedback-loop] weekly export message failed to send for ${deps.ownerUserId}:`, err);
+    });
   });
 
   const unsubscribeReflection = subscribeTradeCountReflection(deps.db, deps.ownerUserId, async (input: ReflectionInput) => {

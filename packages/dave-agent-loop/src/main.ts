@@ -244,7 +244,7 @@ export async function main(): Promise<void> {
     },
     onManualModify: (userId, modification) => {
       const chatId = telegramClient && getPrimaryChatId(db, userId);
-      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualModifyMessage(modification) });
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualModifyMessage(modification) }).catch(() => undefined);
     },
     onClosedPosition: (userId, closed) => {
       // Real gap fixed (user: "implement journal of the day that's win rate and others"): the
@@ -252,11 +252,11 @@ export async function main(): Promise<void> {
       // persisted for real win-rate aggregation -- never a second, possibly-drifting source of truth.
       logClosedTrade(db, userId, closed);
       const chatId = telegramClient && getPrimaryChatId(db, userId);
-      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildClosedTradeMessage(closed) });
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildClosedTradeMessage(closed) }).catch(() => undefined);
     },
     onManualClose: (userId, position) => {
       const chatId = telegramClient && getPrimaryChatId(db, userId);
-      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualCloseMessage(position) });
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualCloseMessage(position) }).catch(() => undefined);
     },
   });
 

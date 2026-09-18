@@ -1,5 +1,5 @@
 import type { DaveDatabase } from "@dave/db";
-import { addProviderKey, addProviderKeysBulk, editProviderKey, listProviderKeys, removeProviderKey, checkProviderKeyHealth, setPrimaryProviderKey } from "./provider-keys.js";
+import { addProviderKey, addProviderKeysBulk, editProviderKey, listProviderKeys, removeProviderKey, checkProviderKeyHealth, setPrimaryProviderKey, maskProviderKeys, maskBulkAddResults } from "./provider-keys.js";
 import { createCustomProvider, editCustomProvider, listCustomProviders, deleteCustomProvider } from "./custom-providers.js";
 import { listProviderCatalog } from "./provider-catalog.js";
 import { fetchAvailableModels } from "./model-fetch.js";
@@ -112,9 +112,16 @@ export const PROVIDER_TOOLS: ToolDefinition[] = [
   },
   {
     name: "list_provider_keys",
-    description: "List stored keys for a provider (or all providers), including real health status.",
+    description: "List stored keys for a provider (or all providers), including real health status. Key values are masked -- never retrievable through this tool.",
     parameters: { type: "object", properties: { provider: { type: "string" } } },
-    execute: async (args, ctx) => listProviderKeys(ctx.db, ctx.userId, args.provider as ProviderName | undefined),
+    // Real security bug fixed (bug-hunt pass): this returned every StoredProviderKey verbatim,
+    // `config.apiKey` and `config.secretAccessKey` included. It is a live agent tool, so the raw
+    // keys were sent into the model's context on whatever third-party provider happened to serve
+    // that turn, and could be echoed straight back out into a Telegram reply. The admin panel's
+    // own route has always redacted these (dave-admin/app/api/provider-keys/route.ts's `redact`);
+    // the agent path simply never did. Health status, labels and ids are what a caller actually
+    // needs here -- the secret itself has no legitimate reason to be readable back out at all.
+    execute: async (args, ctx) => maskProviderKeys(listProviderKeys(ctx.db, ctx.userId, args.provider as ProviderName | undefined)),
   },
   {
     name: "add_provider_keys_bulk",
@@ -128,7 +135,10 @@ export const PROVIDER_TOOLS: ToolDefinition[] = [
       },
       required: ["provider", "labelPrefix", "rawKeys"],
     },
-    execute: async (args, ctx) => addProviderKeysBulk(ctx.db, ctx.userId, args.provider as ProviderName, args.labelPrefix as string, args.rawKeys as string),
+    // Masked for the same reason as list_provider_keys above -- this used to echo every
+    // submitted key back verbatim as `line`, straight into the model's context.
+    execute: async (args, ctx) =>
+      maskBulkAddResults(addProviderKeysBulk(ctx.db, ctx.userId, args.provider as ProviderName, args.labelPrefix as string, args.rawKeys as string)),
   },
   {
     name: "set_primary_provider_key",

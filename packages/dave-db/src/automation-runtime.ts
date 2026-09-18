@@ -134,9 +134,31 @@ export function wireEntityAutomations(db: DaveDatabase, userId: string, dispatch
   const unsubscribe = db.onEntityEvent((event: EntityEvent) => {
     if (event.ownerUserId !== userId) return;
     const automations = listAutomations(db, userId).filter((a) => a.enabled && a.triggerType === "entity" && a.entityName === event.table);
-    for (const automation of automations) {
-      void dispatch(automation.userId, automation.toolName, { ...automation.toolArgs, entityEvent: event });
-    }
+    if (automations.length === 0) return;
+    // Real bug fixed (bug-hunt pass on a live trading bot), two distinct problems in one line.
+    //
+    // 1. `void dispatch(...)` had no .catch(). dispatch executes a real agent tool (LLM, broker,
+    //    DB, network), so it genuinely rejects -- an unhandled rejection, which Node turns into a
+    //    process-killing uncaught exception. A failing automation also reported to nobody at all,
+    //    not even a console line.
+    // 2. Worse, this fanned out with NO bound: one db.insert() on a watched table fired every
+    //    matching automation simultaneously. On the single Node process that also serves the EA
+    //    webhook (every 8 seconds), the Telegram webhook and every LLM call, a burst of inserts
+    //    -- trade rows arriving from an EA tick, exactly the hot path here -- became N x M
+    //    concurrent tool executions and starved the trading loop.
+    //
+    // Run sequentially instead: automations are background work and have no reason to race the
+    // live trading loop for the event loop. Each failure is isolated, so one broken automation
+    // never stops the rest.
+    void (async () => {
+      for (const automation of automations) {
+        try {
+          await dispatch(automation.userId, automation.toolName, { ...automation.toolArgs, entityEvent: event });
+        } catch (err) {
+          console.error(`[automation] entity automation "${automation.toolName}" failed for ${automation.userId}:`, err);
+        }
+      }
+    })();
   });
   entitySubscriptions.set(userId, unsubscribe);
   return unsubscribe;

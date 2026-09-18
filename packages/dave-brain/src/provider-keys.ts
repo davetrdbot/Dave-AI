@@ -101,6 +101,40 @@ export interface BulkAddResult {
 }
 
 /**
+ * Real security bug fixed (bug-hunt pass on a live bot). Two agent-callable tools handed real,
+ * plaintext API keys straight back to the model: `list_provider_keys` returned every
+ * StoredProviderKey verbatim, and `add_provider_keys_bulk` echoed each submitted key back as
+ * `BulkAddResult.line`. Anything in a tool result enters the model's context -- sent to whatever
+ * third-party provider serves that turn -- and can be echoed into a Telegram reply. The admin
+ * panel has always redacted these on its own route; the agent path never did.
+ *
+ * Enough of the tail is kept to tell two stored keys apart (which is the only real reason to look
+ * at a key value), and never enough to use one.
+ */
+export function maskKeyValue(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value.length <= 4) return "****";
+  return `****${value.slice(-4)}`;
+}
+
+export function maskProviderKey(key: StoredProviderKey): StoredProviderKey {
+  return { ...key, config: { ...key.config, apiKey: maskKeyValue(key.config.apiKey)!, secretAccessKey: maskKeyValue(key.config.secretAccessKey) } };
+}
+
+export function maskProviderKeys(keys: StoredProviderKey[]): StoredProviderKey[] {
+  return keys.map(maskProviderKey);
+}
+
+/** The submitted key itself is never echoed back -- only whether that line worked, and why not. */
+export function maskBulkAddResults(results: BulkAddResult[]): BulkAddResult[] {
+  return results.map((result) => ({
+    ...result,
+    line: maskKeyValue(result.line)!,
+    key: result.key ? maskProviderKey(result.key) : undefined,
+  }));
+}
+
+/**
  * Real gap fixed: "bulk-add up to 10 keys at once, one per line,
  * validate and save each individually, report per-key success/failure."
  * Reuses the exact same addProviderKey() path per line -- same

@@ -7,6 +7,7 @@ import { enableBreakevenTrailing, disableBreakevenTrailing } from "./breakeven-t
 import { evaluateConfidenceGate } from "./confidence-gate.js";
 import { getRiskSettings } from "./risk-settings.js";
 import { getSettingsLog } from "./settings-log.js";
+import { derivePipSize } from "./pip-size.js";
 
 /**
  * Agentic tool exposure. Real gap this fills: everything in this
@@ -161,30 +162,48 @@ export const TRADING_TOOLS: ToolDefinition[] = [
           throw new AutoModeRequiresComputedValueError("tp", order.symbol);
         }
         let referencePrice = order.price;
-        if (referencePrice === undefined) {
-          try {
-            const quote = await ctx.analysis.get<{ bid?: number; ask?: number; close?: number }>("price", order.symbol);
-            referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
-          } catch {
-            // No live quote -- sl/tp stay honestly unset below, never guessed.
-          }
+        // Real bug fixed (bug-hunt pass): the quote was fetched, its price used, and the rest of
+        // it thrown away -- including the `spread_pips` needed to know what a pip is worth on
+        // THIS symbol. Kept now, for the pip derivation below.
+        let quote: { bid?: number; ask?: number; close?: number; spread_pips?: number } | undefined;
+        try {
+          quote = await ctx.analysis.get<{ bid?: number; ask?: number; close?: number; spread_pips?: number }>("price", order.symbol);
+        } catch {
+          // No live quote -- sl/tp stay honestly unset below, never guessed.
         }
+        if (referencePrice === undefined) referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
         if (referencePrice !== undefined) {
           const direction = order.type === "buy" || order.type === "buy_limit" || order.type === "buy_stop" ? 1 : -1;
-          const pip = 0.0001;
-          if (order.sl === undefined && risk.slMode === "on" && risk.slValue !== undefined) {
-            order.sl = referencePrice - direction * risk.slValue * pip;
-          }
-          if (order.tp === undefined && risk.tpMode === "on" && risk.tpValue !== undefined) {
-            order.tp = referencePrice + direction * risk.tpValue * pip;
+          // Real bug fixed (bug-hunt pass) -- the SECOND copy of the hardcoded-pip bug. The same
+          // `const pip = 0.0001` was fixed in autonomous-tick.ts for the autonomous path, and this
+          // manual trade_execute path had its own identical copy that the first fix missed. Only
+          // correct for 4-digit forex; on this trader's synthetic indices (real live prices in the
+          // hundreds of thousands) a fixed-pip SL/TP resolved to a fraction of a point from entry
+          // -- an instant stop-out or a broker rejection. Derived per symbol from the EA's own
+          // numbers; left honestly unset when it cannot be established, exactly as this block
+          // already does for a missing quote, rather than guessed.
+          const pip = derivePipSize(quote);
+          if (pip !== undefined) {
+            if (order.sl === undefined && risk.slMode === "on" && risk.slValue !== undefined) {
+              order.sl = referencePrice - direction * risk.slValue * pip;
+            }
+            if (order.tp === undefined && risk.tpMode === "on" && risk.tpValue !== undefined) {
+              order.tp = referencePrice + direction * risk.tpValue * pip;
+            }
           }
         }
       }
-      if (typeof confidence === "number") {
-        const gate = evaluateConfidenceGate(ctx.userId, order, confidence, reason as string | undefined);
-        if (gate.needsApproval) {
-          return { needsApproval: true, pendingId: gate.pendingId, confidence, threshold: gate.threshold };
-        }
+      // Real bug fixed (bug-hunt pass, money-safety): this used to be
+      // `if (typeof confidence === "number")` -- and `confidence` is NOT in this tool's required
+      // list. So omitting one optional field skipped the user's approval gate entirely and fired
+      // a live order immediately, whatever threshold they had set. The same class of hole
+      // autonomous-tick.ts already closed on its own decision schema (see its `required` comment:
+      // a missing confidence must never be treated as a pass). Treated as 0 -- no stated
+      // confidence is the least confident a call can be, so it gates rather than bypasses.
+      const gatedConfidence = typeof confidence === "number" ? confidence : 0;
+      const gate = evaluateConfidenceGate(ctx.userId, order, gatedConfidence, reason as string | undefined);
+      if (gate.needsApproval) {
+        return { needsApproval: true, pendingId: gate.pendingId, confidence: gatedConfidence, threshold: gate.threshold };
       }
       const result = await tradeExecute(ctx.executor, order);
       return typeof confidence === "number" ? { ...result, confidence } : result;

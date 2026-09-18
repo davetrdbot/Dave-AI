@@ -12,6 +12,7 @@ import {
   tradeExecute,
   tradeExecuteWithMarginRetry,
   derivePipSize,
+
   InsufficientMarginError,
   ABSOLUTE_MIN_LOTS,
   tradeModify,

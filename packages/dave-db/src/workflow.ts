@@ -113,8 +113,26 @@ export class WorkflowEngine {
     const row = this.db.getById(TABLE, this.ownerUserId, runId) as WorkflowRunRow | undefined;
     if (!row || row.status !== "running") return;
 
-    const steps: WorkflowStep[] = JSON.parse(row.steps);
-    const context: Record<string, unknown> = JSON.parse(row.context);
+    // Real bug fixed (bug-hunt pass on a live trading bot): these two JSON.parse calls and the
+    // completion write below used to sit OUTSIDE the try block. A truncated or corrupt `steps`/
+    // `context` column -- entirely reachable, since this process has genuinely been crashing
+    // mid-write -- threw here, escaped `advance()` as a rejected promise, and both call sites
+    // invoke this as a bare `void this.advance(runId)` with no .catch(). That is an unhandled
+    // rejection, which Node turns into a process-killing uncaught exception. It also left the run
+    // stuck in "running" forever, with no "failed" status and nobody told. Everything that can
+    // throw is now inside the try, so a corrupt run fails cleanly and visibly instead.
+    let steps: WorkflowStep[];
+    let context: Record<string, unknown>;
+    try {
+      steps = JSON.parse(row.steps);
+      context = JSON.parse(row.context);
+    } catch (err) {
+      this.db.update(TABLE, this.ownerUserId, runId, {
+        status: "failed" satisfies WorkflowStatus,
+        error: `workflow run data is corrupt and cannot be read: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
 
     if (row.step_index >= steps.length) {
       this.db.update(TABLE, this.ownerUserId, runId, { status: "completed" satisfies WorkflowStatus });
