@@ -35,12 +35,18 @@
 
 input string WebhookURL     = "{{WEBHOOK_URL}}";
 input string EaToken        = "{{TOKEN}}"; // embedded in WebhookURL's path -- kept here for logging/diagnostics only
-// Real, live change (user: wants the full-report push as fast as possible). Default is now 1s --
-// MT5's EventSetTimer() has a real, practical floor around 1 second; there is no sub-second/ms
-// timer in the MT5 API, so 1 is the fastest this can genuinely be set to (faking ms precision
-// here would just be a lie -- OnTick() below is the real per-tick path for anything that needs
-// to be faster than this).
-input int    PushSeconds    = 1;     // periodic state-push cadence (default 1s -- EventSetTimer's real floor)
+// Real, live change (the trader, explicit, live: first "change it to 1 min", then "if possible
+// make it 8 sec"). This compiled default has moved several times this session already -- 1s
+// ("wants the full-report push as fast as possible"), then a 120s live override ("the ea tick
+// should be sending every 2min") that outlived its own later source revert because a live
+// runtime override persists on an already-running MT5 terminal independent of what a recompile
+// would produce. Every "analyze" command's result only ships on the EA's NEXT poll after the one
+// that picked it up, so a slower interval directly costs real minutes per autonomous cycle
+// (confirmed live: some timeframe requests hit their full 5-minute timeout at 120s). Hardcoded
+// here as the real, settled default (8s) rather than left as another live-only override that
+// would silently revert on the next terminal restart -- also set live right now via dave-admin's
+// ea-push-interval route so this takes effect immediately without needing a recompile.
+input int    PushSeconds    = 8;     // periodic state-push cadence (default 8s, the trader's explicit setting)
 input bool   EnablePush     = true;  // Step 11.2: MT5 push notification on open/close/error
 input bool   EnableEmail    = true;  // Step 11.2: email on open/close/error
 input int    MagicNumber    = 88001; // ported from the reference DAVE.mq5 -- tags every order this EA places

@@ -239,13 +239,15 @@ export function takeAnalysisResult(userId: string, commandId: string): EaCommand
  * genuine (re)connection, not just a normal heartbeat.
  */
 // Real bug fixed (user: "it doesn't trade... check anything limiting it"): this used to be
-// exactly 2 minutes, which was comfortably above the EA's old 6-second default push interval --
-// but the EA's default PushSeconds is now genuinely 120s (user: "the ea tick should be sending
-// every 2min"), so a gap threshold equal to the push interval itself means ordinary network
-// jitter or a single slightly-late heartbeat reads as "disconnected," which silently skips the
-// entire autonomous cycle (runAutonomousTradingCycle returns immediately when !connected, no
-// error, no message). Real margin -- several missed beats' worth -- above whatever the push
-// interval actually is now.
+// exactly 2 minutes, which was comfortably above the EA's old 6-second default push interval,
+// but broke when the EA's default PushSeconds was briefly 120s -- a gap threshold equal to the
+// push interval itself means ordinary network jitter or a single slightly-late heartbeat reads
+// as "disconnected," which silently skips the entire autonomous cycle
+// (runAutonomousTradingCycle returns immediately when !connected, no error, no message). The
+// EA's real, settled default is now 8s (ea/DaveEA.mq5's PushSeconds, the trader's explicit
+// setting) -- kept at a generous fixed 6-minute margin (several dozen missed beats' worth)
+// rather than tied to whatever the push interval happens to be, so this stays safe across future
+// interval changes too.
 export const CONNECTION_GAP_MS = 6 * 60 * 1000;
 
 export function isNewConnection(userId: string, now = Date.now()): boolean {
