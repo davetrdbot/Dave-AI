@@ -10,7 +10,7 @@ import { getTelegramCredentials, type TelegramClient } from "@dave/telegram";
 import { startTelegramBotServer } from "./telegram-bot-server.js";
 import { getPrimaryChatId } from "./primary-chat.js";
 import { buildClosedTradeMessage, buildManualCloseMessage, buildManualModifyMessage, buildWatchdogAlertMessage } from "./trade-notifications.js";
-import { eaConnectionAlert } from "./health-alerts.js";
+import { eaConnectionAlert, cycleErrorAlert } from "./health-alerts.js";
 import { logClosedTrade } from "@dave/feedback";
 import { loadSystemPrompt } from "./system-prompt.js";
 
@@ -189,6 +189,23 @@ export async function main(): Promise<void> {
     if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
   };
 
+  // Real bug class fixed (the trader: "still find more bugs"). Node's default behavior turns an
+  // unhandled promise rejection into an uncaught exception that kills the process outright. This
+  // codebase is full of deliberate fire-and-forget calls (`void someAsync()`) -- a sound pattern
+  // for work that must not block a trade -- but every single one that forgets its `.catch()`
+  // becomes a live crash trigger. thinking-indicator.ts documents having been bitten by exactly
+  // this and defends its own call; ea-bridge.ts's trailing tick had the identical shape and was
+  // not defended until now. For a bot holding real money, dying because a cosmetic Telegram
+  // update or a single stop-move hiccuped is never the right trade-off: log it loudly, tell the
+  // owner, keep trading. This is the net, not a licence to skip .catch() at the call site.
+  process.on("unhandledRejection", (reason) => {
+    console.error("[fatal-guard] unhandled promise rejection -- kept the process alive:", reason);
+    alertOwner(
+      `⚠️ Something failed in the background and I caught it before it could take me down.\n\n` +
+        `${reason instanceof Error ? reason.message : String(reason)}`.slice(0, 500)
+    );
+  });
+
   watchdog.onEvent((event) => {
     console.error(`[watchdog] ${event.type}`, event);
     // Real gap fixed (the trader: "find bugs this bot"): this handler's own comment used to
@@ -216,6 +233,14 @@ export async function main(): Promise<void> {
       console.log(`[ea] connected: ${userId}`);
       const message = eaConnectionAlert(userId, true, 0);
       if (message) alertOwner(message);
+    },
+    // A stop that failed to move is a real change in the owner's risk, not a cosmetic glitch --
+    // they must know the ticket is still sitting at its old stop. Routed through the same
+    // edge-triggered dedup as every other health alert so a persistently failing ticket reminds
+    // rather than floods.
+    onTrailingFailed: (userId, ticket, err) => {
+      const alert = cycleErrorAlert(userId, err);
+      if (alert) alertOwner(`🔧 Ticket #${ticket}: I couldn't move the trailing stop -- it's still at its previous level.\n\n${alert}`);
     },
     onManualModify: (userId, modification) => {
       const chatId = telegramClient && getPrimaryChatId(db, userId);

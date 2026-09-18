@@ -24,6 +24,9 @@ export interface EaBridgeEvents {
   onManualModify?: (userId: string, modification: ManualModification) => void;
   onCommandResult?: (userId: string, result: EaCommandResult) => void;
   onClosedPosition?: (userId: string, closed: EaClosedPosition) => void;
+  /** A trailing/breakeven stop genuinely failed to move. Never cosmetic: the owner's real risk on
+   *  that ticket is now different from what the trailing config says it should be. */
+  onTrailingFailed?: (userId: string, ticket: string, error: unknown) => void;
 }
 
 /**
@@ -117,7 +120,22 @@ export class EaBridge {
     const executor = this.getExecutor(userId);
     for (const position of report.positions ?? []) {
       if (position.currentPrice === undefined) continue;
-      void runTrailingTick(userId, position.ticket, position.currentPrice, executor);
+      // Real bug fixed (the trader: "still find more bugs"). This was `void runTrailingTick(...)`
+      // with no catch, and runTrailingTick awaits a real executor.modifyOrder() -- so a broker or
+      // EA refusing the stop move (invalid stops, ticket already closed, a round-trip timeout)
+      // rejected a promise nobody was handling. Node's default unhandledRejection behavior turns
+      // that into an uncaught exception that CRASHES THE WHOLE PROCESS -- the exact crash mode
+      // thinking-indicator.ts already documents and defends against for its own fire-and-forget
+      // call, which this one was never given. It runs per open position on EVERY report, so at
+      // the current 8s heartbeat that is hundreds of chances an hour to kill the bot, and it only
+      // became reachable in practice once trades could actually be placed again.
+      //
+      // Deliberately NOT swallowed silently: a stop that failed to move to breakeven leaves the
+      // owner carrying risk they believe they no longer have, so it is surfaced as a real event.
+      void runTrailingTick(userId, position.ticket, position.currentPrice, executor).catch((err) => {
+        console.error(`[ea-bridge] trailing tick failed for ${userId} ticket ${position.ticket}:`, err);
+        this.events.onTrailingFailed?.(userId, position.ticket, err);
+      });
     }
   }
 }
