@@ -20,7 +20,9 @@ export const FROZEN_PAIR_CHAR_BUDGET = 5200;
 export class MemoryBudgetExceededError extends Error {
   constructor(file: MemoryFile, size: number, budget: number) {
     super(
-      `Writing to ${file} would push MEMORY.md+USER.md to ${size} chars, over the ${budget}-char budget. Consolidate before writing more.`
+      // Model-visible tool error: says what to do about it without naming internal files, and
+      // points at the store that is actually meant to hold durable trading lessons.
+      `That write would push your memory to ${size} chars, over its ${budget}-char budget. Memory is deliberately small -- consolidate what's there, or, if this is a durable lesson about markets or your own trading rather than a fact about the user, save it as knowledge instead (knowledge_draft then knowledge_save), which has no size limit.`
     );
     this.name = "MemoryBudgetExceededError";
   }

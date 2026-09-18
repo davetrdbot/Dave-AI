@@ -53,7 +53,7 @@ export const SKILL_TOOLS: ToolDefinition[] = [
   {
     name: "set_active_strategy_skill",
     description:
-      "Mark one of your skills as the active trading strategy. Skills are trading-strategy-only (which timeframes/tools/signals to use and when) -- once active, that skill's instructions become the real analysis lens for every trade cycle, followed explicitly (see prompts/trading.md's 'Trading-strategy skills'), replacing your own default judgment until cleared. Only call this when the user explicitly tells you to activate a specific skill -- never pick or switch a strategy on your own, and never ask the user to choose one; if they haven't told you to activate anything, leave whatever is already active (or nothing) alone.",
+      "Mark one of your skills as the active trading strategy. Skills are trading-strategy-only (which timeframes/tools/signals to use and when) -- once active, that skill's instructions become the real analysis lens for every trade cycle, followed explicitly per your own trading rules, replacing your own default judgment until cleared. Only call this when the user explicitly tells you to activate a specific skill -- never pick or switch a strategy on your own, and never ask the user to choose one; if they haven't told you to activate anything, leave whatever is already active (or nothing) alone.",
     parameters: { type: "object", properties: { skillId: { type: "string" } }, required: ["skillId"] },
     execute: async (args, ctx) => {
       const skillId = args.skillId as string;
@@ -65,7 +65,7 @@ export const SKILL_TOOLS: ToolDefinition[] = [
   },
   {
     name: "clear_active_strategy_skill",
-    description: "Clear the active trading-strategy skill. With none active, trading falls back to your own genuine judgment (prompts/trading.md's default analysis lens) -- no strategy is ever required.",
+    description: "Clear the active trading-strategy skill. With none active, trading falls back to your own genuine judgment and default analysis lens -- no strategy is ever required.",
     parameters: { type: "object", properties: {} },
     execute: async (_args, ctx) => {
       clearActiveStrategySkill(ctx.userId);

@@ -26,7 +26,10 @@ console.log("    confirmed: sniper/scalper tone, full-analysis mandate, hunt-mod
 console.log("\n[2] trading.md loads in the real tier order -- after SECURITY, before BOOTSTRAP...\n");
 const soulIdx = prompt.indexOf("You are Dave. Not a generic assistant");
 const securityIdx = prompt.indexOf("What you are");
-const bootstrapIdx = prompt.indexOf("This file governs what happens the very first time");
+// Anchor updated with the prompt rewrite (step128). This test's real subject is the TIER ORDER,
+// not any particular sentence -- the opening line of the first-contact tier was reworded when the
+// tiers stopped naming each other by filename, so the anchor moves with it.
+const bootstrapIdx = prompt.indexOf("This governs the very first time a real user talks to you");
 assert.ok(soulIdx !== -1 && securityIdx !== -1 && bootstrapIdx !== -1, "all three real anchor strings must genuinely be found");
 assert.ok(soulIdx < securityIdx, "SOUL must come before trading.md");
 assert.ok(securityIdx < bootstrapIdx, "trading.md must come before BOOTSTRAP");

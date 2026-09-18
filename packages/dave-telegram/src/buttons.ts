@@ -61,6 +61,27 @@ export function approvalKeyboard(pendingId: string, domain: string): InlineKeybo
   return keyboard([[coloredButton("✅ Approve", "green", `approve:${domain}:${pendingId}`), coloredButton("❌ Decline", "red", `decline:${domain}:${pendingId}`)]]);
 }
 
+/**
+ * Real bug fixed (the owner, from a live Telegram screenshot: a below-threshold trade arrived as
+ * "⚠️ CRASH_200 SELL 0.01 lots -- confidence 66% is below your 70% threshold... Approve to place
+ * it, or decline to skip." with NO buttons attached at all, so there was literally nothing to
+ * press). The interactive half only ever existed inline in full-registry.ts's trade_execute
+ * wrapper -- the autonomous tick, which is what actually produced that message, returned a bare
+ * string and its send path attached no reply_markup. Lifted here, next to approvalKeyboard above,
+ * so both real producers of a trade-approval ask build the SAME keyboard instead of one of them
+ * silently shipping a dead prompt. Callback data matches command-router.ts's existing
+ * tradeapprove:/tradedecline:/tradefindanother: dispatcher exactly.
+ */
+export function tradeApprovalKeyboard(pendingId: string): InlineKeyboardMarkup {
+  return keyboard([
+    [
+      coloredButton("✅ Approve", "green", `tradeapprove:${pendingId}`),
+      coloredButton("❌ Decline", "red", `tradedecline:${pendingId}`),
+      coloredButton("🔍 Find Another", "neutral", `tradefindanother:${pendingId}`),
+    ],
+  ]);
+}
+
 export function settingsScreen(optionPairs: SettingsOption[][], backCallbackData: string): InlineKeyboardMarkup {
   const rows: InlineKeyboardButton[][] = optionPairs.map((pair) =>
     pair.map((opt) => ({

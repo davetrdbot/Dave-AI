@@ -10,7 +10,7 @@ import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyE
 import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
-import { runAutonomousTick } from "./autonomous-tick.js";
+import { runAutonomousTick, type TickOutcome } from "./autonomous-tick.js";
 import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic, isTradingHalted, assertNotTripped, CircuitBreakerTrippedError } from "@dave/safety";
@@ -415,6 +415,25 @@ const MAX_PENDING_QUESTION_AGE_MS = 15 * 60_000;
  * permanently broken key reminds rather than spams, and a genuinely new failure still gets
  * through immediately.
  */
+/**
+ * The one real send path for a tick's own message to the owner -- chunked for Telegram's real
+ * 4096-char limit, with the outcome's real inline keyboard (when it has one) attached to the LAST
+ * chunk so an approve/decline ask actually arrives pressable. Exported so this exact behavior is
+ * testable end to end rather than only reachable through a full live cycle.
+ */
+export async function sendTickOutcome(client: TelegramClient, chatId: number, outcome: TickOutcome): Promise<void> {
+  if (!outcome.message) return;
+  const chunks = chunkForTelegram(outcome.message);
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    await client.sendMessage({
+      chat_id: chatId,
+      text: chunks[i],
+      ...(isLast && outcome.replyMarkup ? { reply_markup: outcome.replyMarkup } : {}),
+    });
+  }
+}
+
 export async function runAutonomousTradingCycle(deps: TelegramBotServerDeps, client: TelegramClient, chatId: number): Promise<void> {
   try {
     await runAutonomousTradingCycleInner(deps, client, chatId);
@@ -524,7 +543,15 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
     // chunkForTelegram utility every other long-message send path in this codebase already uses
     // (command-router.ts, thinking-indicator.ts) -- sent as real sequential messages, never
     // summarized or shortened.
-    if (outcome.message) for (const chunk of chunkForTelegram(outcome.message)) await client.sendMessage({ chat_id: chatId, text: chunk });
+    // Real bug fixed (the owner, from a live Telegram screenshot: an autonomous below-threshold
+    // trade arrived saying "Approve to place it, or decline to skip." with NO inline keyboard on
+    // it at all -- nothing to press, so a gated trade could never be approved or declined). This
+    // send path only ever passed `text`, so a tick outcome that genuinely needs a decision from
+    // the owner (confidence-gated trade, sniper-tier-while-stopped) shipped as dead prose. The
+    // outcome now carries the real keyboard (autonomous-tick.ts's TickOutcome.replyMarkup) and it
+    // is attached to the LAST chunk -- the same placement full-registry.ts's trade_execute
+    // wrapper already uses, so the buttons sit under the end of the reasoning, not mid-message.
+    if (outcome.message) await sendTickOutcome(client, chatId, outcome);
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
     recordCycleOutcome(deps.ownerUserId, `cycle threw: ${err instanceof Error ? err.message : String(err)}`);

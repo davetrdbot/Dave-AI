@@ -20,7 +20,9 @@ assert.ok(prompt.includes("Long only when the content genuinely needs it"), "the
 console.log("    confirmed: short-by-default instruction is genuinely loaded");
 
 console.log("\n[2] The real paragraph-break-when-long instruction is still present (not clobbered by the new instruction)...\n");
-assert.ok(prompt.includes("never one dense block"), "the real paragraph-break instruction must still be present");
+// Case-insensitive since the prompt rewrite (step128): the instruction now opens a sentence
+// ("Never one dense block."), so a case-sensitive match would fail on wording, not on the rule.
+assert.ok(/never one dense block/i.test(prompt), "the real paragraph-break instruction must still be present");
 console.log("    confirmed: paragraph-break instruction still present alongside the new short-by-default one");
 
 console.log("\n=== ALL ASSERTIONS PASSED ===");

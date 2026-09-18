@@ -63,7 +63,10 @@ import {
   getPendingConfidenceEntry,
   takePendingTradeApproval,
   TradeApprovalNotFoundError,
-  tradeExecute,
+  tradeExecuteWithMarginRetry,
+  InsufficientMarginError,
+  ABSOLUTE_MIN_LOTS,
+  assessRiskRewardForUser,
   huntForSetup,
   getSelfPauseEnabled,
   setSelfPauseEnabled,
@@ -1298,7 +1301,7 @@ async function handleReset(deps: CommandRouterDeps, chatId: number): Promise<voi
     text:
       "<b>⚠️ Full reset</b>\nThis will genuinely wipe:\n" +
       "• Conversation history (both this chat and my own autonomous-cycle thread)\n" +
-      "• Memory (MEMORY.md, USER.md, ADAPTABILITY.md)\n" +
+      "• Memory (what I know about you, your preferences, and my own notes)\n" +
       "• Every past-conversation record (the L0/L1/L2 recall tiers -- raw turns, extracted facts, scenario summaries)\n\n" +
       "Your settings (risk mode, pair group, trading mode, confidence threshold, trailing config, voice/notification prefs), your trading behavior (built in, not something you upload), and your stored provider/E2B API keys and EA pairing token are NOT touched -- this is a memory wipe, not a settings wipe.\n\n" +
       "This cannot be undone. Continue?",
@@ -1656,6 +1659,19 @@ function nextMode(mode: RiskMode): RiskMode {
   return mode === "off" ? "auto" : "off";
 }
 
+/** A real live quote for a market order that carries no entry price of its own, pulled from the
+ *  connected EA through the same analysis source every other path here uses. Returns undefined
+ *  (never a guess) when the EA can't answer, so a caller that needs a real entry price can
+ *  honestly skip its check rather than assess risk against an invented number. */
+async function liveReferencePrice(userId: string, symbol: string): Promise<number | undefined> {
+  try {
+    const quote = await createEaAnalysisSource(userId).get<{ bid?: number; ask?: number; close?: number }>("price", symbol);
+    return quote?.ask ?? quote?.bid ?? quote?.close;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Real callback_query dispatch -- every inline button this bot sends resolves here. Always answers the callback (Telegram shows a loading spinner on the button until it's acknowledged). */
 export async function dispatchCallback(deps: CommandRouterDeps, callback: TelegramCallbackQuery): Promise<void> {
   const chatId = callback.message?.chat.id;
@@ -1944,15 +1960,55 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       const approve = data.startsWith("tradeapprove:");
       const pendingId = data.slice(approve ? "tradeapprove:".length : "tradedecline:".length);
       try {
+        // Taken (removed) BEFORE any execution, so this is genuinely idempotent: a second press
+        // of the same button finds nothing pending and answers "Already handled" rather than
+        // sending a second real order to the broker.
         const entry = takePendingTradeApproval(deps.userId, pendingId);
         if (approve) {
           if (!deps.executor) {
             ackText = "No trade executor configured";
             if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: ackText });
           } else {
-            const { ticket } = await tradeExecute(deps.executor, entry.order);
-            ackText = "Approved";
-            if (chatId) await deps.client.sendMessage({ chat_id: chatId, text: buildTradePlacedMessage(entry.order, ticket, entry.confidence) });
+            // Real gap fixed alongside the missing-buttons bug: an approved trade went out via
+            // bare tradeExecute, so it skipped BOTH protections the autonomous path applies to
+            // every trade it places itself -- the risk:reward guard (autonomous-tick.ts runs the
+            // confidence gate BEFORE that guard, so a queued trade had never been checked at all)
+            // and the margin-aware lot ladder (a broker "not enough money" rejection just threw,
+            // and the owner saw a raw error instead of a placed trade).
+            const entryPrice = entry.order.price ?? (await liveReferencePrice(deps.userId, entry.order.symbol));
+            const rr = entryPrice === undefined ? { ok: true as const, reason: undefined } : assessRiskRewardForUser(deps.userId, entry.order, entryPrice);
+            if (!rr.ok) {
+              ackText = "Refused -- bad risk structure";
+              if (chatId) {
+                await deps.client.sendMessage({
+                  chat_id: chatId,
+                  text: `⚠️ Not placing ${entry.order.symbol} ${entry.order.type.toUpperCase()} -- ${rr.reason}. I won't send a trade whose stop costs more than its target pays, even an approved one. Change the floor with /settings if you really want this shape.`,
+                });
+              }
+            } else {
+              try {
+                const placed = await tradeExecuteWithMarginRetry(deps.executor, entry.order);
+                ackText = "Approved";
+                if (chatId) {
+                  const reducedNote = placed.reducedForMargin
+                    ? `\n\n📉 Size reduced to ${placed.placedLots} lots (I wanted ${placed.requestedLots}) -- that's the largest your free margin allowed.`
+                    : "";
+                  await deps.client.sendMessage({
+                    chat_id: chatId,
+                    text: buildTradePlacedMessage({ ...entry.order, lots: placed.placedLots }, placed.ticket, entry.confidence) + reducedNote,
+                  });
+                }
+              } catch (err) {
+                if (!(err instanceof InsufficientMarginError)) throw err;
+                ackText = "Account can't afford it";
+                if (chatId) {
+                  await deps.client.sendMessage({
+                    chat_id: chatId,
+                    text: `⚠️ Couldn't place ${entry.order.symbol} -- your account can't afford it at any size. I tried down to ${ABSOLUTE_MIN_LOTS} lots and the broker still refused for margin.`,
+                  });
+                }
+              }
+            }
           }
         } else {
           ackText = "Declined";

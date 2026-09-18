@@ -14,7 +14,7 @@ import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS,
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS, MEMORY_EXTRA_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
-import { PUSH_TOOLS, TELEGRAM_TOOLS, type TelegramClient, chunkForTelegram } from "@dave/telegram";
+import { PUSH_TOOLS, TELEGRAM_TOOLS, type TelegramClient, chunkForTelegram, tradeApprovalKeyboard } from "@dave/telegram";
 import { NOTIFICATION_TOOLS } from "@dave/notifications";
 import { SAFETY_TOOLS } from "@dave/safety";
 import { SELF_IMPROVE_TOOLS } from "@dave/self-improve";
@@ -154,20 +154,12 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
                   await deps.telegram!.client.sendMessage({
                     chat_id: deps.telegram!.chatId,
                     text: approvalChunks[i],
-                    ...(i === approvalChunks.length - 1
-                      ? {
-                          reply_markup: {
-                            inline_keyboard: [[
-                              { text: "✅ Approve", callback_data: `tradeapprove:${result.pendingId as string}`, style: "success" },
-                              { text: "❌ Decline", callback_data: `tradedecline:${result.pendingId as string}`, style: "danger" },
-                              // Item 2/6 real gap fixed (user's reference pattern: "an Approve / Decline /
-                              // Find Another inline button prompt"): a real 3rd option, wired to re-hunt
-                              // excluding this declined symbol, not just a plain decline.
-                              { text: "🔍 Find Another", callback_data: `tradefindanother:${result.pendingId as string}` },
-                            ]],
-                          },
-                        }
-                      : {}),
+                    // Item 2/6 real gap: an Approve / Decline / Find Another inline button
+                    // prompt. Built by the shared tradeApprovalKeyboard (dave-telegram/buttons.ts)
+                    // rather than inline here, so this path and the autonomous tick's path can
+                    // never drift apart again -- the tick having no keyboard at all was a real
+                    // production bug the owner hit from a live screenshot.
+                    ...(i === approvalChunks.length - 1 ? { reply_markup: tradeApprovalKeyboard(result.pendingId as string) } : {}),
                   });
                 }
               })().catch(() => undefined);

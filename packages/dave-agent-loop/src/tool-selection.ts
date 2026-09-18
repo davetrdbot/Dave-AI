@@ -110,7 +110,19 @@ export const CORE_TOOL_NAMES: string[] = [
   "get_interrupt_state",
 
   "list_skills",
+
+  // Real bug fixed (the trader: "teach it tool so it knows when to save to memory... and when to
+  // use and save knowledge"). knowledge_view was the ONLY knowledge tool that was ever core -- and
+  // it takes an id. Nothing in a turn ever told the model an id existed, and the lister and both
+  // writers sat behind a search_tools discovery step the model had no reason to take. So the
+  // knowledge store was, in practice, write-never/read-never: every instruction to "save what you
+  // learned" silently no-opped. Saving genuinely requires BOTH knowledge_draft and knowledge_save
+  // (the draft is not committed by itself), so promoting one without the other would have left the
+  // same dead end one call further along.
   "knowledge_view",
+  "knowledge_list",
+  "knowledge_draft",
+  "knowledge_save",
 
   // Item 7 real gap fixed (user: "a worker gets created with a name but never executes its
   // assigned task... no working delete-worker tool despite this being reported as done

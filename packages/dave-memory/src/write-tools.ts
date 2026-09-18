@@ -26,21 +26,21 @@ export const MEMORY_WRITE_TOOLS: MemoryWriteToolDefinition[] = [
   {
     name: "remember_user_fact",
     description:
-      "Save a real, lasting fact about the user to USER.md (e.g. their trading style, account details, stated preferences). Applied immediately unless write-approval mode is on, in which case it's queued pending approval.",
+      "Save a real, lasting fact about the user to memory (e.g. their trading style, account details, stated preferences, a standing instruction). Use this for things about the PERSON -- durable lessons about markets or your own trading belong in knowledge instead (knowledge_draft + knowledge_save), which is unbounded, whereas memory is deliberately small and budgeted. Applied immediately unless write-approval mode is on, in which case it's queued pending approval.",
     parameters: { type: "object", properties: { fact: { type: "string" } }, required: ["fact"] },
     execute: async (args, ctx) => gatedWrite(ctx.actorId, `remember_user_fact: ${args.fact as string}`, () => appendUserFact(ctx.actorId, args.fact as string)),
   },
   {
     name: "remember_note",
     description:
-      "Save a real, lasting general observation to MEMORY.md (not specific to the user's identity -- a pattern noticed, a decision made, something worth recalling later). Applied immediately unless write-approval mode is on.",
+      "Save a real, lasting general observation to memory (not specific to the user's identity -- a decision made, something worth recalling later). Memory is small and budgeted, and is loaded into every turn automatically; a durable trading lesson you'd want to apply to future setups belongs in knowledge instead. Applied immediately unless write-approval mode is on.",
     parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"] },
     execute: async (args, ctx) => gatedWrite(ctx.actorId, `remember_note: ${args.note as string}`, () => appendMemoryNote(ctx.actorId, args.note as string)),
   },
   {
     name: "remember_adaptability_note",
     description:
-      "Save a real communication-style/tone preference to ADAPTABILITY.md (e.g. 'prefers short answers', 'don't ask before X'). Applied immediately unless write-approval mode is on.",
+      "Save a real communication-style/tone preference to memory (e.g. 'prefers short answers', 'don't ask before X', 'don't message before 8am'). Applied immediately unless write-approval mode is on.",
     parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"] },
     execute: async (args, ctx) => gatedWrite(ctx.actorId, `remember_adaptability_note: ${args.note as string}`, () => appendAdaptability(ctx.actorId, args.note as string)),
   },

@@ -3,6 +3,7 @@ import { getConfidenceSettings, getMinRiskReward } from "@dave/trading";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill } from "@dave/skills";
 import { loadFrozenSnapshot } from "@dave/memory";
+import { knowledgeList } from "@dave/knowledge";
 import type { ContentBlock } from "@dave/brain";
 
 /**
@@ -143,6 +144,29 @@ export function buildLiveSettingsBlock(userId: string): string {
     );
   }
 
+  // Real bug fixed, same class as the memory one above and found the same way: Dave's knowledge
+  // store was UNREACHABLE in practice. All six knowledge tools are genuinely registered, but
+  // knowledge is never injected into any prompt, and of the six only knowledge_view was in the
+  // per-turn core tool list -- a reader that takes an id, with nothing in context ever telling the
+  // model an id exists. So "check what you've learned" could only work if the model
+  // spontaneously called search_tools first to discover a lister. It doesn't, and the store stays
+  // empty forever.
+  //
+  // The index is deliberately just id/title/when-to-use -- that is all knowledgeList returns, and
+  // it keeps the per-turn cost flat no matter how long an entry's body is. The body is fetched on
+  // demand with knowledge_view, which is what that tool is for.
+  const knowledge = safeLoadKnowledgeIndex(userId);
+  if (knowledge) {
+    lines.push(
+      "",
+      "<knowledge_index>",
+      knowledge,
+      "</knowledge_index>",
+      "",
+      "This is what you have genuinely learned and written down for yourself. Read the 'use when' of each and call knowledge_view on any that applies to what you're doing right now -- that is what they were saved for. When you learn something durable from a real trade, write a new one (knowledge_draft then knowledge_save -- both calls, or nothing is committed).",
+    );
+  }
+
   return lines.filter((l) => l !== "").join("\n");
 }
 
@@ -155,14 +179,35 @@ export function buildLiveSettingsBlock(userId: string): string {
 function safeLoadMemory(userId: string): string | undefined {
   try {
     const snapshot = loadFrozenSnapshot(userId);
+    // Deliberately NOT labelled with the real filenames. Dave was caught live naming an internal
+    // prompt file to the trader ("he said trading.md to me -- is it supposed to make mention about
+    // that to me"), and this block was one of the real feeders for that: the model saw
+    // "MEMORY.md:" / "USER.md:" every single turn and reasonably echoed those names back as if
+    // they were user-facing. Its own rules now forbid naming internals, so the context it reads
+    // must not put them in front of it either.
     const sections = [
-      snapshot.memory?.trim() ? `MEMORY.md:\n${snapshot.memory.trim()}` : "",
-      snapshot.user?.trim() ? `USER.md:\n${snapshot.user.trim()}` : "",
-      snapshot.adaptability?.trim() ? `ADAPTABILITY.md:\n${snapshot.adaptability.trim()}` : "",
+      snapshot.memory?.trim() ? `Things you've noted before:\n${snapshot.memory.trim()}` : "",
+      snapshot.user?.trim() ? `About the person you work for:\n${snapshot.user.trim()}` : "",
+      snapshot.adaptability?.trim() ? `How they want you to talk to them:\n${snapshot.adaptability.trim()}` : "",
     ].filter(Boolean);
     return sections.length > 0 ? sections.join("\n\n") : undefined;
   } catch (err) {
     console.error(`[live-context] could not load memory for ${userId} -- continuing without it:`, err);
+    return undefined;
+  }
+}
+
+/**
+ * Same fail-safe contract as safeLoadMemory: a knowledge store that is missing, empty or corrupt
+ * must cost the turn nothing at all.
+ */
+function safeLoadKnowledgeIndex(userId: string): string | undefined {
+  try {
+    const entries = knowledgeList(userId);
+    if (entries.length === 0) return undefined;
+    return entries.map((e) => `- [${e.id}] ${e.title} -- use when: ${e.useWhen}`).join("\n");
+  } catch (err) {
+    console.error(`[live-context] could not load knowledge for ${userId} -- continuing without it:`, err);
     return undefined;
   }
 }

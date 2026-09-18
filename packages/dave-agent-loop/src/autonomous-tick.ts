@@ -52,11 +52,63 @@ import { isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { setSelfPause, getSelfPause, MAX_SELF_PAUSE_MINUTES } from "./self-pause.js";
 import { recordAnalysisFetch } from "./analysis-debug-store.js";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperTierWhileStoppedMessage, summarizeReason, buildProgressBar } from "./trade-notifications.js";
+import { tradeApprovalKeyboard, type InlineKeyboardMarkup } from "@dave/telegram";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { consultJournal } from "./journal-agent.js";
 import { consultFlo } from "./flo-agent.js";
 import { computeMtfAlignment, computeMtfConfluenceScore, computeBasketCurrencyRisk, computeSpreadNewsRisk } from "./mtf-confluence.js";
 import { runSequentialThinking } from "./sequential-thinking.js";
+import { buildClockLine } from "./live-context.js";
+import { loadFrozenSnapshot } from "@dave/memory";
+import { knowledgeList, knowledgeView } from "@dave/knowledge";
+
+/** Bounded so a growing knowledge store can never crowd out the analysis suite in the tick's
+ *  prompt. Entries past the budget are listed by title only -- truncated, never silently dropped. */
+const TICK_KNOWLEDGE_CHAR_BUDGET = 8_000;
+
+/** Neither store may ever be able to fail a trading cycle. */
+function safeTickMemory(userId: string): string | undefined {
+  try {
+    const snapshot = loadFrozenSnapshot(userId);
+    const sections = [snapshot.memory?.trim(), snapshot.user?.trim(), snapshot.adaptability?.trim()].filter(
+      (s): s is string => Boolean(s)
+    );
+    return sections.length > 0 ? sections.join("\n") : undefined;
+  } catch (err) {
+    console.error(`[tick] could not load memory for ${userId} -- continuing without it:`, err);
+    return undefined;
+  }
+}
+
+/**
+ * Unlike the chat path, this includes each entry's real CONTENT, not just an index. The tick's
+ * model call forces toolChoice to the decision tool, so it can never follow an index up with a
+ * knowledge_view -- a title-only list here would be strictly worse than nothing, telling the model
+ * a lesson exists while withholding it.
+ */
+function safeTickKnowledgeIndex(userId: string): string | undefined {
+  try {
+    const entries = knowledgeList(userId);
+    if (entries.length === 0) return undefined;
+    const parts: string[] = [];
+    let used = 0;
+    for (const entry of entries) {
+      const full = knowledgeView(userId, entry.id);
+      const body = full?.content?.trim() ?? "";
+      const block = `- ${entry.title} (use when: ${entry.useWhen})\n  ${body}`;
+      if (used + block.length > TICK_KNOWLEDGE_CHAR_BUDGET) {
+        parts.push(`- ${entry.title} (use when: ${entry.useWhen}) [not shown -- knowledge budget reached]`);
+        continue;
+      }
+      used += block.length;
+      parts.push(block);
+    }
+    return parts.join("\n");
+  } catch (err) {
+    console.error(`[tick] could not load knowledge for ${userId} -- continuing without it:`, err);
+    return undefined;
+  }
+}
 
 /**
  * Real replacement for the autonomous cycle's open-ended agentic tool-calling loop, modeled
@@ -185,6 +237,13 @@ export interface TickOutcome {
   /** Set when a real trade-affecting event happened this tick -- the caller uses this to decide whether to message the user. */
   notable: boolean;
   message?: string;
+  /** Real bug fixed (the owner, live Telegram screenshot): a tick that queues a trade for the
+   *  owner's approval used to return ONLY the "Approve to place it, or decline to skip." text,
+   *  and telegram-bot-server.ts sent it as a plain message -- so the prompt arrived with no
+   *  buttons on it and there was nothing the owner could actually press. The real keyboard now
+   *  travels with the outcome and is attached by that same send path (on the LAST chunk, exactly
+   *  like full-registry.ts's trade_execute wrapper does for the interactive path). */
+  replyMarkup?: InlineKeyboardMarkup;
   huntModeActivated?: boolean;
 }
 
@@ -686,7 +745,27 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     }
   }
 
+  // Real gaps fixed, all three the autonomous half of bugs already fixed on the chat path. The
+  // tick builds its own context from scratch and calls the model with toolChoice FORCED to the
+  // single decision tool, so it cannot call a tool to fetch any of this -- if it isn't in these
+  // lines, it does not exist for an autonomous trade decision:
+  //  - the clock (the trader: "the bot doesn't know time"). Chat turns get one; every autonomous
+  //    decision was being made with no idea what time or session it was.
+  //  - what Dave has learned and written down. Knowledge was unreachable here by construction,
+  //    so a lesson saved after a bad trade could never affect the next autonomous one -- which is
+  //    the entire point of saving it.
+  //  - standing instructions in memory ("don't trade X", "never during the open"), which the chat
+  //    path has honoured since memory was wired in but a cycle never saw.
+  const clockLine = buildClockLine();
+  const tickMemory = safeTickMemory(userId);
+  const tickKnowledge = safeTickKnowledgeIndex(userId);
+
   const contextLines = [
+    clockLine,
+    tickMemory ? `WHAT YOU REMEMBER (already known -- treat as standing instructions):\n${tickMemory}` : null,
+    tickKnowledge
+      ? `WHAT YOU HAVE LEARNED AND SAVED (your own past conclusions -- apply any whose "use when" fits this symbol right now):\n${tickKnowledge}`
+      : null,
     `SYMBOL: ${symbol}`,
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
     `ACCOUNT: balance=${account?.balance ?? "unknown"} equity=${account?.equity ?? "unknown"} freeMargin=${account?.freeMargin ?? "unknown"} leverage=${account?.leverage ?? "unknown"}`,
@@ -1255,6 +1334,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
           SNIPER_TIER_CONFIDENCE,
           [marketConversionNote, `${summarizeReason(reason)} (ref #${pendingApproval.id})`].filter(Boolean).join(" -- ")
         ),
+        replyMarkup: tradeApprovalKeyboard(pendingApproval.id),
       };
     }
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "trading stopped mid-cycle, decision discarded" });
@@ -1271,6 +1351,10 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       symbol,
       notable: true,
       message: buildTradeApprovalRequestMessage(order, confidence, gate.threshold, [marketConversionNote, summarizeReason(reason)].filter(Boolean).join(" -- ")),
+      // The real Approve/Decline/Find Another buttons for the exact pending entry
+      // evaluateConfidenceGate just queued. `gate.pendingId` used to be read and then thrown
+      // away here, which is precisely why the owner's live prompt had nothing to press.
+      replyMarkup: tradeApprovalKeyboard(gate.pendingId),
     };
   }
 
