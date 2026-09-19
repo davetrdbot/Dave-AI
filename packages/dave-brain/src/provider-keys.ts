@@ -2,6 +2,7 @@ import type { DaveDatabase } from "@dave/db";
 import type { ProviderKeyConfig } from "./provider-catalog.js";
 import { PROVIDER_CATALOG } from "./provider-catalog.js";
 import { buildProvider } from "./provider-factory.js";
+import { fetchAvailableModels } from "./model-fetch.js";
 import { ProviderError, type CompletionRequest, type CompletionResult, type ProviderName } from "./providers.js";
 
 /**
@@ -268,6 +269,115 @@ export function isModelScopedRateLimit(reason: string): boolean {
   return isRateLimitedError(reason) && /\bmodel\b/i.test(reason);
 }
 
+/**
+ * Real bug fixed, reproduced live against the trader's own real NVIDIA key (2026-09-19). The key
+ * was genuinely VALID -- GET https://integrate.api.nvidia.com/v1/models returned a real HTTP 200
+ * with 82 models on it -- but every chat completion failed, and what the trader saw was "the api
+ * is invalid". The real response:
+ *
+ *   HTTP 410 {"title":"Gone","detail":"The model 'deepseek-ai/deepseek-v4-pro-0813' has reached
+ *             its end of life on 2026-09-14T08:00:00Z and is no longer available."}
+ *
+ * That is a dead MODEL, not a dead key, and the two failures need opposite handling. The failover
+ * loop marked the key `healthy: 0` and moved on, so:
+ *   1. a perfectly good key was recorded as broken, and reported to the trader as invalid;
+ *   2. every remaining key for that provider was then burned on the identical error, because they
+ *      all send the same catalog default model -- N pointless round trips per message, which is
+ *      also a real and significant chunk of the "why is the bot so slow" complaint;
+ *   3. it never self-corrected, because the retry path that exists (isModelScopedRateLimit above)
+ *      retries with the CATALOG DEFAULT -- and here the catalog default was the dead model.
+ *
+ * Matches the real shapes providers actually send for this: NVIDIA's 410 "end of life", OpenAI's
+ * "model_not_found", Groq's "does not exist or you do not have access to it", Cerebras/Mistral's
+ * 404s, and the "decommissioned"/"no longer available"/"retired" wording several vendors use.
+ * Deliberately requires a model-ish signal, so a plain 404 from a wrong base URL or a bare
+ * "not found" does NOT match -- that genuinely is a config problem worth surfacing differently.
+ */
+export function isModelUnavailableError(reason: string): boolean {
+  if (/\b(401|403)\b|invalid api key|incorrect api key|authentication/i.test(reason)) return false;
+
+  // NVIDIA NIM's own shape for "this model is in the catalog but your account can't serve it",
+  // confirmed live 2026-09-19 against the trader's real key:
+  //   HTTP 404 {"title":"Not Found","detail":"Function '23d4f03a-...': Not found for account
+  //             'l1iKH_cM8Xh0...'"}
+  // Note it never says "model" -- it names the internal function id instead -- so the generic
+  // rule below genuinely does not catch it. This matters a lot in practice: most of the 82 ids
+  // NVIDIA's /v1/models returns are NOT actually servable on a given account, so without this an
+  // ordinary model pick marks a perfectly good key as invalid.
+  if (/not found for account/i.test(reason)) return true;
+
+  const modelish = /\bmodel\b|\bmodels\b/i.test(reason);
+  const goneish =
+    /end of life|no longer available|\bgone\b|decommissioned|deprecated|retired|model_not_found|does not exist|not found|unknown model|invalid model|unsupported model/i.test(
+      reason
+    );
+  return modelish && goneish;
+}
+
+/**
+ * Thrown instead of AllProviderKeysFailedError when the real cause is the configured model rather
+ * than the key, so the caller can say something true and actionable ("that model is gone, here are
+ * the real ones") instead of the flatly wrong "your key is invalid" the trader was being shown.
+ */
+export class ModelUnavailableError extends Error {
+  constructor(
+    public readonly provider: ProviderName,
+    public readonly model: string,
+    public readonly reason: string,
+    public readonly availableModels: string[] = []
+  ) {
+    const suggestion =
+      availableModels.length > 0
+        ? ` Real models currently available on this provider include: ${availableModels.slice(0, 8).join(", ")}.`
+        : "";
+    super(
+      `The model "${model}" is no longer available on ${provider} -- your API key is fine, the model is not. ${reason}${suggestion}`
+    );
+    this.name = "ModelUnavailableError";
+  }
+}
+
+/** Model ids that are real but are not chat models -- never auto-switch a chat request onto one. */
+const NON_CHAT_MODEL = /embed|rerank|whisper|tts|speech|audio|image|vision|diffusion|guard|moderat|ocr|bge|clip/i;
+
+/**
+ * Picks the closest live replacement for a model that has gone away, by longest shared prefix on
+ * the id. Real ids carry their family in the string ("deepseek-ai/deepseek-v4-pro-0813" ->
+ * "deepseek-ai/deepseek-v4-flash-0731"; "Claude-Sonnet-4.6" -> "claude-sonnet-4.6"), so this
+ * reliably lands in the same family rather than jumping to an unrelated vendor's model.
+ *
+ * Returns undefined rather than guessing when nothing plausibly matches -- an arbitrary model from
+ * a stranger's catalog is worse than an honest error, because it would silently change which model
+ * is trading.
+ */
+export function pickReplacementModel(deadModel: string, available: string[]): string | undefined {
+  const candidates = available.filter((m) => !NON_CHAT_MODEL.test(m));
+  if (candidates.length === 0) return undefined;
+  const dead = deadModel.toLowerCase();
+
+  // A pure case difference is the single most common form of this (Poe documents
+  // "Claude-Sonnet-4.6" while its real catalog lists "claude-sonnet-4.6").
+  const caseMatch = candidates.find((m) => m.toLowerCase() === dead);
+  if (caseMatch) return caseMatch;
+
+  const sharedPrefix = (a: string, b: string): number => {
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    return i;
+  };
+  let best: string | undefined;
+  let bestScore = 0;
+  for (const candidate of candidates) {
+    const score = sharedPrefix(dead, candidate.toLowerCase());
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+  // Require a real family match, not one coincidental letter.
+  return bestScore >= 4 ? best : undefined;
+}
+
 export interface KeyFailoverNotifier {
   /** Fired the moment a key fails and the router is about to retry the SAME in-flight request with the next key. */
   onKeySwitch?: (info: { provider: ProviderName; fromIndex: number; toIndex: number; failedLabel: string; nextLabel: string; reason: string; quotaExhausted: boolean }) => void | Promise<void>;
@@ -369,6 +479,62 @@ export async function generateWithKeyFailover(
           // The alternate model didn't help either -- fall through to the normal
           // key-unhealthy/switch handling below with the ORIGINAL error.
         }
+      }
+
+      // Real bug fixed (see isModelUnavailableError above -- reproduced live on the trader's own
+      // NVIDIA key, which was valid while every completion failed with a 410 "end of life").
+      // A dead model is not a dead key, so this must never mark the key unhealthy, and must never
+      // fall through to the other keys: they all send the same model and would all fail
+      // identically, turning one bad config into N wasted round trips per message.
+      //
+      // Instead it self-heals once, on the SAME key: ask the provider what models it really has
+      // right now, pick one, and retry the in-flight request with it. That is the only way this
+      // recovers without the trader hand-editing a model id -- the existing model-scoped-rate-limit
+      // retry can't help here, because it retries with the catalog default, and the catalog default
+      // is exactly what went end-of-life.
+      if (isModelUnavailableError(reason)) {
+        const deadModel = key.config.model ?? PROVIDER_CATALOG[provider]?.defaultModel ?? "(default)";
+        let available: string[] = [];
+        try {
+          const listed = await fetchAvailableModels(provider, key.config, Math.max(1, Math.min(10_000, deadline - Date.now())));
+          available = listed.models;
+        } catch {
+          // No live list (manual-entry provider, or the models endpoint failed). Nothing to retry
+          // with -- fall through to the honest error below rather than guessing a model id.
+        }
+        const replacement = pickReplacementModel(deadModel, available);
+        if (replacement) {
+          try {
+            const retried = await buildProvider(provider, { ...key.config, model: replacement }).generate(
+              req,
+              Math.max(1, deadline - Date.now()),
+              signal
+            );
+            // It worked. Persist the live model so the next message doesn't repeat this discovery,
+            // and keep the key marked healthy -- it never stopped being healthy.
+            db.update(TABLE, userId, key.id, {
+              // The model lives inside the serialized config blob, not its own column -- writing
+              // it as a bare field silently fails with "no such column: model".
+              config_json: JSON.stringify({ ...key.config, model: replacement }),
+              healthy: 1,
+              last_checked_at: Date.now(),
+              last_error: `auto-switched model: "${deadModel}" is gone, now using "${replacement}"`,
+              rate_limited_until: null,
+            });
+            return retried;
+          } catch (retryErr) {
+            // The replacement didn't work either -- report the original, honest cause below.
+            // Logged rather than silently swallowed: when auto-recovery fails, the reason why is
+            // the only clue anyone has for why a provider still looks broken.
+            console.error(
+              `[provider-keys] ${provider}: "${deadModel}" is gone; retry on "${replacement}" also failed:`,
+              retryErr instanceof Error ? retryErr.message : retryErr
+            );
+          }
+        }
+        // The key is fine; say so plainly rather than recording it as broken.
+        db.update(TABLE, userId, key.id, { healthy: 1, last_checked_at: Date.now(), last_error: reason, rate_limited_until: null });
+        throw new ModelUnavailableError(provider, deadModel, reason, available);
       }
 
       // Real cooldown recording: a genuine (non-model-scoped) rate limit gets a real, bounded

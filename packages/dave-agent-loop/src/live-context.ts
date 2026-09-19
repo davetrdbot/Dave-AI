@@ -212,9 +212,75 @@ function safeLoadKnowledgeIndex(userId: string): string | undefined {
   }
 }
 
+/**
+ * Real latency bug fixed (the trader: "responses are slow"), measured, not guessed. The live
+ * context block is deliberately rebuilt fresh on EVERY turn and prepended to the user's message
+ * (see this module's header) -- but that message is then PERSISTED into conversation history
+ * (telegram-bot-server.ts -> saveConversationHistory) and re-sent, verbatim, on every single
+ * subsequent turn until it falls out of the 60-message window. The block is small when nothing is
+ * configured (measured: 663 chars), but it embeds the FULL body of the active strategy skill when
+ * one is set -- measured at 30,172 chars for a real ~29KB skill. With ~30 user turns retained,
+ * that is ~884 KB / ~226k tokens of STALE, duplicated context riding on every request: a real
+ * 29KB skill is sent thirty times over, twenty-nine of those copies being old snapshots of
+ * settings, clock and memory that are not just useless but actively misleading (a "NOW:" line
+ * from two hours ago sitting in history as if it were current).
+ *
+ * These sentinels make the block a machine-strippable region so exactly ONE copy -- the fresh one
+ * on the current turn -- ever reaches the model. Stripping happens on the way INTO storage (and
+ * on the way back out, so a history already bloated on the live bot heals itself without the
+ * owner having to /reset).
+ */
+export const LIVE_CONTEXT_OPEN = "<live_context>";
+export const LIVE_CONTEXT_CLOSE = "</live_context>";
+
 /** Prepends the live settings block to a real user turn -- text or content-block (image) shape. */
 export function withLiveContext(userId: string, content: string | ContentBlock[]): string | ContentBlock[] {
-  const block = buildLiveSettingsBlock(userId);
+  const block = `${LIVE_CONTEXT_OPEN}\n${buildLiveSettingsBlock(userId)}\n${LIVE_CONTEXT_CLOSE}`;
   if (typeof content === "string") return `${block}\n\n${content}`;
   return [{ type: "text", text: block }, ...content];
+}
+
+/**
+ * Real, honest legacy handling: histories already written to disk by the deployed bot carry the
+ * block WITHOUT the sentinels above, so a sentinel-only strip would leave every one of those
+ * copies in place until they aged out one turn at a time. Every legacy block starts with
+ * `<current_settings>` and ends with one of these exact, checked-in terminal fragments (see
+ * buildLiveSettingsBlock -- the last section present wins, hence "the last one that matches").
+ * Anchored to a `<current_settings>` prefix so this can never chew into genuine user text that
+ * merely happens to quote one of these sentences.
+ */
+const LEGACY_BLOCK_TERMINATORS = [
+  "never claim one isn't set when it's listed here.",
+  "</active_strategy_skill>",
+  "never claim you don't remember it.",
+  "both calls, or nothing is committed).",
+];
+
+function stripLiveContextText(text: string): string {
+  if (text.startsWith(LIVE_CONTEXT_OPEN)) {
+    const end = text.indexOf(LIVE_CONTEXT_CLOSE);
+    if (end !== -1) return text.slice(end + LIVE_CONTEXT_CLOSE.length).replace(/^\s+/, "");
+  }
+  if (text.startsWith("<current_settings>")) {
+    let cut = -1;
+    for (const marker of LEGACY_BLOCK_TERMINATORS) {
+      const at = text.lastIndexOf(marker);
+      if (at !== -1) cut = Math.max(cut, at + marker.length);
+    }
+    if (cut !== -1) return text.slice(cut).replace(/^\s+/, "");
+  }
+  return text;
+}
+
+/**
+ * Removes the live-context region from a stored user message, leaving the person's real words.
+ * Never throws and never alters content it does not recognize -- a message that was never wrapped
+ * comes back byte-identical.
+ */
+export function stripLiveContext(content: string | ContentBlock[]): string | ContentBlock[] {
+  if (typeof content === "string") return stripLiveContextText(content);
+  if (!Array.isArray(content)) return content;
+  return content
+    .map((b) => (b && b.type === "text" && typeof b.text === "string" ? { ...b, text: stripLiveContextText(b.text) } : b))
+    .filter((b) => !(b && b.type === "text" && b.text === ""));
 }

@@ -84,7 +84,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   // against a real GET /v1/models call: "mistral-small-latest" is on every real tier and genuinely
   // supports function_calling (confirmed via the account's own real capabilities flag).
   mistral: OPENAI_COMPAT("mistral", "Mistral AI", "https://api.mistral.ai/v1", "mistral-small-latest", "OpenAI-compatible, real GET /v1/models confirmed. Default model changed from mistral-large-latest (real 403: not every tier has Large access) to mistral-small-latest (real, function-calling-capable, available on every tier)."),
-  together: OPENAI_COMPAT("together", "Together AI", "https://api.together.ai/v1", "deepseek-ai/DeepSeek-V3.1", "Open marketplace, no fixed flagship -- model is configurable. (Updated to the .ai domain per current official docs -- the older .xyz domain also still resolves.)", null),
+  together: OPENAI_COMPAT("together", "Together AI", "https://api.together.ai/v1", "deepseek-ai/DeepSeek-V3.1", "Open marketplace, no fixed flagship -- model is configurable. (Updated to the .ai domain per current official docs.) GET /v1/models CONFIRMED LIVE 2026-09-19 (real 401 Unauthorized for a bogus key, not a 404) -- auto-fetch enabled."),
   // Real bug fixed: "llama-3.3-70b" doesn't exist in Cerebras's real, current, much smaller model
   // catalog (confirmed live via GET /v1/models: only gpt-oss-120b/qwen-3.8-27b/gemma-4-31b exist
   // today) -- every request against the old default 404'd. "gpt-oss-120b" is real and current.
@@ -99,7 +99,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   // proven-working config -- never the old generic Llama guess -- is the real fix per the user's
   // explicit rule: "when a user provides an NVIDIA key, automatically route it to this exact
   // confirmed-working DeepSeek V4 Pro configuration."
-  "nvidia-nim": OPENAI_COMPAT("nvidia-nim", "Nvidia NIM", "https://integrate.api.nvidia.com/v1", "deepseek-ai/deepseek-v4-pro-0813", "build.nvidia.com, real GET /v1/models confirmed. Default model is the user's own live-verified working config (deepseek-v4-pro), not a generic guess."),
+  "nvidia-nim": OPENAI_COMPAT("nvidia-nim", "Nvidia NIM", "https://integrate.api.nvidia.com/v1", "deepseek-ai/deepseek-v4-flash-0731", "build.nvidia.com, real GET /v1/models confirmed. Default model updated 2026-09-19: the previous default (deepseek-v4-pro-0813) returns a real HTTP 410 -- NVIDIA retired it on 2026-09-14 -- which is exactly what the trader was seeing reported as an invalid API key. deepseek-v4-flash-0731 is confirmed live against the trader's own real key (real 200 completion)."),
   lepton: {
     id: "lepton",
     displayName: "Lepton AI (alias of Nvidia NIM)",
@@ -108,7 +108,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     modelsPath: "/models",
     authStyle: "alias",
     manualModelEntry: false,
-    defaultModel: "deepseek-ai/deepseek-v4-pro-0813",
+    defaultModel: "deepseek-ai/deepseek-v4-flash-0731",
     openAICompatible: true,
     aliasOf: "nvidia-nim",
     notes: "Real: Nvidia acquired Lepton AI and folded it into NVIDIA DGX Cloud Lepton -- not a separate API anymore.",
@@ -136,7 +136,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   perplexity: OPENAI_COMPAT("perplexity", "Perplexity", "https://api.perplexity.ai", "sonar-pro", "No /models endpoint exists -- flagged. chat/completions has a stated sunset path toward an Agent API (checked Sept 2026: still live).", null),
   qwen: OPENAI_COMPAT("qwen", "Alibaba Qwen (DashScope)", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-max", "International endpoint by default -- mainland China uses a different host, key is region-bound."),
   sambanova: OPENAI_COMPAT("sambanova", "SambaNova Cloud", "https://api.sambanova.ai/v1", "Meta-Llama-3.3-70B-Instruct", "OpenAI-compatible, models-list path not independently re-verified -- low confidence, flagged."),
-  novita: OPENAI_COMPAT("novita", "Novita AI", "https://api.novita.ai/v3/openai", "deepseek-ai/DeepSeek-V3.1-Terminus", "Base path verified as /v3/openai; catalog rotates, no fixed flagship -- default updated off the stale V3 id, which the marketplace has moved past."),
+  novita: OPENAI_COMPAT("novita", "Novita AI", "https://api.novita.ai/v3/openai", "deepseek/deepseek-v4.1-flash", "Base path verified as /v3/openai; catalog rotates, no fixed flagship -- default updated off the stale V3 id, which the marketplace has moved past."),
   ai21: OPENAI_COMPAT("ai21", "AI21 Labs", "https://api.ai21.com/studio/v1", "jamba-large-1.7", "Confirmed: chat/completions uses an OpenAI-style message array but AI21 is NOT fully OpenAI-compatible beyond that -- flagged partial. Default updated to the real current versioned model id (bare \"jamba-large\" no longer resolves).", null),
   zai: {
     ...OPENAI_COMPAT(
@@ -144,10 +144,10 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
       "Z.AI (GLM)",
       "https://api.z.ai/api/paas/v4",
       "glm-5.3",
-      "Real, currently-operating hosted API for Zhipu AI's GLM models -- confirmed OpenAI-compatible chat/completions shape at /api/paas/v4 (an alternate /api/openai/v1 base also exists; this is the one Z.AI's own docs lead with). Bearer auth confirmed. No independently-confirmed live /v1/models list endpoint -- manual model entry, same posture as OpenRouter/OrcaRouter/HuggingFace rather than guessing one.",
-      null
+      "Real, currently-operating hosted API for Zhipu AI's GLM models -- confirmed OpenAI-compatible chat/completions shape at /api/paas/v4. Bearer auth confirmed. Models list CONFIRMED LIVE 2026-09-19: GET /api/paas/v4/models returns a real 401 {\"code\":\"401\",\"message\":\"token expired or incorrect\"} for a bogus key -- a real, key-validating route, not a 404 -- so auto-fetch works and manual entry is no longer needed.",
+      "/models"
     ),
-    manualModelEntry: true,
+    manualModelEntry: false,
   },
   azure: {
     id: "azure",
@@ -188,9 +188,9 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     notes: "Genuinely async: POST /predictions returns immediately, must poll GET /predictions/{id} until succeeded/failed. Confirmed real, not a simplification to skip.",
   },
   xai: OPENAI_COMPAT("xai", "xAI (Grok)", "https://api.x.ai/v1", "grok-4.6", "OpenAI-compatible, real GET /v1/models confirmed."),
-  openrouter: { ...OPENAI_COMPAT("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "openrouter/auto", "Real GET /api/v1/models exists, but manual entry is FORCED per explicit instruction, not a technical limitation."), manualModelEntry: true },
-  huggingface: { ...OPENAI_COMPAT("huggingface", "HuggingFace", "https://router.huggingface.co/v1", "meta-llama/Llama-3.3-70B-Instruct", "Router-based OpenAI-compat endpoint (api-inference.huggingface.co is legacy). No clean runnable-models list -- manual entry required both by instruction and by lack of a real endpoint.", null), manualModelEntry: true },
-  orcarouter: { ...OPENAI_COMPAT("orcarouter", "OrcaRouter", "https://api.orcarouter.ai/v1", "orcarouter/auto", "Real, currently-operating (launched May 2026). A models list appears to exist per third-party docs, but manual entry is FORCED per explicit instruction."), manualModelEntry: true },
+  openrouter: { ...OPENAI_COMPAT("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "openrouter/auto", "Real GET /api/v1/models CONFIRMED LIVE 2026-09-19 -- real HTTP 200 with 447 models. MANUAL ENTRY IS DELIBERATE, at the trader's explicit instruction (re-confirmed 2026-09-19): the models endpoint genuinely works, but these routers expose hundreds of models and the trader wants to type the exact id rather than pick from a list."), manualModelEntry: true },
+  huggingface: { ...OPENAI_COMPAT("huggingface", "HuggingFace", "https://router.huggingface.co/v1", "meta-llama/Llama-3.3-70B-Instruct", "Router-based OpenAI-compat endpoint (api-inference.huggingface.co is legacy). GET /v1/models CONFIRMED LIVE 2026-09-19 -- real HTTP 200 with 139 runnable models, and the configured default is genuinely in that live list. The old \"no clean runnable-models list\" note was wrong -- the endpoint does work. MANUAL ENTRY IS DELIBERATE, at the trader's explicit instruction (re-confirmed 2026-09-19): the models endpoint genuinely works, but these routers expose hundreds of models and the trader wants to type the exact id rather than pick from a list.", "/models"), manualModelEntry: true },
+  orcarouter: { ...OPENAI_COMPAT("orcarouter", "OrcaRouter", "https://api.orcarouter.ai/v1", "orcarouter/auto", "Real, currently-operating (launched May 2026). GET /v1/models CONFIRMED LIVE 2026-09-19 (real 401 orcarouter_api_error for a bogus key, not a 404). MANUAL ENTRY IS DELIBERATE, at the trader's explicit instruction (re-confirmed 2026-09-19): the models endpoint genuinely works, but these routers expose hundreds of models and the trader wants to type the exact id rather than pick from a list."), manualModelEntry: true },
   bedrock: {
     id: "bedrock",
     displayName: "AWS Bedrock",
@@ -250,7 +250,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   // rather than guessing one. Model ids are Claude-family names (opus/sonnet/haiku/fable) routed
   // through xpiki's own infrastructure -- default set to claude-sonnet-5, the mid-tier real model
   // from the user's own provided list.
-  xpiki: { ...OPENAI_COMPAT("xpiki", "Xpiki", "https://api.xpiki.com/v1", "claude-sonnet-5", "OpenAI-compatible per the user's own provided usage instructions (Bearer sk-... key, /v1/chat/completions). Also exposes claude-opus-5, claude-opus-4-8, claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5, claude-fable-5. No confirmed /v1/models endpoint -- manual model entry.", null), manualModelEntry: true },
+  xpiki: { ...OPENAI_COMPAT("xpiki", "Xpiki", "https://api.xpiki.com/v1", "claude-sonnet-5", "OpenAI-compatible per the user's own provided usage instructions (Bearer sk-... key, /v1/chat/completions). Also exposes claude-opus-5, claude-opus-4-8, claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5, claude-fable-5. GET /v1/models CONFIRMED LIVE 2026-09-19 (real 401 invalid_api_key for a bogus key, not a 404) -- auto-fetch enabled.", "/models"), manualModelEntry: false },
   custom: {
     id: "custom",
     displayName: "Custom provider",
@@ -295,11 +295,11 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
       "friendli",
       "Friendli AI",
       "https://api.friendli.ai/serverless/v1",
-      "meta-llama-3.1-8b-instruct",
-      "Confirmed real via docs.friendli.ai/guides/serverless_endpoints/openai_compatibility: Friendli Serverless Endpoints are genuinely OpenAI-SDK-compatible, migrate by swapping base_url + api_key. Open marketplace catalog (Llama, GLM, and others) with no single fixed flagship. No independently-confirmed /v1/models list page found in the docs -- manual model entry, not guessed.",
-      null
+      "zai-org/GLM-5.3",
+      "Confirmed real via docs.friendli.ai/guides/serverless_endpoints/openai_compatibility: Friendli Serverless Endpoints are genuinely OpenAI-SDK-compatible, migrate by swapping base_url + api_key. Open marketplace catalog (Llama, GLM, and others) with no single fixed flagship. No independently-confirmed /v1/models list page found in the docs -- manual model entry, not guessed. GET /serverless/v1/models CONFIRMED LIVE 2026-09-19 -- returns a real HTTP 200 catalog unauthenticated (zai-org/GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5.1, google/gemma-4-31B-it, deepseek-ai/DeepSeek-V3.2, MiniMaxAI/MiniMax-M2.5). Auto-fetch enabled; default updated because the old meta-llama-3.1-8b-instruct id is no longer in that real catalog.",
+      "/models"
     ),
-    manualModelEntry: true,
+    manualModelEntry: false,
   },
   siliconflow: OPENAI_COMPAT(
     "siliconflow",
@@ -314,16 +314,16 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
       "Upstage (Solar)",
       "https://api.upstage.ai/v1",
       "solar-pro4",
-      "Confirmed real via upstage.ai/blog/en/solar-pro-4 and the Upstage Console docs: chat/completions is genuinely OpenAI-compatible at api.upstage.ai/v1, model id solar-pro4 is Upstage's own current documented flagship (524K context, agentic/coding-focused). No confirmed /v1/models list doc page found -- manual model entry rather than guessing one, confirmed 2026-09-14.",
-      null
+      "Confirmed real via upstage.ai/blog/en/solar-pro-4 and the Upstage Console docs: chat/completions is genuinely OpenAI-compatible at api.upstage.ai/v1, model id solar-pro4 is Upstage's own current documented flagship (524K context, agentic/coding-focused). No confirmed /v1/models list doc page found -- manual model entry rather than guessing one, confirmed 2026-09-14. GET /v1/models CONFIRMED LIVE 2026-09-19 (real 401 naming the Upstage console key page for a bogus key -- a real key-validating route). Auto-fetch enabled.",
+      "/models"
     ),
-    manualModelEntry: true,
+    manualModelEntry: false,
   },
   venice: OPENAI_COMPAT(
     "venice",
     "Venice AI",
     "https://api.venice.ai/api/v1",
-    "venice-uncensored",
+    "venice-uncensored-1-2",
     "Confirmed real via docs.venice.ai/api-reference/endpoint/models/list (a real, documented List Models endpoint) and docs.venice.ai/api-reference/api-spec: genuinely mirrors the OpenAI API shape at /chat/completions, Bearer auth confirmed (an alternate x402-wallet auth header also exists but Bearer is the documented primary path). Default set to Venice's own distinguishing uncensored model rather than a generic open-weight one, confirmed 2026-09-14.",
     "/models"
   ),
@@ -364,11 +364,11 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
       "poe",
       "Poe API",
       "https://api.poe.com/v1",
-      "Claude-Sonnet-4.6",
-      "Re-verified via a full crawl of creator.poe.com/docs (openai-compatible-api, external-application-guide, api-reference) PLUS a real live unauthenticated curl against https://api.poe.com/v1/chat/completions, which returned a real HTTP 400 {error:{type:\"authentication_error\",code:\"missing_api_key\"}} -- proves the base URL/chat path genuinely resolve, not just docs-guessed. Base URL, /chat/completions path, and Bearer auth (Authorization: Bearer $POE_API_KEY) all confirmed byte-for-byte against the docs' own curl example, including the exact default model id \"Claude-Sonnet-4.6\". Real tool-calling IS genuinely supported through this endpoint (docs' own compatibility table: tools/tool_choice/parallel_tool_calls all \"Fully Supported\") -- NOT chat-only, safe for Dave's tool-heavy agent loop. One real, confirmed caveat that matters for tool-calling reliability: the `strict` param is ignored server-side, so a Poe tool_call's JSON arguments are NOT guaranteed to conform to the supplied JSON Schema (may have missing/extra fields) -- callers of this provider should treat parsed tool-call arguments defensively. Other confirmed-real gaps vs vanilla OpenAI: `response_format`/structured outputs (json_schema) is ignored, not honored; audio input is stripped/ignored; only PUBLIC bots are reachable (private bots return an error); image/video/audio bots should be called with stream=false. Rate limit: 500 req/min/user, real Retry-After-compatible 429s (already handled generically by providerErrorFromResponse). No /v1/models list endpoint documented -- the bot catalog is enormous and partly per-account/community-created, so manual model entry is required (same posture as openrouter/orcarouter), not guessed. Confirmed 2026-09-14.",
-      null
+      "claude-sonnet-4.6",
+      "Re-verified via a full crawl of creator.poe.com/docs (openai-compatible-api, external-application-guide, api-reference) PLUS a real live unauthenticated curl against https://api.poe.com/v1/chat/completions, which returned a real HTTP 400 {error:{type:\"authentication_error\",code:\"missing_api_key\"}} -- proves the base URL/chat path genuinely resolve, not just docs-guessed. Base URL, /chat/completions path, and Bearer auth (Authorization: Bearer $POE_API_KEY) all confirmed byte-for-byte against the docs' own curl example, including the exact default model id \"Claude-Sonnet-4.6\". Real tool-calling IS genuinely supported through this endpoint (docs' own compatibility table: tools/tool_choice/parallel_tool_calls all \"Fully Supported\") -- NOT chat-only, safe for Dave's tool-heavy agent loop. One real, confirmed caveat that matters for tool-calling reliability: the `strict` param is ignored server-side, so a Poe tool_call's JSON arguments are NOT guaranteed to conform to the supplied JSON Schema (may have missing/extra fields) -- callers of this provider should treat parsed tool-call arguments defensively. Other confirmed-real gaps vs vanilla OpenAI: `response_format`/structured outputs (json_schema) is ignored, not honored; audio input is stripped/ignored; only PUBLIC bots are reachable (private bots return an error); image/video/audio bots should be called with stream=false. Rate limit: 500 req/min/user, real Retry-After-compatible 429s (already handled generically by providerErrorFromResponse). No /v1/models list endpoint documented -- the bot catalog is enormous and partly per-account/community-created, so manual model entry is required (same posture as openrouter/orcarouter), not guessed. Confirmed 2026-09-14. GET /v1/models CONFIRMED LIVE 2026-09-19 -- real HTTP 200 with 341 bots. Auto-fetch enabled. Default corrected to the real lowercase id claude-sonnet-4.6 -- the docs write it capitalised, but the live catalog is lowercase and the id is case-sensitive.",
+      "/models"
     ),
-    manualModelEntry: true,
+    manualModelEntry: false,
   },
 };
 

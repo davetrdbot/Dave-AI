@@ -18,11 +18,17 @@ console.log("[1] MonsterAPI is genuinely gone from the catalog...");
 assert.equal((PROVIDER_CATALOG as Record<string, unknown>).monsterapi, undefined);
 console.log("    confirmed absent");
 
-console.log("\n[2] Z.AI is present, OpenAI-compatible, forced to manual model entry...");
+// Updated 2026-09-19, live-verified: Z.AI's models endpoint was recorded as non-existent, so the
+// entry was forced to manual entry. A real GET https://api.z.ai/api/paas/v4/models with a bogus
+// key returns a real 401 {"code":"401","message":"token expired or incorrect"} -- a real route
+// that genuinely validates the key, not a 404. Auto-fetch works, so manual entry is no longer
+// needed here (the routers -- OpenRouter/OrcaRouter/HuggingFace -- keep it by explicit choice).
+console.log("\n[2] Z.AI is present, OpenAI-compatible, and auto-fetches models from its real endpoint...");
 const zai = PROVIDER_CATALOG.zai;
 console.log(`    baseUrl: ${zai.baseUrl}, manualModelEntry: ${zai.manualModelEntry}`);
 assert.equal(zai.baseUrl, "https://api.z.ai/api/paas/v4");
-assert.equal(zai.manualModelEntry, true);
+assert.equal(zai.manualModelEntry, false);
+assert.equal(zai.modelsPath, "/models");
 assert.equal(zai.openAICompatible, true);
 
 console.log("\n[3] Azure OpenAI: real per-deployment URL shape, requires accountId + model (deployment)...");

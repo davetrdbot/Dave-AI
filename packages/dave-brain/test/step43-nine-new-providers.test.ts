@@ -39,15 +39,24 @@ interface Expected {
 }
 
 const expected: Expected[] = [
-  { id: "friendli", displayName: "Friendli AI", baseUrl: "https://api.friendli.ai/serverless/v1", chatPath: "/chat/completions", modelsPath: null, manualModelEntry: true, defaultModel: "meta-llama-3.1-8b-instruct" },
+  // Updated 2026-09-19, all three live-verified (see step129). These rows recorded "no models
+  // endpoint found in the docs" -- but the endpoints are real and answering:
+  //   friendli  GET /serverless/v1/models -> real 200, and the old default id is NOT in that
+  //             real catalog (it lists zai-org/GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5.1,
+  //             google/gemma-4-31B-it, deepseek-ai/DeepSeek-V3.2, MiniMaxAI/MiniMax-M2.5)
+  //   upstage   GET /v1/models -> real 401 naming the Upstage console key page
+  //   poe       GET /v1/models -> real 200 with 341 bots, and the real ids are LOWERCASE
+  //             ("claude-sonnet-4.6"); the docs write them capitalised and the id is
+  //             case-sensitive, so the shipped default could never have resolved.
+  { id: "friendli", displayName: "Friendli AI", baseUrl: "https://api.friendli.ai/serverless/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "zai-org/GLM-5.3" },
   { id: "siliconflow", displayName: "SiliconFlow", baseUrl: "https://api.siliconflow.cn/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "deepseek-ai/DeepSeek-V3" },
-  { id: "upstage", displayName: "Upstage (Solar)", baseUrl: "https://api.upstage.ai/v1", chatPath: "/chat/completions", modelsPath: null, manualModelEntry: true, defaultModel: "solar-pro4" },
-  { id: "venice", displayName: "Venice AI", baseUrl: "https://api.venice.ai/api/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "venice-uncensored" },
+  { id: "upstage", displayName: "Upstage (Solar)", baseUrl: "https://api.upstage.ai/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "solar-pro4" },
+  { id: "venice", displayName: "Venice AI", baseUrl: "https://api.venice.ai/api/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "venice-uncensored-1-2" },
   { id: "scaleway", displayName: "Scaleway Generative APIs", baseUrl: "https://api.scaleway.ai/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "llama-3.3-70b-instruct" },
   { id: "lambda", displayName: "Lambda AI (Inference API)", baseUrl: "https://api.lambda.ai/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "deepseek-r1" },
   { id: "nscale", displayName: "Nscale Serverless Inference", baseUrl: "https://inference.api.nscale.com/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B" },
   { id: "parasail", displayName: "Parasail", baseUrl: "https://api.parasail.io/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "parasail-deepseek-r1" },
-  { id: "poe", displayName: "Poe API", baseUrl: "https://api.poe.com/v1", chatPath: "/chat/completions", modelsPath: null, manualModelEntry: true, defaultModel: "Claude-Sonnet-4.6" },
+  { id: "poe", displayName: "Poe API", baseUrl: "https://api.poe.com/v1", chatPath: "/chat/completions", modelsPath: "/models", manualModelEntry: false, defaultModel: "claude-sonnet-4.6" },
 ];
 
 console.log("[1] Each new entry is present in the real catalog with the exact verified shape...\n");

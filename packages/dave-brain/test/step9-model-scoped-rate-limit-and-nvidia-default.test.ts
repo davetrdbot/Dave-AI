@@ -21,9 +21,14 @@ import { addProviderKey, generateWithKeyFailover, isModelScopedRateLimit, isRate
 
 console.log("=== Real proof: NVIDIA routes to the proven-working model, and model-scoped rate limits retry on the same key ===\n");
 
-console.log("[1] The nvidia-nim catalog entry's defaultModel is the user's own live-verified working config...\n");
-assert.equal(PROVIDER_CATALOG["nvidia-nim"].defaultModel, "deepseek-ai/deepseek-v4-pro-0813");
-assert.equal(PROVIDER_CATALOG.lepton.defaultModel, "deepseek-ai/deepseek-v4-pro-0813", "the real Lepton alias must match (same real backend as nvidia-nim)");
+// Updated 2026-09-19, live-verified: deepseek-v4-pro-0813 was retired by NVIDIA on 2026-09-14 and
+// now returns a real HTTP 410 "has reached its end of life" against the trader's own real key --
+// which is precisely what was surfacing to them as an invalid API key. deepseek-v4-flash-0731 is
+// confirmed present in the real GET /v1/models list and returns a real 200 completion. See
+// step129 for the full reproduction.
+console.log("[1] The nvidia-nim catalog entry's defaultModel is a live-verified working model...\n");
+assert.equal(PROVIDER_CATALOG["nvidia-nim"].defaultModel, "deepseek-ai/deepseek-v4-flash-0731");
+assert.equal(PROVIDER_CATALOG.lepton.defaultModel, "deepseek-ai/deepseek-v4-flash-0731", "the real Lepton alias must match (same real backend as nvidia-nim)");
 console.log(`    confirmed: nvidia-nim/lepton default model = "${PROVIDER_CATALOG["nvidia-nim"].defaultModel}"`);
 
 console.log("\n[2] isModelScopedRateLimit() genuinely distinguishes a per-model limit from a whole-key/account one...\n");
@@ -60,7 +65,7 @@ try {
       },
     });
     assert.equal(result.text, "Real reply from the catalog default model.");
-    assert.deepEqual(requestedModels, ["some-other-model-x", "deepseek-ai/deepseek-v4-pro-0813"], "must retry the SAME key with the real catalog default model, not jump straight to a different key");
+    assert.deepEqual(requestedModels, ["some-other-model-x", "deepseek-ai/deepseek-v4-flash-0731"], "must retry the SAME key with the real catalog default model, not jump straight to a different key");
     assert.equal(switchFired, false, "a model-scoped retry that succeeds must NOT count as a key switch");
     const reloaded = db.getById("provider_keys", OWNER, key.id);
     assert.equal(Boolean(reloaded!.healthy), true, "the key must stay healthy -- the problem was never the key");

@@ -123,9 +123,18 @@ export class ThinkingIndicator {
    * Best-effort: a failed "typing..." indicator (e.g. a transient
    * Telegram error) must never block the actual task from running, so
    * failures here are swallowed rather than thrown.
+   *
+   * Real latency fix (the trader: "responses are slow"): this used to `await` the very first
+   * sendChatAction, so EVERY turn -- including a plain "hey" -- paid a full Telegram API round
+   * trip before runAgentTurn was allowed to start building the request, let alone call the model.
+   * That await bought nothing: the call is already `.catch(() => {})`-swallowed (its result is
+   * never read and it can never reject), the 4s heartbeat below re-sends the same action anyway,
+   * and every other sendChatAction in this class is already fire-and-forget for exactly this
+   * reason. Kicked off without blocking, so the typing bubble and the real work start together
+   * instead of one after the other.
    */
   async start(): Promise<void> {
-    await this.client.sendChatAction({ chat_id: this.chatId, action: this.chatAction }).catch(() => {});
+    void this.client.sendChatAction({ chat_id: this.chatId, action: this.chatAction }).catch(() => {});
     this.heartbeat = setInterval(() => {
       void this.client.sendChatAction({ chat_id: this.chatId, action: this.chatAction }).catch(() => {});
     }, 4000);
