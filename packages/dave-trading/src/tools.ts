@@ -11,6 +11,7 @@ import { derivePipSize } from "./pip-size.js";
 import { assessRiskRewardForUser, getMinRiskReward, setMinRiskReward } from "./risk-reward-guard.js";
 import { createWatch, listActiveWatches, cancelWatch, type WatchKind } from "./background-watch.js";
 import { recordExpectation, findSimilarSetups, predictionAccuracySummary } from "./trade-prediction-store.js";
+import { setThesisStatus, getThesisStatus, listThesisStatuses, thesisStatusLabel, type ThesisStatus } from "./thesis-status-store.js";
 
 /**
  * Agentic tool exposure. Real gap this fills: everything in this
@@ -379,6 +380,49 @@ export const TRADING_TOOLS: ToolDefinition[] = [
     description: "See how your predictions have held up overall -- total trades scored, how often the thesis was right, and your expected vs actual time-to-outcome. Your own track record.",
     parameters: { type: "object", properties: {} },
     execute: async (_args, ctx) => predictionAccuracySummary(ctx.userId),
+  },
+  {
+    // Self-Awareness spec part 2: "Is my idea still valid?" -- judged against fresh analysis.
+    name: "update_trade_thesis",
+    description:
+      "After re-checking an open trade against current market conditions (run get_all_analysis first), record whether the ORIGINAL idea still holds: " +
+      "'still_valid' (behaving as expected), 'weakening' (some supporting conditions fading), 'invalidated' (key conditions gone), or 'recovering' (was under pressure, now moving back your way). " +
+      "The result tells you whether this is a CHANGE from the last status -- if it changed, tell the user plainly what changed and why. Do this periodically while a trade is open, not just once.",
+    parameters: {
+      type: "object",
+      required: ["ticket", "symbol", "status"],
+      properties: {
+        ticket: { type: "string" },
+        symbol: { type: "string" },
+        status: { type: "string", enum: ["still_valid", "weakening", "invalidated", "recovering"] },
+        note: { type: "string", description: "what changed / why, in your own words" },
+      },
+    },
+    execute: async (args, ctx) => {
+      const res = setThesisStatus(ctx.userId, {
+        ticket: args.ticket as string,
+        symbol: args.symbol as string,
+        status: args.status as ThesisStatus,
+        note: args.note as string | undefined,
+      });
+      return {
+        changed: res.changed,
+        previous: res.previous,
+        status: res.record.status,
+        label: thesisStatusLabel(res.record.status),
+        note: res.record.note,
+        alert: res.changed
+          ? `Thesis on ${res.record.symbol} #${res.record.ticket} changed: ${res.previous ?? "(new)"} -> ${res.record.status}. Tell the user what changed.`
+          : undefined,
+      };
+    },
+  },
+  {
+    name: "get_trade_thesis",
+    description: "Read the current 'is my idea still valid' status for one open trade (by ticket), or all of them if no ticket is given -- with the history of how the thesis has shifted.",
+    parameters: { type: "object", properties: { ticket: { type: "string" } } },
+    execute: async (args, ctx) =>
+      args.ticket ? getThesisStatus(ctx.userId, args.ticket as string) ?? { status: "none recorded yet" } : { theses: listThesisStatuses(ctx.userId) },
   },
   {
     name: "get_min_risk_reward",

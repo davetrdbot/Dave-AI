@@ -136,6 +136,8 @@ export const CORE_TOOL_NAMES: string[] = [
   "record_trade_expectation",
   "find_similar_setups",
   "review_prediction_accuracy",
+  "update_trade_thesis",
+  "get_trade_thesis",
   // use and save knowledge"). knowledge_view was the ONLY knowledge tool that was ever core -- and
   // it takes an id. Nothing in a turn ever told the model an id existed, and the lister and both
   // writers sat behind a search_tools discovery step the model had no reason to take. So the
