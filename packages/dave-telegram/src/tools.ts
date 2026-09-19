@@ -1,4 +1,4 @@
-import type { TelegramClient } from "./client.js";
+import type { TelegramClient, TelegramChatAction } from "./client.js";
 import { ThinkingIndicator } from "./thinking-indicator.js";
 import { markdownToTelegramHtml } from "./rich-format.js";
 import { getOrCreateUserWebhook } from "@dave/memory";
@@ -113,9 +113,89 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
   },
   {
     name: "tg_chat_action",
-    description: "Show a real typing/uploading indicator.",
-    parameters: { type: "object", properties: { action: { type: "string", enum: ["typing", "upload_document", "upload_photo"] } }, required: ["action"] },
-    execute: async (args, ctx) => ctx.client.sendChatAction({ chat_id: ctx.chatId, action: args.action as "typing" | "upload_document" | "upload_photo" }),
+    description:
+      "Show a real Telegram 'loading' indicator to the user -- the little 'Dave is typing…' / 'sending a photo…' status. Auto-clears after a few seconds or when your next message lands; send it again for a longer wait. Use the one that matches what you're about to do.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: [
+            "typing",
+            "upload_photo",
+            "record_video",
+            "upload_video",
+            "record_voice",
+            "upload_voice",
+            "upload_document",
+            "choose_sticker",
+            "find_location",
+            "record_video_note",
+            "upload_video_note",
+          ],
+        },
+      },
+      required: ["action"],
+    },
+    execute: async (args, ctx) => ctx.client.sendChatAction({ chat_id: ctx.chatId, action: args.action as TelegramChatAction }),
+  },
+  {
+    // Real Bot API setMessageReaction. The client method existed; nothing exposed it to Dave.
+    name: "react_to_message",
+    description:
+      "React to a message with a single emoji (👍 ❤️ 🔥 🎉 😁 🤔 👏 🙏 💯 and the rest Telegram allows), the way a person taps a reaction. Pass the message id and one emoji; pass an empty emoji to clear your reaction. Lighter than a whole reply -- use it to acknowledge without adding a message.",
+    parameters: {
+      type: "object",
+      properties: { messageId: { type: "number" }, emoji: { type: "string", description: "one emoji, or empty to clear the reaction" } },
+      required: ["messageId"],
+    },
+    execute: async (args, ctx) =>
+      ctx.client.setMessageReaction({
+        chat_id: ctx.chatId,
+        message_id: args.messageId as number,
+        reaction: args.emoji ? [{ type: "emoji", emoji: args.emoji as string }] : [],
+      }),
+  },
+  {
+    // Real Bot API deleteMessage. Used internally for self-cleaning; now Dave-callable.
+    name: "delete_message",
+    description:
+      "Delete a message this bot sent (by its message id). Use it to clean up a message that's now wrong or obsolete -- e.g. a stale trade alert after the position closed. Only works on the bot's own messages (and, in a group where it's admin, others').",
+    parameters: { type: "object", properties: { messageId: { type: "number" } }, required: ["messageId"] },
+    execute: async (args, ctx) => ctx.client.deleteMessage({ chat_id: ctx.chatId, message_id: args.messageId as number }),
+  },
+  {
+    // Real Bot API stopPoll. The client method existed (used by the feedback loop); no Dave tool.
+    name: "stop_poll",
+    description: "Close a poll you sent (by its message id) so it stops taking votes, and get back the final tallies. There is no way to edit a live poll's options -- close and send a new one.",
+    parameters: { type: "object", properties: { messageId: { type: "number" } }, required: ["messageId"] },
+    execute: async (args, ctx) => ctx.client.stopPoll({ chat_id: ctx.chatId, message_id: args.messageId as number }),
+  },
+  {
+    // Real Bot API sendRichMessageDraft (Bot API 10.1). Streams a rich message block-by-block under
+    // a stable draft_id so a long/generated reply renders as it's built, instead of many separate
+    // sendMessage calls (which burn the rate limit). The client method existed; no Dave tool.
+    name: "send_rich_draft",
+    description:
+      "Stream a rich message as a live-updating DRAFT rather than sending it all at once -- ideal for a long report or a reply you're building up. Call it repeatedly with the SAME draftId to progressively replace the draft's content (HTML: tables, headings, expandable quotes, up to ~32k chars). Finalise by sending the finished HTML through tg_rich_message. Use a fresh draftId per message; keepOnStop leaves the last draft visible if you stop early.",
+    parameters: {
+      type: "object",
+      properties: {
+        draftId: { type: "number", description: "a stable id for THIS draft; reuse it across updates of the same message" },
+        html: { type: "string", description: "the rich HTML content so far (replaces the draft's current content)" },
+        canStop: { type: "boolean", description: "let the user stop the stream" },
+        keepOnStop: { type: "boolean", description: "keep the last draft content visible if stopped" },
+      },
+      required: ["draftId", "html"],
+    },
+    execute: async (args, ctx) =>
+      ctx.client.sendRichMessageDraft({
+        chat_id: ctx.chatId,
+        draft_id: args.draftId as number,
+        rich_message: { html: args.html as string },
+        can_stop: args.canStop as boolean | undefined,
+        keep_on_stop: args.keepOnStop as boolean | undefined,
+      }),
   },
   {
     name: "set_bot_profile",

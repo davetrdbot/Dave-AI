@@ -163,6 +163,17 @@ export const CORE_TOOL_NAMES: string[] = [
   "remember_user_fact",
   "remember_note",
   "remember_adaptability_note",
+
+  // The full Telegram message-action surface (the trader: "the rich text editor... all of them").
+  // The client could already react, delete, close polls, stream a rich draft, and show every
+  // loading indicator, but none of those was a core tool, so Dave never reached for them. rich
+  // formatting itself is already handled automatically on every send (rich-format.ts); these are
+  // the message ACTIONS Dave chooses to take.
+  "react_to_message",
+  "delete_message",
+  "stop_poll",
+  "send_rich_draft",
+  "tg_chat_action",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the

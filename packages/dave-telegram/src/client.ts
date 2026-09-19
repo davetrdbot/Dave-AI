@@ -54,6 +54,21 @@ export interface InlineKeyboardMarkup {
  * block-based format (InputRichBlock*, tables, thinking blocks, etc.) is
  * real but out of scope for what Dave needs from rich messages today.
  */
+/** The full, real Bot API set of sendChatAction values (the "loading" indicators) -- confirmed
+ *  against the live docs 2026-09-19. Previously only 3 of these 11 were typed/reachable. */
+export type TelegramChatAction =
+  | "typing"
+  | "upload_photo"
+  | "record_video"
+  | "upload_video"
+  | "record_voice"
+  | "upload_voice"
+  | "upload_document"
+  | "choose_sticker"
+  | "find_location"
+  | "record_video_note"
+  | "upload_video_note";
+
 export interface RichMessage {
   html: string;
 }
@@ -333,7 +348,7 @@ export class TelegramClient {
     return this.call<{ id: string; question: string; options: { text: string; voter_count: number }[]; is_closed: boolean }>("stopPoll", params);
   }
 
-  sendChatAction(params: { chat_id: number | string; action: "typing" | "upload_document" | "upload_photo" }) {
+  sendChatAction(params: { chat_id: number | string; action: TelegramChatAction }) {
     return this.call<true>("sendChatAction", params);
   }
 
