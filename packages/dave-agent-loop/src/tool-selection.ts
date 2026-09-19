@@ -130,6 +130,12 @@ export const CORE_TOOL_NAMES: string[] = [
   "mark_level",
   "check_marked_levels",
   "cancel_marked_level",
+
+  // Self-awareness: record what you expect before a trade, and check your own past experience with
+  // a similar setup before taking a new one. Outcomes accrue automatically as trades close.
+  "record_trade_expectation",
+  "find_similar_setups",
+  "review_prediction_accuracy",
   // use and save knowledge"). knowledge_view was the ONLY knowledge tool that was ever core -- and
   // it takes an id. Nothing in a turn ever told the model an id existed, and the lister and both
   // writers sat behind a search_tools discovery step the model had no reason to take. So the

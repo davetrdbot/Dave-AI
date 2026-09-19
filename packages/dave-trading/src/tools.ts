@@ -10,6 +10,7 @@ import { getSettingsLog } from "./settings-log.js";
 import { derivePipSize } from "./pip-size.js";
 import { assessRiskRewardForUser, getMinRiskReward, setMinRiskReward } from "./risk-reward-guard.js";
 import { createWatch, listActiveWatches, cancelWatch, type WatchKind } from "./background-watch.js";
+import { recordExpectation, findSimilarSetups, predictionAccuracySummary } from "./trade-prediction-store.js";
 
 /**
  * Agentic tool exposure. Real gap this fills: everything in this
@@ -309,6 +310,75 @@ export const TRADING_TOOLS: ToolDefinition[] = [
     description: "Stop one of your pending background checks by id (from check_marked_levels) -- e.g. the thesis behind it no longer holds.",
     parameters: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
     execute: async (args, ctx) => cancelWatch(ctx.userId, args.id as string),
+  },
+  {
+    // Self-Awareness spec part 4: record what you EXPECT before a trade, so it can be compared to
+    // reality after it closes.
+    name: "record_trade_expectation",
+    description:
+      "Before or just after opening a trade, record what you expect to happen -- so your prediction can be scored against reality later. " +
+      "Pass the ticket and your read: expected target price, how long you think it'll take (minutes), the worst drawdown you'd tolerate (% ), your confidence, " +
+      "what behaviour you expect, the timeframe, and setup tags (e.g. 'liquidity-sweep', 'OB-retest') used to find similar past trades. This is how you learn whether your calls actually play out.",
+    parameters: {
+      type: "object",
+      required: ["ticket", "symbol", "direction"],
+      properties: {
+        ticket: { type: "string" },
+        symbol: { type: "string" },
+        direction: { type: "string", enum: ["buy", "sell"] },
+        timeframe: { type: "string" },
+        setupTags: { type: "array", items: { type: "string" } },
+        expectedTarget: { type: "number" },
+        expectedTimeMinutes: { type: "number" },
+        expectedMaxDrawdownPct: { type: "number" },
+        confidence: { type: "number" },
+        expectedBehavior: { type: "string" },
+      },
+    },
+    execute: async (args, ctx) =>
+      recordExpectation(ctx.userId, {
+        ticket: args.ticket as string,
+        symbol: args.symbol as string,
+        direction: args.direction as "buy" | "sell",
+        timeframe: args.timeframe as string | undefined,
+        setupTags: args.setupTags as string[] | undefined,
+        expectedTarget: args.expectedTarget as number | undefined,
+        expectedTimeMinutes: args.expectedTimeMinutes as number | undefined,
+        expectedMaxDrawdownPct: args.expectedMaxDrawdownPct as number | undefined,
+        confidence: args.confidence as number | undefined,
+        expectedBehavior: args.expectedBehavior as string | undefined,
+      }),
+  },
+  {
+    // Self-Awareness spec part 5: search past trades for similar setups before entering a new one.
+    name: "find_similar_setups",
+    description:
+      "Before entering, search your OWN past closed trades for setups like this one (same symbol + direction, optionally same timeframe / setup tags). " +
+      "Returns how many similar trades you've taken, how many worked vs failed, the win rate, and the average time to outcome -- real experience to weigh the new trade against. " +
+      "Empty until you've closed some trades; it grows automatically as trades close.",
+    parameters: {
+      type: "object",
+      required: ["symbol", "direction"],
+      properties: {
+        symbol: { type: "string" },
+        direction: { type: "string", enum: ["buy", "sell"] },
+        timeframe: { type: "string" },
+        setupTags: { type: "array", items: { type: "string" } },
+      },
+    },
+    execute: async (args, ctx) =>
+      findSimilarSetups(ctx.userId, {
+        symbol: args.symbol as string,
+        direction: args.direction as "buy" | "sell",
+        timeframe: args.timeframe as string | undefined,
+        setupTags: args.setupTags as string[] | undefined,
+      }),
+  },
+  {
+    name: "review_prediction_accuracy",
+    description: "See how your predictions have held up overall -- total trades scored, how often the thesis was right, and your expected vs actual time-to-outcome. Your own track record.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => predictionAccuracySummary(ctx.userId),
   },
   {
     name: "get_min_risk_reward",

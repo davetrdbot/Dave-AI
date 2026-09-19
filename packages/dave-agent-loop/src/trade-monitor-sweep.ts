@@ -1,5 +1,6 @@
 import { getLastKnownState } from "@dave/ea-bridge";
 import { getTradeLifecycle } from "@dave/feedback";
+import { recordOutcome } from "@dave/trading";
 import type { DaveDatabase } from "@dave/db";
 import {
   readMonitors,
@@ -94,8 +95,29 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
     fired.push(...alerts);
   }
 
-  // Everything left in byTicket is a monitor whose ticket is no longer open -> close it (once).
-  for (const m of byTicket.values()) next.push(closeMonitor(m, now));
+  // Everything left in byTicket is a monitor whose ticket is no longer open -> close it (once),
+  // and fold what actually happened into the prediction/similarity database (spec parts 4 & 5).
+  for (const m of byTicket.values()) {
+    const wasOpen = m.state !== "closed";
+    const closed = closeMonitor(m, now);
+    next.push(closed);
+    if (wasOpen) {
+      try {
+        recordOutcome(deps.userId, {
+          ticket: closed.ticket,
+          symbol: closed.symbol,
+          direction: closed.direction,
+          actual: {
+            durationMinutes: Math.round((now - closed.openedAt) / 60_000),
+            closePnl: closed.lastPnl,
+            worstPnl: closed.worstPnl,
+          },
+        });
+      } catch (err) {
+        console.error(`[trade-monitor] ${deps.userId}: could not record outcome for #${closed.ticket}:`, err);
+      }
+    }
+  }
 
   writeMonitors(deps.userId, next);
 

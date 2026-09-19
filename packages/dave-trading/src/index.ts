@@ -12,6 +12,7 @@ export * from "./margin-aware-execute.js";
 export * from "./pip-size.js";
 export * from "./risk-reward-guard.js";
 export * from "./background-watch.js";
+export * from "./trade-prediction-store.js";
 export * from "./trading-mode.js";
 export * from "./skills.js";
 export * from "./mt5-accounts.js";
