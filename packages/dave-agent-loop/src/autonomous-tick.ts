@@ -182,12 +182,15 @@ const ACTION_TO_ORDER_TYPE: Record<TradeAction, OrderType> = {
  *  approve/decline rather than either firing on its own or staying silent. */
 const SNIPER_TIER_CONFIDENCE = 85;
 
-/** Real, live-stated bar (user's own number, exact: "89%"). Real SL-progress -- genuine distance
+/** Real, live-stated bar (user's own upgrade request, exact: "when a trade is reaching 50% toward
+ *  the SL it should alert" -- lowered from the earlier 89%). Real SL-progress -- genuine distance
  *  travelled from a real open position's entry toward its real SL, as a fraction of the real
  *  entry-to-SL distance (see buildProgressBar in trade-notifications.ts, the same math the visual
- *  bar renders) -- at or beyond this fraction triggers the SELF-AWARE ALERT context line below,
- *  for ANY open position account-wide, not just the current round-robin symbol's own position. */
-const SL_DANGER_THRESHOLD = 0.89;
+ *  bar renders) -- at or beyond this 50%+ fraction triggers the SELF-AWARE ALERT context line
+ *  below, for ANY open position account-wide, not just the current round-robin symbol's own
+ *  position. The SAME threshold now also drives the standalone, edge-triggered proactive alert
+ *  (self-aware-sweep.ts) that fires even when autonomous trading is OFF or between ticks. */
+const SL_DANGER_THRESHOLD = 0.5;
 
 export interface TickDecision {
   action: DecisionAction;
@@ -704,7 +707,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     : "none";
   const pendingSummary = pendingOrders.length ? pendingOrders.map((p) => `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.price} #${p.ticket}`).join("; ") : "none";
 
-  // Real self-aware SL-danger alert (user's own exact stated bar, 89%): ANY open position
+  // Real self-aware SL-danger alert (user's own exact stated bar, now 50%+): ANY open position
   // account-wide at/beyond SL_DANGER_THRESHOLD, not just the current round-robin symbol's own
   // position -- picks the single worst (highest SL-progress) one if more than one qualifies, and
   // pulls its REAL original placement reason from the real trade journal by ticket (never a

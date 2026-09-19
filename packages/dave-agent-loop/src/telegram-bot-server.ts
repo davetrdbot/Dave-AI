@@ -22,6 +22,7 @@ import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } fr
 import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState, waitForBusyToClear } from "./busy-state.js";
 import { eaConnectionAlert, cycleErrorAlert, clearCycleErrorAlert } from "./health-alerts.js";
 import { startWatchSweep } from "./watch-sweep.js";
+import { startSelfAwareSweep } from "./self-aware-sweep.js";
 import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt, collapseQueuedMessages } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
@@ -1046,6 +1047,20 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   startWatchSweep({
     userId: deps.ownerUserId,
     analysis: createEaAnalysisSource(deps.ownerUserId),
+    notify: async (text) => {
+      const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
+      if (chatId === undefined) return;
+      await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
+    },
+  });
+
+  // The proactive self-aware SL alert (the trader: "when a trade is reaching 50% toward the SL it
+  // should alert"). Runs on its own timer independent of the hunting loop, reads live open
+  // positions off the EA snapshot, and pushes ONCE per position when it first crosses halfway to
+  // its stop -- so the trader is told even when autonomous trading is off or between ticks.
+  startSelfAwareSweep({
+    db: deps.db,
+    userId: deps.ownerUserId,
     notify: async (text) => {
       const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
       if (chatId === undefined) return;

@@ -1,7 +1,7 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
 import { getConfidenceSettings, getMinRiskReward } from "@dave/trading";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
-import { getSkill } from "@dave/skills";
+import { getSkill, listSkills } from "@dave/skills";
 import { loadFrozenSnapshot } from "@dave/memory";
 import { knowledgeList } from "@dave/knowledge";
 import type { ContentBlock } from "@dave/brain";
@@ -118,6 +118,34 @@ export function buildLiveSettingsBlock(userId: string): string {
     }
   }
 
+  // Real bug fixed (the trader, explicit: "fix the skill so it can recall skill -- implement
+  // exactly how your skill works so it will know when to call it or pop up to the agent"). Skills
+  // were surfaced the same broken way memory and knowledge were: the model only ever saw a skill
+  // if it was already ACTIVE (the block above), so a skill the user installed but hasn't activated
+  // was invisible -- Dave could not know it existed, let alone that it fit the situation in front
+  // of him. That is the opposite of how a coding agent's own skills work: an agent is shown a
+  // catalog of every available skill with a one-line "use when", every turn, and decides from that
+  // catalog when one applies.
+  //
+  // This gives Dave the same: a per-turn index of ALL his skills (name + what each is for), so he
+  // can recognise when a strategy skill fits and surface it. Same shape and cost as the knowledge
+  // index -- name + description only, never the full content (the active one's content is already
+  // injected above; the others are fetched with get_active_strategy_skill only when activated).
+  // Deliberately does NOT change the standing rule that ACTIVATION is the user's call: awareness is
+  // the fix here, not silent self-activation. The index tells Dave to OFFER a fitting skill, not to
+  // switch to it on his own.
+  const skillIndex = safeLoadSkillIndex(userId, activeSkillId);
+  if (skillIndex) {
+    lines.push(
+      "",
+      "<available_skills>",
+      skillIndex,
+      "</available_skills>",
+      "",
+      "These are the strategy skills you have available -- your own catalogue, loaded every turn so you always know what's there. When the setup or the user's request clearly fits one of these, say so and offer to activate it; never switch strategy on your own initiative, and never ask which to use out of the blue. Activating or clearing one is always the user's call (set_active_strategy_skill / clear_active_strategy_skill), made only when they tell you to.",
+    );
+  }
+
   // Real bug fixed (the trader, explicit: "don't forget to check the memory"). Dave's memory was
   // write-only in practice. remember_user_fact / remember_note / remember_adaptability_note all
   // genuinely persist to disk, and prompts/BOOTSTRAP.md tells the model those saves are
@@ -168,6 +196,28 @@ export function buildLiveSettingsBlock(userId: string): string {
   }
 
   return lines.filter((l) => l !== "").join("\n");
+}
+
+/**
+ * The per-turn skill catalogue: every skill's name and what it's for, with the active one marked so
+ * it isn't presented as something to "switch to". Fail-safe like the memory and knowledge loaders --
+ * a missing or corrupt registry costs the turn nothing.
+ */
+function safeLoadSkillIndex(userId: string, activeSkillId: string | undefined): string | undefined {
+  try {
+    const skills = listSkills(userId);
+    if (skills.length === 0) return undefined;
+    return skills
+      .map((s) => {
+        const active = s.id === activeSkillId ? " [ACTIVE NOW]" : "";
+        const useWhen = s.description?.trim() ? ` -- use when: ${s.description.trim()}` : "";
+        return `- [${s.id}] ${s.name}${active}${useWhen}`;
+      })
+      .join("\n");
+  } catch (err) {
+    console.error(`[live-context] could not load skills for ${userId} -- continuing without it:`, err);
+    return undefined;
+  }
 }
 
 /**
@@ -254,6 +304,10 @@ const LEGACY_BLOCK_TERMINATORS = [
   "</active_strategy_skill>",
   "never claim you don't remember it.",
   "both calls, or nothing is committed).",
+  // The available_skills catalogue can be the last block in the region (a user with skills but no
+  // memory or knowledge yet), so its final line must be a recognised terminator or a legacy
+  // history carrying it won't fully heal on load.
+  "made only when they tell you to.",
 ];
 
 function stripLiveContextText(text: string): string {

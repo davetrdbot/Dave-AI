@@ -111,7 +111,25 @@ export const CORE_TOOL_NAMES: string[] = [
 
   "list_skills",
 
-  // Real bug fixed (the trader: "teach it tool so it knows when to save to memory... and when to
+  // Real bug fixed (the trader: "feasibility to check for anything... I don't want to mark levels
+  // again"). The general-purpose "check anything" background system (start/list/get/stop_background_
+  // check -- a free-text whatToCheck re-evaluated by a real agent each poll tick, distinct from the
+  // cheap mechanical mark_level) is genuinely built and wired (full-registry.ts starts the polling
+  // engine and re-arms active checks at boot), but NONE of its four tools was core, so Dave could
+  // only reach the check-anything primitive after a search_tools call he rarely made. Same fix as
+  // knowledge: put them in front of him every turn so the capability is actually used.
+  "start_background_check",
+  "list_background_checks",
+  "get_background_check",
+  "stop_background_check",
+
+  // The cheap mechanical background check (a price level, evaluated by a comparison, no model call)
+  // -- the other half of "check for anything". The trading rules actively tell Dave to mark a level
+  // and move on while hunting, so these must be in front of him every turn, not discovery-gated.
+  // Same never-surfaced bug as the agent check above.
+  "mark_level",
+  "check_marked_levels",
+  "cancel_marked_level",
   // use and save knowledge"). knowledge_view was the ONLY knowledge tool that was ever core -- and
   // it takes an id. Nothing in a turn ever told the model an id existed, and the lister and both
   // writers sat behind a search_tools discovery step the model had no reason to take. So the
