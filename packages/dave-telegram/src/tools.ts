@@ -1,4 +1,4 @@
-import type { TelegramClient, TelegramChatAction } from "./client.js";
+import type { TelegramClient, TelegramChatAction, RichMessageMedia } from "./client.js";
 import { ThinkingIndicator } from "./thinking-indicator.js";
 import { markdownToTelegramHtml } from "./rich-format.js";
 import { getOrCreateUserWebhook } from "@dave/memory";
@@ -62,15 +62,60 @@ export function clearActiveIndicator(chatId: number): void {
 export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
   {
     name: "send_telegram",
-    description: "Send a plain real Telegram message.",
-    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-    execute: async (args, ctx) => ctx.client.sendMessage({ chat_id: ctx.chatId, text: markdownToTelegramHtml(args.text as string), parse_mode: "HTML" }),
+    description:
+      "Send a plain real Telegram message. Optional linkPreview controls the URL preview card: 'off' hides it, 'large'/'small' sizes it, 'above' puts it over the text. Leave unset for the default.",
+    parameters: {
+      type: "object",
+      required: ["text"],
+      properties: { text: { type: "string" }, linkPreview: { type: "string", enum: ["off", "small", "large", "above"] } },
+    },
+    execute: async (args, ctx) => {
+      const lp = args.linkPreview as "off" | "small" | "large" | "above" | undefined;
+      const link_preview_options = lp
+        ? {
+            is_disabled: lp === "off" || undefined,
+            prefer_small_media: lp === "small" || undefined,
+            prefer_large_media: lp === "large" || undefined,
+            show_above_text: lp === "above" || undefined,
+          }
+        : undefined;
+      return ctx.client.sendMessage({ chat_id: ctx.chatId, text: markdownToTelegramHtml(args.text as string), parse_mode: "HTML", link_preview_options });
+    },
   },
   {
     name: "tg_rich_message",
-    description: "Send a real rich-formatted Telegram message (HTML: tables, expandable blockquotes, etc).",
-    parameters: { type: "object", properties: { html: { type: "string" } }, required: ["html"] },
-    execute: async (args, ctx) => ctx.client.sendRichMessage({ chat_id: ctx.chatId, rich_message: { html: args.html as string } }),
+    description:
+      "Send a real rich-formatted Telegram message (Bot API rich messages -- up to ~32k chars, tables, headings, expandable blockquotes, and more than plain sendMessage can do). " +
+      "Write HTML. To embed a chart/image/video INLINE in the message, put a tg://photo?id=<id> (or tg://video?id=, tg://document?id=, tg://audio?id=) link where it should appear and pass that media in the `media` array with the same id. " +
+      "For a row of tappable buttons use the <tg-button-row> tag in the HTML.",
+    parameters: {
+      type: "object",
+      required: ["html"],
+      properties: {
+        html: { type: "string" },
+        media: {
+          type: "array",
+          description: "media referenced in the html via tg://<kind>?id=<id> links",
+          items: {
+            type: "object",
+            required: ["id", "type", "url"],
+            properties: {
+              id: { type: "string", description: "1-64 chars [A-Za-z0-9_-]; must match the tg://...?id= link in the html" },
+              type: { type: "string", enum: ["photo", "video", "animation", "audio", "document", "voice_note"] },
+              url: { type: "string", description: "a URL or Telegram file_id for the media" },
+              caption: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+    execute: async (args, ctx) => {
+      const media = (args.media as { id: string; type: string; url: string; caption?: string }[] | undefined)?.map((m) => ({
+        id: m.id,
+        media: { type: m.type as RichMessageMedia["media"]["type"], media: m.url, caption: m.caption },
+      }));
+      return ctx.client.sendRichMessage({ chat_id: ctx.chatId, rich_message: { html: args.html as string, media } });
+    },
   },
   {
     name: "tg_edit_message",

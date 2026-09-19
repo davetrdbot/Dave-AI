@@ -182,6 +182,7 @@ export const CORE_TOOL_NAMES: string[] = [
   "stop_poll",
   "send_rich_draft",
   "tg_chat_action",
+  "tg_rich_message",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the

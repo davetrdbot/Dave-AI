@@ -108,7 +108,10 @@ function convertBlockquoteLines(working: string): string {
  * that merely LOOKS like a tag but isn't on the allowlist still gets safely escaped, so this
  * doesn't reopen the class of bug that broke Token Harbor's detail view.
  */
-const TELEGRAM_HTML_TAG_ALLOWLIST = "b|strong|i|em|u|ins|s|strike|del|span|tg-spoiler|a|code|pre|blockquote|tg-emoji";
+// tg-button-row (Bot API 10.3 rich-message buttons) and tg-thinking (the streaming "Thinking…"
+// placeholder, only valid inside sendRichMessageDraft) are real custom tags -- allow them through
+// the sanitizer so they survive into a rich message rather than being escaped to literal text.
+const TELEGRAM_HTML_TAG_ALLOWLIST = "b|strong|i|em|u|ins|s|strike|del|span|tg-spoiler|a|code|pre|blockquote|tg-emoji|tg-button-row|tg-thinking";
 const REAL_TELEGRAM_TAG_PATTERN = new RegExp(`</?(?:${TELEGRAM_HTML_TAG_ALLOWLIST})(?:\\s+[a-zA-Z-]+="[^"]*")*\\s*>`, "gi");
 
 export function markdownToTelegramHtml(text: string): string {

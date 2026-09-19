@@ -69,8 +69,21 @@ export type TelegramChatAction =
   | "record_video_note"
   | "upload_video_note";
 
+/** One media element embedded in a rich message (Bot API 10.2). The `id` (1-64 chars, A-Za-z0-9_-)
+ *  is what the html/markdown references via a tg://photo?id=<id> / video / document / audio link. */
+export interface RichMessageMedia {
+  id: string;
+  media: { type: "photo" | "video" | "animation" | "audio" | "document" | "voice_note"; media: string; caption?: string };
+}
+
 export interface RichMessage {
-  html: string;
+  /** Exactly one of html / markdown is used here (the block-array form isn't modelled). */
+  html?: string;
+  markdown?: string;
+  /** Bot API 10.2: media referenced inside html/markdown via tg://photo?id= etc. */
+  media?: RichMessageMedia[];
+  is_rtl?: boolean;
+  skip_entity_detection?: boolean;
 }
 
 /** Real, minimal shape of a Telegram Update -- just the fields this build actually reads. */
@@ -142,6 +155,14 @@ export interface SendMessageParams {
   reply_markup?: InlineKeyboardMarkup;
   reply_parameters?: ReplyParameters;
   disable_web_page_preview?: boolean;
+  /** Real Bot API LinkPreviewOptions -- finer control than the legacy disable_web_page_preview. */
+  link_preview_options?: {
+    is_disabled?: boolean;
+    url?: string;
+    prefer_small_media?: boolean;
+    prefer_large_media?: boolean;
+    show_above_text?: boolean;
+  };
 }
 
 /**
