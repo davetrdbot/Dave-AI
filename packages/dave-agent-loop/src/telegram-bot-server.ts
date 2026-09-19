@@ -22,7 +22,7 @@ import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } fr
 import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState, waitForBusyToClear } from "./busy-state.js";
 import { eaConnectionAlert, cycleErrorAlert, clearCycleErrorAlert } from "./health-alerts.js";
 import { startWatchSweep } from "./watch-sweep.js";
-import { startSelfAwareSweep } from "./self-aware-sweep.js";
+import { startTradeMonitorSweep } from "./trade-monitor-sweep.js";
 import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation, buildDelegationPrompt, collapseQueuedMessages } from "./delegation.js";
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
@@ -1054,11 +1054,12 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     },
   });
 
-  // The proactive self-aware SL alert (the trader: "when a trade is reaching 50% toward the SL it
-  // should alert"). Runs on its own timer independent of the hunting loop, reads live open
-  // positions off the EA snapshot, and pushes ONCE per position when it first crosses halfway to
-  // its stop -- so the trader is told even when autonomous trading is off or between ticks.
-  startSelfAwareSweep({
+  // The Self-Aware Trade Monitor: on its own timer, reads live open positions off the EA snapshot,
+  // drives each trade's lifecycle (entry -> losing -> deep loss -> recovery -> profit -> closed),
+  // and pushes an alert quoting the original idea whenever something important changes -- loss for
+  // ~5min then ~10min, deep loss / halfway-to-stop, and recovery after a prolonged loss. Runs even
+  // when autonomous trading is off or between ticks.
+  startTradeMonitorSweep({
     db: deps.db,
     userId: deps.ownerUserId,
     notify: async (text) => {
