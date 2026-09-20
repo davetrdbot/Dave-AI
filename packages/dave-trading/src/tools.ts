@@ -10,6 +10,7 @@ import { getSettingsLog } from "./settings-log.js";
 import { derivePipSize } from "./pip-size.js";
 import { assessRiskRewardForUser, getMinRiskReward, setMinRiskReward } from "./risk-reward-guard.js";
 import { getDeepLossAlertPercent, setDeepLossAlertPercent } from "./deep-loss-alert-store.js";
+import { getAlertToggles, setAlertToggle, ALERT_CATEGORIES, type AlertCategory } from "./self-aware-alert-toggles.js";
 import { createWatch, listActiveWatches, cancelWatch, type WatchKind } from "./background-watch.js";
 import { recordExpectation, findSimilarSetups, predictionAccuracySummary } from "./trade-prediction-store.js";
 import { setThesisStatus, getThesisStatus, listThesisStatuses, thesisStatusLabel, type ThesisStatus } from "./thesis-status-store.js";
@@ -456,6 +457,27 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       "earlier, 70 to be warned later). Applies to every open trade the self-aware monitor watches from then on.",
     parameters: { type: "object", required: ["percent"], properties: { percent: { type: "number" } } },
     execute: async (args, ctx) => setDeepLossAlertPercent(ctx.userId, args.percent as number),
+  },
+  {
+    name: "get_self_aware_alerts",
+    description:
+      "List every self-aware trade alert and whether it's switched on. These warnings serve both you and " +
+      "the user: loss-duration, deep-loss danger, recovery, breakeven guard, stuck-trade, and the hot-hand warning.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => ({ alerts: getAlertToggles(ctx.userId), categories: ALERT_CATEGORIES }),
+  },
+  {
+    name: "set_self_aware_alert",
+    description:
+      "Turn one self-aware alert on or off. Valid alerts: " +
+      ALERT_CATEGORIES.map((c) => c.id).join(", ") +
+      ". Switching one off silences it for both the user's push and your own turn context.",
+    parameters: {
+      type: "object",
+      required: ["alert", "on"],
+      properties: { alert: { type: "string", enum: ALERT_CATEGORIES.map((c) => c.id) }, on: { type: "boolean" } },
+    },
+    execute: async (args, ctx) => ({ alerts: setAlertToggle(ctx.userId, args.alert as AlertCategory, args.on as boolean) }),
   },
   {
     name: "trade_modify",

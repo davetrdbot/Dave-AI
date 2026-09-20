@@ -148,6 +148,10 @@ export const CORE_TOOL_NAMES: string[] = [
   "set_min_risk_reward",
   "get_deep_loss_alert",
   "set_deep_loss_alert",
+  // Every self-aware alert (loss-duration, deep-loss, recovery, breakeven, stuck, hot-hand) has an
+  // on/off switch. Core so "turn off the stuck-trade nag" works without a discovery step.
+  "get_self_aware_alerts",
+  "set_self_aware_alert",
   // use and save knowledge"). knowledge_view was the ONLY knowledge tool that was ever core -- and
   // it takes an id. Nothing in a turn ever told the model an id existed, and the lister and both
   // writers sat behind a search_tools discovery step the model had no reason to take. So the

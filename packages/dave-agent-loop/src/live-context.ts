@@ -1,5 +1,6 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
-import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent } from "@dave/trading";
+import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, getWinStreak, ALERT_CATEGORIES } from "@dave/trading";
+import { listOpenMonitors, HOT_HAND_MIN_STREAK } from "./trade-monitor-store.js";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill, listSkills } from "@dave/skills";
 import { loadFrozenSnapshot } from "@dave/memory";
@@ -60,6 +61,8 @@ export function buildLiveSettingsBlock(userId: string): string {
   const autoApproval = getAutoApprovalEnabled(userId);
   const minRiskReward = getMinRiskReward(userId);
   const deepLossPercent = getDeepLossAlertPercent(userId);
+  const alertToggles = getAlertToggles(userId);
+  const alertsOff = ALERT_CATEGORIES.filter((c) => alertToggles[c.id] === false).map((c) => c.id);
   const ea = getEaConnectionStatus(userId);
   const account = getLastKnownAccountSnapshot(userId);
 
@@ -91,6 +94,7 @@ export function buildLiveSettingsBlock(userId: string): string {
     `Minimum risk:reward: ${minRiskReward}:1 (a trade whose stop risks more than its target pays is refused)`,
     // Same reasoning: the self-aware monitor's deep-loss alert level, settable via set_deep_loss_alert.
     `Deep-loss alert: at ${deepLossPercent}% of the way from entry to the stop (the self-aware monitor warns you here)`,
+    `Self-aware alerts: ${alertsOff.length === 0 ? "all on" : `off: ${alertsOff.join(", ")}`} (toggle with set_self_aware_alert)`,
     `Auto-approval of your own proposed changes: ${autoApproval ? "on" : "off"}`,
     `EA connection: ${ea.connected ? "connected" : "not connected"}`,
     accountLine,
@@ -198,7 +202,59 @@ export function buildLiveSettingsBlock(userId: string): string {
     );
   }
 
+  // The trader, explicit: "the self aware is for the bot and also the user" -- the monitor's
+  // warnings don't only push to the user, they're surfaced HERE so Dave itself is aware of them and
+  // can act (move a stop to breakeven, close a stuck trade, hold its risk after a win streak). Same
+  // per-turn injection pattern as settings/memory/knowledge, and it respects the very same on/off
+  // switches: a category the user turned off appears to neither the user nor the bot.
+  const selfAware = safeLoadSelfAware(userId, alertToggles);
+  if (selfAware) {
+    lines.push(
+      "",
+      "<self_aware>",
+      selfAware,
+      "</self_aware>",
+      "",
+      "This is your own live read on the open trades, loaded fresh this turn. Act on it: if a trade is up ~1R, offer to move its stop to breakeven; if one is stuck flat, consider freeing the capital; if you're on a win streak, hold your risk and criteria exactly -- do not oversize. These are the same warnings the user gets; a category the user switched off is not shown.",
+    );
+  }
+
   return lines.filter((l) => l !== "").join("\n");
+}
+
+/**
+ * The per-turn self-aware read: every open trade's lifecycle state and any actionable note the
+ * monitor has latched, plus a hot-hand line when the win streak warrants it. Fail-safe like the
+ * other loaders -- a missing/corrupt store or a store read error costs the turn nothing. Notes for a
+ * switched-off category are suppressed (the switch governs the bot's awareness too, not just the push).
+ */
+function safeLoadSelfAware(userId: string, toggles: ReturnType<typeof getAlertToggles>): string | undefined {
+  try {
+    const monitors = listOpenMonitors(userId);
+    const rows: string[] = [];
+    for (const m of monitors) {
+      const head = `${m.symbol} ${m.direction.toUpperCase()} #${m.ticket}`;
+      const pnl = m.lastPnl !== undefined ? ` P/L ${m.lastPnl > 0 ? "+" : ""}${m.lastPnl}` : "";
+      const notes: string[] = [];
+      if (m.alerts.breakeven && toggles.breakeven) notes.push("up ~1R — offer to move stop to breakeven");
+      if (m.alerts.stuck && toggles.stuck) notes.push("stuck flat near breakeven — consider closing");
+      if ((m.state === "deep_loss" || m.alerts.deepLoss) && toggles.deep_loss) notes.push("near its stop");
+      const note = notes.length ? ` — ${notes.join("; ")}` : "";
+      rows.push(`- ${head} [${m.state}]${pnl}${note}`);
+    }
+    let streakLine = "";
+    if (toggles.hot_hand) {
+      const streak = getWinStreak(userId);
+      if (streak >= HOT_HAND_MIN_STREAK) {
+        streakLine = `Win streak: ${streak} in a row — hold your risk and entry criteria exactly, do NOT oversize or loosen rules.`;
+      }
+    }
+    if (rows.length === 0 && !streakLine) return undefined;
+    return [...rows, streakLine].filter(Boolean).join("\n");
+  } catch (err) {
+    console.error(`[live-context] could not load self-aware state for ${userId} -- continuing without it:`, err);
+    return undefined;
+  }
 }
 
 /**

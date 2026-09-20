@@ -80,6 +80,14 @@ import {
   toggleEndpoint,
   ALL_ANALYSIS_TIMEFRAMES,
   ALL_ANALYSIS_ENDPOINTS,
+  getMinRiskReward,
+  setMinRiskReward,
+  getDeepLossAlertPercent,
+  setDeepLossAlertPercent,
+  getAlertToggles,
+  setAlertToggle,
+  ALERT_CATEGORIES,
+  type AlertCategory,
 } from "@dave/trading";
 import { listSkills } from "@dave/skills";
 import {
@@ -916,6 +924,8 @@ function notificationsKeyboard(deps: CommandRouterDeps): ReturnType<typeof keybo
       [coloredButton(`Push notifications: ${settings.pushEnabled ? "On" : "Off"}`, settings.pushEnabled ? "green" : "red", "notif:togglepush")],
       [coloredButton(`Trade-opened alert: ${settings.tradeOpenedEnabled ? "On" : "Off"}`, settings.tradeOpenedEnabled ? "green" : "red", "notif:toggletradeopened")],
       [coloredButton(`Email notifications: ${settings.emailEnabled ? "On (no email sender configured yet)" : "Off"}`, settings.emailEnabled ? "green" : "red", "notif:toggleemail")],
+      // Real UI (the trader: "all the self aware alerts give an off and on switch in the settings").
+      [coloredButton("🧠 Self-Aware Alerts >", "blue", "settings:selfaware")],
     ]),
     "settings:top"
   );
@@ -1093,6 +1103,9 @@ function riskSettingsKeyboard(userId: string) {
         // separate approve/decline round trip, same as a Dave-initiated proposal.
         [{ label: maxOpenTradesLabel, callbackData: "proposelimit:maxOpenTrades", active: false }],
         [{ label: maxDailyLossLabel, callbackData: "proposelimit:maxDailyLossPct", active: false }],
+        // Real UI (the trader: "user can set risk reward ratio in the settings"). A real tap-through
+        // picker, not just an agent tool -- opens a preset screen.
+        [{ label: `Risk:Reward floor: ${getMinRiskReward(userId)}:1`, callbackData: "settings:riskreward", active: false }],
         [{ label: selfPauseLabel, callbackData: "toggleselfpause", active: selfPauseEnabled }],
         [{ label: twoStepLabel, callbackData: "toggletwostep", active: twoStepEnabled }],
         [{ label: sequentialThinkingLabel, callbackData: "togglesequentialthinking", active: sequentialThinkingEnabled }],
@@ -1100,6 +1113,51 @@ function riskSettingsKeyboard(userId: string) {
       "settings:top"
     )
   );
+}
+
+/** RISK:REWARD picker (the trader: "user can set risk reward ratio in the settings"). Presets cover
+ *  the usual floors; the current one is ticked. A floor of 1 means "never risk more than you stand
+ *  to gain". */
+const RISK_REWARD_PRESETS = [1, 1.5, 2, 3];
+function riskRewardKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const current = getMinRiskReward(userId);
+  const text =
+    `<b>Risk:Reward floor</b>\nCurrent: ${current}:1\n\nA trade whose target pays less than its stop risks is refused. ` +
+    `1 = never risk more than you stand to gain. 2 = the target must pay double the risk.`;
+  const rows = RISK_REWARD_PRESETS.map((v) => [
+    coloredButton(`${current === v ? "✅ " : ""}${v}:1`, current === v ? "green" : "neutral", `rr:set:${v}`),
+  ]);
+  return { text, reply_markup: withMenuHome(keyboard(rows), "settings:risk") };
+}
+
+/** DEEP-LOSS alert level picker (the trader: "set the deep loss alert -- default 50%"). How far a
+ *  trade may travel toward its stop before the self-aware monitor warns of deep loss. */
+const DEEP_LOSS_PRESETS = [30, 40, 50, 60, 70];
+function deepLossKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const current = getDeepLossAlertPercent(userId);
+  const text =
+    `<b>Deep-loss alert</b>\nCurrent: ${current}% of the way to the stop\n\nDave warns you when an open trade has moved this far ` +
+    `from entry toward its stop. 50% = halfway. A smaller number warns earlier, a larger one warns later.`;
+  const rows = DEEP_LOSS_PRESETS.map((v) => [
+    coloredButton(`${current === v ? "✅ " : ""}${v}%`, current === v ? "green" : "neutral", `deeploss:set:${v}`),
+  ]);
+  return { text, reply_markup: withMenuHome(keyboard(rows), "settings:selfaware") };
+}
+
+/** SELF-AWARE ALERTS screen (the trader: "all the self aware alerts give an off and on switch in the
+ *  settings"). Every category is a real on/off toggle; the deep-loss level lives here too since it's
+ *  the one self-aware alert with a "where" as well as an on/off. */
+function selfAwareKeyboard(userId: string): { text: string; reply_markup: ReturnType<typeof keyboard> } {
+  const toggles = getAlertToggles(userId);
+  const deepLossPercent = getDeepLossAlertPercent(userId);
+  const rows = ALERT_CATEGORIES.map((c) => [
+    coloredButton(`${toggles[c.id] ? "✅" : "❌"} ${c.label}`, toggles[c.id] ? "green" : "red", `selfaware:toggle:${c.id}`),
+  ]);
+  // The deep-loss level sub-picker, right under its own on/off row's group.
+  rows.push([coloredButton(`⚙️ Deep-loss level: ${deepLossPercent}%`, "blue", "settings:deeploss")]);
+  const text =
+    `<b>Self-Aware Alerts</b>\nThese warnings go to you AND guide Dave itself. Tap to switch any on or off.`;
+  return { text, reply_markup: withMenuHome(keyboard(rows), "settings:notifications") };
 }
 
 /** The user's next message after tapping a protected-limit row IS the proposed new number --
@@ -1777,6 +1835,47 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
     } else if (data === "settings:risk") {
       ackText = undefined;
       await renderInPlace("<b>Risk / Trading</b>", riskSettingsKeyboard(deps.userId));
+    } else if (data === "settings:riskreward") {
+      ackText = undefined;
+      const view = riskRewardKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("rr:set:")) {
+      const value = Number(data.slice("rr:set:".length));
+      if (Number.isFinite(value)) {
+        setMinRiskReward(deps.userId, value);
+        ackText = `Risk:reward floor set to ${value}:1`;
+        await confirm(`Risk:reward floor set to ${value}:1`);
+      }
+      const view = riskRewardKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:selfaware") {
+      ackText = undefined;
+      const view = selfAwareKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("selfaware:toggle:")) {
+      const cat = data.slice("selfaware:toggle:".length) as AlertCategory;
+      const currentlyOn = getAlertToggles(deps.userId)[cat] !== false;
+      if (ALERT_CATEGORIES.some((c) => c.id === cat)) {
+        setAlertToggle(deps.userId, cat, !currentlyOn);
+        const label = ALERT_CATEGORIES.find((c) => c.id === cat)?.label ?? cat;
+        ackText = `${label}: ${!currentlyOn ? "on" : "off"}`;
+        await confirm(`${label}: ${!currentlyOn ? "On" : "Off"}`);
+      }
+      const view = selfAwareKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data === "settings:deeploss") {
+      ackText = undefined;
+      const view = deepLossKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
+    } else if (data.startsWith("deeploss:set:")) {
+      const value = Number(data.slice("deeploss:set:".length));
+      if (Number.isFinite(value)) {
+        setDeepLossAlertPercent(deps.userId, value);
+        ackText = `Deep-loss alert set to ${value}%`;
+        await confirm(`Deep-loss alert set to ${value}%`);
+      }
+      const view = deepLossKeyboard(deps.userId);
+      await renderInPlace(view.text, view.reply_markup);
     } else if (data.startsWith("setrisk:")) {
       // Item 12 real gap fixed: cyclemode only ever toggled off<->auto -- "on" mode requires the
       // user's own exact numeric value, and there was no real way to TYPE it for sl/tp/lot (only

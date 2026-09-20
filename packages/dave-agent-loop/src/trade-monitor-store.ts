@@ -46,6 +46,9 @@ export interface TradeMonitor {
   /** When the trade most recently entered a losing state (reset when it climbs back to profit) --
    *  drives the loss-duration alerts. */
   lossStartedAt?: number;
+  /** When the trade most recently entered the flat "near breakeven" band (reset when it leaves) --
+   *  drives the stuck-trade alert. */
+  flatStartedAt?: number;
   /** Worst (most negative) P/L ever seen -- for the DEEP_LOSS classification and the story. */
   worstPnl?: number;
   /** True once the trade has been in loss long enough to make a later return to profit a genuine
@@ -60,6 +63,8 @@ export interface TradeMonitor {
     slDanger?: boolean;
     recovery?: boolean;
     deepLoss?: boolean;
+    breakeven?: boolean;
+    stuck?: boolean;
   };
 }
 
@@ -70,8 +75,19 @@ export const LOSS_ALERT_10M_MS = 10 * 60_000;
 export const PROLONGED_LOSS_MS = LOSS_ALERT_5M_MS;
 /** Fraction of the entry-to-SL distance travelled that counts as "deep" / genuine SL danger. */
 export const DEEP_LOSS_SL_PROGRESS = 0.5;
+/** Favorable move (in multiples of the entry-to-SL risk) at which the stop should go to breakeven.
+ *  1.0 = the trade is up as much as it originally risked -- the classic "lock it in risk-free" point. */
+export const BREAKEVEN_R = 1.0;
+/** How close to entry (as a fraction of the entry-to-SL risk) still counts as "flat / near breakeven". */
+export const FLAT_BAND_FRACTION = 0.15;
+/** A trade sitting flat near breakeven this long is tying up capital doing nothing. */
+export const STUCK_FLAT_MS = 15 * 60_000;
 /** Keep at most this many finished (closed) monitors, newest first -- bounds the store. */
 export const MAX_RETAINED_CLOSED_MONITORS = 100;
+/** Consecutive wins that trip the hot-hand warning (the trader: "3+ wins in a row"). Lives here in
+ *  the pure module so both the sweep and the per-turn context can share it without importing the
+ *  EA-backed runtime. */
+export const HOT_HAND_MIN_STREAK = 3;
 
 function monitorsPath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "trade-monitors.json");
@@ -134,7 +150,7 @@ export interface PositionObservation {
 }
 
 /** The alerts a single advance() produced -- the sweep turns these into real messages. */
-export type MonitorAlertKind = "loss5m" | "loss10m" | "slDanger" | "recovery" | "deepLoss";
+export type MonitorAlertKind = "loss5m" | "loss10m" | "slDanger" | "recovery" | "deepLoss" | "breakeven" | "stuck";
 export interface MonitorAlert {
   kind: MonitorAlertKind;
   monitor: TradeMonitor;
@@ -192,6 +208,35 @@ export function advanceMonitor(
   const inLoss = pnl < 0;
   const progress = price !== undefined ? slProgress(m, price) : undefined;
   const deep = inLoss && progress !== undefined && progress >= deepLossThreshold;
+
+  // Breakeven guard and stuck-trade -- independent of the loss/profit branch below (a trade can be
+  // up ~1R or sitting flat regardless of the exact lifecycle state). Both need a live price and,
+  // for a meaningful "in multiples of risk" measure, a stop.
+  if (price !== undefined && m.sl !== undefined) {
+    const risk = Math.abs(m.openPrice - m.sl);
+    if (risk > 0) {
+      const favorable = m.direction === "buy" ? price - m.openPrice : m.openPrice - price;
+      // Breakeven: up as much as it risked -> suggest moving the stop to breakeven. Latched for the
+      // life of the trade (a later dip must not re-suggest it).
+      if (!m.alerts.breakeven && favorable >= risk * BREAKEVEN_R) {
+        m.alerts.breakeven = true;
+        alerts.push({ kind: "breakeven", monitor: m });
+      }
+      // Stuck: within a narrow band around entry for a sustained stretch. The clock starts when it
+      // enters the band and resets the moment it leaves, so only genuine dead time fires.
+      const flat = Math.abs(price - m.openPrice) <= risk * FLAT_BAND_FRACTION;
+      if (flat) {
+        if (m.flatStartedAt === undefined) m.flatStartedAt = now;
+        if (now - m.flatStartedAt >= STUCK_FLAT_MS && !m.alerts.stuck) {
+          m.alerts.stuck = true;
+          alerts.push({ kind: "stuck", monitor: m });
+        }
+      } else {
+        m.flatStartedAt = undefined;
+        m.alerts.stuck = false;
+      }
+    }
+  }
 
   if (inLoss) {
     if (m.lossStartedAt === undefined) m.lossStartedAt = now;

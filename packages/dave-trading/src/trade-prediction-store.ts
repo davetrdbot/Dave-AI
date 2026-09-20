@@ -150,6 +150,25 @@ export function listOutcomes(userId: string): TradeOutcome[] {
   return readJson<TradeOutcome[]>(outcomesPath(userId), []);
 }
 
+/** Whether a recorded outcome counts as a win: real profit if we have it, else the thesis flag. */
+function isWin(o: TradeOutcome): boolean {
+  return o.actual.closePnl !== undefined ? o.actual.closePnl > 0 : o.thesisCorrect;
+}
+
+/**
+ * How many trades in a row, ending with the most recent close, were wins. 0 if the last trade was a
+ * loss. Drives the hot-hand warning (the trader: "after 3+ wins in a row, warn against oversizing").
+ */
+export function getWinStreak(userId: string): number {
+  const outcomes = [...listOutcomes(userId)].sort((a, b) => a.recordedAt - b.recordedAt);
+  let streak = 0;
+  for (let i = outcomes.length - 1; i >= 0; i--) {
+    if (isWin(outcomes[i])) streak++;
+    else break;
+  }
+  return streak;
+}
+
 export interface SimilarSetupQuery {
   symbol: string;
   direction: "buy" | "sell";
