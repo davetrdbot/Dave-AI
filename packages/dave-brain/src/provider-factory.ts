@@ -50,7 +50,7 @@ export function buildProvider(name: ProviderName, config: ProviderKeyConfig): Pr
       if (entry.requiresExtraConfig?.includes("accountId") && !config.accountId) {
         throw new Error(`${resolved} requires accountId in the stored key's config`);
       }
-      return new OpenAICompatibleProvider(name, baseUrl, config.apiKey, config.model ?? entry.defaultModel, entry.chatPath);
+      return new OpenAICompatibleProvider(name, baseUrl, config.apiKey, config.model ?? entry.defaultModel, entry.chatPath, "bearer", entry.toolChoiceStyle);
     }
   }
 }

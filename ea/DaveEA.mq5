@@ -163,8 +163,89 @@ void OnDeinit(const int reason)
    EventKillTimer();
   }
 
+//+------------------------------------------------------------------+
+//| Real bug fixed (the trader, live: the MetaTrader push notification |
+//| "doesn't send full reasoning -- it just stops at ...").            |
+//| SendNotification's body is genuinely capped at 255 characters by   |
+//| the MetaQuotes push service, and the old NotifyTradeEvent simply   |
+//| cut the combined string at 252 and appended "..." -- so everything |
+//| past the first ~250 characters of the model's reasoning never      |
+//| reached the phone at all. The per-MESSAGE cap is real, but the     |
+//| reasoning can still arrive in full as FURTHER notifications.       |
+//| MetaQuotes also rate-limits pushes (roughly 2/second), so overflow |
+//| parts are queued and drained one per OnTimer tick rather than      |
+//| fired in a burst the service would drop -- and no Sleep() is used, |
+//| so the EA is never blocked mid-tick.                               |
+//+------------------------------------------------------------------+
+#define PUSH_MAX_LEN   255
+#define PUSH_MAX_PARTS 6     // ~1.4k chars of real reasoning; past that it genuinely is trimmed.
+
+string g_pushQueue[];
+int    g_pushQueueCount = 0;
+
+void EnqueuePush(string text)
+  {
+   if(g_pushQueueCount >= ArraySize(g_pushQueue))
+      ArrayResize(g_pushQueue, g_pushQueueCount + 8);
+   g_pushQueue[g_pushQueueCount] = text;
+   g_pushQueueCount++;
+  }
+
+// Sends exactly one queued push per call -- real rate-limit respect without blocking the EA.
+void DrainPushQueue()
+  {
+   if(g_pushQueueCount <= 0)
+      return;
+   SendNotification(g_pushQueue[0]);
+   for(int i = 1; i < g_pushQueueCount; i++)
+      g_pushQueue[i - 1] = g_pushQueue[i];
+   g_pushQueueCount--;
+  }
+
+// Splits `text` into at most PUSH_MAX_PARTS chunks of <= maxLen, breaking at the last space before
+// the cap so a chunk never cuts mid-word or mid-number (the same real complaint that produced
+// summarizeReason's word-boundary fix on the Telegram side).
+int SplitForPush(string text, int maxLen, string &out[])
+  {
+   int count = 0;
+   ArrayResize(out, 0);
+   while(StringLen(text) > 0 && count < PUSH_MAX_PARTS)
+     {
+      if(StringLen(text) <= maxLen)
+        {
+         ArrayResize(out, count + 1);
+         out[count] = text;
+         count++;
+         // Cleared before breaking so the leftover check below correctly sees "nothing remains" --
+         // otherwise a message that fit perfectly would be falsely marked truncated with "...".
+         text = "";
+         break;
+        }
+      int cut = maxLen;
+      int lastSpace = -1;
+      for(int i = 0; i < maxLen; i++)
+         if(StringGetCharacter(text, i) == ' ')
+            lastSpace = i;
+      if(lastSpace > maxLen / 2)
+         cut = lastSpace;
+      ArrayResize(out, count + 1);
+      out[count] = StringSubstr(text, 0, cut);
+      count++;
+      text = StringSubstr(text, cut);
+      StringTrimLeft(text);
+     }
+   // Only reachable when the reasoning genuinely exceeds PUSH_MAX_PARTS messages. Mark the last
+   // part so the reader can see it really was cut, rather than "(6/6)" implying a complete message.
+   if(StringLen(text) > 0 && count > 0)
+      out[count - 1] = out[count - 1] + "...";
+   return count;
+  }
+
 void OnTimer()
   {
+   // Drain before the (much heavier) report push so a queued reasoning part always goes out on
+   // schedule even when the webhook call is slow.
+   DrainPushQueue();
    PushReportAndExecuteCommands();
   }
 
@@ -550,8 +631,9 @@ void ExecuteOneCommand(string obj)
       // reach MT5 itself as a real push notification/email -- not just the short `comment` above,
       // which has its own separate, much tighter broker-enforced length limit). This is a
       // SEPARATE field, never used as the CTrade comment argument -- only passed to
-      // NotifyTradeEvent below, which truncates it for SendNotification's real ~255-char push
-      // limit but sends it in full via SendMail.
+      // NotifyTradeEvent below, which splits it across as many numbered push notifications as it
+      // takes to deliver it in full (SendNotification's real ~255-char cap is per message), and
+      // sends it in one piece via SendMail.
       string pushMessage = JsonGetString(obj, "pushMessage");
       bool ok = false;
       // Real bug fixed here: this used to only ever call trade.Buy/trade.Sell
@@ -2775,18 +2857,31 @@ void NotifyTradeEvent(string message, string fullReasoning = "")
    Print("Dave EA: ", message, (StringLen(fullReasoning) > 0 ? " | " + fullReasoning : ""));
    if(EnablePush)
      {
-      // Real MT5 constraint: SendNotification's push body is capped at roughly 255 characters by
-      // the MetaQuotes push service -- there is no real way around this, so a combined string
-      // longer than that is truncated here, sensibly: `message` (direction/symbol/lots, or the
-      // failure reason) is always kept in full at the front, and only the reasoning's own
-      // trailing detail is cut, never the message itself.
-      string pushText = message;
-      if(StringLen(fullReasoning) > 0)
+      // Real MT5 constraint: SendNotification's body is capped at ~255 characters by the MetaQuotes
+      // push service. That cap is per MESSAGE, not per event -- so instead of cutting the reasoning
+      // at 252 chars (the old behaviour, which is exactly the "it just stops at ..." bug), anything
+      // longer is split into numbered parts. Part 1 goes out immediately so the trade itself is
+      // never delayed; the rest are queued and drained one per OnTimer tick (see DrainPushQueue),
+      // which respects the service's real ~2/second rate limit without blocking the EA.
+      string combined = StringLen(fullReasoning) > 0 ? message + " - " + fullReasoning : message;
+      if(StringLen(combined) <= PUSH_MAX_LEN)
         {
-         string combined = message + " - " + fullReasoning;
-         pushText = StringLen(combined) > 255 ? StringSubstr(combined, 0, 252) + "..." : combined;
+         SendNotification(combined);
         }
-      SendNotification(pushText);
+      else
+        {
+         string parts[];
+         // Reserve room for the "(i/n) " prefix so a numbered part still fits inside the real cap.
+         int n = SplitForPush(combined, PUSH_MAX_LEN - 8, parts);
+         for(int i = 0; i < n; i++)
+           {
+            string numbered = "(" + IntegerToString(i + 1) + "/" + IntegerToString(n) + ") " + parts[i];
+            if(i == 0)
+               SendNotification(numbered);
+            else
+               EnqueuePush(numbered);
+           }
+        }
      }
    if(EnableEmail)
      {

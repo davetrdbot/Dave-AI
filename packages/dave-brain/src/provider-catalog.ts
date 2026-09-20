@@ -32,6 +32,17 @@ export interface ProviderCatalogEntry {
   readonly openAICompatible: boolean;
   readonly requiresExtraConfig?: ("accountId" | "region" | "secretAccessKey")[];
   readonly aliasOf?: ProviderName;
+  /**
+   * Real bug fixed (the trader, live, with the provider's own error text: nscale returned
+   * `HTTP 400 INVALID_TOOL_CHOICE: Supported tool_choice values are "auto" and "none" currently`,
+   * which crashed EVERY autonomous trading cycle -- the tick forces `tool_choice` to the named
+   * decision tool). Not every OpenAI-compatible server implements the named-function form of
+   * `tool_choice`; some only accept the string values. "auto-only" makes a forced choice degrade to
+   * `"auto"` for that provider instead of sending a body it will reject outright.
+   *
+   * Defaults to "named" (the full OpenAI shape) -- every existing provider keeps current behaviour.
+   */
+  readonly toolChoiceStyle?: "named" | "auto-only";
   readonly notes: string;
 }
 
@@ -343,14 +354,17 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     "Confirmed real via docs.lambda.ai/public-cloud/lambda-inference-api/ and lambda.ai/inference-models/deepseek-r1: genuinely OpenAI-compatible chat/completions, real documented GET /v1/models, flat-string model ids (deepseek-r1, llama3.3-70b-instruct-fp8, ...). Confirmed 2026-09-14.",
     "/models"
   ),
-  nscale: OPENAI_COMPAT(
-    "nscale",
-    "Nscale Serverless Inference",
-    "https://inference.api.nscale.com/v1",
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-    "Confirmed real via docs.nscale.com/docs/ai-services/models: genuinely OpenAI-compatible chat/completions across Llama/Qwen/DeepSeek/GPT-OSS/Mistral, real GET /v1/models for programmatic model discovery. Default model id confirmed live in the docs' own examples, confirmed 2026-09-14.",
-    "/models"
-  ),
+  nscale: {
+    ...OPENAI_COMPAT(
+      "nscale",
+      "Nscale Serverless Inference",
+      "https://inference.api.nscale.com/v1",
+      "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+      "Confirmed real via docs.nscale.com/docs/ai-services/models: genuinely OpenAI-compatible chat/completions across Llama/Qwen/DeepSeek/GPT-OSS/Mistral, real GET /v1/models for programmatic model discovery. Default model id confirmed live in the docs' own examples, confirmed 2026-09-14. Real limitation confirmed live 2026-09-20 from the server's own error body: it rejects the named-function form of tool_choice with HTTP 400 INVALID_TOOL_CHOICE (\"Supported tool_choice values are \\\"auto\\\" and \\\"none\\\" currently\"), so it is marked auto-only -- a forced tool choice degrades to \"auto\" rather than being rejected outright.",
+      "/models"
+    ),
+    toolChoiceStyle: "auto-only",
+  },
   parasail: OPENAI_COMPAT(
     "parasail",
     "Parasail",

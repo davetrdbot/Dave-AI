@@ -265,9 +265,29 @@ function toOpenAIToolSpecs(tools: CompletionRequest["tools"]): unknown[] | undef
 }
 
 /** Real, standard OpenAI-shaped forced tool choice -- shared by every OpenAI-compatible wire
- *  format in this file (OpenAICompatibleProvider, DeepSeek, Cohere all use this exact shape). */
-function toOpenAIToolChoice(toolChoice: CompletionRequest["toolChoice"]): unknown | undefined {
-  return toolChoice ? { type: "function", function: { name: toolChoice.name } } : undefined;
+ *  format in this file (OpenAICompatibleProvider, DeepSeek, Cohere all use this exact shape).
+ *
+ *  Real bug fixed (the trader, live: nscale returned HTTP 400 INVALID_TOOL_CHOICE -- "Supported
+ *  tool_choice values are \"auto\" and \"none\" currently" -- which crashed every autonomous trading
+ *  cycle, since the tick forces tool_choice to the named decision tool). Not every OpenAI-compatible
+ *  server implements the named-function form; `style: "auto-only"` degrades a forced choice to the
+ *  plain string "auto" for those, which they DO accept. Safe for the two real forced call sites:
+ *  both send exactly ONE tool, and both already fall back to parsing the model's text when no
+ *  structured tool call comes back (autonomous-tick's parseDecisionFromText, sequential-thinking's
+ *  own guard) -- so "auto" degrades reasoning quality slightly at worst, instead of failing hard. */
+function toOpenAIToolChoice(toolChoice: CompletionRequest["toolChoice"], style: ToolChoiceStyle = "named"): unknown | undefined {
+  if (!toolChoice) return undefined;
+  return style === "auto-only" ? "auto" : { type: "function", function: { name: toolChoice.name } };
+}
+
+export type ToolChoiceStyle = "named" | "auto-only";
+
+/** Does this 400 body look like the server rejecting the NAMED tool_choice shape specifically?
+ *  Used for a real one-shot retry so a provider we haven't catalogued yet self-heals instead of
+ *  failing the whole run (nscale's own body is the reference case: an INVALID_TOOL_CHOICE code with
+ *  a "tool_choice" param). Deliberately narrow -- it must not swallow unrelated 400s. */
+function looksLikeToolChoiceRejection(body: string): boolean {
+  return /tool_choice/i.test(body) && /invalid|unsupported|not supported|supported .*values/i.test(body);
 }
 
 /**
@@ -550,36 +570,65 @@ export class OpenAICompatibleProvider implements Provider {
      * Microsoft's own docs -- Bearer is not accepted there), so this is now a real, honored switch,
      * not just documentation. Every existing provider keeps its current (correct) Bearer behavior
      * by default. */
-    private readonly authHeaderStyle: "bearer" | "api-key-header" = "bearer"
+    private readonly authHeaderStyle: "bearer" | "api-key-header" = "bearer",
+    /** See toOpenAIToolChoice: some OpenAI-compatible servers only accept the string forms of
+     *  tool_choice. Catalog-driven, defaulting to the full OpenAI shape. */
+    private readonly toolChoiceStyle: ToolChoiceStyle = "named"
   ) {}
 
   async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     const start = Date.now();
     const tools = toOpenAIToolSpecs(req.tools);
-    const tool_choice = toOpenAIToolChoice(req.toolChoice);
-    let res: Response;
-    try {
-      res = await fetchWithTimeout(
-        `${this.baseUrl}${this.chatPath}`,
-        {
-          method: "POST",
-          headers:
-            this.authHeaderStyle === "api-key-header"
-              ? { "content-type": "application/json", "api-key": this.apiKey }
-              : { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools, tool_choice }),
-        },
-        timeoutMs,
-        signal
-      );
-    } catch (err) {
-      throw new ProviderError(this.name, `request failed/timed out after ${timeoutMs}ms`, err);
-    }
+    const headers: Record<string, string> =
+      this.authHeaderStyle === "api-key-header"
+        ? { "content-type": "application/json", "api-key": this.apiKey }
+        : { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` };
+    const post = async (tool_choice: unknown | undefined): Promise<Response> => {
+      try {
+        return await fetchWithTimeout(
+          `${this.baseUrl}${this.chatPath}`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ model: this.model, messages: toOpenAIToolCallMessages(req.messages), max_tokens: req.maxTokens, tools, tool_choice }),
+          },
+          timeoutMs,
+          signal
+        );
+      } catch (err) {
+        throw new ProviderError(this.name, `request failed/timed out after ${timeoutMs}ms`, err);
+      }
+    };
+
+    let sentToolChoice = toOpenAIToolChoice(req.toolChoice, this.toolChoiceStyle);
+    let res = await post(sentToolChoice);
     if (!res.ok) {
-      throw await providerErrorFromResponse(this.name, res);
+      // The body can only be read once, so read it here and decide from it -- either a real
+      // one-shot retry with the degraded tool_choice, or the same error we always raised.
+      const body = await res.text();
+      const sentNamedChoice = sentToolChoice !== undefined && typeof sentToolChoice !== "string";
+      if (res.status === 400 && sentNamedChoice && looksLikeToolChoiceRejection(body)) {
+        // This provider genuinely doesn't implement the named form. Retry once with "auto" so the
+        // run survives (and is worth cataloguing as auto-only, as nscale now is).
+        sentToolChoice = "auto";
+        res = await post(sentToolChoice);
+        if (!res.ok) throw new ProviderError(this.name, `HTTP ${res.status}: ${await res.text()}`, undefined, res.status === 429 ? parseRetryAfterMs(res) : undefined);
+      } else {
+        throw new ProviderError(this.name, `HTTP ${res.status}: ${body}`, undefined, res.status === 429 ? parseRetryAfterMs(res) : undefined);
+      }
     }
     const json = (await res.json()) as {
-      choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
+      choices: {
+        message: {
+          content: string | null;
+          /** Reasoning models served through this same OpenAI-compatible shape put their chain of
+           *  thought here (DeepSeek-R1 and its distills: `reasoning_content`; GPT-OSS and several
+           *  routers: `reasoning`) -- see the fallback below. */
+          reasoning_content?: string | null;
+          reasoning?: string | null;
+          tool_calls?: { id: string; function: { name: string; arguments: string } }[];
+        };
+      }[];
       usage?: { prompt_tokens_details?: { cached_tokens?: number }; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
     const message = json.choices[0].message;
@@ -590,6 +639,18 @@ export class OpenAICompatibleProvider implements Provider {
     // inline in `content` instead. Only consulted when the structured field came back genuinely
     // empty, so a provider that's doing this correctly is never touched.
     let text = message.content ?? "";
+    // Real bug fixed (the trader, live: "nscale provider it just says ✅ Done."). "✅ Done." is
+    // telegram-bot-server's fallback for an EMPTY final text -- and this class only ever read
+    // `content`. A reasoning model (nscale's own default is DeepSeek-R1-Distill-Qwen-32B) routinely
+    // returns its answer in `reasoning_content`/`reasoning` with `content` empty or null, so every
+    // such reply was silently thrown away and replaced by "✅ Done.". Strictly a fallback: a
+    // provider that fills `content` properly is never touched. Deliberately ahead of the marker
+    // strip below, so a reasoning-only reply carrying inline tool-call tokens is cleaned up exactly
+    // the way a `content` reply would be.
+    if (!text.trim()) {
+      const reasoning = (message.reasoning_content ?? message.reasoning ?? "").trim();
+      if (reasoning) text = reasoning;
+    }
     if ((!toolCalls || toolCalls.length === 0) && text) {
       const stripped = stripInlineToolCallMarkers(text);
       text = stripped.text;
