@@ -138,6 +138,16 @@ export const CORE_TOOL_NAMES: string[] = [
   "review_prediction_accuracy",
   "update_trade_thesis",
   "get_trade_thesis",
+
+  // Trade-safety settings the trader adjusts by hand (both are real, per-user, and surfaced every
+  // turn in <current_settings>): the risk:reward floor a trade must clear, and how far a position
+  // may travel toward its stop before the self-aware monitor warns of deep loss (default 50%).
+  // Core, not discovery-gated -- a "set my R:R to 2" / "warn me at 40%" must never depend on the
+  // model happening to search_tools for the setting first.
+  "get_min_risk_reward",
+  "set_min_risk_reward",
+  "get_deep_loss_alert",
+  "set_deep_loss_alert",
   // use and save knowledge"). knowledge_view was the ONLY knowledge tool that was ever core -- and
   // it takes an id. Nothing in a turn ever told the model an id existed, and the lister and both
   // writers sat behind a search_tools discovery step the model had no reason to take. So the

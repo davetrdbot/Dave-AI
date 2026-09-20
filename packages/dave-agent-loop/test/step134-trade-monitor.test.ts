@@ -57,6 +57,17 @@ try {
   assert.equal(r.alerts.filter((a) => a.kind === "deepLoss").length, 1, "deep loss must fire once at halfway to stop");
   console.log("    confirmed: state=deep_loss, one deep-loss alert");
 
+  console.log("\n[4b] A custom deep-loss threshold fires earlier (trader: settable, default 50%)...\n");
+  // entry 100, sl 90, price 97 => 30% of the way to the stop. At the default 50% nothing fires;
+  // at a configured 30% it's already deep loss.
+  const early = obs({ ticket: "T3", currentPrice: 97, pnl: -3 });
+  const atDefault = advanceMonitor(undefined, early, t0);
+  assert.equal(atDefault.alerts.filter((a) => a.kind === "deepLoss").length, 0, "at default 50% a 30% move is not yet deep");
+  const atThirty = advanceMonitor(undefined, early, t0, 0.3);
+  assert.equal(atThirty.monitor.state, "deep_loss", "with a 30% threshold, 30% to the stop is deep loss");
+  assert.equal(atThirty.alerts.filter((a) => a.kind === "deepLoss").length, 1, "and the deep-loss alert fires at the configured level");
+  console.log("    confirmed: threshold 0.3 fires at 30%; default 0.5 stays quiet");
+
   console.log("\n[5] RECOVERY: after a prolonged loss, back to profit fires a recovery alert...\n");
   r = advanceMonitor(r.monitor, obs({ currentPrice: 101, pnl: 3 }), t0 + LOSS_ALERT_10M_MS + 120_000);
   assert.equal(r.alerts.filter((a) => a.kind === "recovery").length, 1, "recovery after prolonged loss must be announced");

@@ -152,7 +152,12 @@ function transition(m: TradeMonitor, state: LifecycleState, at: number, price?: 
  *
  * `now` is injected so tests can drive time deterministically.
  */
-export function advanceMonitor(prev: TradeMonitor | undefined, obs: PositionObservation, now: number): { monitor: TradeMonitor; alerts: MonitorAlert[] } {
+export function advanceMonitor(
+  prev: TradeMonitor | undefined,
+  obs: PositionObservation,
+  now: number,
+  deepLossThreshold: number = DEEP_LOSS_SL_PROGRESS
+): { monitor: TradeMonitor; alerts: MonitorAlert[] } {
   const m: TradeMonitor =
     prev ??
     {
@@ -186,7 +191,7 @@ export function advanceMonitor(prev: TradeMonitor | undefined, obs: PositionObse
   m.worstPnl = m.worstPnl === undefined ? pnl : Math.min(m.worstPnl, pnl);
   const inLoss = pnl < 0;
   const progress = price !== undefined ? slProgress(m, price) : undefined;
-  const deep = inLoss && progress !== undefined && progress >= DEEP_LOSS_SL_PROGRESS;
+  const deep = inLoss && progress !== undefined && progress >= deepLossThreshold;
 
   if (inLoss) {
     if (m.lossStartedAt === undefined) m.lossStartedAt = now;
@@ -199,7 +204,7 @@ export function advanceMonitor(prev: TradeMonitor | undefined, obs: PositionObse
       m.alerts.deepLoss = true;
       m.alerts.slDanger = true; // deep loss implies SL danger; don't double-fire the SL alert
       alerts.push({ kind: "deepLoss", monitor: m });
-    } else if (!deep && progress !== undefined && progress >= DEEP_LOSS_SL_PROGRESS && !m.alerts.slDanger) {
+    } else if (!deep && progress !== undefined && progress >= deepLossThreshold && !m.alerts.slDanger) {
       m.alerts.slDanger = true;
       alerts.push({ kind: "slDanger", monitor: m });
     }

@@ -1,5 +1,5 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
-import { getConfidenceSettings, getMinRiskReward } from "@dave/trading";
+import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent } from "@dave/trading";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill, listSkills } from "@dave/skills";
 import { loadFrozenSnapshot } from "@dave/memory";
@@ -59,6 +59,7 @@ export function buildLiveSettingsBlock(userId: string): string {
   const confidence = getConfidenceSettings(userId);
   const autoApproval = getAutoApprovalEnabled(userId);
   const minRiskReward = getMinRiskReward(userId);
+  const deepLossPercent = getDeepLossAlertPercent(userId);
   const ea = getEaConnectionStatus(userId);
   const account = getLastKnownAccountSnapshot(userId);
 
@@ -88,6 +89,8 @@ export function buildLiveSettingsBlock(userId: string): string {
     // Surfaced every turn for the same reason as every other setting in this block: a floor the
     // model cannot see is a floor it will keep tripping over. Settable via set_min_risk_reward.
     `Minimum risk:reward: ${minRiskReward}:1 (a trade whose stop risks more than its target pays is refused)`,
+    // Same reasoning: the self-aware monitor's deep-loss alert level, settable via set_deep_loss_alert.
+    `Deep-loss alert: at ${deepLossPercent}% of the way from entry to the stop (the self-aware monitor warns you here)`,
     `Auto-approval of your own proposed changes: ${autoApproval ? "on" : "off"}`,
     `EA connection: ${ea.connected ? "connected" : "not connected"}`,
     accountLine,

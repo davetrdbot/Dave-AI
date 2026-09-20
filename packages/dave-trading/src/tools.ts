@@ -9,6 +9,7 @@ import { getRiskSettings } from "./risk-settings.js";
 import { getSettingsLog } from "./settings-log.js";
 import { derivePipSize } from "./pip-size.js";
 import { assessRiskRewardForUser, getMinRiskReward, setMinRiskReward } from "./risk-reward-guard.js";
+import { getDeepLossAlertPercent, setDeepLossAlertPercent } from "./deep-loss-alert-store.js";
 import { createWatch, listActiveWatches, cancelWatch, type WatchKind } from "./background-watch.js";
 import { recordExpectation, findSimilarSetups, predictionAccuracySummary } from "./trade-prediction-store.js";
 import { setThesisStatus, getThesisStatus, listThesisStatuses, thesisStatusLabel, type ThesisStatus } from "./thesis-status-store.js";
@@ -439,6 +440,22 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       "Applies to every trade from then on, both your autonomous cycles and direct trade_execute calls.",
     parameters: { type: "object", required: ["minRiskReward"], properties: { minRiskReward: { type: "number" } } },
     execute: async (args, ctx) => setMinRiskReward(ctx.userId, args.minRiskReward as number),
+  },
+  {
+    name: "get_deep_loss_alert",
+    description:
+      "Get the user's deep-loss alert level (a percentage). It's how far a trade has moved from entry toward its stop before the " +
+      "self-aware monitor warns you it's in deep loss. 50 means 'halfway to the stop' (the default).",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => ({ deepLossPercent: getDeepLossAlertPercent(ctx.userId) }),
+  },
+  {
+    name: "set_deep_loss_alert",
+    description:
+      "Set the deep-loss alert level as a percentage of the distance from entry to the stop (e.g. 50 for halfway, 30 to be warned " +
+      "earlier, 70 to be warned later). Applies to every open trade the self-aware monitor watches from then on.",
+    parameters: { type: "object", required: ["percent"], properties: { percent: { type: "number" } } },
+    execute: async (args, ctx) => setDeepLossAlertPercent(ctx.userId, args.percent as number),
   },
   {
     name: "trade_modify",

@@ -1,6 +1,6 @@
 import { getLastKnownState } from "@dave/ea-bridge";
 import { getTradeLifecycle } from "@dave/feedback";
-import { recordOutcome } from "@dave/trading";
+import { recordOutcome, getDeepLossAlertProgress } from "@dave/trading";
 import type { DaveDatabase } from "@dave/db";
 import {
   readMonitors,
@@ -58,9 +58,9 @@ export function buildMonitorAlert(a: MonitorAlert, now: number): string {
     case "loss10m":
       return `⏳ ${head} has now been losing for ${lossFor}.${pnl} This is dragging — decide: hold, cut, or adjust.${why}`;
     case "deepLoss":
-      return `🚨 ${head} is in DEEP loss — past halfway to its stop.${pnl} Genuinely close to being stopped out.${why}`;
+      return `🚨 ${head} is in DEEP loss — past your alert level on the way to its stop.${pnl} Genuinely close to being stopped out.${why}`;
     case "slDanger":
-      return `⚠️ ${head} is halfway from entry to its stop.${pnl}${why}`;
+      return `⚠️ ${head} has reached your deep-loss alert level toward its stop.${pnl}${why}`;
     case "recovery":
       return `🟢 ${head} has climbed back to profit after being under water for a stretch.${pnl} The idea recovered.${why}`;
   }
@@ -75,6 +75,9 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
 
   const fired: MonitorAlert[] = [];
   const next: TradeMonitor[] = [];
+  // The trader's own deep-loss alert level (default 50% -- halfway to the stop), read fresh each
+  // sweep so a change takes effect on the very next pass with no restart.
+  const deepLossThreshold = getDeepLossAlertProgress(deps.userId);
 
   // Advance each currently-open position.
   for (const p of positions) {
@@ -89,7 +92,7 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
       pnl: p.pnl,
       reason: byTicket.get(p.ticket)?.reason ?? reasonFor(deps.db, deps.userId, p.ticket),
     };
-    const { monitor, alerts } = advanceMonitor(byTicket.get(p.ticket), obs, now);
+    const { monitor, alerts } = advanceMonitor(byTicket.get(p.ticket), obs, now, deepLossThreshold);
     next.push(monitor);
     byTicket.delete(p.ticket);
     fired.push(...alerts);
