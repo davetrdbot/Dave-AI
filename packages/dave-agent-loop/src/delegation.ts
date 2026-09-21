@@ -14,7 +14,29 @@ import type { BusyState } from "./busy-state.js";
 export interface PendingDelegation {
   text: string;
   chatId: number;
+  /** When this message actually arrived. Load-bearing -- see PENDING_DELEGATION_MAX_AGE_MS. */
+  receivedAt: number;
 }
+
+/**
+ * Real bug fixed (the trader, live, with their own timeline: "what's my balance" at 10:01, "wassup"
+ * at 10:53, "pending orders" at 10:58, then "hello" -- "it just as if the message send previously
+ * was sent now, so it keeps like telling me your balance is this pending orders is this that").
+ *
+ * The queue had no notion of age and was drained ONLY by a button tap. A delegation prompt's
+ * buttons stay tappable in Telegram forever, and the busy flag that created the prompt self-heals
+ * after 15 minutes (busy-state.ts) -- so the message that queued at 10:01 was never answered, just
+ * sat on disk. Later messages went through normally while it waited. Whenever that old button was
+ * finally tapped -- or another message queued behind it and drained the backlog -- Dave answered
+ * the whole stale pile at once, reporting a balance and pending orders the trader had asked about
+ * nearly an hour earlier, reading exactly like the bot repeating itself at random.
+ *
+ * A queued message is only worth answering while the person is still waiting on it. Past this, they
+ * have moved on (and, in the real timeline above, have usually already asked again and been
+ * answered). Tied to the user-turn busy ceiling deliberately: beyond that the turn that caused the
+ * queue is itself treated as dead, so anything still queued behind it is waiting on nothing.
+ */
+export const PENDING_DELEGATION_MAX_AGE_MS = 15 * 60_000;
 
 /**
  * Real bug fixed (the trader, live, with his own timeline: "hi" around 10:11, "trade" around
@@ -68,9 +90,17 @@ function readDelegationQueue(userId: string): PendingDelegation[] {
   const path = delegationPath(userId);
   if (!existsSync(path)) return [];
   const parsed = JSON.parse(readFileSync(path, "utf8"));
-  if (Array.isArray(parsed)) return parsed as PendingDelegation[];
-  // Back-compat with the old single-object shape, in case a file from before this fix is read.
-  return parsed ? [parsed as PendingDelegation] : [];
+  const raw: PendingDelegation[] = Array.isArray(parsed)
+    ? (parsed as PendingDelegation[])
+    : // Back-compat with the old single-object shape, in case a file from before this fix is read.
+      parsed
+      ? [parsed as PendingDelegation]
+      : [];
+
+  // An entry written before receivedAt existed is, by definition, from a previous deploy -- older
+  // than any live turn could be. Treated as expired rather than replayed at the user.
+  const cutoff = Date.now() - PENDING_DELEGATION_MAX_AGE_MS;
+  return raw.filter((item) => typeof item.receivedAt === "number" && item.receivedAt > cutoff);
 }
 
 function writeDelegationQueue(userId: string, queue: PendingDelegation[]): void {
@@ -80,10 +110,11 @@ function writeDelegationQueue(userId: string, queue: PendingDelegation[]): void 
   writeFileSync(path, JSON.stringify(queue), "utf8");
 }
 
-/** Appends a new message to the queue rather than replacing whatever was already pending. */
-export function addPendingDelegation(userId: string, delegation: PendingDelegation): void {
+/** Appends a new message to the queue rather than replacing whatever was already pending. Expired
+ *  entries are dropped on the way through, so the file self-prunes instead of growing forever. */
+export function addPendingDelegation(userId: string, delegation: Omit<PendingDelegation, "receivedAt"> & { receivedAt?: number }): void {
   const queue = readDelegationQueue(userId);
-  queue.push(delegation);
+  queue.push({ ...delegation, receivedAt: delegation.receivedAt ?? Date.now() });
   writeDelegationQueue(userId, queue);
 }
 

@@ -14,6 +14,7 @@ import {
   type WeeklyExportResult,
 } from "@dave/feedback";
 import { getPrimaryChatId } from "./primary-chat.js";
+import { reviewWeeklyExport, composeReviewMessage } from "./weekly-export-review.js";
 
 /**
  * Real gap fixed (Step 18 re-verification): every one of the 6 real
@@ -95,8 +96,29 @@ export function wireFeedbackLoop(deps: FeedbackLoopDeps): WiredFeedbackLoop {
     // long", and this fires from inside a node-cron callback with no caller frame to absorb it:
     // an unhandled rejection, which Node turns into a process-killing uncaught exception on a
     // live trading bot, over a weekly export message.
-    void sendToPrimaryChat(deps, composeExportMessage(result), "weekly export").catch((err) => {
-      console.error(`[feedback-loop] weekly export message failed to send for ${deps.ownerUserId}:`, err);
+    //
+    // Real automation added (the trader: "when this come it automatically read through this then
+    // create a knowledge"): the export used to announce a filename and stop there. Now Dave
+    // genuinely reads the dataset and writes down what he learned before the message goes out, so
+    // the one message the trader sees carries the findings rather than a path to a file nobody
+    // opens. The review is deliberately INSIDE this catch: a failed review must still leave the
+    // plain export message delivered, never swallow it.
+    void (async () => {
+      const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
+      if (chatId === undefined) {
+        console.warn(`[feedback-loop] no known chat for ${deps.ownerUserId} yet -- skipping weekly export push`);
+        return;
+      }
+      const outcome = await reviewWeeklyExport({ db: deps.db, client: deps.client, ownerUserId: deps.ownerUserId, chatId }, result);
+      if (outcome.status === "failed" || outcome.status === "export_missing") {
+        console.error(`[feedback-loop] weekly export review for ${deps.ownerUserId} did not complete: ${outcome.summary}`);
+      }
+      await deps.client.sendMessage({ chat_id: chatId, text: composeReviewMessage(result, outcome), parse_mode: "HTML" });
+    })().catch(async (err) => {
+      console.error(`[feedback-loop] weekly export review/message failed for ${deps.ownerUserId}:`, err);
+      // Last resort: the trader still gets the original export notice even if the review path blew
+      // up entirely, so a new feature can never make them lose a message they already relied on.
+      await sendToPrimaryChat(deps, composeExportMessage(result), "weekly export").catch(() => undefined);
     });
   });
 

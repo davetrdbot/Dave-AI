@@ -197,7 +197,7 @@ async function collectOutputs(sandbox: Sandbox, extraPaths: string[]): Promise<{
   return { files, truncated: all.length > capped.length };
 }
 
-async function runWithKey(key: StoredE2BKey, userId: string, options: RunScriptOptions): Promise<RunScriptResult> {
+async function runWithKey(key: StoredE2BKey, attachments: { name: string; data: ArrayBuffer }[], options: RunScriptOptions): Promise<RunScriptResult> {
   const language = options.language ?? "bash";
   const interpreter = INTERPRETERS[language];
   if (!interpreter) throw new Error(`unsupported script language "${language}" -- use bash, python, or node`);
@@ -221,11 +221,10 @@ async function runWithKey(key: StoredE2BKey, userId: string, options: RunScriptO
     for (const file of options.filesIn ?? []) {
       await sandbox.files.write(resolveInPath(file.path), file.encoding === "base64" ? toArrayBuffer(Buffer.from(file.content, "base64")) : file.content);
     }
-    // Files the user actually sent the bot, copied in by name. Read through readUserUpload, which
-    // is what confines this to the user's own upload directory.
-    for (const name of options.attachUserFiles ?? []) {
-      const safe = basename(name);
-      await sandbox.files.write(`${SANDBOX_IN_DIR}/${safe}`, toArrayBuffer(readUserUpload(userId, safe)));
+    // Files the user actually sent the bot. Already resolved (and confined to the user's own
+    // upload directory) before any key was tried -- see runScriptInE2B.
+    for (const file of attachments) {
+      await sandbox.files.write(`${SANDBOX_IN_DIR}/${file.name}`, file.data);
     }
 
     // The script is written, never interpolated into a shell string -- see this module's header.
@@ -295,12 +294,23 @@ export async function runScriptInE2B(db: DaveDatabase, userId: string, options: 
   if (keys.length === 0) {
     throw new Error("No E2B key stored yet -- add one with add_e2b_key before running scripts (get one free at e2b.dev).");
   }
-  const ordered = [...keys.filter((k) => k.healthy), ...keys.filter((k) => !k.healthy)];
 
+  // Real bug fixed (caught by the first live run against real E2B): attached files used to be
+  // resolved INSIDE the key loop, so naming a file that doesn't exist -- an ordinary mistake, and
+  // the exact thing the traversal guard raises -- was caught by the failover handler and reported
+  // as "All stored E2B keys failed", blaming the keys for what is really a bad filename. With
+  // several keys stored it also span up a fresh sandbox per key to re-fail identically every time.
+  // Resolving up front means a bad name fails immediately, with the message that actually helps.
+  const attachments = (options.attachUserFiles ?? []).map((name) => {
+    const safe = basename(name);
+    return { name: safe, data: toArrayBuffer(readUserUpload(userId, safe)) };
+  });
+
+  const ordered = [...keys.filter((k) => k.healthy), ...keys.filter((k) => !k.healthy)];
   const attempts: { keyId: string; label: string; reason: string }[] = [];
   for (const key of ordered) {
     try {
-      return await runWithKey(key, userId, options);
+      return await runWithKey(key, attachments, options);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       attempts.push({ keyId: key.id, label: key.label, reason });

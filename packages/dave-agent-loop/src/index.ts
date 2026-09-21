@@ -7,5 +7,6 @@ export * from "./conversation-store.js";
 export * from "./telegram-bot-server.js";
 export * from "./main.js";
 export * from "./feedback-loop-handler.js";
+export * from "./weekly-export-review.js";
 export * from "./primary-chat.js";
 export * from "./autonomous-trading-state.js";
