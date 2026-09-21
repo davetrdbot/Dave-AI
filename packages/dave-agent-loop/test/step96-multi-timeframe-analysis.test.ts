@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { DaveDatabase } from "@dave/db";
 import type { Provider, CompletionRequest, CompletionResult } from "@dave/brain";
 import type { TradeExecutor } from "@dave/trading";
-import { upsertGroup, setActiveGroup } from "@dave/trading";
+import { upsertGroup, setActiveGroup, ALL_ANALYSIS_TIMEFRAMES } from "@dave/trading";
 import { getOrCreateEaWebhook, createEaWebhookServer, type EaCommand } from "@dave/ea-bridge";
 import { runAutonomousTick } from "../src/autonomous-tick.js";
 
@@ -89,10 +89,14 @@ try {
   try {
     await runAutonomousTick({ userId: OWNER, db, executor, provider });
 
-    const EXPECTED_TIMEFRAMES = ["M1", "M3", "M5", "M15", "H1", "H4"];
+    // Derived from the ONE real source rather than hand-copied. A hardcoded list here is the same
+    // drift that produced the live deadlock this repo just fixed (see step147): the suite changed,
+    // a second copy of the list did not, and nothing noticed. This assertion now tracks the real
+    // suite automatically -- if a timeframe is added or removed, this test follows it.
+    const EXPECTED_TIMEFRAMES = [...ALL_ANALYSIS_TIMEFRAMES];
     console.log(`[1] The EA genuinely received a separate real "analyze" command for each of the user's specified timeframes...\n`);
     console.log(`    real timeframes requested from the EA: ${JSON.stringify(ea.requestedTimeframes)}`);
-    assert.deepEqual([...ea.requestedTimeframes].sort(), [...EXPECTED_TIMEFRAMES].sort(), "must genuinely request M1/M3/M5/M15/H1/H4 as six separate real EA commands, not one H1-only call");
+    assert.deepEqual([...ea.requestedTimeframes].sort(), [...EXPECTED_TIMEFRAMES].sort(), "must genuinely request every timeframe in the real suite as separate real EA commands, not one H1-only call");
 
     console.log(`\n[2] The model's own context genuinely contains all six real timeframes' data, not just one...\n`);
     const userMessage = calls[0].messages.find((m) => m.role === "user")!.content as string;

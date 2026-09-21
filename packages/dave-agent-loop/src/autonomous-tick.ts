@@ -33,6 +33,7 @@ import {
   isForexSymbol,
   evaluateAccountAwareness,
   ALL_ANALYSIS_TIMEFRAMES,
+  isAnalysisScopeSufficientFor,
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -162,6 +163,19 @@ const ANALYSIS_TIMEFRAMES = ALL_ANALYSIS_TIMEFRAMES;
  *  round trips ahead of it, so a script that hasn't answered in this long is costing the cycle more
  *  than its answer is worth. Matches the REQUEST_CANDLES fetch budget. */
 const TICK_SCRIPT_TIMEOUT_MS = 60_000;
+
+/** Builds the honest warning line when the active strategy skill names timeframes the current
+ *  analysis scope will not fetch, so an unsatisfiable strategy announces itself instead of
+ *  producing an endless, error-free stand-down. Returns null when the scope genuinely covers it. */
+function scopeWarningFor(userId: string, skillContent: string): string | null {
+  const check = isAnalysisScopeSufficientFor(userId, skillContent);
+  if (check.sufficient) return null;
+  console.warn(`[autonomous-tick] ${userId}: active strategy names ${check.missing.join(", ")}, which the analysis scope does NOT fetch (scope: ${check.active.join(", ")}) -- the strategy cannot be followed as written`);
+  return (
+    `SCOPE WARNING: this strategy's own instructions reference ${check.missing.join(", ")}, but your analysis scope does not fetch ${check.missing.length === 1 ? "it" : "them"} -- you are receiving ${check.active.join(", ")} only, and no amount of waiting will produce the missing data. ` +
+    `Do NOT stand down cycle after cycle waiting for a timeframe that will never arrive. Either judge the setup on the timeframes you genuinely have and say in your reason that you did so, or, if the strategy truly cannot be followed without ${check.missing.join(", ")}, use ASK to tell the user their strategy and their analysis scope disagree and which they want changed.`
+  );
+}
 
 const TRADE_ACTIONS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
 type TradeAction = (typeof TRADE_ACTIONS)[number];
@@ -769,6 +783,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
         `ACTIVE STRATEGY SKILL: "${activeSkill.name}" -- follow this explicitly for this decision. Use only the timeframes, endpoints, and signals this strategy actually calls for -- do NOT supplement it with other tools, timeframes, or indicators "just to be safe". That is not extra diligence, it is silently trading a different strategy than the one the user activated. This does not change whether you trade -- it only changes what you're allowed to base the decision on.`,
         activeSkill.description ? `Summary: ${activeSkill.description}` : null,
         `Full instructions: ${activeSkill.content}`,
+        // Real, live failure this exists to surface (see analysis-config.ts's own account): this
+        // account's active skill required a D1 bias read "before any entry" while the analysis
+        // scope no longer fetched D1, so step one of the only strategy in force could never
+        // complete. 41 consecutive cycles stood down with no error anywhere -- indistinguishable
+        // from a cautious bot finding nothing. The instruction above ("use ONLY what the strategy
+        // calls for, do NOT supplement") is what makes this fatal rather than merely awkward, so
+        // when the scope genuinely cannot satisfy the skill the model is told plainly, instead of
+        // being left to conclude the setup is incomplete forever.
+        scopeWarningFor(userId, activeSkill.content),
       ].filter((l): l is string => l !== null).join("\n");
     }
   }

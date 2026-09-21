@@ -184,7 +184,8 @@ export const SETTINGS_TOOLS: ToolDefinition[] = [
   },
   {
     name: "set_analysis_timeframes",
-    description: "Narrow which real timeframes (from H4/H1/M15/M5/M3/M1) get_all_analysis fetches, switching scope to 'custom'.",
+    description:
+      "Narrow which real timeframes (from D1/H4/H1/M15/M5/M3/M1) get_all_analysis fetches, switching scope to 'custom'. Be careful dropping a timeframe an active strategy skill depends on -- a strategy that requires data the scope no longer fetches can never complete, and the result is a silent, permanent stand-down rather than an error.",
     parameters: { type: "object", required: ["timeframes"], properties: { timeframes: { type: "array", items: { type: "string" } } } },
     execute: async (args, ctx) => setCustomTimeframes(ctx.userId, args.timeframes as string[]),
   },
