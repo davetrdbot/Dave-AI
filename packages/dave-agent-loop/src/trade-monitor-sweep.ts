@@ -9,6 +9,9 @@ import {
   closeMonitor,
   HOT_HAND_MIN_STREAK,
   REASON_NOT_RECORDED,
+  SL_NEAR_PROGRESS,
+  SL_CRITICAL_PROGRESS,
+  TP_NEAR_PROGRESS,
   type TradeMonitor,
   type MonitorAlert,
   type MonitorAlertKind,
@@ -91,6 +94,12 @@ export function alertCategoryOf(kind: MonitorAlertKind): AlertCategory {
       return "range";
     case "quickProfitCheck":
       return "quick_profit_check";
+    case "slNear":
+      return "sl_near";
+    case "slCritical":
+      return "sl_critical";
+    case "tpNear":
+      return "tp_near";
   }
 }
 
@@ -208,6 +217,24 @@ export function buildMonitorAlert(a: MonitorAlert, now: number, breakeven?: Brea
         `Current trade: ${m.direction.toUpperCase()} ${m.symbol} (ticket #${m.ticket})\n` +
         `Trade duration: ${fmtDuration(now - m.openedAt)}${pnl}${why}\n\n` +
         `Self-check: is the original thesis still valid? The expected directional move has not developed.`
+      );
+
+    // Escalating proximity warnings. Each states the real percentage and the real level, so the
+    // trader can act without opening the terminal to work out where price actually is.
+    case "slNear":
+      return (
+        `⚠️ NEARLY STOPPED OUT\n\n${head} has travelled ${Math.round(SL_NEAR_PROGRESS * 100)}% of the way from entry to its stop (${m.sl}).${pnl}${why}\n\n` +
+        `Self-check: is the idea genuinely broken, or is this the noise you expected? Decide now — cut, adjust the stop, or hold deliberately.`
+      );
+    case "slCritical":
+      return (
+        `🚨 ABOUT TO BE STOPPED OUT\n\n${head} is ${Math.round(SL_CRITICAL_PROGRESS * 100)}% of the way to its stop (${m.sl}).${pnl}${why}\n\n` +
+        `This is the last moment to act deliberately rather than letting the stop decide for you.`
+      );
+    case "tpNear":
+      return (
+        `🎯 NEARLY AT TARGET\n\n${head} has covered ${Math.round(TP_NEAR_PROGRESS * 100)}% of the distance from entry to its take profit (${m.tp}).${pnl}${why}\n\n` +
+        `Self-check: let it run to target, take partial profit here, or tighten the stop to protect what it has already made?`
       );
 
     // 5. "Current profit / trade duration / original target / current momentum / original thesis"

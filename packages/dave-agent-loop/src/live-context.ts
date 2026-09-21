@@ -1,6 +1,6 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
 import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, getWinStreak, ALERT_CATEGORIES } from "@dave/trading";
-import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK } from "./trade-monitor-store.js";
+import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK, SL_NEAR_PROGRESS, SL_CRITICAL_PROGRESS, TP_NEAR_PROGRESS } from "./trade-monitor-store.js";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill, listSkills } from "@dave/skills";
 import { loadFrozenSnapshot } from "@dave/memory";
@@ -249,6 +249,10 @@ function safeLoadSelfAware(userId: string, toggles: ReturnType<typeof getAlertTo
         }
       }
       if (toggles.range && isRanging(m, Date.now())) notes.push("ranging — the expected move hasn't developed");
+      // Escalating proximity, derived live so the context always shows where the trade stands NOW.
+      if (m.alerts.slCritical && toggles.sl_critical) notes.push(`${Math.round(SL_CRITICAL_PROGRESS * 100)}% of the way to its stop — act now or the stop decides`);
+      else if (m.alerts.slNear && toggles.sl_near) notes.push(`${Math.round(SL_NEAR_PROGRESS * 100)}% of the way to its stop`);
+      if (m.alerts.tpNear && toggles.tp_near) notes.push(`${Math.round(TP_NEAR_PROGRESS * 100)}% of the way to target — run it, take partial, or tighten?`);
       if (m.alerts.profitStable && toggles.profit_stable) notes.push("held profit a while — confirm the plan still holds");
       if (m.alerts.quickProfitCheck && toggles.quick_profit_check) notes.push("10+ min in profit — still heading for the target?");
       const note = notes.length ? ` — ${notes.join("; ")}` : "";

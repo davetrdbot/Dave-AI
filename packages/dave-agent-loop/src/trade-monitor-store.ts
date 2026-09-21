@@ -92,6 +92,9 @@ export interface TradeMonitor {
     stuck?: boolean;
     profitStable?: boolean;
     quickProfitCheck?: boolean;
+    slNear?: boolean;
+    slCritical?: boolean;
+    tpNear?: boolean;
   };
 }
 
@@ -144,6 +147,22 @@ export const RANGE_BAND_RISK_FRACTION = 0.6;
 /** Genuine back-and-forth: price must cross the window's midline at least this many times. A drift
  *  through a narrow band crosses once; real chop crosses repeatedly. */
 export const RANGE_MIN_CROSSINGS = 3;
+
+/* ---------------------------------------------------------------------------------------------
+ * Escalating proximity warnings (the trader: "when it's 89 percentage near the SL, and 95 it
+ * should alert, and when a trade is 85 near the TP too"). These sit ON TOP of the settable
+ * deep-loss level (default 50%), giving three escalating stops-side warnings -- "halfway there",
+ * "nearly there", "about to happen" -- plus the first target-side warning the monitor has ever
+ * had. Fixed rather than settable: the deep-loss level is the one the trader tunes, and these are
+ * the late stages where the number matters far less than the fact of being told.
+ * ------------------------------------------------------------------------------------------- */
+
+/** Fraction of the entry-to-SL distance travelled that means "nearly stopped out". */
+export const SL_NEAR_PROGRESS = 0.89;
+/** …and the point where it is about to happen. */
+export const SL_CRITICAL_PROGRESS = 0.95;
+/** Fraction of the entry-to-TP distance travelled that means "nearly at target". */
+export const TP_NEAR_PROGRESS = 0.85;
 
 /** Rolling history cap -- about 20 minutes at the sweep's 30s cadence, comfortably more than the
  *  10-minute range window needs, while keeping the on-disk record small. */
@@ -210,6 +229,21 @@ export function slProgress(m: Pick<TradeMonitor, "openPrice" | "sl">, currentPri
   return Math.min(1, Math.max(0, (m.openPrice - currentPrice) / denom));
 }
 
+/**
+ * Directional distance from entry toward the TAKE PROFIT, [0,1] -- the mirror of slProgress, and
+ * the first time the monitor has been able to see a trade approaching its target at all.
+ *
+ * Works for both directions without a special case: on a sell both the numerator and the
+ * denominator are negative, so the ratio stays positive. Clamped, and undefined when there is no
+ * TP or it sits at entry.
+ */
+export function tpProgress(m: Pick<TradeMonitor, "openPrice" | "tp">, currentPrice: number): number | undefined {
+  if (m.tp === undefined) return undefined;
+  const denom = m.tp - m.openPrice;
+  if (denom === 0) return undefined;
+  return Math.min(1, Math.max(0, (currentPrice - m.openPrice) / denom));
+}
+
 /** A market observation for one open position on one sweep. */
 export interface PositionObservation {
   ticket: string;
@@ -237,7 +271,11 @@ export type MonitorAlertKind =
   | "profitDrop"
   | "peakPullback"
   | "range"
-  | "quickProfitCheck";
+  | "quickProfitCheck"
+  // Escalating proximity warnings.
+  | "slNear"
+  | "slCritical"
+  | "tpNear";
 export interface MonitorAlert {
   kind: MonitorAlertKind;
   monitor: TradeMonitor;
@@ -372,6 +410,29 @@ export function advanceMonitor(
   }
   const progress = price !== undefined ? slProgress(m, price) : undefined;
   const deep = inLoss && progress !== undefined && progress >= deepLossThreshold;
+
+  // Escalating proximity to the stop and the target. Deliberately OUTSIDE the loss/profit branch:
+  // approaching the TP is a profit-side event, approaching the SL is a loss-side one, and both are
+  // just "how far has price travelled toward a level you already chose". Each stage latches on its
+  // own, so 89% firing never suppresses 95% -- the trader asked to be told at both.
+  if (price !== undefined) {
+    const toStop = slProgress(m, price);
+    if (toStop !== undefined) {
+      if (toStop >= SL_NEAR_PROGRESS && !m.alerts.slNear) {
+        m.alerts.slNear = true;
+        alerts.push({ kind: "slNear", monitor: m });
+      }
+      if (toStop >= SL_CRITICAL_PROGRESS && !m.alerts.slCritical) {
+        m.alerts.slCritical = true;
+        alerts.push({ kind: "slCritical", monitor: m });
+      }
+    }
+    const toTarget = tpProgress(m, price);
+    if (toTarget !== undefined && toTarget >= TP_NEAR_PROGRESS && !m.alerts.tpNear) {
+      m.alerts.tpNear = true;
+      alerts.push({ kind: "tpNear", monitor: m });
+    }
+  }
 
   // Breakeven guard and stuck-trade -- independent of the loss/profit branch below (a trade can be
   // up ~1R or sitting flat regardless of the exact lifecycle state). Both need a live price and,

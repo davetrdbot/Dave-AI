@@ -29,7 +29,11 @@ export type AlertCategory =
   | "profit_drop" //       profitable ~10 min and now giving it back
   | "peak_pullback" //     pulled back meaningfully from the tracked peak
   | "range" //             sustained chop -- the expected move never developed
-  | "quick_profit_check"; // in profit ~10 min -- still heading for the original target
+  | "quick_profit_check" // in profit ~10 min -- still heading for the original target
+  // Escalating proximity to the levels the trade already chose.
+  | "sl_near" //      89% of the way to the stop
+  | "sl_critical" //  95% -- about to be stopped out
+  | "tp_near"; //     85% of the way to the take profit
 
 export const ALERT_CATEGORIES: { id: AlertCategory; label: string }[] = [
   { id: "loss_duration", label: "Loss-duration nudges (5m / 10m in the red)" },
@@ -43,6 +47,9 @@ export const ALERT_CATEGORIES: { id: AlertCategory; label: string }[] = [
   { id: "peak_pullback", label: "Peak pullback (gave back part of the peak)" },
   { id: "range", label: "Range detected (chop — expected move never came)" },
   { id: "quick_profit_check", label: "Quick profit check (10 min — still on target?)" },
+  { id: "sl_near", label: "Nearly stopped out (89% of the way to SL)" },
+  { id: "sl_critical", label: "About to be stopped out (95% to SL)" },
+  { id: "tp_near", label: "Nearly at target (85% of the way to TP)" },
 ];
 
 const VALID = new Set<AlertCategory>(ALERT_CATEGORIES.map((c) => c.id));
@@ -62,6 +69,9 @@ function defaultToggles(): AlertToggles {
     peak_pullback: true,
     range: true,
     quick_profit_check: true,
+    sl_near: true,
+    sl_critical: true,
+    tp_near: true,
   };
 }
 
