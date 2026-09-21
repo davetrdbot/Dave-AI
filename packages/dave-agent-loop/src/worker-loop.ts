@@ -3,6 +3,7 @@ import type { TradeExecutor, AnalysisSource } from "@dave/trading";
 import { markdownToTelegramHtml, type TelegramClient } from "@dave/telegram";
 import { type Worker, toolsForWorker, JOURNAL_TOOLS, WORKER_TOOL_REQUEST_TOOLS, reportToUser, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID, getGrantedToolNames, retireWorker } from "@dave/workers";
 import { logTrade } from "@dave/feedback";
+import { E2B_TOOLS } from "@dave/e2b";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { modelConfigProvider } from "./provider-selection.js";
@@ -63,6 +64,14 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
       liveRegistry.register(adaptTools(JOURNAL_TOOLS, { userId: ownerUserId, onTradeLogged: (input) => logTrade(db, ownerUserId, input) }));
     }
     liveRegistry.register(adaptTools(WORKER_TOOL_REQUEST_TOOLS, { ownerUserId, workerId: worker.id }));
+    // Real script capability, granted to every subagent by default (the trader: "expand the
+    // background tool and the subtask so it can run any script to check for anything in the
+    // market"). This is deliberately NOT routed through the request/grant exchange the way other
+    // extra tools are: a subagent whose whole job is "go measure this" is useless if it has to
+    // stop and ask permission to compute. Only run_script is granted -- E2B key management stays
+    // Dave's, so a worker can run code but can never add, read, or delete a stored key.
+    const workerRunScript = E2B_TOOLS.find((t) => t.name === "run_script");
+    if (workerRunScript) liveRegistry.register(adaptTools([workerRunScript], { userId: ownerUserId, db }));
 
     const reportTool: AgentTool = {
       name: "report_to_user",
@@ -102,7 +111,9 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
     });
     const loop = new AgentLoop(provider, liveRegistry);
 
-    const systemPrompt = `You are ${worker.name}, a real subagent Dave created to help its user. Your standing assignment: ${worker.task}\n\nYour current task right now: ${task}\n\nUse report_to_user whenever you have something genuinely worth telling the user. If you need a tool you weren't given, call request_tool and explain why -- don't guess or make something up. When you're finished, answer in plain text summarizing what you actually did.`;
+    const systemPrompt = `You are ${worker.name}, a real subagent Dave created to help its user. Your standing assignment: ${worker.task}\n\nYour current task right now: ${task}\n\nYou have run_script: you can write and run real code (bash/python/node, with network access) in a disposable sandbox, pass files into it and get files back out. Use it whenever the task is measurable by code -- pull a live feed, compute an indicator, backtest a rule, parse data the user sent, check a number before you quote it -- rather than estimating.
+
+Use report_to_user whenever you have something genuinely worth telling the user. If you need a tool you weren't given, call request_tool and explain why -- don't guess or make something up. When you're finished, answer in plain text summarizing what you actually did.`;
 
     // Real gap fixed (independent audit, same class as telegram-bot-server.ts's runAgentTurn
     // fix): a worker's own AgentLoop.run() never registered itself with turn-abort.ts at all, so
@@ -117,7 +128,14 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
           { role: "system", content: systemPrompt },
           { role: "user", content: task },
         ],
-        { maxSteps: 12, onStep, signal: abortController.signal }
+        // Real cap removed (the trader: "give it uncountable max steps so it knows, like the way
+        // you are"). A subagent was capped at 12 steps while Dave's own turns have been uncounted
+        // (`maxSteps ?? Infinity`) since the earlier "no max step, unlimited max step" fix -- so a
+        // worker given real work (run a script, read its output, fix it, re-run, then report) ran
+        // out of steps mid-task and died with MaxStepsExceededError rather than finishing. The
+        // real ceiling is the overall wall-clock deadline plus /stop, both still in force below --
+        // step count was never the thing protecting anything.
+        { onStep, signal: abortController.signal }
       );
       if (result.status === "aborted") {
         console.log(`[turn-abort] ${ownerUserId}: worker "${worker.name}" (${worker.id}) genuinely stopped (reason=${result.reason})`);

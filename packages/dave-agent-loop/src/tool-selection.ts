@@ -197,6 +197,18 @@ export const CORE_TOOL_NAMES: string[] = [
   "send_rich_draft",
   "tg_chat_action",
   "tg_rich_message",
+
+  // Real general-purpose compute (the trader: "you can connect the main agent to the e2b").
+  // run_script was registered in the full registry but never core, so the main agent essentially
+  // never reached for it -- the whole point of wiring E2B in was that Dave can check ANYTHING it
+  // can express as code (pull a live feed, compute a correlation, backtest a rule, parse a file
+  // the user sent, verify a number before quoting it) instead of guessing. That only works if the
+  // tool is reachable on every turn without a discovery round first.
+  "run_script",
+  // File I/O both directions -- useless if the model has to discover them first, since the trigger
+  // is always a file the user just sent or a result it just produced.
+  "list_user_files",
+  "send_file_to_user",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the

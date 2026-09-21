@@ -275,6 +275,31 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
     },
   },
   {
+    name: "send_file_to_user",
+    description:
+      "Send a real file to the user as a Telegram document -- the output half of file I/O (the trader: \"task files inside and task files outside\"). Use it to hand back something a script produced: a CSV of results, a generated chart, a cleaned-up export, a report. Pass the content you got back from run_script's filesOut, keeping its encoding (base64 for anything binary, like an image or a zip).",
+    parameters: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "Filename the user will see, with a real extension (e.g. \"backtest-results.csv\"). The extension is what makes it open correctly on their phone." },
+        content: { type: "string", description: "The file's content. For a file that came back from run_script, pass its `content` verbatim." },
+        encoding: { type: "string", enum: ["utf8", "base64"], description: "Must match how the content is encoded -- use base64 for any binary file. Defaults to utf8." },
+        caption: { type: "string", description: "Short note sent with the file, e.g. what it contains or what you found in it." },
+      },
+      required: ["filename", "content"],
+    },
+    execute: async (args, ctx) => {
+      const encoding = (args.encoding as string) === "base64" ? "base64" : "utf8";
+      const buffer = Buffer.from(args.content as string, encoding);
+      await ctx.client.sendDocument({
+        chat_id: ctx.chatId,
+        document: { buffer, filename: args.filename as string },
+        caption: args.caption as string | undefined,
+      });
+      return { sent: true, filename: args.filename, bytes: buffer.byteLength };
+    },
+  },
+  {
     name: "pair_user",
     description: "Get (or create) the real Dave-to-user push webhook for this user.",
     parameters: { type: "object", properties: { userId: { type: "string" } }, required: ["userId"] },

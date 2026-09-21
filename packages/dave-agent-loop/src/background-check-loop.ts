@@ -12,6 +12,7 @@ import {
   recordBackgroundCheckTick,
   finalizeBackgroundCheck,
 } from "@dave/workers";
+import { E2B_TOOLS, runScriptInE2B } from "@dave/e2b";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { modelConfigProvider } from "./provider-selection.js";
@@ -77,17 +78,40 @@ async function runBackgroundCheckTick(deps: BackgroundCheckLoopDeps, check: Back
       },
     };
     liveRegistry.register([reportTool]);
+    // Real script capability for the tick itself (the trader: "expand the background tool and the
+    // subtask so it can run any script to check for anything in the market"). The tick can write
+    // and run ad-hoc code -- fetch a feed, compute a spread, parse a series -- not just call the
+    // fixed analysis tools. Only run_script is granted; E2B key management is Dave's own business,
+    // not something an unattended tick should be able to touch.
+    const runScriptTool = E2B_TOOLS.find((t) => t.name === "run_script");
+    if (runScriptTool) liveRegistry.register(adaptTools([runScriptTool], { userId: deps.ownerUserId, db: deps.db }));
+
+    // The check's own stored script runs FIRST, deterministically, every tick -- same measurement
+    // every time, rather than depending on the model to re-invent it. Its real output becomes
+    // evidence in the prompt; a failure is reported honestly rather than silently swallowed, so a
+    // broken script shows up as "I couldn't measure" instead of a confident wrong verdict.
+    let scriptEvidence = "";
+    if (check.script) {
+      try {
+        const run = await runScriptInE2B(deps.db, deps.ownerUserId, { script: check.script, language: check.scriptLanguage ?? "bash" });
+        const files = run.filesOut.length > 0 ? `\n\nFiles it produced:\n${run.filesOut.map((f) => `- ${f.path} (${f.bytes} bytes)${f.encoding === "utf8" ? `\n${f.content}` : " [binary]"}`).join("\n")}` : "";
+        scriptEvidence = `\n\nThis check has a script that was just run for this tick (exit code ${run.exitCode}).\nstdout:\n${run.stdout || "(empty)"}${run.stderr ? `\nstderr:\n${run.stderr}` : ""}${files}\n\nTreat this as your primary evidence, but sanity-check it -- a non-zero exit code or empty output means the measurement FAILED and you must not report met=true off it.`;
+      } catch (err) {
+        scriptEvidence = `\n\nThis check has a script, but running it for this tick genuinely FAILED: ${err instanceof Error ? err.message : String(err)}\n\nYou therefore have no script evidence this tick. Do not report met=true on a guess -- investigate with your other tools, or report met=false and say the measurement failed.`;
+      }
+    }
 
     const provider = modelConfigProvider(deps.db, deps.ownerUserId, () => undefined);
     const loop = new AgentLoop(provider, liveRegistry);
-    const systemPrompt = `You are running one poll tick of a background check the owner started earlier. Use your real tools to genuinely investigate right now, then call report_check_result exactly once with your honest finding -- do not fabricate a result and do not report met=true unless it is genuinely, verifiably true right now.\n\nCondition to check: ${check.whatToCheck}`;
-    const result = await loop.run(
-      [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: check.whatToCheck },
-      ],
-      { maxSteps: 8 }
-    );
+    const systemPrompt = `You are running one poll tick of a background check the owner started earlier. Use your real tools to genuinely investigate right now, then call report_check_result exactly once with your honest finding -- do not fabricate a result and do not report met=true unless it is genuinely, verifiably true right now.\n\nYou have run_script: you can write and run real code (bash/python/node, with network access) to measure anything you can express as code, rather than guessing.\n\nCondition to check: ${check.whatToCheck}${scriptEvidence}`;
+    // No step cap (the trader: "give it uncountable max steps"). A tick that needs to run a script,
+    // read its output, fix it and re-run was previously killed at 8 steps. Overlapping ticks are
+    // already impossible -- registerPollingCheck skips a tick while the previous one is in flight --
+    // and AgentLoop's own overall wall-clock deadline still bounds every run.
+    const result = await loop.run([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: check.whatToCheck },
+    ]);
 
     if (verdict) return verdict;
     // The model answered in plain text instead of calling report_check_result -- never guess

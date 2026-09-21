@@ -6,6 +6,7 @@ import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
 import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, chunkForTelegram, getActiveIndicator, setActiveIndicator, clearActiveIndicator, withThinkingIndicator, type ActionType, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
+import { userUploadDir } from "@dave/e2b";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyError } from "@dave/vision";
 import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
@@ -578,11 +579,10 @@ function findPendingAskUserToolCallId(history: CompletionMessage[]): string | un
   return lastAssistant?.toolCalls?.find((c) => c.name === ASK_USER_TOOL_NAME)?.id;
 }
 
-function inboxDir(ownerUserId: string): string {
-  const dir = join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "telegram-inbox", ownerUserId);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  return dir;
-}
+/** Single definition, shared with the executor that reads these files back out (dave-e2b's
+ *  userUploadDir) -- previously this path was written here and hardcoded nowhere else, so nothing
+ *  could actually reach a file the user sent. */
+const inboxDir = userUploadDir;
 
 /**
  * Real gap closed (final pre-deployment pass, Step 15 -- file I/O both
@@ -651,7 +651,11 @@ export async function buildInboundContent(
       const caption = message.caption?.trim();
       return [{ type: "text", text: caption ? caption : `[Image document "${filename}" attached]` }, block];
     }
-    return `[Document received and saved to ${savedPath}]${message.caption ? ` Caption: ${message.caption}` : ""} -- use your sandbox file tools to read/process it.`;
+    // Real gap fixed (the trader: "give the bot input and output, task files inside and task files
+    // outside"). This used to say "use your sandbox file tools to read/process it" -- but no tool
+    // could reach this directory at all, so the file was saved and then genuinely unreachable. It
+    // now names the real tool and the real filename that works.
+    return `[Document "${filename}" received from the user]${message.caption ? ` Caption: ${message.caption}` : ""} -- to actually read or process it, call run_script with attachUserFiles: ["${filename}"] and it will be placed in the sandbox for your script. Anything your script writes to $DAVE_OUT_DIR comes back to you, and you can send a result file to the user with send_file_to_user.`;
   }
   return undefined;
 }

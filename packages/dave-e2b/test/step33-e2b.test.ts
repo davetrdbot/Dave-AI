@@ -167,7 +167,9 @@ try {
   // --- [4] Real agent tools ---
   console.log("\n[4] Real agent tools registered and callable...\n");
   const toolNames = E2B_TOOLS.map((t) => t.name);
-  assert.deepEqual(toolNames, ["add_e2b_key", "list_e2b_keys", "remove_e2b_key", "check_e2b_key_health", "create_e2b_sandbox"]);
+  // run_script/list_user_files joined this set when real execution and file I/O landed (see
+  // step143) -- the key-management tools this step covers are unchanged.
+  assert.deepEqual(toolNames, ["add_e2b_key", "list_e2b_keys", "remove_e2b_key", "check_e2b_key_health", "create_e2b_sandbox", "run_script", "list_user_files"]);
   const listTool = E2B_TOOLS.find((t) => t.name === "list_e2b_keys")!;
   const listed: any = await listTool.execute({}, { userId: OWNER, db });
   assert.equal(listed.length, 10);

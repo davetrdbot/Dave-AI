@@ -22,6 +22,11 @@ import { randomBytes } from "node:crypto";
 
 export type BackgroundCheckStatus = "active" | "met" | "expired" | "stopped" | "error";
 
+/** Mirrors dave-e2b's own ScriptLanguage. Deliberately re-declared rather than imported: this
+ *  package owns bookkeeping only and must not take a dependency on the execution layer (the same
+ *  one-way-dependency rule that keeps runWorkerTask in dave-agent-loop, not here). */
+export type BackgroundCheckScriptLanguage = "bash" | "python" | "node";
+
 export interface BackgroundCheck {
   id: string;
   ownerUserId: string;
@@ -31,6 +36,14 @@ export interface BackgroundCheck {
   /** Free text, WHAT to check on every poll tick -- re-evaluated by a real agent-loop tool-call
    *  round each tick, never pattern-matched/parsed here. */
   whatToCheck: string;
+  /** Optional real script (the trader: "expand the background tool ... so it can run any script to
+   *  check for anything in the market"). When set, it is genuinely executed in a fresh E2B sandbox
+   *  at the START of every tick and its real stdout/stderr/exit code are handed to the tick's
+   *  reasoning as evidence. This is the deterministic half of a check: the same script, the same
+   *  way, every tick -- rather than relying on the model to re-invent the measurement each time.
+   *  The tick can ALSO write and run ad-hoc scripts itself via its own run_script tool. */
+  script?: string;
+  scriptLanguage?: BackgroundCheckScriptLanguage;
   checkEveryMs: number;
   maxDurationMs: number;
   createdAt: number;
@@ -70,6 +83,8 @@ function saveRegistry(ownerUserId: string, checks: BackgroundCheck[]): void {
 export interface CreateBackgroundCheckOptions {
   reason: string;
   whatToCheck: string;
+  script?: string;
+  scriptLanguage?: BackgroundCheckScriptLanguage;
   checkEveryMs?: number;
   maxDurationMs?: number;
 }
@@ -87,6 +102,8 @@ export function createBackgroundCheck(ownerUserId: string, options: CreateBackgr
     ownerUserId,
     reason: options.reason,
     whatToCheck: options.whatToCheck,
+    script: options.script?.trim() ? options.script : undefined,
+    scriptLanguage: options.script?.trim() ? options.scriptLanguage ?? "bash" : undefined,
     checkEveryMs,
     maxDurationMs,
     createdAt: now,
@@ -163,6 +180,12 @@ export const BACKGROUND_CHECK_TOOLS: BackgroundCheckToolDefinitionShape[] = [
           type: "string",
           description: "Free text describing the actual condition to check on EVERY poll tick (e.g. \"has XAUUSD traded at or below 2380.00 yet, and if so did it reverse or continue\"). Re-evaluated by a real reasoning+tool-call round each tick -- be specific enough that a fresh read of just this text, with no other memory of why you started the check, is enough to judge it.",
         },
+        script: {
+          type: "string",
+          description:
+            "Optional but powerful: a real script that is genuinely executed in a fresh sandbox at the start of EVERY tick, with its real stdout/stderr/exit code handed to your reasoning as evidence. Use this whenever the condition is measurable by code -- fetch a live price or feed over HTTP, compute an indicator or spread, diff against a threshold -- so every tick measures the same way instead of you re-inventing it each time. Print what you need to judge the condition to stdout. You can still investigate further with your other tools on top of this.",
+        },
+        scriptLanguage: { type: "string", enum: ["bash", "python", "node"], description: "Language for `script`. Defaults to bash." },
         checkEveryMs: { type: "number", description: `How often to poll, in ms. Default ${DEFAULT_CHECK_EVERY_MS}ms (5 min); floor of ${MIN_CHECK_EVERY_MS}ms -- never busy-loop.` },
         maxDurationMs: { type: "number", description: `Deadline after which this auto-expires and notifies the user even if the condition was never met -- never runs forever. Default ${DEFAULT_MAX_DURATION_MS}ms (48h).` },
       },
@@ -172,6 +195,8 @@ export const BACKGROUND_CHECK_TOOLS: BackgroundCheckToolDefinitionShape[] = [
       createBackgroundCheck(ctx.ownerUserId, {
         reason: args.reason as string,
         whatToCheck: args.whatToCheck as string,
+        script: args.script as string | undefined,
+        scriptLanguage: args.scriptLanguage as BackgroundCheckScriptLanguage | undefined,
         checkEveryMs: args.checkEveryMs as number | undefined,
         maxDurationMs: args.maxDurationMs as number | undefined,
       }),
