@@ -44,6 +44,16 @@ export interface BackgroundCheck {
    *  The tick can ALSO write and run ad-hoc scripts itself via its own run_script tool. */
   script?: string;
   scriptLanguage?: BackgroundCheckScriptLanguage;
+  /** Symbols whose LIVE EA data gets fetched and handed to the script every tick (the trader:
+   *  "the background tool only works for coins and others -- give it a way so it can check for
+   *  synthetic pairs, mostly"). A sandbox reaches the public internet, so a script can price
+   *  bitcoin unaided -- but VOL_80, CRASH_100, BOOM_500 and the rest exist ONLY inside the
+   *  connected MT5 EA and are on no public API anywhere. Naming them here is what makes a
+   *  synthetic pair scriptable at all: the tick fetches their real analysis from the EA and writes
+   *  it into the sandbox as market.json before the script runs. */
+  symbols?: string[];
+  /** Timeframe for that fetch. Defaults to M15. */
+  timeframe?: string;
   checkEveryMs: number;
   maxDurationMs: number;
   createdAt: number;
@@ -85,9 +95,16 @@ export interface CreateBackgroundCheckOptions {
   whatToCheck: string;
   script?: string;
   scriptLanguage?: BackgroundCheckScriptLanguage;
+  symbols?: string[];
+  timeframe?: string;
   checkEveryMs?: number;
   maxDurationMs?: number;
 }
+
+/** A tick fetches these sequentially from the EA, and every fetch is a real round trip to the
+ *  trader's own terminal. Capped so one check can never turn a 5-minute tick into a scan that
+ *  outlives its own interval. */
+export const MAX_CHECK_SYMBOLS = 3;
 
 export function createBackgroundCheck(ownerUserId: string, options: CreateBackgroundCheckOptions): BackgroundCheck {
   if (!options.reason || !options.reason.trim()) throw new Error("reason is required -- this is what gets resurfaced to the user when the check fires.");
@@ -104,6 +121,8 @@ export function createBackgroundCheck(ownerUserId: string, options: CreateBackgr
     whatToCheck: options.whatToCheck,
     script: options.script?.trim() ? options.script : undefined,
     scriptLanguage: options.script?.trim() ? options.scriptLanguage ?? "bash" : undefined,
+    symbols: options.symbols?.length ? options.symbols.map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, MAX_CHECK_SYMBOLS) : undefined,
+    timeframe: options.symbols?.length ? options.timeframe?.trim().toUpperCase() || "M15" : undefined,
     checkEveryMs,
     maxDurationMs,
     createdAt: now,
@@ -186,6 +205,13 @@ export const BACKGROUND_CHECK_TOOLS: BackgroundCheckToolDefinitionShape[] = [
             "Optional but powerful: a real script that is genuinely executed in a fresh sandbox at the start of EVERY tick, with its real stdout/stderr/exit code handed to your reasoning as evidence. Use this whenever the condition is measurable by code -- fetch a live price or feed over HTTP, compute an indicator or spread, diff against a threshold -- so every tick measures the same way instead of you re-inventing it each time. Print what you need to judge the condition to stdout. You can still investigate further with your other tools on top of this.",
         },
         scriptLanguage: { type: "string", enum: ["bash", "python", "node"], description: "Language for `script`. Defaults to bash." },
+        symbols: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            `REQUIRED whenever the check is about a synthetic pair (VOL_80, CRASH_100, BOOM_500, STORM_500, FLAMES, VOL_10, and the rest). Those exist only inside the connected MT5 terminal -- they are on no public API, so a script CANNOT fetch them from the internet and must not try. Name them here and each tick fetches their real live analysis from the EA and writes it into the sandbox as "market.json" for your script to read. Up to ${MAX_CHECK_SYMBOLS}. Leave empty only for things genuinely on the public internet, like crypto or a news feed.`,
+        },
+        timeframe: { type: "string", description: "Timeframe for the symbol fetch (M1/M3/M5/M15/H1/H4). Defaults to M15." },
         checkEveryMs: { type: "number", description: `How often to poll, in ms. Default ${DEFAULT_CHECK_EVERY_MS}ms (5 min); floor of ${MIN_CHECK_EVERY_MS}ms -- never busy-loop.` },
         maxDurationMs: { type: "number", description: `Deadline after which this auto-expires and notifies the user even if the condition was never met -- never runs forever. Default ${DEFAULT_MAX_DURATION_MS}ms (48h).` },
       },
@@ -197,6 +223,8 @@ export const BACKGROUND_CHECK_TOOLS: BackgroundCheckToolDefinitionShape[] = [
         whatToCheck: args.whatToCheck as string,
         script: args.script as string | undefined,
         scriptLanguage: args.scriptLanguage as BackgroundCheckScriptLanguage | undefined,
+        symbols: args.symbols as string[] | undefined,
+        timeframe: args.timeframe as string | undefined,
         checkEveryMs: args.checkEveryMs as number | undefined,
         maxDurationMs: args.maxDurationMs as number | undefined,
       }),

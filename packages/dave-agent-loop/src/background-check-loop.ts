@@ -30,6 +30,12 @@ import { modelConfigProvider } from "./provider-selection.js";
  * level, a news event, a pattern, anything expressible in free text -- nothing here parses
  * `whatToCheck` itself.
  */
+/** Per-symbol ceiling on the EA round trip. Deliberately tighter than the EA's own 5-minute
+ *  worst-case analysis budget: this runs unattended on a timer, and a tick that stalls for minutes
+ *  per symbol would outlive its own interval. A fetch that misses this window is reported as a
+ *  genuine failure for that symbol and simply retried on the next tick, which costs nothing. */
+const SYMBOL_FETCH_TIMEOUT_MS = 120_000;
+
 export interface BackgroundCheckLoopDeps {
   db: DaveDatabase;
   ownerUserId: string;
@@ -90,10 +96,31 @@ async function runBackgroundCheckTick(deps: BackgroundCheckLoopDeps, check: Back
     // every time, rather than depending on the model to re-invent it. Its real output becomes
     // evidence in the prompt; a failure is reported honestly rather than silently swallowed, so a
     // broken script shows up as "I couldn't measure" instead of a confident wrong verdict.
+    // Live EA data for the synthetic pairs this check names (the trader: "the background tool only
+    // works for coins and others -- give it a way so it can check for synthetic pairs"). A sandbox
+    // has real internet, so a script can price bitcoin by itself -- but VOL_80, CRASH_100 and the
+    // rest are on NO public API: they exist only in the trader's own terminal. Fetching them here
+    // and writing them in as market.json is the entire difference between a script that can check
+    // a synthetic pair and one that can only check crypto.
+    const market: Record<string, unknown> = {};
+    const marketErrors: string[] = [];
+    for (const symbol of check.symbols ?? []) {
+      try {
+        market[symbol] = await deps.analysis.get("all", symbol, check.timeframe ?? "M15", { timeoutMs: SYMBOL_FETCH_TIMEOUT_MS });
+      } catch (err) {
+        marketErrors.push(`${symbol}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const marketFile = Object.keys(market).length > 0 ? JSON.stringify({ timeframe: check.timeframe ?? "M15", fetchedAt: Date.now(), symbols: market }, null, 2) : undefined;
+
     let scriptEvidence = "";
     if (check.script) {
       try {
-        const run = await runScriptInE2B(deps.db, deps.ownerUserId, { script: check.script, language: check.scriptLanguage ?? "bash" });
+        const run = await runScriptInE2B(deps.db, deps.ownerUserId, {
+          script: check.script,
+          language: check.scriptLanguage ?? "bash",
+          filesIn: marketFile ? [{ path: "market.json", content: marketFile }] : undefined,
+        });
         const files = run.filesOut.length > 0 ? `\n\nFiles it produced:\n${run.filesOut.map((f) => `- ${f.path} (${f.bytes} bytes)${f.encoding === "utf8" ? `\n${f.content}` : " [binary]"}`).join("\n")}` : "";
         scriptEvidence = `\n\nThis check has a script that was just run for this tick (exit code ${run.exitCode}).\nstdout:\n${run.stdout || "(empty)"}${run.stderr ? `\nstderr:\n${run.stderr}` : ""}${files}\n\nTreat this as your primary evidence, but sanity-check it -- a non-zero exit code or empty output means the measurement FAILED and you must not report met=true off it.`;
       } catch (err) {
@@ -103,7 +130,11 @@ async function runBackgroundCheckTick(deps: BackgroundCheckLoopDeps, check: Back
 
     const provider = modelConfigProvider(deps.db, deps.ownerUserId, () => undefined);
     const loop = new AgentLoop(provider, liveRegistry);
-    const systemPrompt = `You are running one poll tick of a background check the owner started earlier. Use your real tools to genuinely investigate right now, then call report_check_result exactly once with your honest finding -- do not fabricate a result and do not report met=true unless it is genuinely, verifiably true right now.\n\nYou have run_script: you can write and run real code (bash/python/node, with network access) to measure anything you can express as code, rather than guessing.\n\nCondition to check: ${check.whatToCheck}${scriptEvidence}`;
+    const marketNote =
+      (check.symbols?.length ?? 0) > 0
+        ? `\n\nLive data for ${check.symbols!.join(", ")} (${check.timeframe ?? "M15"}) was fetched from the trading terminal for this tick${marketFile ? ` and written into the sandbox as "market.json" (in $DAVE_IN_DIR), so your script reads it from there` : ""}.${marketErrors.length > 0 ? ` These genuinely FAILED to fetch and you have no data for them: ${marketErrors.join("; ")}. Do not guess at them.` : ""}\n\nThese are synthetic pairs -- they exist only in this terminal and are on no public API. Never try to fetch them over the internet, and never substitute a real-world instrument for one.`
+        : "";
+    const systemPrompt = `You are running one poll tick of a background check the owner started earlier. Use your real tools to genuinely investigate right now, then call report_check_result exactly once with your honest finding -- do not fabricate a result and do not report met=true unless it is genuinely, verifiably true right now.\n\nYou have run_script: you can write and run real code (bash/python/node, with network access) to measure anything you can express as code, rather than guessing. You also have get_all_analysis for a live read on any symbol.\n\nCondition to check: ${check.whatToCheck}${marketNote}${scriptEvidence}`;
     // No step cap (the trader: "give it uncountable max steps"). A tick that needs to run a script,
     // read its output, fix it and re-run was previously killed at 8 steps. Overlapping ticks are
     // already impossible -- registerPollingCheck skips a tick while the previous one is in flight --
