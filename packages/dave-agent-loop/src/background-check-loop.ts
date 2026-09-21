@@ -11,6 +11,7 @@ import {
   listBackgroundChecks,
   recordBackgroundCheckTick,
   finalizeBackgroundCheck,
+  recordBackgroundCheckScriptRun,
 } from "@dave/workers";
 import { E2B_TOOLS, runScriptInE2B } from "@dave/e2b";
 import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
@@ -121,9 +122,17 @@ async function runBackgroundCheckTick(deps: BackgroundCheckLoopDeps, check: Back
           language: check.scriptLanguage ?? "bash",
           filesIn: marketFile ? [{ path: "market.json", content: marketFile }] : undefined,
         });
+        // Persisted so an ACTIVE check can be inspected between firings -- get_background_check
+        // and list_background_checks both surface this, so a script that is quietly failing or
+        // printing something unexpected is visible now rather than at the deadline.
+        recordBackgroundCheckScriptRun(deps.ownerUserId, check.id, { at: Date.now(), exitCode: run.exitCode, stdout: run.stdout, stderr: run.stderr });
         const files = run.filesOut.length > 0 ? `\n\nFiles it produced:\n${run.filesOut.map((f) => `- ${f.path} (${f.bytes} bytes)${f.encoding === "utf8" ? `\n${f.content}` : " [binary]"}`).join("\n")}` : "";
         scriptEvidence = `\n\nThis check has a script that was just run for this tick (exit code ${run.exitCode}).\nstdout:\n${run.stdout || "(empty)"}${run.stderr ? `\nstderr:\n${run.stderr}` : ""}${files}\n\nTreat this as your primary evidence, but sanity-check it -- a non-zero exit code or empty output means the measurement FAILED and you must not report met=true off it.`;
       } catch (err) {
+        // A run that could not happen at all is recorded too -- otherwise a check whose script has
+        // never once executed (no E2B key, say) would look identical to one that simply hasn't
+        // ticked yet, and the trader would have no way to tell why nothing is coming back.
+        recordBackgroundCheckScriptRun(deps.ownerUserId, check.id, { at: Date.now(), exitCode: null, stdout: "", stderr: "", error: err instanceof Error ? err.message : String(err) });
         scriptEvidence = `\n\nThis check has a script, but running it for this tick genuinely FAILED: ${err instanceof Error ? err.message : String(err)}\n\nYou therefore have no script evidence this tick. Do not report met=true on a guess -- investigate with your other tools, or report met=false and say the measurement failed.`;
       }
     }

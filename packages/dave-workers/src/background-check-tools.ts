@@ -27,6 +27,23 @@ export type BackgroundCheckStatus = "active" | "met" | "expired" | "stopped" | "
  *  one-way-dependency rule that keeps runWorkerTask in dave-agent-loop, not here). */
 export type BackgroundCheckScriptLanguage = "bash" | "python" | "node";
 
+/** The real result of one tick's script run, kept on the check so a pending check can be inspected
+ *  mid-flight rather than being opaque until it fires. */
+export interface BackgroundCheckScriptRun {
+  at: number;
+  /** null when the script could not be run at all (no E2B key, sandbox failure) -- distinct from
+   *  a script that genuinely ran and exited non-zero. */
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  /** Set only when the run itself failed rather than the script exiting non-zero. */
+  error?: string;
+}
+
+/** Stored output is bounded: this registry is read and rewritten on every tick of every check, and
+ *  a chatty script would otherwise grow the file without limit. */
+export const MAX_STORED_SCRIPT_OUTPUT = 2_000;
+
 export interface BackgroundCheck {
   id: string;
   ownerUserId: string;
@@ -54,6 +71,13 @@ export interface BackgroundCheck {
   symbols?: string[];
   /** Timeframe for that fetch. Defaults to M15. */
   timeframe?: string;
+  /** What this check's script actually produced on its most recent tick (the trader: "hope you
+   *  added for it to see pending scripts and also for the run script to return back with
+   *  responses"). Without this a pending check was a black box between firings -- you could see
+   *  that it had a script and had run 14 times, but not one thing it had actually measured. Now
+   *  inspecting a check shows its real last reading, so a script that has been quietly failing,
+   *  or printing something unexpected, is visible immediately instead of at the deadline. */
+  lastScriptRun?: BackgroundCheckScriptRun;
   checkEveryMs: number;
   maxDurationMs: number;
   createdAt: number;
@@ -158,6 +182,24 @@ export function recordBackgroundCheckTick(ownerUserId: string, checkId: string):
   return check;
 }
 
+/** Records what this check's script actually produced on the tick that just ran, so an active
+ *  check can be inspected between firings. Output is truncated to MAX_STORED_SCRIPT_OUTPUT.
+ *  Silently no-ops for a check that has since been stopped -- a late write from an in-flight tick
+ *  must never resurrect a finished check's record. */
+export function recordBackgroundCheckScriptRun(ownerUserId: string, checkId: string, run: BackgroundCheckScriptRun): void {
+  const checks = readRegistry(ownerUserId);
+  const check = checks.find((c) => c.id === checkId);
+  if (!check) return;
+  check.lastScriptRun = {
+    at: run.at,
+    exitCode: run.exitCode,
+    stdout: run.stdout.slice(0, MAX_STORED_SCRIPT_OUTPUT),
+    stderr: run.stderr.slice(0, MAX_STORED_SCRIPT_OUTPUT),
+    error: run.error,
+  };
+  saveRegistry(ownerUserId, checks);
+}
+
 /** Moves a check to a terminal state ("met"/"expired"/"stopped"/"error") with the real outcome
  *  text attached. Idempotent against an already-terminal check (a race between a tick concluding
  *  and a user-initiated stop is possible -- this never overwrites a check that already finished). */
@@ -231,13 +273,15 @@ export const BACKGROUND_CHECK_TOOLS: BackgroundCheckToolDefinitionShape[] = [
   },
   {
     name: "list_background_checks",
-    description: "List your pending/active background checks (or all, including finished ones), each with its reason, whatToCheck, and status.",
+    description:
+      "List your pending/active background checks (or all, including finished ones), each with its reason, whatToCheck, status, and -- for a check that carries a script -- what that script actually printed on its most recent tick. Use this to see what your running checks are genuinely measuring right now, rather than waiting for one to fire.",
     parameters: { type: "object", properties: { includeFinished: { type: "boolean" } } },
     execute: async (args, ctx) => listBackgroundChecks(ctx.ownerUserId, !args.includeFinished),
   },
   {
     name: "get_background_check",
-    description: "Inspect one specific background check's real current state by id -- reason, whatToCheck, status, how many times it's been polled, and its outcome if finished.",
+    description:
+      "Inspect one specific background check's real current state by id -- reason, whatToCheck, status, how many times it's been polled, its outcome if finished, and its script's real output from the most recent tick (stdout, stderr, exit code). Check this when you want to know what a running check is actually seeing, or to debug a script that isn't behaving.",
     parameters: { type: "object", properties: { checkId: { type: "string" } }, required: ["checkId"] },
     execute: async (args, ctx) => {
       const check = getBackgroundCheck(ctx.ownerUserId, args.checkId as string);

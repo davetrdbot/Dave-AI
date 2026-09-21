@@ -109,5 +109,51 @@ for (const s of ["CRASH_100", "BOOM_500", "STORM_500", "FLAMES", "VOL_10"]) {
 }
 console.log("    confirmed: prompt teaches it with a real VOL_80 scenario and names the synthetics");
 
+console.log("\n[9] A PENDING check is no longer a black box -- its script's last output is visible...\n");
+// The trader: "hope you added for it to see pending scripts and also for the run script to return
+// back with responses". Before this you could see a check had a script and had polled 14 times,
+// but not one thing it had actually measured -- so a script quietly failing looked identical to
+// one finding nothing.
+const { recordBackgroundCheckScriptRun, getBackgroundCheck, listBackgroundChecks, MAX_STORED_SCRIPT_OUTPUT } = await import("../../dave-workers/src/background-check-tools.js");
+const watched = createBackgroundCheck(OWNER, { reason: "watching the gap", whatToCheck: "below 196740?", script: "print(1)", symbols: ["VOL_80"] });
+assert.equal(getBackgroundCheck(OWNER, watched.id)!.lastScriptRun, undefined, "nothing recorded before the first tick");
+
+recordBackgroundCheckScriptRun(OWNER, watched.id, { at: Date.now(), exitCode: 0, stdout: "closes_below=2 momentum=-0.4", stderr: "" });
+const afterRun = getBackgroundCheck(OWNER, watched.id)!;
+assert.equal(afterRun.lastScriptRun!.exitCode, 0);
+assert.match(afterRun.lastScriptRun!.stdout, /closes_below=2/, "the real reading must be inspectable mid-flight");
+assert.ok(listBackgroundChecks(OWNER, true).find((c) => c.id === watched.id)?.lastScriptRun, "…and visible in the list, not just the single get");
+console.log("    confirmed: a running check's real last measurement is inspectable");
+
+// A script that cannot run AT ALL must look different from one that ran and found nothing.
+recordBackgroundCheckScriptRun(OWNER, watched.id, { at: Date.now(), exitCode: null, stdout: "", stderr: "", error: "No E2B key stored yet" });
+const failed = getBackgroundCheck(OWNER, watched.id)!.lastScriptRun!;
+assert.equal(failed.exitCode, null, "a run that never happened must be distinguishable from exit 0");
+assert.match(failed.error!, /No E2B key/, "…and carry the real reason");
+console.log("    confirmed: 'never ran' is distinguishable from 'ran and found nothing'");
+
+// Bounded: this registry is rewritten on every tick of every check.
+recordBackgroundCheckScriptRun(OWNER, watched.id, { at: Date.now(), exitCode: 0, stdout: "x".repeat(50_000), stderr: "y".repeat(50_000) });
+const huge = getBackgroundCheck(OWNER, watched.id)!.lastScriptRun!;
+assert.equal(huge.stdout.length, MAX_STORED_SCRIPT_OUTPUT, "stored output must be capped");
+assert.equal(huge.stderr.length, MAX_STORED_SCRIPT_OUTPUT);
+console.log(`    confirmed: output capped at ${MAX_STORED_SCRIPT_OUTPUT} chars -- a chatty script can't bloat the registry`);
+
+// A late write from an in-flight tick must never resurrect a stopped check.
+recordBackgroundCheckScriptRun(OWNER, "no-such-check-id", { at: Date.now(), exitCode: 0, stdout: "ghost", stderr: "" });
+assert.equal(getBackgroundCheck(OWNER, "no-such-check-id"), undefined, "a write for an unknown check must no-op, not create one");
+console.log("    confirmed: a late write for a vanished check no-ops");
+
+console.log("\n[10] run_script genuinely RETURNS its results to the caller...\n");
+const runScriptTool = (await import("../../dave-e2b/src/index.js")).E2B_TOOLS.find((t) => t.name === "run_script")!;
+assert.match(runScriptTool.description, /real stdout, stderr, exit code, and any files it produced/, "the tool must promise a real response, not fire-and-forget");
+// The loop must genuinely feed that response back into the tick's own reasoning.
+assert.ok(loopSrc.includes("run.stdout") && loopSrc.includes("run.exitCode"), "the background tick must read the real stdout and exit code back");
+assert.ok(loopSrc.includes("run.filesOut"), "…and any files the script produced");
+const tickSrc = read("packages/dave-agent-loop/src/autonomous-tick.ts");
+assert.ok(tickSrc.includes("YOUR SCRIPT'S REAL OUTPUT"), "the trading tick must hand the real output back to the decision");
+assert.ok(tickSrc.includes("run.exitCode !== 0"), "…and flag a failed script rather than letting a result be read into it");
+console.log("    confirmed: stdout/stderr/exit code/files all returned and fed back on every path");
+
 console.log("\n=== ALL ASSERTIONS PASSED ===");
 process.exit(0);
