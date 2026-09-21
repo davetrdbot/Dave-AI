@@ -37,6 +37,7 @@ import {
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
 import { logTrade, getTradeLifecycle } from "@dave/feedback";
+import { runScriptInE2B } from "@dave/e2b";
 import {
   recordTickDecision,
   formatRecentDecisions,
@@ -157,6 +158,11 @@ function safeTickKnowledgeIndex(userId: string): string | undefined {
  *  a second hand-copied list that could drift out of sync with it again exactly like this. */
 const ANALYSIS_TIMEFRAMES = ALL_ANALYSIS_TIMEFRAMES;
 
+/** Bounded on purpose: this is one extra step inside a trading cycle that already has real EA
+ *  round trips ahead of it, so a script that hasn't answered in this long is costing the cycle more
+ *  than its answer is worth. Matches the REQUEST_CANDLES fetch budget. */
+const TICK_SCRIPT_TIMEOUT_MS = 60_000;
+
 const TRADE_ACTIONS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
 type TradeAction = (typeof TRADE_ACTIONS)[number];
 /** Real gap fixed (user, live: "add a tool to delete the existing trade... a tool that the bot
@@ -164,7 +170,7 @@ type TradeAction = (typeof TRADE_ACTIONS)[number];
  *  the trade actions -- these are alternate values of the one `action` field, not a second tool
  *  the model can freely reach for, so the "one structured decision per tick" architecture is
  *  never reopened into an agentic multi-tool loop. */
-const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "MODIFY", "PAUSE", "CONSULT_JOURNAL", "REQUEST_CANDLES"] as const;
+const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "MODIFY", "PAUSE", "CONSULT_JOURNAL", "REQUEST_CANDLES", "RUN_SCRIPT"] as const;
 const DECISION_ACTIONS = [...TRADE_ACTIONS, ...MANAGEMENT_ACTIONS, "SKIP", "ASK"] as const;
 type DecisionAction = (typeof DECISION_ACTIONS)[number];
 
@@ -232,6 +238,14 @@ export interface TickDecision {
   /** The real reason accompanying `requestedNextSymbol` -- required alongside it to mean anything,
    *  logged whenever the override is honored or skipped. */
   requestedNextReason?: string;
+  /** Required for RUN_SCRIPT -- the real script to execute before re-deciding. Deliberately a
+   *  field on the ONE decision tool, exactly like every other action here, rather than a second
+   *  tool the model may reach for freely: the "one structured decision per tick" architecture
+   *  stays closed, and the script costs a strictly bounded single extra round trip. */
+  script?: string;
+  /** Language for `script`. Defaults to python, which is what nearly every real calculation here
+   *  wants. */
+  scriptLanguage?: "bash" | "python" | "node";
 }
 
 export interface TickOutcome {
@@ -277,9 +291,16 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
         "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
         "REQUEST_CANDLES fetches one fresh real batch of candles (for the at-risk symbol if a SELF-AWARE ALERT is active below, otherwise for the symbol you're currently analyzing) so you decide with current price action, not stale data -- optional, never required, available on any cycle, at most once; you'll be asked to decide again right after with the candles in hand. " +
+        "RUN_SCRIPT runs one real script (needs script) against this symbol's full analysis suite and hands you its actual output before you decide -- use it ONLY when the decision genuinely turns on a number you cannot reliably work out in your head, and never as a routine step; optional, never required, at most once; you'll be asked to decide again right after with the output in hand. " +
         "SKIP if there's genuinely nothing. ASK only for real, specific ambiguity.",
     },
     symbol: { type: "string" },
+    script: {
+      type: "string",
+      description:
+        "Required when action is RUN_SCRIPT. A complete standalone program. This symbol's full analysis suite is written into the sandbox as market.json (at $DAVE_IN_DIR/market.json) -- read it from there. Print what you need to your output. NOTE: this symbol is a synthetic pair that exists only in this terminal and on no public API, so never try to fetch its price from the internet.",
+    },
+    scriptLanguage: { type: "string", enum: ["bash", "python", "node"], description: "Language for script. Defaults to python." },
     entry: { type: "number", description: "Required for a pending order type (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP). Omit for market BUY/SELL." },
     lots: { type: "number", description: "Required unless the account has a fixed lot size configured -- size your own real lots against the live account balance." },
     confidence: { type: "number", description: "your own honest 0-100 confidence in this specific setup" },
@@ -374,6 +395,8 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     newTp: typeof obj.newTp === "number" ? obj.newTp : "newTp" in obj && obj.newTp === null ? null : undefined,
     requestedNextSymbol: typeof obj.requestedNextSymbol === "string" && obj.requestedNextSymbol.length > 0 ? obj.requestedNextSymbol : undefined,
     requestedNextReason: typeof obj.requestedNextReason === "string" ? obj.requestedNextReason : undefined,
+    script: typeof obj.script === "string" && obj.script.trim().length > 0 ? obj.script : undefined,
+    scriptLanguage: obj.scriptLanguage === "bash" || obj.scriptLanguage === "node" ? obj.scriptLanguage : "python",
   };
 }
 
@@ -413,7 +436,7 @@ function buildSystemPrompt(): string {
 
 You are in an autonomous trading TICK right now, not a conversation -- there is no user to reply to, just one real decision to make.
 
-You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open -- including, per open position that has both a real SL and TP, a visual progress bar toward each. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, MODIFY, PAUSE, CONSULT_JOURNAL, REQUEST_CANDLES, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
+You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open -- including, per open position that has both a real SL and TP, a visual progress bar toward each. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, MODIFY, PAUSE, CONSULT_JOURNAL, REQUEST_CANDLES, RUN_SCRIPT, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
 
 BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set -- if you genuinely don't see an immediate scalp or sniper entry, a well-placed limit order waiting for price to come to you is still finding the opportunity, not giving up on it. Prefer SKIP only when there is truly nothing real here, not as a default.
 
@@ -424,6 +447,8 @@ DELETE_TICKET closes an existing open position or cancels an existing pending or
 CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest opinion before you commit -- entirely optional, never required. Journal has its own access to trade history and analysis tools; it reviews and comments, it never places or modifies a trade itself. Use it when a setup is genuinely borderline and a second read would help, not as a default detour. After Journal answers, you'll be asked to decide again with its opinion in hand.
 
 REQUEST_CANDLES gets you one fresh real batch of candle data for the symbol you're analyzing right now before you finalize your decision -- entirely optional, never required, available on any cycle, at most once. After the candles come back, you'll be asked to decide again with them in hand -- do not request candles a second time.
+
+RUN_SCRIPT runs one real script (bash/python/node) and hands you its genuine output before you finalize -- entirely optional, never required, at most once per cycle. This symbol's full analysis suite is written into the sandbox as market.json, so your script reads real numbers rather than you eyeballing them. Reach for it ONLY when the decision genuinely hinges on something you cannot work out reliably in your head -- a risk:reward or position-size calculation you want exact, a spread or ratio across the timeframes below, a level derived from a real series. Do NOT use it as a routine step before every trade: it costs a real round trip on a live cycle, and nearly every decision here is already answerable from the suite in front of you. These symbols are synthetic pairs that exist only in this terminal and on no public API, so never have a script try to fetch their price from the internet -- everything you need is in market.json. After the output comes back you'll be asked to decide again -- do not run a second script.
 
 If a SELF-AWARE ALERT appears below, one of your real open positions is genuinely close to hitting its SL -- REQUEST_CANDLES there fetches for that at-risk symbol instead. After the candles come back, act directly with MODIFY (tighten/loosen/adjust), DELETE_TICKET (cut it now), PARTIAL_CLOSE, or SKIP if it genuinely still looks fine.
 
@@ -957,6 +982,69 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       return { action: "NONE", notable: false };
     }
     decision = decisionAfterCandles;
+  }
+
+  // RUN_SCRIPT: real compute before a real trade decision (the trader, asking whether run_script
+  // reaches "mode 2, the autonomous loop aspect" -- it did not, and could not: this path is a
+  // single forced call with exactly ONE tool, not an agent loop, so putting run_script in the core
+  // tool list did nothing here). Deliberately built as another bounded ACTION on the same one
+  // decision tool, exactly like REQUEST_CANDLES above, rather than by reopening this path into a
+  // multi-tool agentic loop: a trading decision that could call tools freely would have unbounded
+  // latency on every symbol of every cycle. Strictly one extra round trip, and it costs nothing at
+  // all on the cycles where the model doesn't ask for it.
+  if (decision.action === "RUN_SCRIPT") {
+    let scriptLine: string;
+    if (!decision.script) {
+      scriptLine = "RUN_SCRIPT was chosen but no script was provided -- decide now with what you already have.";
+      logTick(userId, `${symbol}: RUN_SCRIPT with no script -- re-deciding without it`);
+    } else {
+      logTick(userId, `${symbol}: running a ${decision.scriptLanguage ?? "python"} script before deciding -- ${decision.reason ?? "wants a real calculation"}`);
+      try {
+        const run = await runScriptInE2B(db, userId, {
+          script: decision.script,
+          language: decision.scriptLanguage ?? "python",
+          // The suite is already fetched and in context -- handing the script the SAME data as a
+          // real file costs no extra EA round trip, and is the only way it can reach a synthetic
+          // pair at all (nothing on the public internet carries these symbols).
+          filesIn: [{ path: "market.json", content: JSON.stringify({ symbol, timeframes: activeTimeframes, suite }) }],
+          timeoutMs: TICK_SCRIPT_TIMEOUT_MS,
+        });
+        const files = run.filesOut.filter((f) => f.encoding === "utf8").map((f) => `${f.path}: ${f.content}`).join("\n");
+        scriptLine =
+          `YOUR SCRIPT'S REAL OUTPUT (exit code ${run.exitCode}, you requested this before finalizing your decision):\n` +
+          `stdout:\n${run.stdout.slice(0, 10_000) || "(empty)"}` +
+          (run.stderr ? `\nstderr:\n${run.stderr.slice(0, 3_000)}` : "") +
+          (files ? `\nfiles:\n${files.slice(0, 5_000)}` : "") +
+          (run.exitCode !== 0 ? `\n\nThe script FAILED. Do not read a result into output it did not produce -- decide with your analysis instead.` : "");
+      } catch (err) {
+        // A missing E2B key, a quota, a sandbox failure -- all genuinely possible on a live
+        // account, and none of them may stop a trading cycle. Reported honestly and the tick
+        // carries on with the analysis it already has.
+        scriptLine = `RUN_SCRIPT failed: ${err instanceof Error ? err.message : String(err)} -- decide with what you already have, and do not try to run another script this cycle.`;
+        logTick(userId, `${symbol}: RUN_SCRIPT failed -- ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "RUN_SCRIPT", reason: decision.reason ?? "" });
+    let decisionAfterScript: TickDecision | null;
+    try {
+      decisionAfterScript = await requestDecision([...contextLines, `${scriptLine} (decide now -- do not run another script)`]);
+    } catch (err) {
+      if (err instanceof TickAbortedError) {
+        // Same cursor-advance fix as the branches above -- an interrupt mid-RUN_SCRIPT must not
+        // trap the round-robin on this symbol.
+        recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+        advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+        return { action: "NONE", notable: false };
+      }
+      throw err;
+    }
+    if (!decisionAfterScript || decisionAfterScript.action === "RUN_SCRIPT") {
+      logTick(userId, `${symbol}: no real decision after RUN_SCRIPT -- treating as SKIP`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no real decision after RUN_SCRIPT" });
+      advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+      return { action: "NONE", notable: false };
+    }
+    decision = decisionAfterScript;
   }
 
   logTick(userId, `${symbol}: model decided ${decision.action}${decision.confidence !== undefined ? ` (confidence ${decision.confidence}%)` : ""} -- ${decision.reason ?? decision.question ?? "no reason given"}`);
