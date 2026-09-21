@@ -7,13 +7,17 @@ import { readSkipLog } from "./skip-log.js";
 import { readHypotheses } from "./hypotheses.js";
 
 /**
- * Step 18.6: weekly dataset export, a real scheduled job (not a manual
- * "export" button that happens to exist). Default weekly (Sunday
- * 04:00 UTC, an hour after the dreaming cron so it can include that
- * run's output), writes a real JSON file to disk every time it fires.
+ * Step 18.6: dataset export, a real scheduled job (not a manual "export"
+ * button that happens to exist). Runs DAILY at 04:00 UTC, an hour after
+ * the dreaming cron so it can include that run's output, and writes a
+ * real JSON file to disk every time it fires.
+ *
+ * Was weekly until the trader asked for daily ("make it 1 day"). Each run
+ * writes `<YYYY-MM-DD>.json`, so a daily cadence produces one file per day
+ * with no collision and no change needed here -- see the path below.
  */
 
-export const DEFAULT_EXPORT_CRON = "0 4 * * 0";
+export const DEFAULT_EXPORT_CRON = "0 4 * * *";
 
 export interface WeeklyExportResult {
   path: string;

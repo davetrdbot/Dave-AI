@@ -1,6 +1,6 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
 import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, getWinStreak, ALERT_CATEGORIES } from "@dave/trading";
-import { listOpenMonitors, HOT_HAND_MIN_STREAK } from "./trade-monitor-store.js";
+import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK } from "./trade-monitor-store.js";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill, listSkills } from "@dave/skills";
 import { loadFrozenSnapshot } from "@dave/memory";
@@ -215,7 +215,7 @@ export function buildLiveSettingsBlock(userId: string): string {
       selfAware,
       "</self_aware>",
       "",
-      "This is your own live read on the open trades, loaded fresh this turn. Act on it: if a trade is up ~1R, offer to move its stop to breakeven; if one is stuck flat, consider freeing the capital; if you're on a win streak, hold your risk and criteria exactly -- do not oversize. These are the same warnings the user gets; a category the user switched off is not shown.",
+      "This is your own live read on the open trades, loaded fresh this turn. Act on it: a trade up ~1R has already had its stop moved to breakeven for you; if one is stuck flat, consider freeing the capital; if a winner has given back a chunk of its peak or the market has gone to chop, re-check whether the original idea is still live rather than waiting it out; if you're on a win streak, hold your risk and criteria exactly -- do not oversize. These are the same warnings the user gets; a category the user switched off is not shown.",
     );
   }
 
@@ -239,6 +239,18 @@ function safeLoadSelfAware(userId: string, toggles: ReturnType<typeof getAlertTo
       if (m.alerts.breakeven && toggles.breakeven) notes.push("up ~1R — offer to move stop to breakeven");
       if (m.alerts.stuck && toggles.stuck) notes.push("stuck flat near breakeven — consider closing");
       if ((m.state === "deep_loss" || m.alerts.deepLoss) && toggles.deep_loss) notes.push("near its stop");
+      // The profit-side checks, surfaced to Dave the same way the downside ones already are. The
+      // peak/pullback and range notes are derived live (not latched) so the context always reflects
+      // where the trade stands THIS turn, not where it stood when an alert last fired.
+      if (m.bestPnl !== undefined && m.lastPnl !== undefined && m.bestPnl >= PEAK_PULLBACK_MIN_PEAK) {
+        const givenBack = m.bestPnl - m.lastPnl;
+        if (givenBack >= m.bestPnl * PEAK_PULLBACK_FRACTION && toggles.peak_pullback) {
+          notes.push(`gave back ${givenBack.toFixed(2)} of a ${m.bestPnl.toFixed(2)} peak — is the idea done?`);
+        }
+      }
+      if (toggles.range && isRanging(m, Date.now())) notes.push("ranging — the expected move hasn't developed");
+      if (m.alerts.profitStable && toggles.profit_stable) notes.push("held profit a while — confirm the plan still holds");
+      if (m.alerts.quickProfitCheck && toggles.quick_profit_check) notes.push("10+ min in profit — still heading for the target?");
       const note = notes.length ? ` — ${notes.join("; ")}` : "";
       rows.push(`- ${head} [${m.state}]${pnl}${note}`);
     }

@@ -21,7 +21,15 @@ export type AlertCategory =
   | "recovery" //      climbed back to profit after a prolonged loss
   | "breakeven" //     up ~1R -- move the stop to breakeven
   | "stuck" //         flat near breakeven for 15+ min, tying up capital
-  | "hot_hand"; //     3+ wins in a row -- don't oversize / loosen rules
+  | "hot_hand" //      3+ wins in a row -- don't oversize / loosen rules
+  // The trader's five profit-side checks. Each gets its own switch for the same reason the others
+  // do: these fire per-trade on a 30s sweep, so whichever one turns out to be noisy in practice
+  // must be silenceable on its own rather than forcing the whole feature off.
+  | "profit_stable" //     in profit ~5 min -- is the original plan still valid
+  | "profit_drop" //       profitable ~10 min and now giving it back
+  | "peak_pullback" //     pulled back meaningfully from the tracked peak
+  | "range" //             sustained chop -- the expected move never developed
+  | "quick_profit_check"; // in profit ~10 min -- still heading for the original target
 
 export const ALERT_CATEGORIES: { id: AlertCategory; label: string }[] = [
   { id: "loss_duration", label: "Loss-duration nudges (5m / 10m in the red)" },
@@ -30,6 +38,11 @@ export const ALERT_CATEGORIES: { id: AlertCategory; label: string }[] = [
   { id: "breakeven", label: "Breakeven guard (up ~1R — move stop to BE)" },
   { id: "stuck", label: "Stuck trade (flat near breakeven 15+ min)" },
   { id: "hot_hand", label: "Hot-hand warning (3+ wins in a row)" },
+  { id: "profit_stable", label: "Profit stability (in profit 5 min — plan still valid?)" },
+  { id: "profit_drop", label: "Profit reduction (profit starting to fall back)" },
+  { id: "peak_pullback", label: "Peak pullback (gave back part of the peak)" },
+  { id: "range", label: "Range detected (chop — expected move never came)" },
+  { id: "quick_profit_check", label: "Quick profit check (10 min — still on target?)" },
 ];
 
 const VALID = new Set<AlertCategory>(ALERT_CATEGORIES.map((c) => c.id));
@@ -37,7 +50,19 @@ const VALID = new Set<AlertCategory>(ALERT_CATEGORIES.map((c) => c.id));
 export type AlertToggles = Record<AlertCategory, boolean>;
 
 function defaultToggles(): AlertToggles {
-  return { loss_duration: true, deep_loss: true, recovery: true, breakeven: true, stuck: true, hot_hand: true };
+  return {
+    loss_duration: true,
+    deep_loss: true,
+    recovery: true,
+    breakeven: true,
+    stuck: true,
+    hot_hand: true,
+    profit_stable: true,
+    profit_drop: true,
+    peak_pullback: true,
+    range: true,
+    quick_profit_check: true,
+  };
 }
 
 export class InvalidAlertCategoryError extends Error {

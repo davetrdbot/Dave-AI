@@ -142,7 +142,7 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       "rather than a ticket when that happens.",
     parameters: {
       type: "object",
-      required: ["symbol", "type", "lots", "confidence"],
+      required: ["symbol", "type", "lots", "confidence", "reason"],
       properties: {
         symbol: { type: "string" },
         type: { type: "string", enum: ["buy", "sell", "buy_limit", "sell_limit", "buy_stop", "sell_stop"] },
@@ -151,7 +151,19 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         sl: { type: "number" },
         tp: { type: "number" },
         confidence: { type: "number", description: "your own real assessed confidence (0-100) for this specific trade" },
-        reason: { type: "string", description: "brief reason behind the confidence score, shown to the user if approval is needed" },
+        // Real bug fixed (the trader, live: an alert reading "📌 Original idea: (reason not
+        // recorded)"). This was optional AND described as only mattering "if approval is needed",
+        // so the model routinely omitted it -- and full-registry.ts then journalled an empty
+        // reasoning array, leaving every later self-aware alert about that position with nothing
+        // to quote for the whole life of the trade. It is required now, and described for what it
+        // actually is: the trade's thesis, not a footnote to the confidence score.
+        reason: {
+          type: "string",
+          description:
+            "REQUIRED. Your real thesis for this trade in one or two sentences -- what you saw and what you expect. " +
+            "This is recorded against the ticket and quoted back to you in every alert about this position for as long as it stays open " +
+            "(and to the user if the trade needs their approval), so write what you would actually want to read an hour from now, not a label.",
+        },
       },
     },
     execute: async (args, ctx) => {

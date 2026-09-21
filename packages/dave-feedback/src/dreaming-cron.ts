@@ -7,7 +7,7 @@ import { readHypotheses } from "./hypotheses.js";
 
 /**
  * Step 18.1: the dreaming cron. Real `node-cron` scheduling (Step
- * 16.2a), default "every Sunday" (`0 3 * * 0` -- 03:00 UTC Sunday), a
+ * 16.2a), default DAILY (`0 3 * * *` -- 03:00 UTC every day), a
  * real customizable expression per user. "Run through a worker" is
  * literal here, not a figure of speech: a real `journal`-role worker
  * (Step 12) is created for the run and retired immediately after, the
@@ -15,7 +15,14 @@ import { readHypotheses } from "./hypotheses.js";
  * inline callback pretending to be a worker.
  */
 
-export const DEFAULT_DREAMING_CRON = "0 3 * * 0";
+/**
+ * Real change (the trader: "what's the point of self improvement if it's only 1 week / so make it
+ * 1 day"). A weekly reflection means a lesson learned on Monday sits unused until the following
+ * Sunday -- six days of trading on knowledge the data had already contradicted. Daily closes that
+ * gap. The run is cheap (it reads already-persisted trade/skip records), and a day with nothing
+ * worth concluding is an accepted, explicitly-handled outcome, so a quiet day costs nothing.
+ */
+export const DEFAULT_DREAMING_CRON = "0 3 * * *";
 
 export interface DreamingInput {
   allTradesEver: ReturnType<typeof listTradesSince>;

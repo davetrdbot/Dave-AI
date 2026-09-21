@@ -89,8 +89,16 @@ try {
   let w = advanceMonitor(undefined, obs({ ticket: "T2", currentPrice: 120, pnl: 20 }), t0);
   assert.equal(w.monitor.state, "profit");
   w = advanceMonitor(w.monitor, obs({ ticket: "T2", currentPrice: 125, pnl: 25 }), t0 + LOSS_ALERT_10M_MS);
-  assert.equal(w.alerts.length, 0, "a trade that's been winning the whole time must never get a loss alert");
-  console.log("    confirmed: a winner stays silent");
+  // This asserted `alerts.length === 0` until the profit-side checks landed (step148): a winner
+  // held for 10 minutes now legitimately fires profitStable/quickProfitCheck. The test's real
+  // subject is unchanged and still the point -- a winning trade must never be told it is LOSING.
+  const lossKinds = ["loss5m", "loss10m", "slDanger", "deepLoss"];
+  assert.deepEqual(
+    w.alerts.filter((a) => lossKinds.includes(a.kind)).map((a) => a.kind),
+    [],
+    "a trade that's been winning the whole time must never get a loss alert"
+  );
+  console.log("    confirmed: a winner never gets a loss alert");
 
   console.log("\n[8] END TO END through the EA snapshot: alert sends, then CLOSE finalizes...\n");
   const db = new DaveDatabase(join(workDir, "dave.db"));

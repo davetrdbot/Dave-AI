@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, chunkForTelegram, getActiveIndicator, setActiveIndicator, clearActiveIndicator, withThinkingIndicator, type ActionType, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, sendSelfDeletingMessage, chunkForTelegram, getActiveIndicator, setActiveIndicator, clearActiveIndicator, withThinkingIndicator, type ActionType, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { invokeWebhookTrigger } from "@dave/db";
 import { userUploadDir } from "@dave/e2b";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyError } from "@dave/vision";
@@ -140,7 +140,14 @@ async function runAgentTurn(
   messageText: string | undefined
 ): Promise<void> {
   const registry = getOrBuildRegistry(deps, client, chatId);
-  const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text) => { await client.sendMessage({ chat_id: chatId, text }); });
+  const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text, options) => {
+    // A transient notice (a key rotation that recovered) removes itself; anything else stays.
+    if (options?.transientMs) {
+      await sendSelfDeletingMessage(client, { chat_id: chatId, text }, options.transientMs).catch(() => undefined);
+      return;
+    }
+    await client.sendMessage({ chat_id: chatId, text });
+  });
   const loop = new AgentLoop(provider, registry);
 
   let history = loadConversationHistory(deps.db, historyKey);
@@ -511,7 +518,11 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
   // tool loop unchanged -- only this unattended background loop, running with real money with
   // nobody watching each cycle, gets the tighter mechanism.
   if (deps.executor === undefined) return logCycle(deps.ownerUserId, "skipped -- no trade executor configured");
-  const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text) => {
+  const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text, options) => {
+    if (options?.transientMs) {
+      await sendSelfDeletingMessage(client, { chat_id: chatId, text }, options.transientMs).catch(() => undefined);
+      return;
+    }
     await client.sendMessage({ chat_id: chatId, text });
   });
 
@@ -1066,6 +1077,9 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   startTradeMonitorSweep({
     db: deps.db,
     userId: deps.ownerUserId,
+    // The real executor, so the breakeven alert can genuinely move the stop instead of only
+    // suggesting it (the trader: "breakeven doesn't work" -- it had no executor at all).
+    executor: deps.executor,
     notify: async (text) => {
       const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
       if (chatId === undefined) return;

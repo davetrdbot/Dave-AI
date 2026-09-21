@@ -1,6 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor, AnalysisSource } from "@dave/trading";
-import { markdownToTelegramHtml, type TelegramClient } from "@dave/telegram";
+import { markdownToTelegramHtml, sendSelfDeletingMessage, type TelegramClient } from "@dave/telegram";
 import { type Worker, toolsForWorker, JOURNAL_TOOLS, WORKER_TOOL_REQUEST_TOOLS, reportToUser, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID, getGrantedToolNames, retireWorker } from "@dave/workers";
 import { logTrade } from "@dave/feedback";
 import { E2B_TOOLS } from "@dave/e2b";
@@ -106,8 +106,13 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
       }
     };
 
-    const provider = modelConfigProvider(db, ownerUserId, async (text) => {
-      await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(`${tag} (provider): ${text}`), parse_mode: "HTML" });
+    const provider = modelConfigProvider(db, ownerUserId, async (text, options) => {
+      const params = { chat_id: chatId, text: markdownToTelegramHtml(`${tag} (provider): ${text}`), parse_mode: "HTML" as const };
+      if (options?.transientMs) {
+        await sendSelfDeletingMessage(client, params, options.transientMs).catch(() => undefined);
+        return;
+      }
+      await client.sendMessage(params);
     });
     const loop = new AgentLoop(provider, liveRegistry);
 

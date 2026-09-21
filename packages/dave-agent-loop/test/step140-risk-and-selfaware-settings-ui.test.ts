@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DaveDatabase } from "@dave/db";
 import { TelegramClient } from "@dave/telegram";
 import { dispatchCallback, type CommandRouterDeps } from "../src/command-router.js";
-import { getMinRiskReward, getDeepLossAlertPercent, getAlertToggles } from "@dave/trading";
+import { getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, ALERT_CATEGORIES } from "@dave/trading";
 
 /**
  * Real bug (the trader: "the earlier ui you told me you added... no ui. check"). The risk:reward,
@@ -64,7 +64,13 @@ try {
   console.log("\n[4] Self-Aware screen shows every category as a toggle, and tapping one flips it...\n");
   await tap("settings:selfaware", "c5");
   const toggleButtons = buttons().filter((b) => b.callback_data.startsWith("selfaware:toggle:"));
-  assert.equal(toggleButtons.length, 6, `all six self-aware categories must be togglable, found ${toggleButtons.length}`);
+  // Derived from the one real list, not hardcoded -- the count grew from 6 to 11 when the
+  // profit-side checks landed, and a literal here would have to be chased every time.
+  assert.equal(
+    toggleButtons.length,
+    ALERT_CATEGORIES.length,
+    `every self-aware category must be togglable: expected ${ALERT_CATEGORIES.length}, found ${toggleButtons.length}`
+  );
   assert.ok(buttons().some((b) => b.callback_data === "settings:deeploss"), "the deep-loss level sub-picker must be reachable here");
   assert.equal(getAlertToggles(OWNER).stuck, true, "stuck starts on");
   await tap("selfaware:toggle:stuck", "c6");

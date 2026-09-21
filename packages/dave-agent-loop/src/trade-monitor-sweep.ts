@@ -1,6 +1,6 @@
 import { getLastKnownState } from "@dave/ea-bridge";
 import { getTradeLifecycle } from "@dave/feedback";
-import { recordOutcome, getDeepLossAlertProgress, getAlertToggles, getWinStreak, type AlertCategory } from "@dave/trading";
+import { recordOutcome, getDeepLossAlertProgress, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
 import type { DaveDatabase } from "@dave/db";
 import {
   readMonitors,
@@ -8,6 +8,7 @@ import {
   advanceMonitor,
   closeMonitor,
   HOT_HAND_MIN_STREAK,
+  REASON_NOT_RECORDED,
   type TradeMonitor,
   type MonitorAlert,
   type MonitorAlertKind,
@@ -24,10 +25,22 @@ import {
 
 const SWEEP_INTERVAL_MS = 30_000;
 
+/** How far back the quick check's momentum read looks. Long enough to be a trend rather than one
+ *  sweep's jitter, short enough to describe where the trade is going NOW. */
+const MOMENTUM_WINDOW_MS = 3 * 60_000;
+
 export interface TradeMonitorSweepDeps {
   db: DaveDatabase;
   userId: string;
   notify: (text: string) => Promise<void>;
+  /**
+   * Real bug fixed (the trader: "breakeven doesn't work"). These deps carried ONLY `notify`, so the
+   * breakeven alert could say "enough to move the stop to breakeven" and then, by construction, do
+   * nothing at all -- there was no path from this sweep to the position. With a real executor the
+   * alert becomes an action. Optional so existing callers/tests that only assert on messages keep
+   * working; when it is absent the alert honestly reverts to advice.
+   */
+  executor?: TradeExecutor;
 }
 
 function reasonFor(db: DaveDatabase, userId: string, ticket: string): string {
@@ -39,7 +52,13 @@ function reasonFor(db: DaveDatabase, userId: string, ticket: string): string {
   } catch {
     /* no journal entry for this ticket */
   }
-  return "(reason not recorded)";
+  return REASON_NOT_RECORDED;
+}
+
+/** The cached reason when it is genuinely known, otherwise a fresh journal lookup. */
+function realReasonOrRetry(deps: TradeMonitorSweepDeps, cached: string | undefined, ticket: string): string {
+  if (cached && cached !== REASON_NOT_RECORDED) return cached;
+  return reasonFor(deps.db, deps.userId, ticket);
 }
 
 function fmtDuration(ms: number): string {
@@ -62,16 +81,68 @@ export function alertCategoryOf(kind: MonitorAlertKind): AlertCategory {
       return "breakeven";
     case "stuck":
       return "stuck";
+    case "profitStable":
+      return "profit_stable";
+    case "profitDrop":
+      return "profit_drop";
+    case "peakPullback":
+      return "peak_pullback";
+    case "range":
+      return "range";
+    case "quickProfitCheck":
+      return "quick_profit_check";
   }
 }
 
-export function buildMonitorAlert(a: MonitorAlert, now: number): string {
+/** Money as the trader reads it in these alerts. */
+function money(n: number): string {
+  return `${n > 0 ? "+" : ""}${n.toFixed(2)}`;
+}
+
+/**
+ * The trade's original target expressed the way the spec's example shows it (`Target: +2.0%`),
+ * derived from the stored TP against the entry. A trade with no TP says so rather than having a
+ * number invented for it.
+ */
+function targetLine(m: TradeMonitor): string {
+  if (m.tp === undefined || m.openPrice === 0) return "Target: none set";
+  const movePct = (Math.abs(m.tp - m.openPrice) / m.openPrice) * 100;
+  return `Target: ${movePct.toFixed(1)}% (${m.tp})`;
+}
+
+/**
+ * Momentum read off the rolling sample history rather than a fresh EA analysis call. The spec calls
+ * the quick check "lightweight", and this runs every 30s for every open position -- pulling a full
+ * analysis suite per trade per check would not be lightweight. Compares the newest reading against
+ * the oldest still inside the momentum window.
+ */
+function momentumLine(m: TradeMonitor, now: number): string {
+  const window = (m.samples ?? []).filter((s) => now - s.at <= MOMENTUM_WINDOW_MS);
+  if (window.length < 2) return "Momentum: not enough history yet";
+  const first = window[0].pnl;
+  const last = window[window.length - 1].pnl;
+  const delta = last - first;
+  const dir = delta > 0 ? "building" : delta < 0 ? "fading" : "flat";
+  return `Momentum: ${dir} (${money(delta)} over the last ${fmtDuration(now - window[0].at)})`;
+}
+
+/** What actually happened when a breakeven alert tried to move the stop. "advice" means no
+ *  executor was wired, so nothing was attempted and the message must not claim otherwise. */
+export type BreakevenOutcome =
+  | { status: "moved"; level: number }
+  | { status: "failed"; level: number; error: string }
+  | { status: "advice" };
+
+export function buildMonitorAlert(a: MonitorAlert, now: number, breakeven?: BreakevenOutcome): string {
   const m = a.monitor;
   const head = `${m.symbol} ${m.direction.toUpperCase()} (ticket #${m.ticket})`;
   const pnl = m.lastPnl !== undefined ? ` P/L ${m.lastPnl > 0 ? "+" : ""}${m.lastPnl}` : "";
   const lossFor = m.lossStartedAt ? fmtDuration(now - m.lossStartedAt) : "";
   const flatFor = m.flatStartedAt ? fmtDuration(now - m.flatStartedAt) : "";
   const why = `\n\n📌 Original idea: ${m.reason}`;
+  const inProfitFor = m.profitStartedAt ? fmtDuration(now - m.profitStartedAt) : "a while";
+  const dropAmount = m.bestPnl !== undefined && m.lastPnl !== undefined ? money(m.lastPnl - m.bestPnl) : "unknown";
+  const peakWhen = m.bestPnlAt ? ` (${fmtDuration(now - m.bestPnlAt)} ago)` : "";
   switch (a.kind) {
     case "loss5m":
       return `⏳ ${head} has been in the red about ${lossFor}.${pnl} Still losing — worth a look at whether the idea holds.${why}`;
@@ -83,10 +154,90 @@ export function buildMonitorAlert(a: MonitorAlert, now: number): string {
       return `⚠️ ${head} has reached your deep-loss alert level toward its stop.${pnl}${why}`;
     case "recovery":
       return `🟢 ${head} has climbed back to profit after being under water for a stretch.${pnl} The idea recovered.${why}`;
-    case "breakeven":
+    case "breakeven": {
+      // Real bug fixed (the trader: "breakeven doesn't work"). This used to be pure advice -- it
+      // told the trader the stop *should* move and nothing ever moved it. It now reports what
+      // genuinely happened, and a failed move says so plainly rather than quietly implying the
+      // trade is protected when it isn't.
+      if (breakeven?.status === "moved") {
+        return `🎯 ${head} is up about 1R — I've moved the stop to breakeven (${breakeven.level}). This trade is now risk-free.${pnl}${why}`;
+      }
+      if (breakeven?.status === "failed") {
+        return `🎯 ${head} is up about 1R, but I could NOT move the stop to breakeven (${breakeven.level}) — ${breakeven.error}. The trade is still carrying full risk; move it by hand if you want it locked in.${pnl}${why}`;
+      }
       return `🎯 ${head} is up about 1R — enough to move the stop to breakeven and make it a risk-free trade.${pnl}${why}`;
+    }
     case "stuck":
       return `😴 ${head} has sat flat near breakeven for ${flatFor}.${pnl} It's tying up capital doing nothing — consider closing and freeing the margin.${why}`;
+
+    /* ---- the trader's five profit-side checks ---- */
+
+    // 1. "Is the original trade plan still valid? Are current market conditions still supporting
+    //    the trade? Is the trade still progressing according to the original idea?"
+    case "profitStable":
+      return (
+        `🟢 PROFIT STABILITY CHECK\n\n${head} has held profit for ${inProfitFor}.${pnl}${why}\n\n` +
+        `Self-check: is the original plan still valid, do conditions still support it, and is it still progressing toward the original idea?`
+      );
+
+    // 2. "Current profit / previous higher profit / amount of reduction / original idea / plan status"
+    case "profitDrop":
+      return (
+        `🔻 PROFIT DROPPING\n\n${head} was profitable for ${inProfitFor} and is now giving it back.\n` +
+        `Current profit: ${m.lastPnl !== undefined ? money(m.lastPnl) : "unknown"}\n` +
+        `Previous peak: ${m.bestPnl !== undefined ? money(m.bestPnl) : "unknown"}\n` +
+        `Reduction: ${dropAmount}${why}\n\n` +
+        `Self-check: has the plan changed, or is this normal noise on the way to the target?`
+      );
+
+    // 3. "Peak profit / current profit / pullback amount / original idea / whether the plan still
+    //    appears valid"
+    case "peakPullback":
+      return (
+        `📉 PEAK PULLBACK\n\n${head} has pulled back from its best level.\n` +
+        `Peak profit: ${m.bestPnl !== undefined ? money(m.bestPnl) : "unknown"}${peakWhen}\n` +
+        `Current profit: ${m.lastPnl !== undefined ? money(m.lastPnl) : "unknown"}\n` +
+        `Pullback: ${dropAmount}${why}\n\n` +
+        `Self-check: does the original plan still appear valid, or has this already made its move?`
+      );
+
+    // 4. The spec's own example format, including the direction and duration lines.
+    case "range":
+      return (
+        `🟡 RANGE DETECTED\n\nPrice has repeatedly moved up and down within the same range.\n\n` +
+        `Current trade: ${m.direction.toUpperCase()} ${m.symbol} (ticket #${m.ticket})\n` +
+        `Trade duration: ${fmtDuration(now - m.openedAt)}${pnl}${why}\n\n` +
+        `Self-check: is the original thesis still valid? The expected directional move has not developed.`
+      );
+
+    // 5. "Current profit / trade duration / original target / current momentum / original thesis"
+    case "quickProfitCheck":
+      return (
+        `🔵 QUICK PROFIT CHECK\n\nTrade has been profitable for ${inProfitFor}.\n\n` +
+        `${targetLine(m)}\n` +
+        `Current profit: ${m.lastPnl !== undefined ? money(m.lastPnl) : "unknown"}\n` +
+        `Trade duration: ${fmtDuration(now - m.openedAt)}\n` +
+        `${momentumLine(m, now)}${why}\n\n` +
+        `Self-check: is this trade still trying to reach the original objective?`
+      );
+  }
+}
+
+/**
+ * Moves a position's stop to its entry price -- the real action behind the breakeven alert. Never
+ * throws: a broker rejection, a disconnected EA or a missing executor all resolve to an outcome the
+ * message can state honestly. Same executor contract the trailing-stop runtime already uses.
+ */
+async function moveStopToBreakeven(deps: TradeMonitorSweepDeps, m: TradeMonitor): Promise<BreakevenOutcome> {
+  if (!deps.executor) return { status: "advice" };
+  try {
+    await deps.executor.modifyOrder(m.ticket, { sl: m.openPrice });
+    console.log(`[trade-monitor] ${deps.userId}: moved #${m.ticket} (${m.symbol}) stop to breakeven ${m.openPrice}`);
+    return { status: "moved", level: m.openPrice };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[trade-monitor] ${deps.userId}: breakeven move failed for #${m.ticket}:`, err);
+    return { status: "failed", level: m.openPrice, error };
   }
 }
 
@@ -117,7 +268,13 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
       tp: p.tp,
       currentPrice: p.currentPrice,
       pnl: p.pnl,
-      reason: byTicket.get(p.ticket)?.reason ?? reasonFor(deps.db, deps.userId, p.ticket),
+      // Real bug fixed (the trader: "reason not added"). `??` only falls through on null/undefined,
+      // and the placeholder is a truthy string -- so the FIRST sweep that ran before the journal row
+      // existed (logTrade lands a moment after the position appears in the EA snapshot) cached
+      // "(reason not recorded)" and this line then served that cached miss forever, never asking the
+      // journal again. A placeholder is a cache MISS, not a value: re-query until a real reason
+      // exists, then it sticks.
+      reason: realReasonOrRetry(deps, byTicket.get(p.ticket)?.reason, p.ticket),
     };
     const { monitor, alerts } = advanceMonitor(byTicket.get(p.ticket), obs, now, deepLossThreshold);
     next.push(monitor);
@@ -164,8 +321,13 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
   // Push per-trade alerts, silencing any whose category the user switched off.
   for (const a of fired) {
     if (!toggles[alertCategoryOf(a.kind)]) continue;
+    // Breakeven is the one alert that DOES something: move the real stop to the entry price before
+    // telling the trader about it, so the message reports a fact rather than a suggestion. The
+    // alert's latch was already set in advanceMonitor, so a failed move is reported once and never
+    // retried every 30s -- a broker that refuses this stop will keep refusing it.
+    const breakeven = a.kind === "breakeven" ? await moveStopToBreakeven(deps, a.monitor) : undefined;
     try {
-      await deps.notify(buildMonitorAlert(a, now));
+      await deps.notify(buildMonitorAlert(a, now, breakeven));
     } catch (err) {
       console.error(`[trade-monitor] ${deps.userId}: alert ${a.kind} for #${a.monitor.ticket} failed to send:`, err);
     }

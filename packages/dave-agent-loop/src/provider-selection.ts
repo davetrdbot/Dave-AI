@@ -45,7 +45,28 @@ export const NVIDIA_TIMEOUT_MS = MAX_TIMEOUT_SECONDS * 1000;
  * Previously it fired for every provider unconditionally, so the same failure could reach the
  * user twice: once here, live, and again in the final thrown error's own rendering.
  */
-export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (text: string) => void | Promise<void>): Provider {
+/**
+ * How long a transient notice stays in the chat before deleting itself. The trader's own number
+ * ("this message should get deleted ... after 10 s").
+ */
+export const TRANSIENT_NOTICE_MS = 10_000;
+
+/**
+ * Options a notice carries to its sink. `transientMs` means "this is worth glancing at, not worth
+ * keeping" -- the sink should delete the message after that long.
+ *
+ * Real complaint this exists for (the trader): "when the bot is calling its tool already it
+ * shouldn't show any timeout -- it's already working, so what's the point". A key rotation that
+ * RECOVERS is, by definition, a turn that carried on working, so its notice is noise a few seconds
+ * later. It still shows briefly (a sick key is worth knowing about) and then removes itself.
+ */
+export interface NoticeOptions {
+  transientMs?: number;
+}
+
+export type NotifyFn = (text: string, options?: NoticeOptions) => void | Promise<void>;
+
+export function modelConfigProvider(db: DaveDatabase, userId: string, notify: NotifyFn): Provider {
   return {
     name: "model-config" as ProviderName,
     async generate(req: CompletionRequest, defaultTimeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
@@ -80,10 +101,17 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: (t
             timeoutMs,
             {
               onKeySwitch: async ({ reason }) => {
-                await notify(`⚠️ ${provider} key issue (${describeProviderFailure(reason)}) — trying next key`);
+                // Transient: a key rotation only matters until the next key answers. If the turn
+                // then completes normally the trader has nothing to act on, so the message removes
+                // itself rather than sitting in the chat implying something is still wrong.
+                await notify(`⚠️ ${provider} key issue (${describeProviderFailure(reason)}) — trying next key`, {
+                  transientMs: TRANSIENT_NOTICE_MS,
+                });
               },
               onProviderExhausted: async ({ reason }) => {
                 attempts.push({ provider, reason });
+                // Deliberately NOT transient: a whole provider dropping out is worth keeping in
+                // the chat, unlike a single key rotation that recovered.
                 if (hasNextProvider) await notify(`⚠️ ${provider} unavailable (${describeProviderFailure(reason)}) — switching provider`);
               },
             },
