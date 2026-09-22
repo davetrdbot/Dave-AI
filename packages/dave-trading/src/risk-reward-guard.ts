@@ -103,9 +103,17 @@ export function assessRiskReward(order: OrderRequest, entryPrice: number, minRat
       ratio,
       riskDistance,
       rewardDistance,
+      // Real bug fixed (the trader: "it should obey the settings own"). This text was written when
+      // the floor was hardcoded at 1.0, so it always explained the refusal as "risking more than
+      // you stand to make" -- which is simply FALSE once the trader raises the floor. A 1.5:1
+      // trade refused against a 2:1 setting does not risk more than it makes, and telling the
+      // model that invites it to argue with a number it can see is wrong, or to nudge the target
+      // until the sentence stops being untrue. The refusal now names the configured floor, which
+      // is the actual reason, and only adds the break-even point when it genuinely applies.
       reason:
-        `risk:reward is ${ratio.toFixed(2)}:1 -- the stop risks ${riskDistance.toFixed(0)} points to gain ` +
-        `${rewardDistance.toFixed(0)}. Risking more than the trade stands to make needs a >50% win rate just to break even`,
+        `risk:reward is ${ratio.toFixed(2)}:1, below your configured minimum of ${minRatio}:1 -- the stop risks ` +
+        `${riskDistance.toFixed(0)} points to gain ${rewardDistance.toFixed(0)}` +
+        (ratio < 1 ? ". Risking more than the trade stands to make needs a >50% win rate just to break even" : ""),
     };
   }
   return { ok: true, ratio, riskDistance, rewardDistance };

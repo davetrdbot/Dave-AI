@@ -13,6 +13,7 @@ import {
   tradeExecuteWithMarginRetry,
   derivePipSize,
   assessRiskRewardForUser,
+  getMinRiskReward,
 
   InsufficientMarginError,
   ABSOLUTE_MIN_LOTS,
@@ -292,7 +293,21 @@ const DECISION_TOOL_NAME = "submit_trading_decision";
  *  "off" state -- a trade always needs a size, and the order-building logic below only ever uses
  *  the fixed `risk.lotValue` when mode is "on"; every other mode falls through to whatever the
  *  model supplied, so it must be required whenever mode isn't "on". */
-function buildDecisionTool(risk: RiskSettings): ToolSpec {
+/**
+ * Real bug fixed (the trader: "the models still tends to follow the risk:reward via prompt, so fix
+ * that -- it should obey the settings own").
+ *
+ * The floor WAS genuinely enforced -- runAutonomousTick rejects a bad structure before it reaches
+ * the broker -- but the model choosing the stop and target was never told what the floor is. The
+ * tick's context carried SL/TP/lot modes and the confidence threshold and simply omitted this one
+ * setting, so the model fell back on the prompt's general "a target that pays more than its stop
+ * risks" (effectively 1:1) and produced trades that were then refused after the fact. From the
+ * trader's side that reads exactly as "it follows the prompt, not my setting".
+ *
+ * The number is now stated where the numbers are actually chosen -- on the sl and tp fields
+ * themselves -- as well as in the context block below.
+ */
+function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec {
   const properties: Record<string, unknown> = {
     action: {
       type: "string",
@@ -349,9 +364,12 @@ function buildDecisionTool(risk: RiskSettings): ToolSpec {
   // model can still return a malformed/missing value despite the schema.
   const required = ["action", "reason", "confidence"];
   if (risk.lotMode !== "on") required.push("lots");
-  if (risk.slMode !== "off") properties.sl = { type: "number" };
+  const rrNote =
+    `Your configured risk:reward floor is ${minRiskReward}:1 and it is a HARD GATE -- a trade whose target pays less than ${minRiskReward}x what its stop risks is refused before it reaches the broker, no matter how good the setup looks. ` +
+    `Place the stop where the thesis is genuinely wrong and the target where price is genuinely likely to reach, then check the ratio clears ${minRiskReward}:1. If it doesn't, the ENTRY is in the wrong place -- SKIP or wait for a better one. Never stretch the target or tighten the stop just to pass this check.`;
+  if (risk.slMode !== "off") properties.sl = { type: "number", description: `Stop loss price. ${rrNote}` };
   if (risk.slMode === "auto") required.push("sl");
-  if (risk.tpMode !== "off") properties.tp = { type: "number" };
+  if (risk.tpMode !== "off") properties.tp = { type: "number", description: `Take profit price. ${rrNote}` };
   if (risk.tpMode === "auto") required.push("tp");
   return {
     name: DECISION_TOOL_NAME,
@@ -596,6 +614,9 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const account = getLastKnownAccountSnapshot(userId);
   const { positions, pendingOrders } = getLastKnownState(userId);
   const risk = getRiskSettings(userId);
+  // Read fresh every tick, exactly like every other setting here, so a change in /settings takes
+  // effect on the very next cycle with no restart.
+  const minRiskReward = getMinRiskReward(userId);
   const confidenceSettings = getConfidenceSettings(userId);
   // Real feature (user, live: "add a feature in the settings that the user can configure the
   // get all analysis... select among endpoints... and the timeframe, and a default button to
@@ -822,6 +843,9 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     `ACCOUNT: balance=${account?.balance ?? "unknown"} equity=${account?.equity ?? "unknown"} freeMargin=${account?.freeMargin ?? "unknown"} leverage=${account?.leverage ?? "unknown"}`,
     `SL_MODE: ${risk.slMode}${risk.slMode === "on" ? ` (fixed ${risk.slValue} pips)` : ""} | TP_MODE: ${risk.tpMode}${risk.tpMode === "on" ? ` (fixed ${risk.tpValue} pips)` : ""} | LOT_MODE: ${risk.lotMode}${risk.lotMode === "on" ? ` (fixed ${risk.lotValue})` : ""}`,
     `CONFIDENCE THRESHOLD: ${confidenceSettings.threshold}%`,
+    // The setting the tick used to enforce silently without ever showing it -- see
+    // buildDecisionTool's header for why its absence read as "it ignores my setting".
+    `MINIMUM RISK:REWARD: ${minRiskReward}:1 -- a HARD GATE. Any BUY/SELL/pending order whose target pays less than ${minRiskReward}x its stop risk is REFUSED before it reaches the broker. Size your stop and target to genuine levels and check the ratio clears ${minRiskReward}:1; if it can't, the entry is wrong -- SKIP it.`,
     buildTradeAdviceBlock(confidenceSettings),
     // Real gap fixed (user, live: "it doesn't know the pending orders it just place and the
     // active" / wants position info shown "when it knows that the trade it opened is already
@@ -851,7 +875,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     activeStrategySkillLine,
   ].filter((line): line is string => line !== null);
 
-  const tool = buildDecisionTool(risk);
+  const tool = buildDecisionTool(risk, minRiskReward);
 
   async function requestDecision(lines: string[]): Promise<TickDecision | null> {
     let genResult;
@@ -1485,7 +1509,10 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       action: "NONE",
       symbol,
       notable: true,
-      message: `⚠️ Skipped ${symbol} -- ${rr.reason}.\n\nI had a ${decisionAction} read at ${confidence}% confidence, but I won't place a trade whose stop costs more than its target pays.`,
+      // Was hardcoded 1:1 language ("stop costs more than its target pays"), which is plainly
+      // wrong once the floor is raised -- a 1.5:1 trade refused against a 2:1 setting does not
+      // cost more than it pays. Names the trader's own configured floor instead.
+      message: `⚠️ Skipped ${symbol} -- ${rr.reason}.\n\nI had a ${decisionAction} read at ${confidence}% confidence, but your risk:reward floor is ${minRiskReward}:1 and this structure doesn't clear it.`,
     };
   }
 
