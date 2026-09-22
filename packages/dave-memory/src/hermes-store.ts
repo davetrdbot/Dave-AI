@@ -178,3 +178,175 @@ export function writeLive(userId: string, file: MemoryFile, content: string): vo
   ensureUserMemory(userId);
   writeFileSync(filePath(userId, file), content, "utf8");
 }
+
+/* ===============================================================================================
+ * Batch memory editing -- ported from Nous Research's Hermes Agent (NousResearch/hermes-agent,
+ * tools/memory_tool_store.py), whose memory design this store already follows.
+ *
+ * The gap this closes: every write path here was APPEND-ONLY (appendUserFact / appendMemoryNote).
+ * Once memory reached its budget the model had no way out -- it could not free space and add in
+ * the same breath, so the only outcome was a rejected write and a fact silently lost. Hermes
+ * solves this with one atomic batch whose budget is checked against the FINAL state only, so a
+ * single call can remove two stale entries AND add a new one even though the add alone would
+ * overflow. Two supporting ideas come with it, and both are load-bearing:
+ *
+ *   - a rejection carries the CURRENT ENTRIES, so the model can consolidate in the same turn
+ *     without a read tool (memory is already in its prompt; a read call would be a wasted round
+ *     trip, which is why neither implementation has one);
+ *   - a consecutive-failure cap, because a fragile consolidation that keeps failing must never
+ *     eat the turn. Hermes' comment on this is the right instinct: a failed memory side effect
+ *     must not block the user's reply.
+ * ============================================================================================ */
+
+/** Which budgeted file an operation targets. ADAPTABILITY.md is deliberately excluded -- it is
+ *  outside the frozen pair's budget and has its own append-only path. */
+export type MemoryTarget = "memory" | "user";
+
+export type MemoryOperation =
+  | { action: "add"; target: MemoryTarget; content: string }
+  | { action: "replace"; target: MemoryTarget; oldText: string; content: string }
+  | { action: "remove"; target: MemoryTarget; oldText: string };
+
+/** Consecutive failed consolidations before the model is told to stop trying this turn. */
+export const MAX_CONSOLIDATION_FAILURES = 3;
+
+const consolidationFailures = new Map<string, number>();
+
+/** Called at the start of a real turn so the cap counts failures within one turn, not forever. */
+export function resetConsolidationFailures(userId: string): void {
+  consolidationFailures.delete(userId);
+}
+
+export class MemoryConsolidationStuckError extends Error {
+  constructor(attempts: number) {
+    super(
+      `Memory consolidation has failed ${attempts} times in a row. Stop retrying memory writes -- leave memory as it is and get on with answering. The fact can be saved later.`
+    );
+    this.name = "MemoryConsolidationStuckError";
+  }
+}
+
+/** A replace/remove that matched nothing. Carries the entries for the same reason the budget
+ *  rejection does: the model can see what IS there and correct itself without another call. */
+export class MemoryEntryNotFoundError extends Error {
+  constructor(
+    public readonly target: MemoryTarget,
+    public readonly oldText: string,
+    public readonly currentEntries: { memory: string[]; user: string[] }
+  ) {
+    super(
+      `No ${target} entry contains "${oldText}". The entries actually stored are in currentEntries -- use an exact substring of one of those, or switch this operation to an add.`
+    );
+    this.name = "MemoryEntryNotFoundError";
+  }
+}
+
+/** Budget rejection that hands back what is actually stored, so the model can fix it in one turn. */
+export class MemoryBatchTooLargeError extends Error {
+  constructor(
+    public readonly size: number,
+    public readonly budget: number,
+    public readonly currentEntries: { memory: string[]; user: string[] }
+  ) {
+    super(
+      `That batch would leave memory at ${size} chars, over its ${budget}-char budget. Your current entries are listed in currentEntries -- reissue as ONE batch that also removes or shortens enough stale entries to fit, all in this call. ` +
+        `If it is a durable lesson about markets or your own trading rather than a fact about the user, save it as knowledge instead (knowledge_draft then knowledge_save), which has no size limit.`
+    );
+    this.name = "MemoryBatchTooLargeError";
+  }
+}
+
+function fileFor(target: MemoryTarget): Extract<MemoryFile, "MEMORY.md" | "USER.md"> {
+  return target === "user" ? "USER.md" : "MEMORY.md";
+}
+
+/** Entries are the "- " bullet lines this store has always written. */
+function parseEntries(raw: string): string[] {
+  return raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("- "))
+    .map((l) => l.slice(2).trim())
+    .filter(Boolean);
+}
+
+const renderEntries = (entries: string[]): string => entries.map((e) => `- ${e}`).join("\n");
+
+export function readMemoryEntries(userId: string, target: MemoryTarget): string[] {
+  ensureUserMemory(userId);
+  return parseEntries(readFileSync(filePath(userId, fileFor(target)), "utf8"));
+}
+
+export interface MemoryBatchResult {
+  applied: number;
+  chars: number;
+  budget: number;
+  usagePercent: number;
+  entries: { memory: string[]; user: string[] };
+}
+
+/**
+ * Applies every operation atomically: nothing is written unless the whole batch succeeds AND the
+ * final combined size fits the budget. Ordering matters and is honoured -- removes/replaces earlier
+ * in the array free room for adds later in it.
+ */
+export function applyMemoryOperations(userId: string, operations: MemoryOperation[]): MemoryBatchResult {
+  if (operations.length === 0) throw new Error("No operations given -- pass at least one add, replace or remove.");
+
+  const failures = consolidationFailures.get(userId) ?? 0;
+  if (failures >= MAX_CONSOLIDATION_FAILURES) throw new MemoryConsolidationStuckError(failures);
+
+  ensureUserMemory(userId);
+  const working: Record<MemoryTarget, string[]> = {
+    memory: readMemoryEntries(userId, "memory"),
+    user: readMemoryEntries(userId, "user"),
+  };
+
+  const fail = (err: Error): never => {
+    consolidationFailures.set(userId, failures + 1);
+    throw err;
+  };
+
+  for (const op of operations) {
+    const entries = working[op.target];
+    if (op.action === "add") {
+      const content = op.content.trim();
+      if (!content) fail(new Error("An add needs non-empty content."));
+      // Exact duplicates are a no-op rather than an error -- re-saving a fact it already knows is
+      // harmless, and failing the whole batch over it would lose the operations around it.
+      if (!entries.includes(content)) entries.push(content);
+      continue;
+    }
+    const needle = op.oldText.trim();
+    if (!needle) fail(new Error(`A ${op.action} needs oldText -- a short unique substring of the entry to act on.`));
+    // Whole-entry match first, then substring -- so a short oldText that happens to be contained
+    // in a longer entry never shadows the entry it exactly names.
+    const exact = entries.indexOf(needle);
+    const index = exact >= 0 ? exact : entries.findIndex((e) => e.includes(needle));
+    if (index < 0) fail(new MemoryEntryNotFoundError(op.target, needle, working));
+    if (op.action === "remove") entries.splice(index, 1);
+    else {
+      const content = op.content.trim();
+      if (!content) fail(new Error("A replace needs non-empty content. Use remove to delete an entry."));
+      entries[index] = content;
+    }
+  }
+
+  // The whole point of the batch: the budget is checked ONCE, against the end state.
+  const memoryText = renderEntries(working.memory);
+  const userText = renderEntries(working.user);
+  const total = memoryText.length + userText.length;
+  if (total > FROZEN_PAIR_CHAR_BUDGET) fail(new MemoryBatchTooLargeError(total, FROZEN_PAIR_CHAR_BUDGET, working));
+
+  writeFileSync(filePath(userId, "MEMORY.md"), memoryText, "utf8");
+  writeFileSync(filePath(userId, "USER.md"), userText, "utf8");
+  consolidationFailures.delete(userId);
+
+  return {
+    applied: operations.length,
+    chars: total,
+    budget: FROZEN_PAIR_CHAR_BUDGET,
+    usagePercent: Math.round((total / FROZEN_PAIR_CHAR_BUDGET) * 100),
+    entries: working,
+  };
+}

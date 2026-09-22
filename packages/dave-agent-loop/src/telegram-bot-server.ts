@@ -5,6 +5,7 @@ import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
 import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, sendSelfDeletingMessage, chunkForTelegram, getActiveIndicator, setActiveIndicator, clearActiveIndicator, withThinkingIndicator, type ActionType, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { resetConsolidationFailures } from "@dave/memory";
 import { invokeWebhookTrigger } from "@dave/db";
 import { userUploadDir } from "@dave/e2b";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyError } from "@dave/vision";
@@ -168,6 +169,9 @@ async function runAgentTurn(
   // Real bug fixed (user, live: a turn got stuck "thinking" forever, immune to a changed timeout
   // setting, `/stop`, and `/reset`). This tracks the turn so those commands can genuinely cancel
   // it (see turn-abort.ts) instead of only flipping flags nothing in this call ever checked.
+  // The consolidation-failure cap counts failures WITHIN a turn, so it resets here with the turn.
+  // Without this a few bad batches early in the day would permanently lock memory writes.
+  resetConsolidationFailures(deps.ownerUserId);
   const abortController = beginTurn(deps.ownerUserId);
   try {
     // Third reversal (see describeStep's comment above): the live progress indicator is now

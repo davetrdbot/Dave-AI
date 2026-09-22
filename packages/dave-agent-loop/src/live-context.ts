@@ -3,7 +3,7 @@ import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAl
 import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK, SL_NEAR_PROGRESS, SL_CRITICAL_PROGRESS, TP_NEAR_PROGRESS } from "./trade-monitor-store.js";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getSkill, listSkills } from "@dave/skills";
-import { loadFrozenSnapshot } from "@dave/memory";
+import { loadFrozenSnapshot, FROZEN_PAIR_CHAR_BUDGET } from "@dave/memory";
 import { knowledgeList } from "@dave/knowledge";
 import type { ContentBlock } from "@dave/brain";
 
@@ -315,7 +315,19 @@ function safeLoadMemory(userId: string): string | undefined {
       snapshot.user?.trim() ? `About the person you work for:\n${snapshot.user.trim()}` : "",
       snapshot.adaptability?.trim() ? `How they want you to talk to them:\n${snapshot.adaptability.trim()}` : "",
     ].filter(Boolean);
-    return sections.length > 0 ? sections.join("\n\n") : undefined;
+    if (sections.length === 0) return undefined;
+    // Usage meter, ported from Hermes Agent's memory block. Without it the model has no idea it is
+    // near the ceiling until a write is rejected -- it only ever sees the CONTENT, never how much
+    // room is left. Seeing "84%" is what turns consolidation into something it does before it is
+    // forced to, which is the whole point of a bounded, curated memory.
+    const used = (snapshot.memory?.trim().length ?? 0) + (snapshot.user?.trim().length ?? 0);
+    const pct = Math.round((used / FROZEN_PAIR_CHAR_BUDGET) * 100);
+    const meter =
+      `Memory usage: ${pct}% (${used}/${FROZEN_PAIR_CHAR_BUDGET} chars).` +
+      (pct >= 80
+        ? " You are near the ceiling -- consolidate with edit_memory (merge overlapping entries, drop stale ones) BEFORE you need the room, rather than waiting for a write to be refused."
+        : "");
+    return [...sections, meter].join("\n\n");
   } catch (err) {
     console.error(`[live-context] could not load memory for ${userId} -- continuing without it:`, err);
     return undefined;

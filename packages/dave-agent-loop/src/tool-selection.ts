@@ -205,6 +205,11 @@ export const CORE_TOOL_NAMES: string[] = [
   // the user sent, verify a number before quoting it) instead of guessing. That only works if the
   // tool is reachable on every turn without a discovery round first.
   "run_script",
+  // Memory consolidation. remember_* can only APPEND, so once memory is full the only tool that
+  // can still save a fact is this one -- and a tool the model has to discover first is a tool it
+  // reaches for after it has already given up. (Same lesson as run_script and the background
+  // checks: registered is not the same as reachable.)
+  "edit_memory",
   // File I/O both directions -- useless if the model has to discover them first, since the trigger
   // is always a file the user just sent or a result it just produced.
   "list_user_files",
