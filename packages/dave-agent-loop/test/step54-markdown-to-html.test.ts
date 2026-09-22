@@ -44,7 +44,7 @@ process.chdir(workDir);
 const OWNER = "user-mdhtml-1";
 const CHAT_ID = 555444;
 
-const sentMessages: Array<{ text?: string; html?: string; parse_mode?: string }> = [];
+const sentMessages: Array<{ text?: string; html?: string; markdown?: string; parse_mode?: string }> = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: string, init?: RequestInit) => {
   const urlStr = String(url);
@@ -53,6 +53,9 @@ globalThis.fetch = (async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
     if (body?.text) sentMessages.push({ text: body.text, parse_mode: body.parse_mode });
     if (body?.rich_message?.html) sentMessages.push({ html: body.rich_message.html });
+    // The rich MARKDOWN transport (step153). Drafts carry the invisible <tg-thinking> indicator
+    // and are not a reply, so they're excluded -- only a finalized answer counts here.
+    if (body?.rich_message?.markdown && method === "sendRichMessage") sentMessages.push({ markdown: body.rich_message.markdown });
     if (method === "setWebhook" || method === "setMyCommands" || method === "setMyDescription" || method === "setMyShortDescription") {
       return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
     }
@@ -103,11 +106,42 @@ try {
 
   console.log(`    real messages sent to Telegram: ${JSON.stringify(sentMessages)}`);
   assert.ok(sentMessages.length > 0, "at least one real message must have been sent");
-  const combined = sentMessages.map((m) => m.text ?? m.html ?? "").join("\n");
-  assert.ok(!combined.includes("**"), "no raw ** markdown may reach Telegram");
-  assert.ok(!combined.includes("| Role |"), "no raw pipe-table syntax may reach Telegram");
-  assert.ok(combined.includes("<b>inyang David</b>"), "real <b> HTML must be present");
-  assert.ok(combined.includes("<pre>"), "real <pre> table HTML must be present");
+
+  // Updated for step153's rich finalize, and the premise genuinely changed. The invariant this
+  // test protects is "the USER never sees raw markdown" -- but how that is satisfied now depends
+  // on which transport carried the reply, and this reply contains a table, so it takes the rich
+  // one:
+  //   - sendMessage + parse_mode HTML: raw markdown must already be CONVERTED, because Telegram's
+  //     HTML parser would show "| Role |" and "**" as literal text.
+  //   - sendRichMessage + rich_message.markdown: raw markdown is exactly what must be sent,
+  //     because Telegram's markdown parser is what renders the table. Converting first would be
+  //     the bug here.
+  const htmlSends = sentMessages.filter((m) => m.text !== undefined || m.html !== undefined);
+  const richSends = sentMessages.filter((m) => m.markdown !== undefined);
+  assert.equal(richSends.length + htmlSends.length, sentMessages.length);
+
+  for (const m of htmlSends) {
+    const t = m.text ?? m.html ?? "";
+    assert.ok(!t.includes("**"), "no raw ** markdown may reach Telegram's HTML parser");
+    assert.ok(!t.includes("| Role |"), "no raw pipe-table syntax may reach Telegram's HTML parser");
+  }
+
+  if (richSends.length > 0) {
+    const md = richSends.map((m) => m.markdown).join("\n");
+    console.log("    (reply took the rich markdown transport -- it contains a table)");
+    // Sent verbatim, because the markdown parser on the other end is what renders it.
+    assert.ok(md.includes("**inyang David**"), "the rich transport carries the model's original markdown");
+    assert.ok(md.includes("| Role |"), "including the pipe table, which Telegram renders natively");
+    assert.ok(!md.includes("<pre>"), "and it must NOT be pre-converted to the faked <pre> table");
+    // The paragraph break that the whole rich_message.html bug was about.
+    assert.ok(md.includes("\n\n"), "blank lines survive into the payload");
+  } else {
+    // If routing ever sends this reply down the HTML path instead, the converted form must be
+    // complete -- that was this test's original subject and it still has to hold.
+    const combined = htmlSends.map((m) => m.text ?? m.html ?? "").join("\n");
+    assert.ok(combined.includes("<b>inyang David</b>"), "real <b> HTML must be present");
+    assert.ok(combined.includes("<pre>"), "real <pre> table HTML must be present");
+  }
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

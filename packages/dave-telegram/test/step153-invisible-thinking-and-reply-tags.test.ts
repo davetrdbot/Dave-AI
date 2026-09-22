@@ -8,6 +8,7 @@ import {
   WORD_JOINER,
   INVISIBLE_PREFIX,
   ACTION_ICONS,
+  shouldFinalizeAsRichMarkdown,
 } from "../src/index.js";
 import { collapseQueuedMessages } from "../../dave-agent-loop/src/delegation.js";
 
@@ -26,7 +27,7 @@ console.log("=== Step 153: invisible thinking draft + reply tagging ===\n");
 
 type Call = { method: string; body: Record<string, unknown> };
 
-function fakeClient(calls: Call[], opts: { failDraft?: boolean } = {}) {
+function fakeClient(calls: Call[], opts: { failDraft?: boolean; failRich?: boolean } = {}) {
   let nextId = 5000;
   return {
     sendChatAction: async (body: Record<string, unknown>) => {
@@ -49,6 +50,11 @@ function fakeClient(calls: Call[], opts: { failDraft?: boolean } = {}) {
     deleteMessage: async (body: Record<string, unknown>) => {
       calls.push({ method: "deleteMessage", body });
       return true as const;
+    },
+    sendRichMessage: async (body: Record<string, unknown>) => {
+      calls.push({ method: "sendRichMessage", body });
+      if (opts.failRich) throw new Error("RICH_MESSAGE_CONTENT_REQUIRED");
+      return { message_id: nextId++ };
     },
   } as unknown as TelegramClient;
 }
@@ -239,5 +245,89 @@ assert.ok(ACTION_ICONS.watch.includes("\u{1F441}"), "the background-watch icon")
 const iconValues = Object.values(ACTION_ICONS);
 assert.equal(new Set(iconValues).size, iconValues.length, "no two actions share an icon -- they'd be unreadable in the indicator");
 console.log(`   ✓ ${iconValues.length} distinct action icons\n`);
+
+// ---------------------------------------------------------------------------
+console.log("[9] Rich finalize: markdown transport where it buys something, HTML where it doesn't\n");
+
+// The routing rule itself, in isolation.
+assert.equal(shouldFinalizeAsRichMarkdown({ html: "<b>hi</b>", markdown: "**hi**" }), false, "a short plain reply gains nothing from the rich path");
+assert.equal(shouldFinalizeAsRichMarkdown({ html: "x" }), false, "no markdown form -> proven HTML path");
+assert.equal(shouldFinalizeAsRichMarkdown({ html: "x", markdown: "" }), false, "empty markdown -> HTML path");
+assert.equal(
+  shouldFinalizeAsRichMarkdown({ html: "x", markdown: "| Metric | Value |\n|---|---|\n| Entry | 2346.50 |" }),
+  true,
+  "a real table renders natively instead of as a faked <pre> block"
+);
+assert.equal(shouldFinalizeAsRichMarkdown({ html: "x", markdown: "# DAVE Signal\n\nbody" }), true, "a heading is real structure");
+assert.equal(shouldFinalizeAsRichMarkdown({ html: "x", markdown: "A".repeat(4500) }), true, "too long for one plain message -> one rich message beats three chunks");
+// The guard that protects an already-fixed bug: the model sometimes writes literal Telegram HTML
+// itself, which markdown mode would render as visible "<b>" text.
+assert.equal(
+  shouldFinalizeAsRichMarkdown({ html: "x", markdown: "# Heading\n\n<b>model wrote this tag itself</b>" }),
+  false,
+  "model-authored HTML tags must take the HTML path, or they show as literal text"
+);
+console.log("   ✓ routing: short->HTML, table/heading/long->rich, model-written HTML->HTML");
+
+// End to end: a table-bearing answer goes out as ONE sendRichMessage with the raw markdown.
+{
+  const calls: Call[] = [];
+  const client = fakeClient(calls);
+  const indicator = new ThinkingIndicator(client, 42, "typing", { fallbackMessage: false, replyToMessageId: 555 });
+  const markdown = "# VOL_80 LONG\n\n| Metric | Value |\n|---|---|\n| Entry | 196740 |\n\nSecond paragraph.";
+  await indicator.finalize({ html: "<b>VOL_80 LONG</b>", markdown });
+  indicator.stop();
+
+  const rich = calls.filter((c) => c.method === "sendRichMessage");
+  assert.equal(rich.length, 1, "exactly one rich message");
+  assert.equal(calls.filter((c) => c.method === "sendMessage").length, 0, "and no chunked fallback alongside it");
+  const rm = rich[0].body.rich_message as { markdown?: string; html?: string };
+  assert.equal(rm.markdown, markdown, "the model's ORIGINAL markdown is sent, not the converted HTML");
+  assert.equal(rm.html, undefined, "never the html field -- that is the one that collapses paragraph breaks");
+  // The paragraph breaks the whole earlier bug was about must still be in the transmitted bytes.
+  assert.ok(rm.markdown!.includes("\n\n"), "blank lines survive into the payload");
+  assert.equal((rich[0].body.reply_parameters as { message_id: number }).message_id, 555, "still tagged as a reply");
+  console.log("   ✓ one rich message, raw markdown, \\n\\n intact, reply tag preserved");
+}
+
+// A rejected rich payload must never cost the user their answer.
+{
+  const calls: Call[] = [];
+  const client = fakeClient(calls, { failRich: true });
+  const indicator = new ThinkingIndicator(client, 42, "typing", { fallbackMessage: false });
+  await indicator.finalize({ html: "<b>converted</b>", markdown: "# Heading\n\nbody" });
+  indicator.stop();
+
+  assert.equal(calls.filter((c) => c.method === "sendRichMessage").length, 1, "it tried the rich path");
+  const sends = calls.filter((c) => c.method === "sendMessage");
+  assert.equal(sends.length, 1, "and fell back to the proven one");
+  assert.equal(sends[0].body.text, "<b>converted</b>", "the fallback sends the CONVERTED html, not raw markdown");
+  assert.equal(sends[0].body.parse_mode, "HTML");
+  console.log("   ✓ rich failure falls back to chunked HTML -- the answer is never lost\n");
+}
+
+// A short plain reply is untouched by any of this.
+{
+  const calls: Call[] = [];
+  const client = fakeClient(calls);
+  const indicator = new ThinkingIndicator(client, 42, "typing", { fallbackMessage: false });
+  await indicator.finalize({ html: "Going well — nothing new opened.", markdown: "Going well — nothing new opened." });
+  indicator.stop();
+  assert.equal(calls.filter((c) => c.method === "sendRichMessage").length, 0, "no rich call for ordinary prose");
+  assert.equal(calls.filter((c) => c.method === "sendMessage").length, 1, "one plain message, exactly as before");
+  console.log("   ✓ ordinary prose still takes the unchanged, proven path\n");
+}
+
+// Back-compat: a bare string caller still works.
+{
+  const calls: Call[] = [];
+  const client = fakeClient(calls);
+  const indicator = new ThinkingIndicator(client, 42, "typing", { fallbackMessage: false });
+  await indicator.finalize("just a string");
+  indicator.stop();
+  assert.equal(calls.filter((c) => c.method === "sendMessage").length, 1);
+  assert.equal(calls[0].body.text, "just a string");
+  console.log("   ✓ the string form of finalize() still works\n");
+}
 
 console.log("=== All sections passed ===");

@@ -220,7 +220,10 @@ async function runAgentTurn(
       }
       saveConversationHistory(deps.db, historyKey, result.history);
 
-      let finalText: string;
+      // Both forms of the same answer -- see FinalMessage in thinking-indicator.ts. The rich
+      // markdown transport needs the model's ORIGINAL text; the HTML one needs the converted
+      // version, and neither can be derived from the other at send time.
+      let finalText: { html: string; markdown?: string };
       if (result.status === "aborted") {
         // Real, plain visibility into the exact bug this closes (user, live: "/stop didn't work,
         // still showing typing") -- confirms in the logs that an abort genuinely reached and
@@ -231,7 +234,10 @@ async function runAgentTurn(
         // took longer than the overall budget) used to show the EXACT same text as a real
         // user-initiated /stop -- reading like Dave stopped for no reason, when it actually timed
         // out on real work. Distinct, honest text for each real cause.
-        finalText = result.reason === "deadline" ? "⏹️ That took longer than I could keep going on this turn -- try again, or ask for something narrower." : "⏹️ Stopped -- that turn was cancelled.";
+        // No markdown form: these are fixed strings with no structure to render richly.
+        finalText = {
+          html: result.reason === "deadline" ? "⏹️ That took longer than I could keep going on this turn -- try again, or ask for something narrower." : "⏹️ Stopped -- that turn was cancelled.",
+        };
       } else {
         // Real bug fixed (user: "sometimes it shows (no text) like this everytime"): a turn that
         // ends with tool calls but no closing remark from the model (common after a purely
@@ -239,7 +245,7 @@ async function runAgentTurn(
         // the placeholder string "(no text)" as if it were Dave's real reply -- looked exactly like
         // a bug because it was one. A real, minimal, honest completion signal instead.
         const rawFinalText = result.status === "done" ? result.text || "✅ Done." : result.question.question;
-        finalText = markdownToTelegramHtml(rawFinalText);
+        finalText = { html: markdownToTelegramHtml(rawFinalText), markdown: rawFinalText };
       }
       return { result, finalText };
     }, { replyToMessageId });

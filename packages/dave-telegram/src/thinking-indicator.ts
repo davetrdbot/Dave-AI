@@ -109,6 +109,54 @@ export function escapeThinkingText(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
 
+/**
+ * What finalize() sends. Both forms of the same answer:
+ *   - `html`: already run through markdownToTelegramHtml, for sendMessage's parse_mode HTML.
+ *   - `markdown`: the model's ORIGINAL text, untouched, for sendRichMessage's markdown field.
+ *
+ * Both are needed because the two transports want opposite things, and converting one into the
+ * other at send time is not possible without losing information. A caller with only the converted
+ * text can still pass a bare string and get the proven HTML path.
+ */
+export interface FinalMessage {
+  html: string;
+  markdown?: string;
+}
+
+/** Off-switch for the rich finalize path, should Telegram's markdown renderer ever regress. */
+export const RICH_FINALIZE_DISABLED = process.env.DAVE_DISABLE_RICH_FINALIZE === "1";
+
+/**
+ * A literal Telegram HTML tag the MODEL wrote itself, rather than markdown. This is a real,
+ * previously-observed behaviour (rich-format.ts exists partly to handle it: the model knows
+ * Telegram's HTML mode and sometimes writes "<b>" directly). Such text is correct for the HTML
+ * transport and WRONG for the markdown one, where the tag would render as visible literal text --
+ * reintroducing the exact "raw <b> visible in the chat" bug that was already fixed once.
+ */
+const MODEL_WROTE_HTML_TAG = /<\/?(?:b|strong|i|em|u|ins|s|strike|del|span|tg-spoiler|a|code|pre|blockquote|tg-emoji)(?:\s[^>]*)?>/i;
+
+/**
+ * Whether this answer should go out as a rich markdown message rather than chunked HTML.
+ *
+ * Deliberately not "always": for a two-line reply the two paths render identically, so there is
+ * nothing to gain and a proven path to lose. The rich path is taken when it genuinely buys
+ * something -- the answer is too long for one ordinary message (otherwise it gets chopped into
+ * several), or it contains structure that Telegram renders natively and sendMessage can only
+ * imitate with a padded <pre> block.
+ */
+export function shouldFinalizeAsRichMarkdown(message: FinalMessage): boolean {
+  const md = message.markdown;
+  if (RICH_FINALIZE_DISABLED || !md || md.trim().length === 0) return false;
+  if (MODEL_WROTE_HTML_TAG.test(md)) return false;
+  // Too long for one plain message -- one rich message beats three chunked ones.
+  if (md.length > TELEGRAM_MESSAGE_LIMIT) return true;
+  // A markdown table: "| a | b |" over a "|---|---|" separator row.
+  if (/^\|.*\|\s*\n\|[\s:|-]+\|\s*$/m.test(md)) return true;
+  // A real heading line.
+  if (/^#{1,6}\s+\S/m.test(md)) return true;
+  return false;
+}
+
 let draftIdCounter = 1;
 /** draft_id must be a non-zero integer the bot chooses -- unique per indicator instance so concurrent tasks don't animate over each other's drafts. */
 function nextDraftId(): number {
@@ -322,8 +370,32 @@ export class ThinkingIndicator {
    * this architecture (which gets a complete, non-streamed answer back
    * from the provider) can honestly get without providers streaming
    * partial completions themselves.
+   *
+   * Reopened and resolved properly (the trader, after live-testing the real finalize step):
+   * everything above is about `rich_message.HTML`, and stays true of that field. But the
+   * conclusion drawn from it -- "finalize can never use sendRichMessage" -- was too broad.
+   * `rich_message.MARKDOWN` is a different field with a different parser, one where a blank line
+   * IS a paragraph break by definition rather than collapsible document whitespace. The trader's
+   * own live-confirmed finalize payload uses exactly that field and renders headings and tables
+   * correctly, which is only possible if markdown block semantics are genuinely being applied.
+   *
+   * So finalize now prefers sendRichMessage + markdown, which buys three real things the chunked
+   * sendMessage path cannot:
+   *   1. ~32k characters instead of 4096, so a long answer arrives as ONE message rather than
+   *      being chopped into three -- the chunking was always a workaround, never desirable.
+   *   2. Real tables, headings and spoilers rendered natively instead of the <pre> padded-column
+   *      imitation rich-format.ts has to fake for sendMessage.
+   *   3. It replaces the in-flight draft, per the live-tested flow -- so the thinking indicator
+   *      is dismissed by the answer itself rather than left to expire on its own clock.
+   *
+   * Two real guards, because this is the single highest-traffic path in the product:
+   *   - If the model wrote literal Telegram HTML tags (a real, previously-observed behaviour --
+   *     see rich-format.ts's allowlist), markdown mode would show them as visible text. That
+   *     content takes the proven HTML path instead.
+   *   - Any failure from sendRichMessage falls back to the chunked sendMessage path, so a
+   *     rejected rich payload can never cost the user their answer.
    */
-  async finalize(finalText: string): Promise<void> {
+  async finalize(final: string | FinalMessage): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
     // Same race, different window: a fire-and-forget update() can still be mid-flight (its
     // sendMessage not yet resolved) when finalize() runs, since real callers never await
@@ -337,7 +409,29 @@ export class ThinkingIndicator {
       await this.client.deleteMessage({ chat_id: this.chatId, message_id: this.progressMessageId }).catch(() => {});
       this.progressMessageId = undefined;
     }
-    const chunks = chunkForTelegram(finalText);
+    const message: FinalMessage = typeof final === "string" ? { html: final } : final;
+
+    if (shouldFinalizeAsRichMarkdown(message)) {
+      try {
+        await this.client.sendRichMessage({
+          chat_id: this.chatId,
+          rich_message: { markdown: message.markdown as string },
+          reply_parameters: this.replyToMessageId !== undefined ? { message_id: this.replyToMessageId, allow_sending_without_reply: true } : undefined,
+        });
+        return;
+      } catch (err) {
+        // Never let a rejected rich payload cost the user their answer -- fall through to the
+        // chunked HTML path below, which has been the proven one for this bot's whole life.
+        console.warn(`[thinking-indicator] rich finalize failed, falling back to chunked sendMessage: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    await this.finalizeAsChunkedHtml(message.html);
+  }
+
+  /** The proven path: HTML parse_mode, chunked under Telegram's real 4096 limit. */
+  private async finalizeAsChunkedHtml(html: string): Promise<void> {
+    const chunks = chunkForTelegram(html);
     for (const [i, chunk] of chunks.entries()) {
       await this.client.sendMessage({
         chat_id: this.chatId,
@@ -383,7 +477,7 @@ export class ThinkingIndicator {
 export async function withThinkingIndicator<T>(
   client: TelegramClient,
   chatId: number,
-  task: (indicator: ThinkingIndicator) => Promise<{ result: T; finalText: string }>,
+  task: (indicator: ThinkingIndicator) => Promise<{ result: T; finalText: string | FinalMessage }>,
   options: { replyToMessageId?: number; fallbackMessage?: boolean } = {}
 ): Promise<T> {
   const indicator = new ThinkingIndicator(client, chatId, "typing", {
