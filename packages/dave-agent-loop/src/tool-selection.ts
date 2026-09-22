@@ -197,6 +197,11 @@ export const CORE_TOOL_NAMES: string[] = [
   "send_rich_draft",
   "tg_chat_action",
   "tg_rich_message",
+  // The structured block form (tables, collapsible details, footers, pull quotes) and real reply
+  // tagging. Both are only ever reached for in the moment they apply -- while composing a message
+  // -- so a discovery round first means the plain-text version has already been sent.
+  "tg_rich_blocks",
+  "reply_to_message",
 
   // Real general-purpose compute (the trader: "you can connect the main agent to the e2b").
   // run_script was registered in the full registry but never core, so the main agent essentially

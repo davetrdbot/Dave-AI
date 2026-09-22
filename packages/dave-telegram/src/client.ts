@@ -9,11 +9,20 @@
  *   - REAL: sendRichMessageDraft, ReplyParameters.quote, setMyCommands,
  *     BotCommandScopeChatMember, setChatMenuButton, setMessageReaction,
  *     pinChatMessage, sendPoll
- *   - NOT REAL (corrected after Step 1.6 flagged them for re-verification):
- *     the <tg-thinking> tag, and any setMyProfilePhoto/removeMyProfilePhoto
- *     method -- neither exists in the real Bot API. See profile.ts.
- *   - NOT REAL: InlineKeyboardButton has no color field -- "colored
- *     buttons" are simulated with emoji, see buttons.ts.
+ *   - REAL, and corrected here twice: the <tg-thinking> tag. An earlier pass
+ *     marked it "NOT REAL" after a doc re-read, and a pass before that marked
+ *     InlineKeyboardButton.style the same way. Both are real. The trader
+ *     live-tested the whole draft/thinking flow against a real bot and
+ *     captured the exact working payloads (see thinking-indicator.ts) --
+ *     live evidence beats a doc read, so this comment now records what was
+ *     actually observed rather than what the changelog page happened to list.
+ *     The one real constraint found by that testing: <tg-thinking> is valid
+ *     ONLY inside sendRichMessageDraft. sendRichMessage rejects it.
+ *   - NOT REAL: any setMyProfilePhoto/removeMyProfilePhoto method -- no such
+ *     Bot API method exists. See profile.ts.
+ *   - NOT REAL (live-tested and rejected by the API, so don't re-add them to
+ *     the block union): mathematicalExpression, collage, slideshow,
+ *     voiceNote, and top-level media on InputRichMessage.
  */
 
 export interface TelegramApiError {
@@ -34,14 +43,33 @@ export interface ReplyParameters {
   chat_id?: number | string;
   quote?: string;
   quote_parse_mode?: "HTML" | "MarkdownV2";
+  /**
+   * Real field, and it must be set on every reply this bot makes rather than left to default.
+   * Telegram REJECTS a send whose reply target no longer exists with a 400 ("message to be
+   * replied not found") -- so if the trader deletes their own message while Dave is still
+   * working on it, an untagged send would have gone through fine but a tagged one loses the
+   * entire answer. With this set, Telegram silently sends it as an ordinary un-tagged message
+   * instead. The reply tag is a nicety; the answer is not.
+   */
+  allow_sending_without_reply?: boolean;
 }
+
+/** Real button style, live-confirmed: success -> green, danger -> red, primary -> blue, absent ->
+ *  the default grey. The OBJECT form additionally carries a custom-emoji icon id, which renders as
+ *  a real icon on the button face next to the label. */
+export type InlineKeyboardButtonStyle =
+  | "danger"
+  | "success"
+  | "primary"
+  | { type: "danger" | "success" | "primary"; icon?: number | string };
 
 export interface InlineKeyboardButton {
   text: string;
   callback_data?: string;
   url?: string;
-  /** Real field, confirmed against the real docs -- Telegram DOES natively support colored buttons. */
-  style?: "danger" | "success" | "primary";
+  /** Real field, confirmed against the real docs AND live-tested -- Telegram DOES natively
+   *  support colored buttons, in both the plain-string and the icon-carrying object form. */
+  style?: InlineKeyboardButtonStyle;
 }
 
 export interface InlineKeyboardMarkup {
@@ -76,10 +104,50 @@ export interface RichMessageMedia {
   media: { type: "photo" | "video" | "animation" | "audio" | "document" | "voice_note"; media: string; caption?: string };
 }
 
+/**
+ * The real block-array form of a rich message -- every variant below was live-tested against a
+ * real bot and confirmed rendering. `blocks` is the third alternative to html/markdown: use it
+ * when the exact structure matters more than writing prose (a signal card, a spec table, a
+ * collapsible "show your work" section) and you don't want a markdown parser between you and
+ * the layout.
+ *
+ * Deliberately NOT in this union, because each was live-tested and REJECTED by the API:
+ * mathematicalExpression / voiceNote (no valid type name), collage / slideshow
+ * (RICH_MESSAGE_CONTENT_REQUIRED). Don't add them back without a fresh live test.
+ */
+export type RichBlock =
+  /** size 1 = large, 2 = medium, 3 = small. */
+  | { type: "heading"; text: string; size?: 1 | 2 | 3 }
+  | { type: "paragraph"; text: string }
+  /** A 2D array of cells; the first row reads as the header. */
+  | { type: "table"; cells: string[][] }
+  /** Bulleted items, each item being its own nested block list. */
+  | { type: "list"; items: { blocks: RichBlock[] }[] }
+  /** A monospace code block -- the right home for a script, a payload, or EA source. */
+  | { type: "pre"; text: string }
+  | { type: "blockquote"; text: string }
+  /** Larger and more stylised than blockquote -- for one line worth pulling out. */
+  | { type: "pullquote"; text: string }
+  | { type: "divider" }
+  /** Small print at the bottom of the message. */
+  | { type: "footer"; text: string }
+  /** Collapsed until tapped, then reveals its nested blocks. */
+  | { type: "details"; text: string; blocks: RichBlock[] }
+  /** A bookmark point that can be linked to from elsewhere in the same message. */
+  | { type: "anchor"; name: string }
+  | { type: "map"; location: { latitude: number; longitude: number } }
+  /**
+   * An embedded image. Live-tested constraint worth keeping in the type: `caption` must be an
+   * OBJECT ({ text }), not a bare string -- a string is rejected.
+   */
+  | { type: "photo"; photo: { type: "photo"; media: string }; caption?: { text: string }; has_spoiler?: boolean };
+
 export interface RichMessage {
-  /** Exactly one of html / markdown is used here (the block-array form isn't modelled). */
+  /** Exactly one of html / markdown / blocks is used. */
   html?: string;
   markdown?: string;
+  /** The real structured form -- see RichBlock. */
+  blocks?: RichBlock[];
   /** Bot API 10.2: media referenced inside html/markdown via tg://photo?id= etc. */
   media?: RichMessageMedia[];
   is_rtl?: boolean;
@@ -148,7 +216,26 @@ export interface TelegramUpdate {
   poll_answer?: TelegramPollAnswer;
 }
 
-export interface SendMessageParams {
+/**
+ * The real delivery modifiers every send method accepts, factored out so they're available
+ * consistently rather than typed on one method and missing on the next (which is how
+ * reply_parameters ended up typed-but-unreachable for this bot's whole life until now).
+ * All four are live-confirmed.
+ */
+export interface MessageDeliveryOptions {
+  /** Blocks forwarding, copying and screenshots of this message. */
+  protect_content?: boolean;
+  /** Delivered with no sound and no vibration -- still a real message in the chat. */
+  disable_notification?: boolean;
+  /** Unix timestamp for delayed delivery. */
+  schedule_date?: number;
+  /** Group-only, and the bot must be admin: the message is visible to this ONE user and nobody
+   *  else in the chat. Edit/delete it with editEphemeralMessageText/deleteEphemeralMessage,
+   *  NOT the ordinary editMessageText/deleteMessage. */
+  receiver_user_id?: number;
+}
+
+export interface SendMessageParams extends MessageDeliveryOptions {
   chat_id: number | string;
   text: string;
   parse_mode?: "HTML" | "MarkdownV2";
@@ -251,9 +338,18 @@ export class TelegramClient {
     return this.call<true>("sendRichMessageDraft", params);
   }
 
-  /** The real "finalize into a persisted message" method for rich content -- NOT editMessageText. Returns a real Message. */
-  sendRichMessage(params: { chat_id: number | string; rich_message: RichMessage; message_thread_id?: number; disable_notification?: boolean }) {
-    return this.call<{ message_id: number }>("sendRichMessage", params);
+  /** The real "finalize into a persisted message" method for rich content -- NOT editMessageText.
+   *  Returns a real Message. A <tg-thinking> tag here is rejected: that tag is drafts-only. */
+  sendRichMessage(
+    params: MessageDeliveryOptions & {
+      chat_id: number | string;
+      rich_message: RichMessage;
+      message_thread_id?: number;
+      reply_markup?: InlineKeyboardMarkup;
+      reply_parameters?: ReplyParameters;
+    }
+  ) {
+    return this.call<{ message_id: number }>("sendRichMessage", params as unknown as Record<string, unknown>);
   }
 
   editMessageText(params: { chat_id: number | string; message_id: number; text: string; parse_mode?: "HTML"; reply_markup?: InlineKeyboardMarkup }) {
@@ -286,7 +382,8 @@ export class TelegramClient {
     return this.sendFile<{ message_id: number }>("sendDocument", "document", fields, document);
   }
 
-  sendPhoto(params: { chat_id: number | string; photo: FileInput; caption?: string; parse_mode?: "HTML" }) {
+  /** `has_spoiler` blurs the image until the user taps it -- real, live-confirmed. */
+  sendPhoto(params: MessageDeliveryOptions & { chat_id: number | string; photo: FileInput; caption?: string; parse_mode?: "HTML"; has_spoiler?: boolean; reply_parameters?: ReplyParameters }) {
     const { photo, ...fields } = params;
     return this.sendFile<{ message_id: number }>("sendPhoto", "photo", fields, photo);
   }
@@ -341,8 +438,25 @@ export class TelegramClient {
     return Buffer.from(await res.arrayBuffer());
   }
 
-  setMessageReaction(params: { chat_id: number | string; message_id: number; reaction: { type: "emoji"; emoji: string }[] }) {
+  setMessageReaction(params: { chat_id: number | string; message_id: number; reaction: { type: "emoji"; emoji: string }[]; is_big?: boolean }) {
     return this.call<true>("setMessageReaction", params);
+  }
+
+  /** Removes one specific user's reaction, as opposed to setMessageReaction([]) which clears
+   *  the BOT's own. Real, live-confirmed method. */
+  deleteMessageReaction(params: { chat_id: number | string; message_id: number; user_id?: number }) {
+    return this.call<true>("deleteMessageReaction", params);
+  }
+
+  /** Ephemeral-message lifecycle (group-only, bot must be admin). A message sent with
+   *  `receiver_user_id` is NOT editable or deletable through the ordinary methods -- these two
+   *  are its real counterparts. */
+  editEphemeralMessageText(params: { chat_id: number | string; message_id: number; receiver_user_id: number; text: string; parse_mode?: "HTML" }) {
+    return this.call<{ message_id: number }>("editEphemeralMessageText", params);
+  }
+
+  deleteEphemeralMessage(params: { chat_id: number | string; message_id: number; receiver_user_id: number }) {
+    return this.call<true>("deleteEphemeralMessage", params);
   }
 
   pinChatMessage(params: { chat_id: number | string; message_id: number; disable_notification?: boolean }) {
@@ -354,7 +468,14 @@ export class TelegramClient {
   }
 
   /** Real Bot API `sendPoll` returns the full sent Message, which includes a `poll` object carrying the poll's OWN id -- distinct from `message_id` -- that's what a real `poll_answer` update correlates back against. */
-  sendPoll(params: { chat_id: number | string; question: string; options: string[]; is_anonymous?: boolean }) {
+  sendPoll(params: {
+    chat_id: number | string;
+    question: string;
+    /** A plain string per option, or the real object form, which can carry media (a chart per
+     *  option, live-confirmed). */
+    options: (string | { text: string; media?: { type: "photo" | "video" | "animation"; media: string } })[];
+    is_anonymous?: boolean;
+  }) {
     return this.call<{ message_id: number; poll: { id: string; question: string; options: { text: string; voter_count: number }[] } }>("sendPoll", params);
   }
 

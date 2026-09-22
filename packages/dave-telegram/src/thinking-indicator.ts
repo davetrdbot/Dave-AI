@@ -21,7 +21,12 @@ import type { TelegramClient } from "./client.js";
 
 // 9.3: typed enum, not free-form -- an agent can only pick one of these.
 export const ACTION_ICONS = {
+  /** Anything that is literally code being run -- run_script above all (the trader: "</> anything
+   *  related to scripts"). Kept as the angle-bracket marker rather than an emoji precisely because
+   *  it reads as code at a glance. */
   code: "</> ",
+  /** Reaching for the toolbox itself: search_tools / get_tool_catalog / a granted-tool request. */
+  tools: "\u{1F9F0} ", // 🧰
   database: "\u{1F5C4}\u{FE0F} ", // 🗄️
   api: "\u{1F4E1} ", // 📡
   input: "\u{1F4E5} ", // 📥
@@ -29,6 +34,8 @@ export const ACTION_ICONS = {
   memory: "\u{1F9E0} ", // 🧠
   trade: "\u{1F4B9} ", // 💹
   worker: "\u{1F465} ", // 👥
+  /** A background watch/check being armed or read -- work that outlives this turn. */
+  watch: "\u{1F441}\u{FE0F} ", // 👁️
 } as const;
 
 export type ActionType = keyof typeof ACTION_ICONS;
@@ -59,6 +66,49 @@ export function chunkForTelegram(text: string, limit = TELEGRAM_MESSAGE_LIMIT): 
   return chunks;
 }
 
+/**
+ * U+2060 WORD JOINER. The one character that makes the invisible-thinking technique work: it is
+ * genuinely zero-width, yet Telegram's non-empty-text validation accepts it, so a draft can carry
+ * "no visible text" without being rejected as empty.
+ *
+ * Live-tested by the trader, and the results are worth keeping written down because they are not
+ * guessable: U+2060 and U+034F pass this check ALONE. U+200B, U+200C, U+200D and U+FEFF are
+ * REJECTED alone -- they only work when combined with a U+2060. So U+2060 is the safe primitive
+ * and the only one used here.
+ */
+export const WORD_JOINER = "⁠";
+
+/** Three joiners, matching the payload shape that was live-confirmed working. */
+export const INVISIBLE_PREFIX = WORD_JOINER.repeat(3);
+
+/**
+ * The real invisible-thinking draft payload (trader, live-tested end to end).
+ *
+ * Two ingredients, and it only works with both:
+ *   1. The leading invisible prefix, so the draft renders with no visible body text -- without it
+ *      you get a half-written message sitting in the chat instead of an indicator.
+ *   2. The <tg-thinking> wrapper, which is what actually produces the collapsible
+ *      "💭 Thinking" indicator. Its text may not be empty.
+ *
+ * This is the payload the OLD code got wrong: it sent `{ html: rendered }` -- visible text, no
+ * thinking tag -- which is why the indicator "wasn't visibly happening" and a real-message
+ * fallback got bolted on beside it. Sending the correct payload is the actual fix; see the
+ * `fallbackMessage` note on ThinkingIndicator for why that fallback is now off by default.
+ *
+ * Markdown (not html) mode, matching what was confirmed live. `escapeThinkingText` keeps a stray
+ * "<" in a tool name from closing the tag early.
+ */
+export function buildThinkingDraft(text: string): { markdown: string } {
+  const body = escapeThinkingText(text).trim();
+  return { markdown: `${INVISIBLE_PREFIX}\n<tg-thinking>${body.length > 0 ? body : "Working"}</tg-thinking>` };
+}
+
+/** Minimal, deliberate: only the two characters that could break out of the tag. Emoji, slashes
+ *  and the "</> " code marker all pass through untouched, which is the point -- they're content. */
+export function escapeThinkingText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
 let draftIdCounter = 1;
 /** draft_id must be a non-zero integer the bot chooses -- unique per indicator instance so concurrent tasks don't animate over each other's drafts. */
 function nextDraftId(): number {
@@ -74,16 +124,28 @@ export class ThinkingIndicator {
   private readonly draftId = nextDraftId();
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private readonly updates: { action: ActionType; text: string }[] = [];
-  // Real bug fixed (item 6, user: "the thinking-draft streaming indicator isn't visibly
-  // happening in real use"). sendRichMessageDraft is a real, documented Bot API method, but it's
-  // genuinely very new (added within weeks of this fix, per the Bot API changelog) -- real client
-  // support for rendering a streamed draft may not be universally rolled out yet, which would
-  // explain updates genuinely never appearing on-screen even though the calls themselves succeed.
-  // Fixed with a guaranteed-visible fallback that doesn't depend on a brand-new feature: a real,
-  // persisted message via the decades-stable sendMessage/editMessageText pair, edited in place as
-  // updates come in (throttled so rapid tool calls don't hit Telegram's real edit rate limit),
-  // deleted again once finalize() sends the real final answer. The draft call stays too (harmless,
-  // free upgrade on clients that DO support it) -- this is belt-and-suspenders, not a replacement.
+  // Real bug fixed (the trader, live: "the thinking message like the tool calling indicator
+  // sending two times, but sometimes it later delete it's self tho like normal").
+  //
+  // Root cause, and it was self-inflicted. An earlier pass concluded the draft indicator "isn't
+  // visibly happening" and added a belt-and-suspenders fallback beside it: a REAL, persisted
+  // sendMessage, edited in place as updates arrived, deleted again at finalize(). So every turn
+  // produced TWO visible things -- the ephemeral draft AND a real progress message -- which is
+  // exactly the reported duplicate. The "sometimes it deletes itself" half is the same bug seen
+  // from the other side: the real one is deleted by finalize(), the draft just fades after ~30s,
+  // so which one appears to vanish depends on which the client rendered.
+  //
+  // The draft was never broken. It was being sent WRONG: `{ html: rendered }` -- visible text and
+  // no <tg-thinking> tag -- so it rendered as a stray half-message rather than an indicator. With
+  // buildThinkingDraft() sending the live-confirmed payload instead, the draft does its job and
+  // the fallback is pure duplication.
+  //
+  // Kept, but OFF unless DAVE_THINKING_FALLBACK_MESSAGE=1. The code is real and proven (two
+  // genuine races were fixed in it, documented below) and drafts are a new-ish API surface, so
+  // this stays as a switch rather than being deleted. Graceful degradation with it off is honest:
+  // start()'s sendChatAction heartbeat still shows "Dave is typing…" the whole time, which is the
+  // decades-stable mechanism and needs no client support at all.
+  private readonly fallbackMessage: boolean;
   private progressMessageId: number | undefined;
   private lastEditAt = 0;
   private static readonly EDIT_THROTTLE_MS = 1200;
@@ -112,8 +174,21 @@ export class ThinkingIndicator {
   constructor(
     private readonly client: TelegramClient,
     private readonly chatId: number,
-    private readonly chatAction: "typing" | "upload_document" | "upload_photo" = "typing"
-  ) {}
+    private readonly chatAction: "typing" | "upload_document" | "upload_photo" = "typing",
+    options: { fallbackMessage?: boolean; replyToMessageId?: number } = {}
+  ) {
+    this.fallbackMessage = options.fallbackMessage ?? process.env.DAVE_THINKING_FALLBACK_MESSAGE === "1";
+    this.replyToMessageId = options.replyToMessageId;
+  }
+
+  /**
+   * The message this turn is answering (the trader: "add message tag so it can actually tag
+   * messages... like you know, respond to that same message"). finalize() attaches it as a real
+   * `reply_parameters` so the answer is visibly tied to the question it answers -- which matters
+   * most in exactly the case that prompted it: several messages sent in a row, where an untethered
+   * reply is genuinely ambiguous about which one it belongs to.
+   */
+  private readonly replyToMessageId: number | undefined;
 
   getUpdates(): readonly { action: ActionType; text: string }[] {
     return this.updates;
@@ -171,14 +246,17 @@ export class ThinkingIndicator {
   }
 
   private async doUpdate(rendered: string): Promise<void> {
+    // The same draft_id on every call is what makes this animate in place instead of stacking new
+    // drafts -- that, plus buildThinkingDraft's invisible prefix and <tg-thinking> wrapper, is the
+    // whole technique.
     await this.client
       .sendRichMessageDraft({
         chat_id: this.chatId,
         draft_id: this.draftId,
-        rich_message: { html: rendered },
+        rich_message: buildThinkingDraft(rendered),
       })
       .catch(() => {});
-    await this.updateGuaranteedProgressMessage(rendered);
+    if (this.fallbackMessage) await this.updateGuaranteedProgressMessage(rendered);
   }
 
   /** The guaranteed-visible fallback -- see the class-level comment. Best-effort: a failure here
@@ -260,8 +338,18 @@ export class ThinkingIndicator {
       this.progressMessageId = undefined;
     }
     const chunks = chunkForTelegram(finalText);
-    for (const chunk of chunks) {
-      await this.client.sendMessage({ chat_id: this.chatId, text: chunk, parse_mode: "HTML" });
+    for (const [i, chunk] of chunks.entries()) {
+      await this.client.sendMessage({
+        chat_id: this.chatId,
+        text: chunk,
+        parse_mode: "HTML",
+        // First chunk only. Tagging every chunk of a long answer would quote the same question
+        // three times over, which reads as a glitch rather than as an answer to it.
+        reply_parameters:
+          i === 0 && this.replyToMessageId !== undefined
+            ? { message_id: this.replyToMessageId, allow_sending_without_reply: true }
+            : undefined,
+      });
     }
   }
 
@@ -295,9 +383,13 @@ export class ThinkingIndicator {
 export async function withThinkingIndicator<T>(
   client: TelegramClient,
   chatId: number,
-  task: (indicator: ThinkingIndicator) => Promise<{ result: T; finalText: string }>
+  task: (indicator: ThinkingIndicator) => Promise<{ result: T; finalText: string }>,
+  options: { replyToMessageId?: number; fallbackMessage?: boolean } = {}
 ): Promise<T> {
-  const indicator = new ThinkingIndicator(client, chatId);
+  const indicator = new ThinkingIndicator(client, chatId, "typing", {
+    replyToMessageId: options.replyToMessageId,
+    fallbackMessage: options.fallbackMessage,
+  });
   await indicator.start();
   try {
     const { result, finalText } = await task(indicator);

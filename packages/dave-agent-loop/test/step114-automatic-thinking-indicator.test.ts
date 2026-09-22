@@ -91,13 +91,25 @@ try {
   console.log(`    real Telegram calls: ${calls.map((c) => c.method).join(" -> ")}`);
 
   assert.ok(calls.some((c) => c.method === "sendChatAction"), "the automatic wrapper must start a real chat action -- nothing to call, it just happens");
-  const progressSend = calls.find((c) => c.method === "sendMessage" && typeof c.body.text === "string" && String(c.body.text).includes("recall memory"));
-  assert.ok(progressSend, "a real progress message narrating the actual tool call (recall_memory) must be sent -- derived from the real AgentStep, no model cooperation involved");
-  const deleteAfterProgress = calls.findIndex((c) => c.method === "deleteMessage");
-  const finalSend = calls.findIndex((c) => c.method === "sendMessage" && c.body.text === "All set.");
-  assert.ok(deleteAfterProgress !== -1, "the progress message must be cleanly deleted before the real final answer");
-  assert.ok(finalSend !== -1 && finalSend > deleteAfterProgress, "the real final answer must be sent AFTER the progress message is deleted, in that order");
-  assert.equal(calls.filter((c) => c.method === "sendMessage" && c.body.text === "All set.").length, 1, "exactly one real final message, never duplicated");
+
+  // This test's subject is that the narration is AUTOMATIC -- derived from the real AgentStep,
+  // with no model cooperation. That is unchanged. What changed in step153 is where it lands: the
+  // invisible <tg-thinking> draft rather than a real progress message (the real message beside the
+  // draft was the trader's "sending two times" bug).
+  const progressDraft = calls.find(
+    (c) => c.method === "sendRichMessageDraft" && String((c.body.rich_message as { markdown?: string } | undefined)?.markdown ?? "").includes("recall memory")
+  );
+  assert.ok(progressDraft, "the real tool call (recall_memory) must be narrated into the thinking draft -- derived from the real AgentStep, no model cooperation involved");
+  const draftMd = String((progressDraft!.body.rich_message as { markdown?: string }).markdown);
+  assert.ok(draftMd.startsWith("⁠"), "the draft body is invisible, so it shows as an indicator and not as a stray half-message");
+  assert.ok(draftMd.includes("<tg-thinking>"), "and carries the real thinking tag");
+
+  // The duplicate guard, now stronger than before: across the WHOLE turn there is exactly one real
+  // message -- the answer. Progress never arrives as a message, so there is nothing to delete.
+  const realMessages = calls.filter((c) => c.method === "sendMessage");
+  assert.equal(realMessages.length, 1, `exactly one real message for the whole turn -- got ${realMessages.length}: ${realMessages.map((m) => JSON.stringify(m.body.text)).join(", ")}`);
+  assert.equal(realMessages[0].body.text, "All set.", "and it is the final answer");
+  assert.equal(calls.filter((c) => c.method === "deleteMessage").length, 0, "nothing to delete -- which is why it no longer appears to delete itself");
 
   console.log("\n=== ALL ASSERTIONS PASSED ===");
 } finally {

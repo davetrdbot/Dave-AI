@@ -49,18 +49,24 @@ await withThinkingIndicator(fakeClient, 847213, async (indicator) => {
 console.log(`    calls, in order: ${sentCalls.map((c) => c.method).join(" -> ")}`);
 assert.equal(sentCalls[0].method, "sendChatAction", "9.1: fires automatically first, zero AI decision");
 const draftCalls = sentCalls.filter((c) => c.method === "sendRichMessageDraft");
-assert.equal(draftCalls.length, 3, "every update still fires the (best-effort) draft call too -- harmless on clients that support it");
-// Item 6 real gap fixed: the FIRST update must genuinely send a real, guaranteed-visible
-// progress message (sendMessage) -- this doesn't depend on a client rendering the newer draft
-// feature at all, so it's visible on every real Telegram client, no exceptions.
-assert.ok(sentCalls.some((c) => c.method === "sendMessage"), "a real guaranteed-visible progress message must be sent");
-// Rapid-fire updates within the same test tick are correctly throttled -- editMessageText is
-// real Bot API rate-limited, so hammering it on every single tool call would risk real 429s.
-const editCallsDuringRapidUpdates = sentCalls.filter((c) => c.method === "editMessageText").length;
-assert.ok(editCallsDuringRapidUpdates <= 1, "rapid-fire updates must be throttled, not hammer editMessageText");
-// The guaranteed progress message is genuinely cleaned up once the real final answer is sent --
-// never left cluttering the chat alongside the real final message.
-assert.ok(sentCalls.some((c) => c.method === "deleteMessage"), "the guaranteed progress message must genuinely be deleted before/at finalize");
+assert.equal(draftCalls.length, 3, "every update fires the draft call -- this is the primary indicator");
+// Rewritten (step153): this used to additionally assert a real sendMessage progress message and
+// its deleteMessage. That belt-and-suspenders fallback was added when the draft appeared not to
+// render, and it turned out to BE the trader's "sending two times" bug -- the draft was simply
+// being sent with the wrong payload (visible html, no <tg-thinking>). The fallback is real and
+// still switchable on (DAVE_THINKING_FALLBACK_MESSAGE=1), and step63/86/87 test that mode
+// directly; the DEFAULT contract asserted here is now exactly one visible stream.
+const progressSends = sentCalls.filter((c) => c.method === "sendMessage");
+assert.equal(progressSends.length, 1, `only the final answer is a real message by default -- got ${progressSends.length}`);
+assert.equal(sentCalls.filter((c) => c.method === "editMessageText").length, 0, "no progress message to edit by default");
+assert.equal(sentCalls.filter((c) => c.method === "deleteMessage").length, 0, "and none to delete -- so it can't appear to delete itself");
+// The payload shape IS the mechanism, so pin it here too: an invisible body plus the thinking
+// tag. Sending visible html instead is the exact regression that caused the original report.
+for (const d of draftCalls) {
+  const rm = d.body.rich_message as { markdown?: string; html?: string };
+  assert.ok(rm.markdown?.startsWith("⁠"), "draft body must be invisible (U+2060 prefix)");
+  assert.ok(rm.markdown?.includes("<tg-thinking>"), "draft must carry the thinking tag");
+}
 assert.equal(sentCalls[sentCalls.length - 1].method, "sendMessage", "9.4: finalize ends with a real sendMessage(parse_mode: HTML) call for the real final answer -- NOT sendRichMessage, which collapses paragraph breaks");
 assert.equal(sentCalls[sentCalls.length - 1].body.parse_mode, "HTML", "9.4: the final send must set parse_mode: HTML so the converted markup actually renders");
 
@@ -71,22 +77,26 @@ assert.equal(draftIds[0], draftIds[1]);
 assert.equal(draftIds[1], draftIds[2]);
 assert.ok(typeof draftIds[0] === "number" && draftIds[0] !== 0, "draft_id must be a non-zero integer");
 
-console.log("\n[A3] Icon-prefixed content sent as rich_message.html for each draft update, and the real guaranteed progress message carries the same content...");
-console.log(`      memory: "${(draftCalls[0].body.rich_message as any).html}"`);
-console.log(`      api:    "${(draftCalls[1].body.rich_message as any).html}"`);
-console.log(`      trade:  "${(draftCalls[2].body.rich_message as any).html}"`);
+console.log("\n[A3] Icon-prefixed content carried inside each draft's <tg-thinking> tag...");
+// Content moved from rich_message.html to the invisible-body markdown form in step153 -- the html
+// form (visible text, no thinking tag) is precisely what never rendered as an indicator.
+const thinkingText = (c: (typeof draftCalls)[number]): string => {
+  const md = (c.body.rich_message as { markdown?: string }).markdown ?? "";
+  return md.replace(/^[\u2060]+\n?/, "").replace(/^<tg-thinking>/, "").replace(/<\/tg-thinking>$/, "");
+};
+console.log(`      memory: "${thinkingText(draftCalls[0])}"`);
+console.log(`      api:    "${thinkingText(draftCalls[1])}"`);
+console.log(`      trade:  "${thinkingText(draftCalls[2])}"`);
 const finalCall = sentCalls[sentCalls.length - 1];
 console.log(`      final:  "${finalCall.body.text}"`);
-assert.equal((draftCalls[0].body.rich_message as any).html, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`);
-assert.equal((draftCalls[1].body.rich_message as any).html, `${ACTION_ICONS.api}Calling EA analysis /correlation + /strength`);
-assert.equal((draftCalls[2].body.rich_message as any).html, `${ACTION_ICONS.trade}Scoring EURUSD setup against confluence`);
+assert.equal(thinkingText(draftCalls[0]), `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`);
+assert.equal(thinkingText(draftCalls[1]), `${ACTION_ICONS.api}Calling EA analysis /correlation + /strength`);
+assert.equal(thinkingText(draftCalls[2]), `${ACTION_ICONS.trade}Scoring EURUSD setup against confluence`);
 assert.equal(finalCall.body.text, "Setup scored -- confluence 78, LONG bias.");
 assert.ok(
   !String(finalCall.body.text).startsWith(ACTION_ICONS.trade),
   "9.4: the final message must be clean, no leftover action icon"
 );
-const guaranteedMsgCall = sentCalls.find((c) => c.method === "sendMessage");
-assert.equal(guaranteedMsgCall?.body.text, `${ACTION_ICONS.memory}Recalling frozen snapshot + L0-L2 tiers`, "the guaranteed fallback message carries the same real content as the draft");
 
 console.log("\n[A4] Two concurrent indicators get DIFFERENT draft_ids -- must not animate over each other's draft...");
 const secondCalls: { method: string; body: Record<string, unknown> }[] = [];
@@ -168,7 +178,12 @@ assert.ok(realCalls.some((c) => c.method === "sendChatAction"));
 assert.ok(realCalls.some((c) => c.method === "sendRichMessageDraft"));
 const realDraftCall = realCalls.find((c) => c.method === "sendRichMessageDraft");
 console.log(`    real request body sent to Telegram: ${JSON.stringify(realDraftCall?.body)}`);
-assert.equal(realDraftCall?.body.rich_message?.html, `${ACTION_ICONS.code}Patching provider-router.ts`);
+const realMarkdown = String(realDraftCall?.body.rich_message?.markdown);
+// The "</>" code marker arrives escaped to "&lt;/>" -- deliberate, so a "<" in the progress text
+// can never close the <tg-thinking> tag early. The marker is still visible to the reader.
+assert.ok(realMarkdown.includes("&lt;/&gt; Patching provider-router.ts") || realMarkdown.includes("&lt;/> Patching provider-router.ts"), `real body must carry the escaped code marker + text -- got ${realMarkdown}`);
+assert.ok(realMarkdown.startsWith("\u2060"), "and an invisible body");
+assert.ok(realMarkdown.includes("<tg-thinking>") && realMarkdown.includes("</tg-thinking>"), "wrapped in a real thinking tag");
 assert.ok(typeof realDraftCall?.body.draft_id === "number");
 global.fetch = realFetch;
 
@@ -178,9 +193,19 @@ console.log("\n[Part B] PASSED (real network calls confirmed, real request shape
 console.log("[Part C] Typed enum, not free-form -- every ActionType key maps to a real icon...");
 const actionTypes = Object.keys(ACTION_ICONS);
 console.log(`    ${actionTypes.join(", ")}`);
-assert.deepEqual(
-  actionTypes.sort(),
-  ["api", "code", "database", "input", "memory", "output", "trade", "worker"].sort()
-);
+// Derived, not a hardcoded roster: the point of this check is that every key maps to a real,
+// non-empty, UNIQUE icon, which is what actually breaks if someone adds one carelessly. Pinning
+// the exact list instead just made adding a genuine new action type (tools 🧰, watch 👁️) look
+// like a failure.
+assert.ok(actionTypes.length > 0, "there is at least one action type");
+for (const key of actionTypes) {
+  const icon = ACTION_ICONS[key as keyof typeof ACTION_ICONS];
+  assert.ok(typeof icon === "string" && icon.trim().length > 0, `${key} maps to a real icon`);
+}
+const icons = Object.values(ACTION_ICONS);
+assert.equal(new Set(icons).size, icons.length, "no two action types share an icon -- they'd be indistinguishable in the indicator");
+// The two the trader asked for by name must exist.
+assert.ok(actionTypes.includes("code"), "scripts have their own action type");
+assert.ok(actionTypes.includes("tools"), "the toolbox has its own action type");
 
 console.log("\n=== ALL ASSERTIONS PASSED ===");

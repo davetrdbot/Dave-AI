@@ -30,7 +30,12 @@ const fakeClient = {
   },
 } as unknown as TelegramClient;
 
-const indicator = new ThinkingIndicator(fakeClient, chatId);
+// fallbackMessage: this test's subject is a real progress MESSAGE left stuck in the chat, which
+// only exists on the fallback path (off by default since step153 -- it was the trader's
+// duplicate-message bug). Switched on so the scenario is genuinely reproduced; the draft-only
+// default is covered as its own case at the end of this file, where there is no message to get
+// stuck because an ephemeral draft fades on its own.
+const indicator = new ThinkingIndicator(fakeClient, chatId, "typing", { fallbackMessage: true });
 await indicator.start();
 await indicator.update("trade", "Placing the trade...");
 setActiveIndicator(chatId, indicator);
@@ -74,5 +79,44 @@ const cleanedUp2 = await ensureNoOrphanedIndicator(idleClient, idleChatId);
 assert.equal(cleanedUp2, false, "no indicator ever existed for this chat -- must report nothing to clean up");
 assert.equal(idleCalls.length, 0, "must not touch Telegram at all when there was never an indicator");
 console.log("    confirmed: a normal plain-message turn (no tg_thinking ever called) is left completely untouched\n");
+
+// --- The draft-only default (step153): nothing can get stuck, but tracking must still clear ---
+console.log("[3] Draft-only default: no message to delete, yet the orphan is still cleared...\n");
+const draftChatId = 777333;
+const draftCalls: { method: string; body: Record<string, unknown> }[] = [];
+const draftClient = {
+  sendChatAction: async () => true,
+  sendRichMessageDraft: async (body: Record<string, unknown>) => {
+    draftCalls.push({ method: "sendRichMessageDraft", body });
+    return true;
+  },
+  sendMessage: async (body: Record<string, unknown>) => {
+    draftCalls.push({ method: "sendMessage", body });
+    return { message_id: 1234 };
+  },
+  editMessageText: async () => ({ message_id: 1234 }),
+  deleteMessage: async (body: Record<string, unknown>) => {
+    draftCalls.push({ method: "deleteMessage", body });
+    return true;
+  },
+} as unknown as TelegramClient;
+
+const draftIndicator = new ThinkingIndicator(draftClient, draftChatId, "typing", { fallbackMessage: false });
+await draftIndicator.start();
+await draftIndicator.update("code", "running a script");
+setActiveIndicator(draftChatId, draftIndicator);
+
+const cleanedUp3 = await ensureNoOrphanedIndicator(draftClient, draftChatId);
+assert.equal(cleanedUp3, true, "the orphan is still detected and reported");
+assert.equal(getActiveIndicator(draftChatId), undefined, "tracking is cleared either way");
+// The key difference, and the whole reason the duplicate is gone: there was never a real message,
+// so there is nothing to delete -- the draft expires by itself.
+assert.equal(draftCalls.filter((c) => c.method === "deleteMessage").length, 0, "nothing to delete on the draft-only path");
+assert.ok(draftCalls.some((c) => c.method === "sendRichMessageDraft"), "the indicator did run as a draft");
+assert.ok(
+  draftCalls.some((c) => c.method === "sendMessage" && String(c.body.text).length > 0),
+  "the honest fallback message still reaches the user -- silence would be the real failure"
+);
+console.log("    confirmed: no stuck message exists to delete, tracking cleared, user still told something\n");
 
 console.log("=== ALL ASSERTIONS PASSED ===");

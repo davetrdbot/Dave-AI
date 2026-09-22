@@ -55,7 +55,10 @@ await withThinkingIndicator(client, 991122, async (indicator) => {
   console.log(`    real edit call: ${JSON.stringify(editCall)}`);
 
   return { result: undefined, finalText: "Done." };
-});
+  // fallbackMessage: this whole test is about the fallback's edit throttling, which only exists
+  // on that path. It is off by default since step153 (it was the trader's duplicate-message bug),
+  // so it is switched on explicitly here rather than the test silently measuring nothing.
+}, { fallbackMessage: true });
 
 console.log("\n[4] The guaranteed progress message is genuinely deleted once the real final answer is sent...\n");
 assert.ok(calls.some((c) => c.method === "deleteMessage" && c.body.message_id === 7001), "the real progress message must genuinely be deleted at finalize");

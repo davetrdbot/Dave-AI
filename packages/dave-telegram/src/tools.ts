@@ -1,5 +1,5 @@
-import type { TelegramClient, TelegramChatAction, RichMessageMedia } from "./client.js";
-import { ThinkingIndicator } from "./thinking-indicator.js";
+import type { TelegramClient, TelegramChatAction, RichMessageMedia, RichBlock } from "./client.js";
+import { ThinkingIndicator, buildThinkingDraft } from "./thinking-indicator.js";
 import { markdownToTelegramHtml } from "./rich-format.js";
 import { getOrCreateUserWebhook } from "@dave/memory";
 import { personalizeEaFile } from "./ea-file.js";
@@ -63,11 +63,18 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
   {
     name: "send_telegram",
     description:
-      "Send a plain real Telegram message. Optional linkPreview controls the URL preview card: 'off' hides it, 'large'/'small' sizes it, 'above' puts it over the text. Leave unset for the default.",
+      "Send a plain real Telegram message. Optional linkPreview controls the URL preview card: 'off' hides it, 'large'/'small' sizes it, 'above' puts it over the text. Leave unset for the default. " +
+      "`silent` delivers it with no sound or vibration -- use it for anything that genuinely doesn't need to wake someone (a routine confirmation, an overnight note). " +
+      "`protect` blocks forwarding, copying and screenshots.",
     parameters: {
       type: "object",
       required: ["text"],
-      properties: { text: { type: "string" }, linkPreview: { type: "string", enum: ["off", "small", "large", "above"] } },
+      properties: {
+        text: { type: "string" },
+        linkPreview: { type: "string", enum: ["off", "small", "large", "above"] },
+        silent: { type: "boolean", description: "No sound, no vibration. Still a real message." },
+        protect: { type: "boolean", description: "Block forwarding, copying and screenshots." },
+      },
     },
     execute: async (args, ctx) => {
       const lp = args.linkPreview as "off" | "small" | "large" | "above" | undefined;
@@ -79,7 +86,14 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
             show_above_text: lp === "above" || undefined,
           }
         : undefined;
-      return ctx.client.sendMessage({ chat_id: ctx.chatId, text: markdownToTelegramHtml(args.text as string), parse_mode: "HTML", link_preview_options });
+      return ctx.client.sendMessage({
+        chat_id: ctx.chatId,
+        text: markdownToTelegramHtml(args.text as string),
+        parse_mode: "HTML",
+        link_preview_options,
+        disable_notification: (args.silent as boolean | undefined) || undefined,
+        protect_content: (args.protect as boolean | undefined) || undefined,
+      });
     },
   },
   {
@@ -118,6 +132,72 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
     },
   },
   {
+    // The real block-array form of a rich message (client.ts's RichBlock). Every block type here
+    // was live-tested against a real bot by the trader; the rejected ones are deliberately absent
+    // from the enum rather than offered and failing at send time.
+    name: "tg_rich_blocks",
+    description:
+      "Send a rich message built from real structured BLOCKS instead of writing HTML -- use this when the layout is the point and you want it exact: a signal card, a spec table, a collapsible 'my reasoning' section. " +
+      "Blocks render in the order you give them. The ones worth knowing: `heading` (size 1 big / 2 medium / 3 small), `paragraph`, `table` (rows of cells, first row reads as the header), `list`, `pre` (a monospace code block -- put any script, payload or EA source in one of these), `blockquote`, `pullquote` (bigger, for one line worth pulling out), `divider`, `footer` (small print), `details` (collapsed until tapped -- the right home for your full working so the main message stays short), `anchor`, `map`, and `photo`. " +
+      "A `details` block is how you give a short answer AND show the whole analysis without burying the person: headline in the open, everything else folded away. " +
+      "Use plain send_telegram for ordinary conversation -- this is for something built.",
+    parameters: {
+      type: "object",
+      required: ["blocks"],
+      properties: {
+        blocks: {
+          type: "array",
+          description: "The blocks, in render order. A `details` block nests its own blocks array.",
+          items: { type: "object", description: "One RichBlock: { type, ... }. See the tool description for the fields each type takes." },
+        },
+        replyToMessageId: { type: "number", description: "Tag this as a reply to a real message id." },
+        silent: { type: "boolean", description: "Deliver with no sound or vibration." },
+        protect: { type: "boolean", description: "Block forwarding, copying and screenshots." },
+      },
+    },
+    execute: async (args, ctx) =>
+      ctx.client.sendRichMessage({
+        chat_id: ctx.chatId,
+        rich_message: { blocks: args.blocks as RichBlock[] },
+        reply_parameters: args.replyToMessageId ? { message_id: args.replyToMessageId as number, allow_sending_without_reply: true } : undefined,
+        disable_notification: (args.silent as boolean | undefined) || undefined,
+        protect_content: (args.protect as boolean | undefined) || undefined,
+      }),
+  },
+  {
+    // Real gap fixed (the trader: "add message tag so it can actually tag messages... respond to
+    // that same message"). An ordinary reply is already tagged automatically by the turn's own
+    // finalize(); this is for the cases that aren't the turn's main reply -- answering an older
+    // message specifically, or quoting one exact line out of a long one.
+    name: "reply_to_message",
+    description:
+      "Reply to a SPECIFIC message, tagged to it so it's clear what you're answering. Your normal reply is already tagged to the message you're answering, so you don't need this for that -- reach for it when you're going back to an EARLIER message, or when you want to quote one exact line out of a long message and answer just that. " +
+      "Pass `quote` with text copied verbatim from that message to pin your reply to that fragment.",
+    parameters: {
+      type: "object",
+      required: ["messageId", "text"],
+      properties: {
+        messageId: { type: "number", description: "The message you're replying to." },
+        text: { type: "string" },
+        quote: { type: "string", description: "An exact substring of that message to quote. Must match its text verbatim or Telegram rejects it." },
+        silent: { type: "boolean", description: "Deliver with no sound or vibration." },
+      },
+    },
+    execute: async (args, ctx) =>
+      ctx.client.sendMessage({
+        chat_id: ctx.chatId,
+        text: markdownToTelegramHtml(args.text as string),
+        parse_mode: "HTML",
+        reply_parameters: {
+          message_id: args.messageId as number,
+          quote: args.quote as string | undefined,
+          // Never lose the message over a deleted reply target -- see ReplyParameters in client.ts.
+          allow_sending_without_reply: true,
+        },
+        disable_notification: (args.silent as boolean | undefined) || undefined,
+      }),
+  },
+  {
     name: "tg_edit_message",
     description: "Edit a real, previously-sent Telegram message's text.",
     parameters: { type: "object", properties: { messageId: { type: "number" }, text: { type: "string" } }, required: ["messageId", "text"] },
@@ -134,9 +214,20 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
     description:
       "Send a real image to the user as an inline Telegram photo (not a generic document/file). " +
       "Use this to hand off the result of generate_image (Lovable MCP) -- pass its returned `url` straight through here so the user actually sees the picture, " +
-      "instead of just a text link. There is no automatic forwarding: you must call this yourself after generate_image returns.",
-    parameters: { type: "object", properties: { fileIdOrUrl: { type: "string" }, caption: { type: "string" } }, required: ["fileIdOrUrl"] },
-    execute: async (args, ctx) => ctx.client.sendPhoto({ chat_id: ctx.chatId, photo: args.fileIdOrUrl as string, caption: args.caption as string | undefined }),
+      "instead of just a text link. There is no automatic forwarding: you must call this yourself after generate_image returns. " +
+      "`spoiler` sends it blurred until the user taps it -- good for a chart you want them to guess at first, or anything they asked not to be shown outright.",
+    parameters: {
+      type: "object",
+      properties: { fileIdOrUrl: { type: "string" }, caption: { type: "string" }, spoiler: { type: "boolean", description: "Blur the image until tapped." } },
+      required: ["fileIdOrUrl"],
+    },
+    execute: async (args, ctx) =>
+      ctx.client.sendPhoto({
+        chat_id: ctx.chatId,
+        photo: args.fileIdOrUrl as string,
+        caption: args.caption as string | undefined,
+        has_spoiler: (args.spoiler as boolean | undefined) || undefined,
+      }),
   },
   {
     name: "tg_send_poll",
@@ -222,12 +313,15 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
     // sendMessage calls (which burn the rate limit). The client method existed; no Dave tool.
     name: "send_rich_draft",
     description:
-      "Stream a rich message as a live-updating DRAFT rather than sending it all at once -- ideal for a long report or a reply you're building up. Call it repeatedly with the SAME draftId to progressively replace the draft's content (HTML: tables, headings, expandable quotes, up to ~32k chars). Finalise by sending the finished HTML through tg_rich_message. Use a fresh draftId per message; keepOnStop leaves the last draft visible if you stop early.",
+      "Stream a rich message as a live-updating DRAFT rather than sending it all at once -- ideal for a long report or a reply you're building up. Call it repeatedly with the SAME draftId to progressively replace the draft's content (HTML: tables, headings, expandable quotes, up to ~32k chars). Finalise by sending the finished HTML through tg_rich_message. Use a fresh draftId per message; keepOnStop leaves the last draft visible if you stop early. " +
+      "A draft is NOT a real message: it is an ephemeral ~30s preview that fades on its own and leaves nothing in the chat history. So if you start one, either finalise it or let it go deliberately -- never rely on it to actually deliver anything. " +
+      "Set `thinking` to show it as a collapsible \"💭 Thinking\" indicator with no visible message text instead of as draft content; that is the same mechanism your automatic progress indicator uses, so only reach for it here when you want a SECOND one under your own control.",
     parameters: {
       type: "object",
       properties: {
         draftId: { type: "number", description: "a stable id for THIS draft; reuse it across updates of the same message" },
         html: { type: "string", description: "the rich HTML content so far (replaces the draft's current content)" },
+        thinking: { type: "boolean", description: "render as an invisible-bodied 💭 Thinking indicator rather than as visible draft content" },
         canStop: { type: "boolean", description: "let the user stop the stream" },
         keepOnStop: { type: "boolean", description: "keep the last draft content visible if stopped" },
       },
@@ -237,7 +331,10 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
       ctx.client.sendRichMessageDraft({
         chat_id: ctx.chatId,
         draft_id: args.draftId as number,
-        rich_message: { html: args.html as string },
+        // The thinking form needs the invisible prefix AND the <tg-thinking> wrapper together --
+        // buildThinkingDraft is the single place that shape is defined, so this can't drift from
+        // what the automatic indicator sends.
+        rich_message: args.thinking ? buildThinkingDraft(args.html as string) : { html: args.html as string },
         can_stop: args.canStop as boolean | undefined,
         keep_on_stop: args.keepOnStop as boolean | undefined,
       }),

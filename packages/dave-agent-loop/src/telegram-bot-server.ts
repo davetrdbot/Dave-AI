@@ -119,6 +119,20 @@ function sendTransientTokenUsage(client: TelegramClient, chatId: number, usage: 
 function describeStep(step: AgentStep): { action: ActionType; text: string } {
   const name = step.toolName;
   if (step.isError) return { action: "code", text: `${name} failed` };
+  // The trader: "</> anything related to scripts". run_script is literally code being executed,
+  // so it gets the code marker rather than being lumped in with the generic "input" fallback it
+  // used to land on -- the icon is the fastest signal in the indicator that Dave went and computed
+  // something instead of guessing at it.
+  if (name === "run_script") return { action: "code", text: "running a script" };
+  // "Tools 🧰 and others" -- reaching for the toolbox itself, which is a different kind of step
+  // from using a tool and worth showing as one.
+  if (name === "search_tools" || name === "get_tool_catalog" || name === "request_tool" || name === "check_my_tool_requests") {
+    return { action: "tools", text: `${name.replace(/_/g, " ")}` };
+  }
+  // Background work that outlives this turn: arming a watch is not the same as reading a value.
+  if (name.endsWith("_background_check") || name === "mark_level" || name === "check_marked_levels" || name === "cancel_marked_level") {
+    return { action: "watch", text: `${name.replace(/_/g, " ")}` };
+  }
   if (name.startsWith("get_") || name === "find_setup" || name === "hunt_for_setup") return { action: "api", text: `Checking ${name.replace(/^get_/, "")}` };
   if (name.startsWith("trade_") || name === "modify_sl_tp" || name === "remove_sl_tp" || name === "partial_close" || name === "full_close") return { action: "trade", text: `${name.replace(/_/g, " ")}` };
   if (name.startsWith("recall_") || name.startsWith("remember_") || name.startsWith("session_") || name === "tencent_memory") return { action: "memory", text: `${name.replace(/_/g, " ")}` };
@@ -138,7 +152,12 @@ async function runAgentTurn(
   chatId: number,
   historyKey: string,
   userContent: string | ContentBlock[],
-  messageText: string | undefined
+  messageText: string | undefined,
+  /** The incoming message this turn answers, so the reply is visibly tagged to it and so Dave can
+   *  genuinely act on it (react, pin, quote) -- see `<incoming_message>` in live-context.ts.
+   *  Absent for turns with no single originating message (a collapsed delegation queue, a button
+   *  tap that resumes a paused question). */
+  replyToMessageId?: number
 ): Promise<void> {
   const registry = getOrBuildRegistry(deps, client, chatId);
   const provider = modelConfigProvider(deps.db, deps.ownerUserId, async (text, options) => {
@@ -196,7 +215,7 @@ async function runAgentTurn(
           { signal: abortController.signal, onStep }
         );
       } else {
-        history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent) });
+        history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent, replyToMessageId) });
         result = await loop.run(history, { signal: abortController.signal, onStep });
       }
       saveConversationHistory(deps.db, historyKey, result.history);
@@ -223,7 +242,7 @@ async function runAgentTurn(
         finalText = markdownToTelegramHtml(rawFinalText);
       }
       return { result, finalText };
-    });
+    }, { replyToMessageId });
     clearActiveIndicator(chatId);
 
     // Real gap fixed (item 7: "inline-button-based questions Dave asks aren't being
@@ -825,7 +844,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
             // minutes apart became three back-to-back turns that each re-answered from scratch.
             for (const collapsed of collapseQueuedMessages(queue)) {
               const historyKeyForPending = `${deps.ownerUserId}:${collapsed.chatId}`;
-              await runAgentTurn(deps, client, collapsed.chatId, historyKeyForPending, collapsed.text, collapsed.text);
+              await runAgentTurn(deps, client, collapsed.chatId, historyKeyForPending, collapsed.text, collapsed.text, collapsed.replyToMessageId);
             }
           }
           return;
@@ -1007,7 +1026,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         // the FIRST one still waiting gets the button prompt -- a second/third arrival while
         // one is already pending just confirms it's been added, not another full prompt.
         const alreadyQueued = getPendingDelegationQueue(deps.ownerUserId).length > 0;
-        addPendingDelegation(deps.ownerUserId, { text: message.text, chatId });
+        addPendingDelegation(deps.ownerUserId, { text: message.text, chatId, messageId: message.message_id });
         if (alreadyQueued) {
           await client.sendMessage({ chat_id: chatId, text: "Got it -- queued behind what's already waiting on your answer above." });
         } else {
@@ -1017,7 +1036,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         return;
       }
 
-      await runAgentTurn(deps, client, chatId, historyKey, userContent, message.text);
+      await runAgentTurn(deps, client, chatId, historyKey, userContent, message.text, message.message_id);
     },
   });
 

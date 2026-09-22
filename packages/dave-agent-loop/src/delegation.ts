@@ -16,6 +16,9 @@ export interface PendingDelegation {
   chatId: number;
   /** When this message actually arrived. Load-bearing -- see PENDING_DELEGATION_MAX_AGE_MS. */
   receivedAt: number;
+  /** The Telegram message id, so the eventual answer can be tagged as a real reply to it.
+   *  Optional: entries queued before this field existed are still on disk and must keep loading. */
+  messageId?: number;
 }
 
 /**
@@ -57,24 +60,33 @@ export interface CollapsedDelegation {
   text: string;
   /** How many real messages this represents, for the caller's own acknowledgement copy. */
   count: number;
+  /** Which message the single collapsed answer should be tagged as replying to: the LAST of the
+   *  backlog, i.e. the most recent thing they asked. Tagging the first would point at the oldest
+   *  message in a pile they have since moved past, and one collapsed answer can only tag one.
+   *  Undefined when no queued entry carried an id. */
+  replyToMessageId?: number;
 }
 
 export function collapseQueuedMessages(queue: PendingDelegation[]): CollapsedDelegation[] {
-  const byChat = new Map<number, string[]>();
+  const byChat = new Map<number, PendingDelegation[]>();
   for (const item of queue) {
     const existing = byChat.get(item.chatId);
-    if (existing) existing.push(item.text);
-    else byChat.set(item.chatId, [item.text]);
+    if (existing) existing.push(item);
+    else byChat.set(item.chatId, [item]);
   }
-  return [...byChat.entries()].map(([chatId, texts]) => ({
-    chatId,
-    count: texts.length,
-    text:
-      texts.length === 1
-        ? texts[0]
-        : `While you were busy I sent you these, in this order -- answer them together in ONE reply, don't repeat yourself once per message:\n` +
-          texts.map((t, i) => `${i + 1}. ${t}`).join("\n"),
-  }));
+  return [...byChat.entries()].map(([chatId, items]) => {
+    const texts = items.map((i) => i.text);
+    return {
+      chatId,
+      count: texts.length,
+      replyToMessageId: [...items].reverse().find((i) => i.messageId !== undefined)?.messageId,
+      text:
+        texts.length === 1
+          ? texts[0]
+          : `While you were busy I sent you these, in this order -- answer them together in ONE reply, don't repeat yourself once per message:\n` +
+            texts.map((t, i) => `${i + 1}. ${t}`).join("\n"),
+    };
+  });
 }
 
 function delegationPath(userId: string): string {

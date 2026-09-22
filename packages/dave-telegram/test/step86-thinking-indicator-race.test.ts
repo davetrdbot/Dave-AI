@@ -52,7 +52,7 @@ function makeDelayedClient(delayMs: number) {
 console.log("[1] Two updates fired without awaiting between them, first sendMessage still in flight...\n");
 {
   const { client, calls } = makeDelayedClient(40);
-  const indicator = new ThinkingIndicator(client, 555111);
+  const indicator = new ThinkingIndicator(client, 555111, "typing", { fallbackMessage: true });
   await indicator.start();
 
   // Exactly the real call pattern: `void indicator.update(...)`, never awaited.
@@ -78,7 +78,7 @@ console.log("\n[1] PASSED\n");
 console.log("[2] Three updates fired without awaiting between them...\n");
 {
   const { client, calls } = makeDelayedClient(30);
-  const indicator = new ThinkingIndicator(client, 555222);
+  const indicator = new ThinkingIndicator(client, 555222, "typing", { fallbackMessage: true });
   await indicator.start();
 
   const p1 = indicator.update("memory", "recall_memory");
@@ -103,7 +103,7 @@ console.log("\n[2] PASSED\n");
 console.log("[3] finalize() runs while an update() call is still mid-flight -- must not orphan the progress message...\n");
 {
   const { client, calls } = makeDelayedClient(30);
-  const indicator = new ThinkingIndicator(client, 555333);
+  const indicator = new ThinkingIndicator(client, 555333, "typing", { fallbackMessage: true });
   await indicator.start();
 
   // Fire-and-forget, deliberately not awaited -- exactly the real call pattern. finalize() (via

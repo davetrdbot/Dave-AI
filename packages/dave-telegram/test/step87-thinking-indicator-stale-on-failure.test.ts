@@ -62,7 +62,11 @@ console.log("[1] task() sends a progress update, then throws a hard provider-fai
       // message gets sent before the hard failure happens.
       await indicator.update("trade", "get_open_positions");
       throw new AllProvidersFailed("All configured providers failed: upstage (request failed).");
-    });
+      // fallbackMessage: the stale leftover this test guards against is a leftover of the
+      // fallback's real progress MESSAGE. Off by default since step153 (it was the trader's
+      // duplicate-message bug), so switched on explicitly -- the cleanup path it proves still
+      // has to work whenever that mode is enabled. An ephemeral draft needs no cleanup: it fades.
+    }, { fallbackMessage: true });
   } catch (err) {
     caught = err;
   }

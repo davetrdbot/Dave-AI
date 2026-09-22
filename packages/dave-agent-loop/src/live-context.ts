@@ -370,9 +370,31 @@ function safeLoadKnowledgeIndex(userId: string): string | undefined {
 export const LIVE_CONTEXT_OPEN = "<live_context>";
 export const LIVE_CONTEXT_CLOSE = "</live_context>";
 
+/**
+ * Real gap fixed (the trader, asking for message tagging -- this turned out to be the bigger half
+ * of it). `react_to_message`, `pin_message`, `unpin_message` and `delete_message` are all real,
+ * registered, CORE tools, and every one of them takes a `messageId`. Nothing in any turn ever told
+ * Dave what message ids existed. So all four were unreachable in practice: the model could either
+ * not call them at all, or could only call them with a guessed number, which Telegram rejects.
+ * Same "registered is not the same as reachable" class as run_script and the background checks,
+ * except here the missing piece was an ID rather than a tool name.
+ *
+ * One line, on the turn it applies to, naming the real id of the message being answered.
+ */
+function incomingMessageBlock(messageId: number | undefined): string {
+  if (messageId === undefined) return "";
+  return (
+    `\n<incoming_message id="${messageId}">\n` +
+    `This turn is answering Telegram message ${messageId}. That is a real id you can act on: react to it ` +
+    `(react_to_message), pin it (pin_message), or delete one of your own messages by its id. Your reply is ` +
+    `already tagged to it automatically -- you do not need to do anything for that.\n` +
+    `</incoming_message>`
+  );
+}
+
 /** Prepends the live settings block to a real user turn -- text or content-block (image) shape. */
-export function withLiveContext(userId: string, content: string | ContentBlock[]): string | ContentBlock[] {
-  const block = `${LIVE_CONTEXT_OPEN}\n${buildLiveSettingsBlock(userId)}\n${LIVE_CONTEXT_CLOSE}`;
+export function withLiveContext(userId: string, content: string | ContentBlock[], incomingMessageId?: number): string | ContentBlock[] {
+  const block = `${LIVE_CONTEXT_OPEN}\n${buildLiveSettingsBlock(userId)}${incomingMessageBlock(incomingMessageId)}\n${LIVE_CONTEXT_CLOSE}`;
   if (typeof content === "string") return `${block}\n\n${content}`;
   return [{ type: "text", text: block }, ...content];
 }
