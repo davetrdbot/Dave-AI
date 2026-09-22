@@ -1,4 +1,5 @@
 import { isTradingHalted, startTradingLoop, resumeTradingLoop } from "@dave/safety";
+import { isAutonomousTradingEnabled, setAutonomousTradingEnabled } from "./autonomous-trading-state.js";
 import { getTradingLoopIntervalMs, getTradingLoopIntervalMinutes, setTradingLoopIntervalMinutes } from "./trading-loop-config.js";
 
 /**
@@ -48,6 +49,20 @@ export function isAutonomousTradingRunning(ownerUserId: string): boolean {
  *  a cycle that runs longer than the configured interval firing a second overlapping call. */
 function pollTick(ownerUserId: string, runCycle: () => Promise<void>): void {
   if (isTradingHalted(ownerUserId)) return;
+  // The trader's standing intent, re-read every tick (autonomous-trading-state.ts).
+  //
+  // This flag already existed and was already persisted -- but it was only ever READ at boot, to
+  // re-arm the loop after a restart. Nothing consulted it again, so it could not stop a loop that
+  // was already running. That mattered the moment the admin panel and the mobile app got a stop
+  // button: both are separate processes from the bot (see this file's header, and
+  // provider-router.ts), so they cannot reach isTradingHalted's in-memory registry, and a stop
+  // that writes a file nothing re-reads is a stop button that reports success and stops nothing.
+  //
+  // Checking it here rather than adding a second, parallel "paused" flag: one concept, already
+  // written by /start_trading and cleared by /stop and /panic, now authoritative on every tick.
+  // Honest limitation: this can HOLD a loop, not arm one. If the bot process has no interval
+  // running, setting the flag true takes effect on the next restart's boot-time resume.
+  if (!isAutonomousTradingEnabled(ownerUserId)) return;
   if (cycleInFlight.has(ownerUserId)) return; // previous cycle still running -- never overlap
   const due = (lastRunAt.get(ownerUserId) ?? 0) + getTradingLoopIntervalMs(ownerUserId);
   if (Date.now() < due) return; // not due yet
@@ -64,6 +79,15 @@ function pollTick(ownerUserId: string, runCycle: () => Promise<void>): void {
  * omit for the normal case (first real cycle fires after one full interval, same as before). */
 export function startAutonomousTradingLoop(ownerUserId: string, runCycle: () => Promise<void>, intervalMs?: number): boolean {
   if (activeIntervals.has(ownerUserId)) return false;
+  // Arming IS the intent, so record it here rather than relying on every caller to remember.
+  //
+  // This became load-bearing when pollTick started consulting the flag on every tick (so the
+  // admin panel and the app can stop a running loop from another process). Without this line,
+  // arming the loop directly -- which /start_trading does not do, but the boot-time resume path
+  // and tests both can -- would produce a loop that polls forever and never fires, because the
+  // flag it now checks was never written. step117 caught exactly that. Setting it here makes the
+  // invariant hold for every caller: if the loop is armed, the flag says so.
+  setAutonomousTradingEnabled(ownerUserId, true);
   startTradingLoop(ownerUserId);
   activeRunners.set(ownerUserId, runCycle);
   lastRunAt.set(ownerUserId, Date.now() - (intervalMs !== undefined ? getTradingLoopIntervalMs(ownerUserId) - intervalMs : 0));

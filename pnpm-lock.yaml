@@ -48,6 +48,9 @@ importers:
       '@dave/firecrawl':
         specifier: workspace:*
         version: link:../dave-firecrawl
+      '@dave/knowledge':
+        specifier: workspace:*
+        version: link:../dave-knowledge
       '@dave/lovable-mcp':
         specifier: workspace:*
         version: link:../dave-lovable-mcp
@@ -60,6 +63,9 @@ importers:
       '@dave/sandbox':
         specifier: workspace:*
         version: link:../dave-sandbox
+      '@dave/skills':
+        specifier: workspace:*
+        version: link:../dave-skills
       '@dave/telegram':
         specifier: workspace:*
         version: link:../dave-telegram
