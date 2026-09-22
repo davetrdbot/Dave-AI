@@ -24,9 +24,73 @@ export interface ToolDefinition {
 export const SKILL_TOOLS: ToolDefinition[] = [
   {
     name: "list_skills",
-    description: "List every skill you currently have -- built-in, self-created, or installed.",
+    description:
+      "List every skill you have -- id, name, what it's for, and how big it is. This is an INDEX, not the skills themselves: to actually read one, call skill_view with its id.",
     parameters: { type: "object", properties: {} },
-    execute: async (_args, ctx) => listSkills(ctx.userId),
+    execute: async (_args, ctx) => {
+      // Real token bug fixed: this used to return listSkills() verbatim, and a Skill carries its
+      // whole `content`. So one call to a CORE tool whose description merely said "list your
+      // skills" dumped every skill's entire body into the conversation -- with a handful of real
+      // strategy skills that is tens of thousands of characters, paid for on a call the model
+      // makes casually, to answer "what skills do I have". Hermes draws this line explicitly
+      // (skills_list = name/description; skill_view = content) and it is the right one: an index
+      // is for choosing, the content is for using.
+      const active = getActiveStrategySkillId(ctx.userId);
+      return listSkills(ctx.userId).map((s) => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        source: s.source,
+        permanent: s.permanent,
+        active: s.id === active,
+        // Honest about what is NOT here, and roughly what reading it would cost.
+        contentChars: s.content.length,
+      }));
+    },
+  },
+  {
+    // Real gap fixed (looking at Hermes's skill_view against Dave's skill tools): Dave had NO way
+    // to read a skill's content at all. He could list skills (name + description), and he could
+    // ACTIVATE one -- which injects its content every turn -- but there was nothing in between.
+    //
+    // That left two real failures. "What does my Sniper strategy actually say about stops?" was
+    // unanswerable unless that skill happened to be active. And deciding whether a skill fits the
+    // situation in front of him -- the whole point of showing the index every turn -- had to be
+    // done from a one-line description, because the only way to see more was to activate it, which
+    // is the trader's call alone and changes how every trade is taken.
+    name: "skill_view",
+    description:
+      "Read one skill's full content, by id or name. The index you see every turn gives you names and one-line descriptions; this is how you actually read one. " +
+      "Use it before offering a skill (so you know what you're offering), to answer a question about what a strategy says, or to check what a skill covers before writing a new one that might overlap. " +
+      "Reading a skill does NOT activate it and changes nothing about how you trade -- activation stays the trader's call.",
+    parameters: {
+      type: "object",
+      properties: { skill: { type: "string", description: "The skill's id (from list_skills) or its exact name." } },
+      required: ["skill"],
+    },
+    execute: async (args, ctx) => {
+      const key = (args.skill as string).trim();
+      const skills = listSkills(ctx.userId);
+      const skill = skills.find((s) => s.id === key) ?? skills.find((s) => s.name.toLowerCase() === key.toLowerCase());
+      if (!skill) {
+        throw new Error(`No skill "${key}" found. Call list_skills for the real ids and names.`);
+      }
+      // Adapted from Hermes's repeat-view dedup, whose point is that re-serving content the model
+      // already has in front of it is pure waste. Dave's version of that is simpler and needs no
+      // cache: the ACTIVE skill's full content is injected into the live context on every single
+      // turn, so viewing it would put the same text in the same request twice.
+      if (getActiveStrategySkillId(ctx.userId) === skill.id) {
+        return {
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          contentReturned: false,
+          reason:
+            "This is your ACTIVE strategy skill, so its full content is already in front of you this turn, under <active_strategy_skill>. Read it there rather than loading a second copy.",
+        };
+      }
+      return { id: skill.id, name: skill.name, description: skill.description, source: skill.source, active: false, content: skill.content };
+    },
   },
   {
     name: "create_skill",

@@ -110,6 +110,10 @@ export const CORE_TOOL_NAMES: string[] = [
   "get_interrupt_state",
 
   "list_skills",
+  // The read half of list_skills. A lister that is core while its reader is discovery-gated is the
+  // same dead end knowledge_list/knowledge_view had: the model sees a name every turn and has no
+  // reachable way to find out what it says. (Dave had no reader at all until now.)
+  "skill_view",
 
   // Real bug fixed (the trader: "feasibility to check for anything... I don't want to mark levels
   // again"). The general-purpose "check anything" background system (start/list/get/stop_background_

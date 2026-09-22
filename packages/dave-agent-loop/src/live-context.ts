@@ -150,6 +150,7 @@ export function buildLiveSettingsBlock(userId: string): string {
       "</available_skills>",
       "",
       "These are the strategy skills you have available -- your own catalogue, loaded every turn so you always know what's there. When the setup or the user's request clearly fits one of these, say so and offer to activate it; never switch strategy on your own initiative, and never ask which to use out of the blue. Activating or clearing one is always the user's call (set_active_strategy_skill / clear_active_strategy_skill), made only when they tell you to.",
+      "What you see above is names and one-line descriptions. `skill_view` reads any one of them in full -- reading is free and changes nothing about how you trade. Use it before you offer a skill, so you're describing what it actually says rather than guessing from its name, and whenever asked what one of your strategies does.",
     );
   }
 
@@ -416,7 +417,12 @@ const LEGACY_BLOCK_TERMINATORS = [
   // The available_skills catalogue can be the last block in the region (a user with skills but no
   // memory or knowledge yet), so its final line must be a recognised terminator or a legacy
   // history carrying it won't fully heal on load.
+  //
+  // NOTE FOR ANYONE EDITING THE SKILLS BLOCK: whenever its LAST line changes, the new final
+  // sentence has to be added here, and the old one kept -- histories already on disk still end
+  // with the old wording. step129's legacy-heal assertion is what catches a miss.
   "made only when they tell you to.",
+  "and whenever asked what one of your strategies does.",
 ];
 
 function stripLiveContextText(text: string): string {
