@@ -6,7 +6,6 @@ import {
   PROVIDER_CATALOG,
   resolveProviderAlias,
   knownContextWindow,
-  fetchModelContextWindow,
   type Provider,
   type CompletionRequest,
   type CompletionResult,
@@ -79,22 +78,15 @@ export interface NoticeOptions {
 
 export type NotifyFn = (text: string, options?: NoticeOptions) => void | Promise<void>;
 
-/** Context windows the providers reported, by model id. Filled in the background; until a
- *  provider answers (or if it never reports one), the published table is used. */
-const reportedWindows = new Map<string, number | null>();
-
+/** The model a provider's calls go to, and its context window from the published table. Kept
+ *  free of network calls: this runs on every AI request. (A window the table doesn't know is
+ *  looked up from the provider's own model listing by the admin side, when the app asks.) */
 function modelAndWindow(db: DaveDatabase, userId: string, provider: ProviderName): { model?: string; contextWindow?: number } {
   try {
     const keys = listProviderKeys(db, userId, provider);
     const key = keys.find((k) => k.isPrimary) ?? keys[0];
     const model = key?.config.model ?? PROVIDER_CATALOG[resolveProviderAlias(provider)]?.defaultModel;
-    if (!model) return {};
-    const cacheKey = `${provider}:${model}`;
-    if (!reportedWindows.has(cacheKey) && key) {
-      reportedWindows.set(cacheKey, null); // one lookup per model per process
-      void fetchModelContextWindow(provider, key.config, model).then((w) => reportedWindows.set(cacheKey, w ?? null));
-    }
-    return { model, contextWindow: reportedWindows.get(cacheKey) ?? knownContextWindow(model) };
+    return model ? { model, contextWindow: knownContextWindow(model) } : {};
   } catch {
     return {};
   }

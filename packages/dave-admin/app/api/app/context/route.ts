@@ -13,5 +13,5 @@ export const dynamic = "force-dynamic";
 
 export const GET = withDevice(async ({ userId, req }) => {
   const days = Math.min(Math.max(Number(req.nextUrl.searchParams.get("days")) || 8, 1), 45);
-  return NextResponse.json(readContextUsage(userId, Date.now() - days * 24 * 60 * 60_000));
+  return NextResponse.json(await readContextUsage(userId, Date.now() - days * 24 * 60 * 60_000));
 });
