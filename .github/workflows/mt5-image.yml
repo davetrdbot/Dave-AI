@@ -1,0 +1,28 @@
+name: MT5 container image
+
+# Proves mt5/Dockerfile builds on real Docker (the build sandbox has too little disk for it), and
+# runs the agent's own tests. Builds only -- nothing is pushed.
+on:
+  push:
+    paths: ["mt5/**", "ea/DaveEA.mq5", ".github/workflows/mt5-image.yml"]
+  pull_request:
+    paths: ["mt5/**", "ea/DaveEA.mq5"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Agent tests
+        run: python3 mt5/test_agent.py
+      - name: Build image
+        run: docker build -f mt5/Dockerfile -t dave-mt5:ci .
+      - name: Agent starts in the image
+        run: |
+          docker run --rm --entrypoint python3 -e MT5_AGENT_SECRET=ci-secret-123 -e AGENT_PORT=8081 -d --name dave-mt5 -p 8081:8081 dave-mt5:ci /opt/dave/agent.py
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8081/health && break; sleep 1; done
+          curl -fs -H 'x-dave-agent-secret: ci-secret-123' http://127.0.0.1:8081/status
+          docker exec dave-mt5 test -f /opt/dave/DaveEA.mq5
+          docker exec dave-mt5 wine --version
+          docker rm -f dave-mt5

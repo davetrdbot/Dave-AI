@@ -9,6 +9,7 @@ import '../session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'context.dart';
+import 'mt5.dart';
 import 'providers.dart';
 
 class _SettingsData {
@@ -504,6 +505,13 @@ class _AiSection extends StatelessWidget {
             await pushScoped<void>(context, const ProvidersPage());
             await reload();
           },
+        ),
+        CupertinoListTile(
+          leading: const Icon(CupertinoIcons.desktopcomputer),
+          title: const Text('MetaTrader 5'),
+          subtitle: const Text('Run MT5 in Dave\'s container -- no VPS'),
+          trailing: const CupertinoListTileChevron(),
+          onTap: () => pushScoped<void>(context, const Mt5Page()),
         ),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.gauge),

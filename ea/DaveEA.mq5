@@ -32,6 +32,9 @@
 // TimeframeFromString), after PrewarmAnalysisSymbols/ExecuteCommandsFromResponse already used
 // it -- moved here, to the top, so every real use compiles regardless of where it appears below.
 #define DAVEEA_BARS 220
+// Docker-mode file bridge (see UseFileBridge) -- defined up here for the same reason.
+#define BRIDGE_DIR "dave_bridge"
+#define BRIDGE_TIMEOUT_MS 5000
 
 input string WebhookURL     = "{{WEBHOOK_URL}}";
 input string EaToken        = "{{TOKEN}}"; // embedded in WebhookURL's path -- kept here for logging/diagnostics only
@@ -54,6 +57,12 @@ input int    SlippagePoints = 20;    // ported from the reference DAVE.mq5
 input int    SwingLookback  = 5;     // ported from the reference DAVEMA EA -- fractal/swing strength for structure/liquidity/etc
 input int    ZoneMax        = 5;     // ported from the reference DAVEMA EA -- supply/demand zones kept per request
 input double EqTolerancePips= 1.5;   // ported from the reference DAVEMA EA -- equal high/low tolerance
+// Docker mode (MT5 running in Dave's own container, no VPS). MT5 only lets WebRequest reach URLs
+// ticked in Tools > Options, and that list is stored encrypted -- it cannot be preset by a script
+// (MetaQuotes: "not possible for security reason"). So in the container the EA does not make the
+// HTTP call itself: it writes each report to MQL5\Files\dave_bridge, and the container's relay
+// posts it to WebhookURL and writes the answer back. Off by default: a normal install is unchanged.
+input bool   UseFileBridge  = false;
 
 CTrade trade;
 
@@ -152,6 +161,11 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
 
+   if(UseFileBridge)
+     {
+      FolderCreate(BRIDGE_DIR);
+      Print("Dave EA: file bridge on -- reports go through ", BRIDGE_DIR, " (container relay), not WebRequest");
+     }
    Print("Dave EA starting. Webhook: ", WebhookURL, ", magic=", MagicNumber);
    g_pushIntervalSeconds = PushSeconds;
    EventSetTimer(g_pushIntervalSeconds);
@@ -287,6 +301,21 @@ void PushReportAndExecuteCommands()
    if(ArraySize(post) > 0 && post[ArraySize(post) - 1] == 0)
       ArrayResize(post, ArraySize(post) - 1);
 
+   if(UseFileBridge)
+     {
+      int bridgeStatus = 0;
+      string bridgeResponse = "";
+      if(!FileBridgeRequest(body, bridgeStatus, bridgeResponse))
+         return; // already logged
+      if(bridgeStatus != 200)
+        {
+         Print("Dave EA: webhook responded with HTTP ", bridgeStatus, " (via bridge): ", bridgeResponse);
+         return;
+        }
+      ExecuteCommandsFromResponse(bridgeResponse);
+      return;
+     }
+
    char result[];
    string resultHeaders;
    string headers = "Content-Type: application/json\r\n";
@@ -311,6 +340,65 @@ void PushReportAndExecuteCommands()
 
    string response = CharArrayToString(result);
    ExecuteCommandsFromResponse(response);
+  }
+
+//+------------------------------------------------------------------+
+//| Docker-mode transport (see UseFileBridge). One request = one      |
+//| file: line 1 is the URL, the rest is the JSON body. The relay     |
+//| answers with a file whose line 1 is the HTTP status. Files are    |
+//| written under a temp name and renamed, so neither side ever reads |
+//| half a file.                                                      |
+//+------------------------------------------------------------------+
+bool FileBridgeRequest(const string body, int &status, string &response)
+  {
+   static int seq = 0;
+   seq++;
+   string id = IntegerToString((long)TimeLocal()) + "_" + IntegerToString(seq);
+   string tmpName = BRIDGE_DIR + "\\req_" + id + ".tmp";
+   string reqName = BRIDGE_DIR + "\\req_" + id + ".json";
+   string resName = BRIDGE_DIR + "\\res_" + id + ".json";
+
+   uchar data[];
+   int n = StringToCharArray(WebhookURL + "\n" + body, data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(n > 0 && data[n - 1] == 0) n--; // drop the terminating NUL
+   int h = FileOpen(tmpName, FILE_WRITE | FILE_BIN);
+   if(h == INVALID_HANDLE)
+     {
+      Print("Dave EA: bridge could not write a request, error ", GetLastError());
+      return(false);
+     }
+   FileWriteArray(h, data, 0, n);
+   FileClose(h);
+   if(!FileMove(tmpName, 0, reqName, FILE_REWRITE))
+     {
+      Print("Dave EA: bridge could not publish a request, error ", GetLastError());
+      FileDelete(tmpName);
+      return(false);
+     }
+
+   uint started = GetTickCount();
+   while(GetTickCount() - started < BRIDGE_TIMEOUT_MS)
+     {
+      if(FileIsExist(resName))
+        {
+         int r = FileOpen(resName, FILE_READ | FILE_BIN);
+         if(r == INVALID_HANDLE) { Sleep(20); continue; }
+         int size = (int)FileSize(r);
+         uchar buf[];
+         if(size > 0) FileReadArray(r, buf, 0, size);
+         FileClose(r);
+         FileDelete(resName);
+         string text = size > 0 ? CharArrayToString(buf, 0, size, CP_UTF8) : "";
+         int nl = StringFind(text, "\n");
+         status = (int)StringToInteger(nl >= 0 ? StringSubstr(text, 0, nl) : text);
+         response = nl >= 0 ? StringSubstr(text, nl + 1) : "";
+         return(true);
+        }
+      Sleep(25);
+     }
+   FileDelete(reqName); // nobody picked it up -- don't let it be sent late
+   Print("Dave EA: bridge got no answer in ", BRIDGE_TIMEOUT_MS, "ms -- is the container relay running?");
+   return(false);
   }
 
 //+------------------------------------------------------------------+

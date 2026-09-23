@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { DaveDatabase } from "@dave/db";
-import { EaTradeExecutor, EA_STATE_TOOLS, EA_ANALYSIS_TOOLS } from "@dave/ea-bridge";
+import { EaTradeExecutor, EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, MT5_CLOUD_TOOLS } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
@@ -63,6 +63,7 @@ try {
     SUBAGENT_TOOLS.length +
     BACKGROUND_CHECK_TOOLS.length +
     REMINDER_TOOLS.length +
+    MT5_CLOUD_TOOLS.length +
     MEMORY_TOOLS.length +
     MEMORY_EXTRA_TOOLS.length +
     MEMORY_WRITE_TOOLS.length +

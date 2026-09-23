@@ -13,7 +13,7 @@ export function setupGaps(db: DaveDatabase, userId: string): string[] {
     gaps.push("Add an AI key -- in the web panel's AI providers card, or in the Dave app under Settings → AI providers. I can't think without one.");
   }
   if (!getEaConnectionStatus(userId).connected) {
-    gaps.push("Connect MetaTrader 5 -- send /ea and I'll give you the EA file, set up with your server's address.");
+    gaps.push("Connect MetaTrader 5 -- /mt5 runs it in my own container with no VPS (you send your login), or /ea gives you the EA file for an MT5 you run yourself.");
   }
   return gaps;
 }

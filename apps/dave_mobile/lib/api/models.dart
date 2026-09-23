@@ -707,3 +707,41 @@ class ContextUsage {
     );
   }
 }
+
+/// MetaTrader 5 running in Dave's own container (no VPS).
+class Mt5View {
+  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt});
+  final String summary;
+  final String? agentUrl;
+  final bool installed;
+  final bool running;
+  final String login; // logged-in | failed | connecting | unknown
+  final String? loginDetail;
+  final bool configured;
+  final ({String login, String server, String symbol, String period})? account;
+  final Map<String, String> inputs;
+  final DateTime? lastReportAt;
+
+  bool get hasAgent => agentUrl != null;
+  int get pushSeconds => int.tryParse(inputs['PushSeconds'] ?? '') ?? 8;
+
+  factory Mt5View.fromJson(Map<String, dynamic> j) {
+    final agent = j['agent'] is Map ? Map<String, dynamic>.from(j['agent'] as Map) : null;
+    final st = j['status'] is Map ? Map<String, dynamic>.from(j['status'] as Map) : null;
+    final acct = st?['account'] is Map ? Map<String, dynamic>.from(st!['account'] as Map) : null;
+    final relay = st?['relay'] is Map ? Map<String, dynamic>.from(st!['relay'] as Map) : null;
+    final inputs = st?['inputs'] is Map ? Map<String, dynamic>.from(st!['inputs'] as Map) : const <String, dynamic>{};
+    return Mt5View(
+      summary: _str(j['summary']),
+      agentUrl: agent == null ? null : _str(agent['url']),
+      installed: st?['installed'] == true,
+      running: st?['running'] == true,
+      login: _str(st?['login'], 'unknown'),
+      loginDetail: st?['loginDetail'] is String ? st!['loginDetail'] as String : null,
+      configured: st?['configured'] == true,
+      account: acct == null ? null : (login: _str(acct['login']), server: _str(acct['server']), symbol: _str(acct['symbol']), period: _str(acct['period'])),
+      inputs: {for (final e in inputs.entries) e.key: '${e.value}'},
+      lastReportAt: relay?['lastAt'] is num ? DateTime.fromMillisecondsSinceEpoch(((relay!['lastAt'] as num) * 1000).round()) : null,
+    );
+  }
+}

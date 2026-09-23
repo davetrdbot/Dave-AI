@@ -19,6 +19,7 @@ import {
 } from "@dave/telegram";
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource, setEaPushInterval, getEaPushIntervalPreference, setPendingPushIntervalEntry, getPendingPushIntervalEntry } from "@dave/ea-bridge";
 import { abortTurn } from "./turn-abort.js";
+import { handleMt5Cloud, handleMt5Callback } from "./mt5-cloud-flow.js";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
 import { formatPnl, buildTradePlacedMessage } from "./trade-notifications.js";
@@ -1633,6 +1634,9 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
     case "connection":
       await handleConnection(deps, chatId, editMessageId);
       break;
+    case "mt5":
+      await handleMt5Cloud(deps, chatId, editMessageId);
+      break;
     case "providers":
       await handleProviders(deps, chatId, editMessageId);
       break;
@@ -1747,6 +1751,11 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
   // informational/logging only; every branch that needs to tell the user something real does it
   // through a genuine message send/edit, not a second toast.
   await deps.client.answerCallbackQuery({ callback_query_id: callback.id }).catch(() => undefined);
+
+  if (data.startsWith("mt5c:") && chatId) {
+    await handleMt5Callback(deps, chatId, data, callback.message?.message_id);
+    return;
+  }
 
   // Real fix (user: "confirmation message after EVERY setting change, not just risky ones") --
   // a re-rendered screen plus a transient callback-answer toast (easy to miss, and not what

@@ -329,4 +329,26 @@ void main() {
       expect(l.others.map((p) => p.provider), ['none']);
     });
   });
+
+  group('MT5 container', () {
+    test('no container yet: nothing invented', () {
+      final v = Mt5View.fromJson({'agent': null, 'status': null, 'summary': 'No MT5 container is connected yet.'});
+      expect(v.hasAgent, isFalse);
+      expect(v.account, isNull);
+      expect(v.pushSeconds, 8);
+    });
+    test('a connected container reads through', () {
+      final v = Mt5View.fromJson({
+        'agent': {'url': 'http://x:8081'},
+        'summary': 's',
+        'status': {'installed': true, 'running': true, 'login': 'failed', 'loginDetail': 'Invalid account', 'configured': true,
+          'account': {'login': '1', 'server': 'Deriv-Demo', 'symbol': 'VOL_80', 'period': 'M5'}, 'inputs': {'PushSeconds': 12}, 'relay': {'lastAt': 1790197424.1}},
+      });
+      expect(v.login, 'failed');
+      expect(v.loginDetail, 'Invalid account');
+      expect(v.account!.symbol, 'VOL_80');
+      expect(v.pushSeconds, 12);
+      expect(v.lastReportAt!.millisecondsSinceEpoch, 1790197424100);
+    });
+  });
 }

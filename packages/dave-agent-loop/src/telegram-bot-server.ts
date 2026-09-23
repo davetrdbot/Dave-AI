@@ -33,6 +33,7 @@ import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
 import { takeControlNotices, describeControlNotice } from "./control-notices.js";
 import { deliverDueReminders } from "./reminder-delivery.js";
 import { setupGaps } from "./setup-gaps.js";
+import { tryHandleMt5Entry } from "./mt5-cloud-flow.js";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
 const CONTROL_WATCH_MS = 5_000;
@@ -988,6 +989,9 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         const routerDeps: CommandRouterDeps = { db: deps.db, client, userId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, executor: deps.executor };
         if (await tryHandlePendingModelEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingVoiceEntry(routerDeps, chatId, message.text)) return;
+        // First: /mt5 account entry. It deletes the password message, so it must see it before
+        // anything else could echo it back or hand it to the model.
+        if (await tryHandleMt5Entry(routerDeps, chatId, message.text, message.message_id)) return;
         if (await tryHandlePendingKeyEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingTtsKeyEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingE2BKeyEntry(routerDeps, chatId, message.text)) return;

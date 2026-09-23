@@ -1,7 +1,7 @@
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness } from "@dave/trading";
-import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
+import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, MT5_CLOUD_TOOLS, createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
 import { MCP_MANAGER_TOOLS } from "@dave/mcp-manager";
@@ -228,6 +228,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(wrappedTradingTools);
 
   registry.register(adaptTools(EA_STATE_TOOLS, { userId: deps.userId }));
+  registry.register(adaptTools(MT5_CLOUD_TOOLS, { userId: deps.userId }));
   registry.register(adaptTools(EA_ANALYSIS_TOOLS, { userId: deps.userId, onAnalysisDebug: (entry) => recordAnalysisFetch(deps.userId, entry) }));
   registry.register(adaptTools(CORE_TOOLS, { userId: deps.userId, workspaceRoot: process.cwd() }));
   registry.register(adaptTools(KNOWLEDGE_TOOLS, { userId: deps.userId }));

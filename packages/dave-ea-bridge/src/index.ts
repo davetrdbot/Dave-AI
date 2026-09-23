@@ -11,3 +11,4 @@ export * from "./trading-mode-config.js";
 export * from "./dynamic-trade-executor.js";
 export * from "./pending-push-interval-entry.js";
 export * from "./trade-events.js";
+export * from "./mt5-cloud.js";

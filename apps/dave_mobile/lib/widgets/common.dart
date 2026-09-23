@@ -276,6 +276,7 @@ Future<String?> promptText(
   String placeholder = '',
   TextInputType keyboardType = TextInputType.text,
   String action = 'Save',
+  bool obscure = false,
 }) {
   final controller = TextEditingController(text: initial);
   return showCupertinoDialog<String>(
@@ -286,7 +287,7 @@ Future<String?> promptText(
         padding: const EdgeInsets.only(top: Space.s3),
         child: Column(children: [
           if (message != null) ...[Text(message), const SizedBox(height: Space.s3)],
-          CupertinoTextField(controller: controller, placeholder: placeholder, keyboardType: keyboardType, autofocus: true, autocorrect: false),
+          CupertinoTextField(controller: controller, placeholder: placeholder, keyboardType: keyboardType, autofocus: true, autocorrect: false, obscureText: obscure, enableSuggestions: !obscure),
         ]),
       ),
       actions: [

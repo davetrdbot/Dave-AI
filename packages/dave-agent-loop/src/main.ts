@@ -96,7 +96,9 @@ function spawnAdminPanel(dataDir: string): ChildProcess | undefined {
     // DIFFERENT file than the one this bot process uses. DATA_DIR already fixed this for the
     // database specifically (db-path.ts); DAVE_DATA_ROOT is the same real fix, generalized, for
     // every other real file-based store admin routes touch.
-    env: { ...process.env, PORT: String(ADMIN_INTERNAL_PORT), DATA_DIR: dataDir, DAVE_DATA_ROOT: process.env.DAVE_DATA_ROOT ?? process.cwd() },
+    // DAVE_BOT_PORT: PORT is overridden for the admin itself, but the MT5 container must be told
+    // the BOT's port to reach it over Railway's private network (dave-ea-bridge mt5-cloud.ts).
+    env: { ...process.env, PORT: String(ADMIN_INTERNAL_PORT), DAVE_BOT_PORT: process.env.PORT ?? "", DATA_DIR: dataDir, DAVE_DATA_ROOT: process.env.DAVE_DATA_ROOT ?? process.cwd() },
     stdio: ["ignore", "inherit", "inherit"],
   });
   child.on("exit", (code, signal) => {

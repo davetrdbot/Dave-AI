@@ -104,10 +104,10 @@ class DaveApi {
 
   Uri _url(String path, [Map<String, String>? query]) => base.replace(path: path, queryParameters: query);
 
-  Future<Map<String, dynamic>> _send(Future<http.Response> Function() call) async {
+  Future<Map<String, dynamic>> _send(Future<http.Response> Function() call, {Duration timeout = _timeout}) async {
     final http.Response res;
     try {
-      res = await call().timeout(_timeout);
+      res = await call().timeout(timeout);
     } on TimeoutException {
       throw const ApiException('The server took too long to answer.');
     } on SocketException {
@@ -206,6 +206,16 @@ class DaveApi {
     final list = body['models'];
     return list is List ? list.whereType<String>().toList() : const [];
   }
+
+  // --- MetaTrader 5 in Dave's container --------------------------------------------------------
+
+  Future<Mt5View> mt5() async => Mt5View.fromJson(await _send(() => _http.get(_url('/api/app/mt5'), headers: _headers), timeout: const Duration(seconds: 40)));
+
+  /// connect / settings / restart compile the EA and restart MT5 under Wine -- minutes, not seconds.
+  Future<Mt5View> mt5Action(String action, [Map<String, Object?> fields = const {}]) async => Mt5View.fromJson(await _send(
+        () => _http.post(_url('/api/app/mt5'), headers: {..._headers, 'content-type': 'application/json'}, body: jsonEncode({'action': action, ...fields})),
+        timeout: const Duration(minutes: 7),
+      ));
 
   // --- context window -------------------------------------------------------------------------
 
