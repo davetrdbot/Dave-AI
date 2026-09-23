@@ -12,7 +12,7 @@ import { FIRECRAWL_TOOLS } from "@dave/firecrawl";
 import { TRADING_TOOLS } from "@dave/trading";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
-import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, BACKGROUND_CHECK_TOOLS } from "@dave/workers";
+import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, BACKGROUND_CHECK_TOOLS, REMINDER_TOOLS } from "@dave/workers";
 import { SKILL_TOOLS } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
@@ -62,6 +62,7 @@ try {
     E2B_TOOLS.length +
     SUBAGENT_TOOLS.length +
     BACKGROUND_CHECK_TOOLS.length +
+    REMINDER_TOOLS.length +
     MEMORY_TOOLS.length +
     MEMORY_EXTRA_TOOLS.length +
     MEMORY_WRITE_TOOLS.length +
