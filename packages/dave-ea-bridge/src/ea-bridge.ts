@@ -3,7 +3,7 @@ import { EaTradeExecutor } from "./ea-trade-executor.js";
 import { detectManualCloses } from "./manual-close-detector.js";
 import { detectManualModifications, type ManualModification } from "./manual-modify-detector.js";
 import { runTrailingTick } from "@dave/trading";
-import { appendTradeEvents, deriveTradeEvents } from "./trade-events.js";
+import { appendTradeEvents, attributeAppCloses, deriveTradeEvents } from "./trade-events.js";
 
 /**
  * The real composition wiring the webhook, the executor's pending-result
@@ -76,7 +76,10 @@ export class EaBridge {
     });
   }
 
-  private handleReport(userId: string, report: EaReport, previousPositions: EaPosition[], isFirstReport = false): void {
+  private handleReport(userId: string, rawReport: EaReport, previousPositions: EaPosition[], isFirstReport = false): void {
+    // A trade the trader closed from the phone app arrives looking like Dave's own close (MT5 tags
+    // every EA close as "expert"); relabel it before anything announces or learns from it.
+    const report: EaReport = rawReport.closedPositions ? { ...rawReport, closedPositions: attributeAppCloses(userId, rawReport.closedPositions) } : rawReport;
     const daveClosedThisCycle = new Set<string>();
     const daveModifiedThisCycle = new Set<string>();
 

@@ -208,3 +208,50 @@ export function deriveTradeEvents(input: {
   }
   return out;
 }
+
+/**
+ * Closes the trader asked for from the phone app.
+ *
+ * The app closes a trade by queueing an ordinary EA close command, and MT5 records any close an
+ * EA makes as DEAL_REASON_EXPERT -- which the EA reports as reason "dave". Without this record a
+ * trade the TRADER closed from their phone would be announced as Dave's own decision, and Dave
+ * would then look for a lesson in a choice he never made. The bot process reads this file (the
+ * admin process writes it), so it is a file like the command queue itself.
+ */
+const APP_CLOSE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function appClosesPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trade-events", userId, "app-closes.json");
+}
+
+function readAppCloses(userId: string, now: number): Record<string, number> {
+  const path = appClosesPath(userId);
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, number>;
+    // A close that never landed must not relabel some future trade: entries expire.
+    return Object.fromEntries(Object.entries(parsed).filter(([, at]) => typeof at === "number" && now - at < APP_CLOSE_TTL_MS));
+  } catch {
+    return {};
+  }
+}
+
+/** Called by the app's close endpoint when it queues a close. */
+export function recordAppClose(userId: string, ticket: string, now = Date.now()): void {
+  const closes = readAppCloses(userId, now);
+  closes[ticket] = now;
+  const path = appClosesPath(userId);
+  if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(closes), "utf8");
+}
+
+/**
+ * Relabels the EA's reported closes: a "dave" close of a ticket the trader closed from the app
+ * becomes "manual" -- the trader's own close, exactly what that reason means everywhere else.
+ */
+export function attributeAppCloses<T extends { ticket: string; reason: EaClosedPosition["reason"] }>(userId: string, closed: T[], now = Date.now()): T[] {
+  if (closed.length === 0) return closed;
+  const closes = readAppCloses(userId, now);
+  if (Object.keys(closes).length === 0) return closed;
+  return closed.map((c) => (c.reason === "dave" && closes[c.ticket] !== undefined ? { ...c, reason: "manual" as const } : c));
+}

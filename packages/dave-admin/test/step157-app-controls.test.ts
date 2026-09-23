@@ -195,25 +195,41 @@ assert.equal(r.status, 200);
 const queue = eaBridge.peekQueue(USER);
 assert.equal(queue.length, 1);
 assert.deepEqual({ action: queue[0].action, ticket: (queue[0] as { ticket: string }).ticket }, { action: "close", ticket: "9001" });
-console.log("   ✓ close queued in the EA's command queue; stale ticket refused\n");
+
+// MT5 tags every EA close as "expert", which the EA reports as "dave". A close the trader made
+// from the phone must NOT reach Telegram, the event log, or Dave's learning as Dave's own decision.
+const closedSeen: { ticket: string; reason: string }[] = [];
+const bridge = new eaBridge.EaBridge({ onClosedPosition: (_u: string, c: { ticket: string; reason: string }) => closedSeen.push(c) });
+const handle = (bridge as unknown as { handleReport: (u: string, r: unknown, prev: unknown[], first?: boolean) => void }).handleReport.bind(bridge);
+const open9001 = { ticket: "9001", symbol: "XAUUSD", type: "buy", lots: 0.1, openPrice: 2650, pnl: 12 };
+handle(USER, { positions: [], closedPositions: [{ ticket: "9001", symbol: "XAUUSD", pnl: 11.8, reason: "dave" }] }, [open9001]);
+assert.equal(closedSeen[0]?.reason, "manual", "the phone close is announced as the trader's own");
+const loggedClose = eaBridge.readTradeEventsAfter(USER, 0).find((e) => e.type === "closed" && e.ticket === "9001");
+assert.equal(loggedClose && "reason" in loggedClose ? loggedClose.reason : undefined, "manual", "and logged as theirs");
+// A close Dave genuinely made (a ticket the app never touched) keeps its "dave" label.
+handle(USER, { positions: [], closedPositions: [{ ticket: "7777", symbol: "EURUSD", pnl: 3, reason: "dave" }] }, [{ ...open9001, ticket: "7777", symbol: "EURUSD" }]);
+assert.equal(closedSeen[1]?.reason, "dave", "Dave's own close is still Dave's");
+console.log("   ✓ close queued in the EA's command queue; stale ticket refused");
+console.log("   ✓ a phone close is attributed to the trader, not to Dave; Dave's own closes unchanged\n");
 
 // ---------------------------------------------------------------------------
 console.log("[6] P&L history: every EA close is kept, with its side, and the dashboard uses it\n");
 
-eaBridge.appendTradeEvents(USER, [{ type: "opened", ticket: "9001", symbol: "XAUUSD", side: "buy", lots: 0.1, openPrice: 2650 }], Date.now() - 3_600_000);
-eaBridge.appendTradeEvents(USER, [{ type: "closed", ticket: "9001", symbol: "XAUUSD", pnl: 25.5, reason: "tp" }]);
-eaBridge.appendTradeEvents(USER, [{ type: "closed", ticket: "9002", symbol: "EURUSD", pnl: -8, reason: "sl" }]);
-const history = eaBridge.readClosedTradeHistory(USER);
+const before = eaBridge.readClosedTradeHistory(USER).length; // the closes from section 5
+eaBridge.appendTradeEvents(USER, [{ type: "opened", ticket: "8001", symbol: "XAUUSD", side: "buy", lots: 0.1, openPrice: 2650 }], Date.now() - 3_600_000);
+eaBridge.appendTradeEvents(USER, [{ type: "closed", ticket: "8001", symbol: "XAUUSD", pnl: 25.5, reason: "tp" }]);
+eaBridge.appendTradeEvents(USER, [{ type: "closed", ticket: "8002", symbol: "GBPUSD", pnl: -8, reason: "sl" }]);
+const history = eaBridge.readClosedTradeHistory(USER).slice(before);
 assert.equal(history.length, 2);
 assert.equal(history[0].side, "buy", "the side is recovered from the matching open");
 assert.equal(history[1].side, undefined, "no open seen -> side unknown, not invented");
 
 r = await call(dashboardRoute.GET as Handler, "GET", "/api/app/dashboard");
 assert.equal(r.status, 200);
-assert.equal(r.json.trades.length, 2, "the dashboard returns the individual closes");
-assert.equal(r.json.results.closedTrades, 2);
-assert.equal(r.json.results.realisedPnl, 17.5);
-assert.equal(r.json.results.wins, 1);
+const all = eaBridge.readClosedTradeHistory(USER);
+assert.equal(r.json.trades.length, all.length, "the dashboard returns the individual closes");
+assert.equal(r.json.results.closedTrades, all.length);
+assert.equal(r.json.results.realisedPnl, Number(all.reduce((s, t) => s + (t.pnl ?? 0), 0).toFixed(2)));
 console.log("   ✓ closes recorded with side; dashboard results come from the EA's own close history\n");
 
 console.log("=== Step 157 passed ===");

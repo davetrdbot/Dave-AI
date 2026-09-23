@@ -72,7 +72,7 @@ void startCallback() {
     'tp' => 'Take profit hit',
     'sl' => 'Stop loss hit',
     'dave' => 'Closed by Dave',
-    'manual' => 'Closed in MT5',
+    'manual' => 'Closed by you',
     _ => 'Position closed',
   };
   return (title: '${e.symbol} closed$result', body: why);

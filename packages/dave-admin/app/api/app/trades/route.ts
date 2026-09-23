@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
-import { enqueueCommand, getLastKnownState } from "@dave/ea-bridge";
+import { enqueueCommand, getLastKnownState, recordAppClose } from "@dave/ea-bridge";
 import { withDevice } from "../../../../server/require-device";
 
 /**
@@ -29,6 +29,8 @@ export const POST = withDevice(async ({ userId, req }) => {
   if (!open) return NextResponse.json({ error: "That trade is no longer open." }, { status: 404 });
 
   const commandId = randomBytes(8).toString("hex");
+  // Recorded first, so the close is attributed to the trader -- not to Dave -- when it lands.
+  recordAppClose(userId, ticket);
   enqueueCommand(userId, { id: commandId, action: "close", ticket });
   return NextResponse.json({ ok: true, queued: { commandId, ticket, symbol: open.symbol } });
 });
