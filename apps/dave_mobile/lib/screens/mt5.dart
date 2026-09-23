@@ -47,21 +47,9 @@ class Mt5Page extends StatelessWidget {
             if (!v.hasAgent)
               SliverToBoxAdapter(
                 child: CupertinoListSection.insetGrouped(
-                  header: const ListHeader('Connect the container'),
-                  footer: const ListFooter('Deploy the MT5 service first (mt5/README.md in the repo). Then enter its address and the MT5_AGENT_SECRET you gave it.'),
-                  children: [
-                    CupertinoListTile(
-                      leading: Icon(CupertinoIcons.link, color: resolve(context, CupertinoColors.systemBlue)),
-                      title: Text('Enter container address', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
-                      onTap: () async {
-                        final url = await promptText(context, title: 'Container address', placeholder: 'http://dave-mt5.railway.internal:8081', keyboardType: TextInputType.url, action: 'Next');
-                        if (url == null || url.isEmpty || !context.mounted) return;
-                        final secret = await promptText(context, title: 'Agent secret', message: 'The MT5_AGENT_SECRET set on the container.', obscure: true, action: 'Connect');
-                        if (secret == null || secret.isEmpty || !context.mounted) return;
-                        await act('set-agent', {'url': url, 'secret': secret});
-                      },
-                    ),
-                  ],
+                  header: const ListHeader('Not set up yet'),
+                  footer: const ListFooter('The MT5 service has to be added next to Dave on the server first. After that, all you enter here is your MT5 login, password and server.'),
+                  children: const [CupertinoListTile(title: Text('Waiting for the MT5 service'))],
                 ),
               )
             else ...[

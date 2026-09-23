@@ -1,7 +1,6 @@
 import { coloredButton, keyboard, type InlineKeyboardMarkup } from "@dave/telegram";
 import {
   getMt5CloudAgent,
-  setMt5CloudAgent,
   mt5CloudStatus,
   mt5CloudConnect,
   mt5CloudSettings,
@@ -22,12 +21,11 @@ import type { CommandRouterDeps } from "./command-router.js";
  * conversation history or to disk on the bot side (the container keeps it -- it has to, to log in).
  */
 
-type Step = "login" | "password" | "server" | "agent-url" | "agent-secret" | "symbol" | "push";
+type Step = "login" | "password" | "server" | "symbol" | "push";
 interface Pending {
   step: Step;
   login?: string;
   password?: string;
-  agentUrl?: string;
   at: number;
 }
 
@@ -41,7 +39,7 @@ function key(deps: CommandRouterDeps, chatId: number): string {
 }
 
 function menu(status: Mt5CloudStatus | undefined, hasAgent: boolean): InlineKeyboardMarkup {
-  if (!hasAgent) return keyboard([[coloredButton("Enter container address", "blue", "mt5c:agent")]]);
+  if (!hasAgent) return keyboard([[coloredButton("Refresh", "blue", "mt5c:refresh")]]);
   const rows = [[coloredButton(status?.configured ? "Change account" : "Connect account", "green", "mt5c:connect")]];
   if (status?.configured) {
     rows.push([coloredButton("Chart symbol", "blue", "mt5c:symbol"), coloredButton("Timeframe", "blue", "mt5c:period")]);
@@ -54,7 +52,7 @@ function menu(status: Mt5CloudStatus | undefined, hasAgent: boolean): InlineKeyb
 const SETUP_TEXT =
   "<b>MT5 in Dave's container</b>\n" +
   "MetaTrader 5 runs next to me with my EA already attached, so you don't need a Windows VPS.\n\n" +
-  "It isn't connected yet. Deploy the MT5 service (see mt5/README.md in the repo), then either set MT5_AGENT_URL and MT5_AGENT_SECRET on this bot, or tap below and send them to me.";
+  "It isn't set up on this server yet: the MT5 service has to be added next to me first (mt5/README.md). Once it is, all you do here is enter your MT5 login, password and server.";
 
 export async function handleMt5Cloud(deps: CommandRouterDeps, chatId: number, editMessageId?: number): Promise<void> {
   const hasAgent = !!getMt5CloudAgent(deps.userId);
@@ -81,10 +79,6 @@ export async function handleMt5Callback(deps: CommandRouterDeps, chatId: number,
   switch (data) {
     case "mt5c:refresh":
       return handleMt5Cloud(deps, chatId, messageId);
-    case "mt5c:agent":
-      pending.set(k, { step: "agent-url", at: Date.now() });
-      await ask("Send the MT5 container's address, e.g. <code>http://dave-mt5.railway.internal:8081</code>");
-      return;
     case "mt5c:connect":
       pending.set(k, { step: "login", at: Date.now() });
       await ask("Send your MT5 <b>account number</b> (the login).");
@@ -149,25 +143,6 @@ export async function tryHandleMt5Entry(deps: CommandRouterDeps, chatId: number,
       );
       return true;
     }
-    case "agent-url":
-      if (!/^https?:\/\/\S+$/.test(value)) {
-        await say("That should be a URL starting with http:// or https://. Send it again.");
-        return true;
-      }
-      pending.set(k, { ...p, step: "agent-secret", agentUrl: value, at: Date.now() });
-      await say("Now the <b>MT5_AGENT_SECRET</b> you set on the container. I'll delete your message after reading it.");
-      return true;
-    case "agent-secret":
-      await deps.client.deleteMessage({ chat_id: chatId, message_id: messageId }).catch(() => undefined);
-      pending.delete(k);
-      try {
-        setMt5CloudAgent(deps.userId, { url: p.agentUrl!, secret: value });
-      } catch (err) {
-        await say(escapeHtml(err instanceof Error ? err.message : String(err)));
-        return true;
-      }
-      await handleMt5Cloud(deps, chatId);
-      return true;
     case "symbol":
       if (!/^[A-Za-z0-9_.#+-]{1,32}$/.test(value)) {
         await say("That doesn't look like a symbol. Send it again, e.g. VOL_80.");

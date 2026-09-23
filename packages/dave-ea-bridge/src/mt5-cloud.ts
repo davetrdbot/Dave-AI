@@ -1,5 +1,3 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { getOrCreateEaWebhook } from "./ea-webhook.js";
 
 /**
@@ -12,8 +10,7 @@ import { getOrCreateEaWebhook } from "./ea-webhook.js";
  * admin process (phone app, web panel) use it, so its settings live in a file like everything else
  * that crosses that boundary.
  *
- * Where the agent is: MT5_AGENT_URL + MT5_AGENT_SECRET in the environment (the Railway template sets
- * both), or saved from Telegram / the panel. The environment wins when set.
+ * Where the agent is comes from the server's settings (see getMt5CloudAgent) -- never from the trader.
  */
 
 export interface Mt5CloudAgent {
@@ -40,31 +37,20 @@ export interface Mt5CloudResult {
   compileLog?: string;
 }
 
-function agentPath(userId: string): string {
-  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "mt5-cloud", userId, "agent.json");
-}
+/** The MT5 service's address on Railway's private network when it is deployed under the default
+ *  name. MT5_AGENT_URL overrides it (a different name, or a container elsewhere). */
+export const DEFAULT_MT5_AGENT_URL = "http://dave-mt5.railway.internal:8081";
 
-export function getMt5CloudAgent(userId: string): Mt5CloudAgent | undefined {
-  const envUrl = process.env.MT5_AGENT_URL?.trim();
-  const envSecret = process.env.MT5_AGENT_SECRET?.trim();
-  if (envUrl && envSecret) return { url: envUrl.replace(/\/$/, ""), secret: envSecret };
-  const path = agentPath(userId);
-  if (!existsSync(path)) return undefined;
-  try {
-    const saved = JSON.parse(readFileSync(path, "utf8")) as Mt5CloudAgent;
-    return saved.url && saved.secret ? saved : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export function setMt5CloudAgent(userId: string, agent: Mt5CloudAgent): void {
-  if (!/^https?:\/\//.test(agent.url)) throw new Error("The agent URL must start with http:// or https://");
-  if (agent.secret.trim().length < 8) throw new Error("The agent secret is too short -- use the MT5_AGENT_SECRET you set on the container.");
-  const path = agentPath(userId);
-  if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify({ url: agent.url.trim().replace(/\/$/, ""), secret: agent.secret.trim() }), "utf8");
-  chmodSync(path, 0o600);
+/**
+ * Where the MT5 container is. The trader never types this: it comes from the server's own
+ * settings (MT5_AGENT_SECRET, set when the MT5 service is deployed next to the bot). The trader
+ * only ever enters their MT5 login, password and server.
+ */
+export function getMt5CloudAgent(_userId?: string): Mt5CloudAgent | undefined {
+  const secret = process.env.MT5_AGENT_SECRET?.trim();
+  if (!secret) return undefined;
+  const url = process.env.MT5_AGENT_URL?.trim() || DEFAULT_MT5_AGENT_URL;
+  return { url: url.replace(/\/$/, ""), secret };
 }
 
 /**
@@ -85,7 +71,7 @@ export function mt5CloudEaBaseUrl(): string | undefined {
 
 export class Mt5CloudNotSetUpError extends Error {
   constructor() {
-    super("No MT5 container is connected. Deploy the MT5 service (mt5/README.md) and set MT5_AGENT_URL and MT5_AGENT_SECRET, or send /mt5 in Telegram to enter them.");
+    super("MT5 isn't set up on this server yet -- the MT5 service needs to be added next to the bot (mt5/README.md).");
     this.name = "Mt5CloudNotSetUpError";
   }
 }
@@ -185,7 +171,7 @@ export const MT5_CLOUD_TOOLS: Mt5CloudToolDefinition[] = [
       "Status of MetaTrader 5 running in Dave's own container (no VPS): installed, logged in, which account and chart, and when the EA last reported. To connect or change the account, tell the trader to send /mt5 -- never ask for an MT5 password in chat.",
     parameters: { type: "object", properties: {} },
     execute: async (_args, ctx) => {
-      if (!getMt5CloudAgent(ctx.userId)) return { connected: false, message: "No MT5 container is set up. The trader deploys it (mt5/README.md) and then sends /mt5." };
+      if (!getMt5CloudAgent(ctx.userId)) return { connected: false, message: "MT5 isn't set up on this server yet (the MT5 service needs adding, mt5/README.md). Once it is, the trader sends /mt5 and enters their login, password and server." };
       const status = await mt5CloudStatus(ctx.userId);
       return { ...status, summary: describeMt5CloudStatus(status) };
     },

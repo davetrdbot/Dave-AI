@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import {
   getMt5CloudAgent,
-  setMt5CloudAgent,
   mt5CloudStatus,
   mt5CloudConnect,
   mt5CloudSettings,
@@ -19,7 +18,7 @@ import {
 
 export async function mt5CloudView(userId: string) {
   const agent = getMt5CloudAgent(userId);
-  if (!agent) return { agent: null, eaBaseUrl: mt5CloudEaBaseUrl() ?? null, status: null, summary: "No MT5 container is connected yet.", editableInputs: MT5_CLOUD_EDITABLE_INPUTS };
+  if (!agent) return { agent: null, eaBaseUrl: mt5CloudEaBaseUrl() ?? null, status: null, summary: "MT5 isn't set up on this server yet.", editableInputs: MT5_CLOUD_EDITABLE_INPUTS };
   try {
     const status = await mt5CloudStatus(userId);
     return { agent: { url: agent.url }, eaBaseUrl: mt5CloudEaBaseUrl() ?? null, status, summary: describeMt5CloudStatus(status), editableInputs: MT5_CLOUD_EDITABLE_INPUTS };
@@ -33,13 +32,6 @@ export async function mt5CloudAction(userId: string, body: Record<string, unknow
   try {
     let result: { ok: boolean; error?: string; compileLog?: string } | undefined;
     switch (body.action) {
-      case "set-agent": {
-        const url = str("url");
-        const secret = str("secret");
-        if (!url || !secret) return NextResponse.json({ error: "url and secret are required." }, { status: 400 });
-        setMt5CloudAgent(userId, { url, secret });
-        break;
-      }
       case "connect": {
         const login = str("login");
         const server = str("server");
@@ -61,7 +53,7 @@ export async function mt5CloudAction(userId: string, body: Record<string, unknow
         result = await mt5CloudRestart(userId);
         break;
       default:
-        return NextResponse.json({ error: "action must be one of: set-agent, connect, settings, restart." }, { status: 400 });
+        return NextResponse.json({ error: "action must be one of: connect, settings, restart." }, { status: 400 });
     }
     if (result && !result.ok) return NextResponse.json({ error: result.error ?? "The MT5 container refused.", compileLog: result.compileLog }, { status: 409 });
     return NextResponse.json(await mt5CloudView(userId));

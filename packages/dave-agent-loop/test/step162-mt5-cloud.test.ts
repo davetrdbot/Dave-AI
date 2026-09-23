@@ -79,22 +79,22 @@ const buttons = () => JSON.stringify(sent[sent.length - 1]?.reply_markup ?? {});
 
 assert.ok(DAVE_COMMANDS.some((c) => c.command === "mt5"), "/mt5 is in the command menu");
 
-console.log("[1] Nothing set up: /mt5 explains the setup and offers to take the container address\n");
+console.log("[1] Not set up on the server: /mt5 says so, and asks the trader for nothing\n");
 await flow.handleMt5Cloud(deps, CHAT);
-assert.match(lastText(), /isn't connected yet/);
-assert.match(buttons(), /mt5c:agent/);
+assert.match(lastText(), /isn't set up on this server yet/);
+assert.doesNotMatch(buttons(), /mt5c:agent|mt5c:connect/, "no address step, and nothing to connect to yet");
+assert.equal(getMt5CloudAgent(USER), undefined);
 console.log("   ✓\n");
 
-console.log("[2] Container address + secret from Telegram; the secret message is deleted\n");
-await flow.handleMt5Callback(deps, CHAT, "mt5c:agent");
-assert.equal(await flow.tryHandleMt5Entry(deps, CHAT, "not a url", 10), true);
-assert.match(lastText(), /http:\/\/ or https:\/\//);
-await flow.tryHandleMt5Entry(deps, CHAT, AGENT_URL, 11);
-await flow.tryHandleMt5Entry(deps, CHAT, "agent-secret-xyz", 12);
-assert.deepEqual(deleted, [12], "the secret's message is deleted");
+console.log("[2] The container comes from the server's own settings -- the default address unless overridden\n");
+process.env.MT5_AGENT_SECRET = "agent-secret-xyz";
+assert.deepEqual(getMt5CloudAgent(USER), { url: "http://dave-mt5.railway.internal:8081", secret: "agent-secret-xyz" });
+process.env.MT5_AGENT_URL = AGENT_URL;
 assert.deepEqual(getMt5CloudAgent(USER), { url: AGENT_URL, secret: "agent-secret-xyz" });
+await flow.handleMt5Cloud(deps, CHAT);
 assert.match(lastText(), /installed and waiting for an account/);
 assert.match(buttons(), /mt5c:connect/);
+assert.doesNotMatch(buttons(), /mt5c:agent/);
 console.log("   ✓\n");
 
 console.log("[3] Connect: login, password (deleted at once), server -> the container logs in with the EA on the bot's URL\n");
@@ -106,7 +106,7 @@ assert.match(lastText(), /digits only/);
 await flow.tryHandleMt5Entry(deps, CHAT, "40123456", 21);
 assert.match(lastText(), /password/);
 await flow.tryHandleMt5Entry(deps, CHAT, "hunter2-secret!", 22);
-assert.ok(deleted.includes(22), "the password message is deleted the moment it's read");
+assert.deepEqual(deleted, [22], "the password message is deleted the moment it's read");
 assert.ok(sent.every((m) => !m.text.includes("hunter2-secret!")), "the password is never echoed");
 await flow.tryHandleMt5Entry(deps, CHAT, "Deriv-Demo", 23);
 const conf = seen.find((s) => s.path === "/configure")!;

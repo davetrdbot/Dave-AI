@@ -22,12 +22,15 @@ already compiled, attached to a chart and logged in to your account. It replaces
 3. **On the bot service**, add:
    | Variable | Value |
    |---|---|
-   | `MT5_AGENT_URL` | `http://<mt5-service-name>.railway.internal:8081` |
    | `MT5_AGENT_SECRET` | the same secret |
+
+   Name the MT5 service `dave-mt5` and that's all the bot needs -- it finds it at
+   `http://dave-mt5.railway.internal:8081`. (A different name: also set `MT5_AGENT_URL`.)
 4. Deploy both. The first start of the MT5 service installs MetaTrader (a few minutes).
-5. In Telegram send **/mt5 → Connect account**: account number, password (Dave deletes the
-   message right after reading it), server name exactly as MT5 shows it (e.g. `Deriv-Demo`).
-   Or use the app: **Settings → MetaTrader 5**.
+5. In Telegram send **/mt5 → Connect account** and type three things: account number, password
+   (Dave deletes the message right after reading it), and server name exactly as MT5 shows it
+   (e.g. `Deriv-Demo`). Or use the app: **Settings → MetaTrader 5**. That's all the trader ever
+   enters -- the container's address and secret are server settings, never typed in chat.
 
 Dave compiles the EA, starts MT5 logged in with the EA on a chart, and tells you whether the
 broker accepted the login. From then on `/mt5` (or the app) changes the chart symbol, timeframe
