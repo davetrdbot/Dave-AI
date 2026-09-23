@@ -187,10 +187,30 @@ class DaveApi {
   /// Changes one setting; returns what the server actually stored.
   Future<AppSettings> updateSetting(String id, Object? value) async => AppSettings.fromJson(await _post('/api/app/settings', {'id': id, 'value': value}));
 
-  Future<BasetenState> baseten() async => BasetenState.fromJson(await _send(() => _http.get(_url('/api/app/provider'), headers: _headers)));
+  // --- AI providers ---------------------------------------------------------------------------
 
-  Future<BasetenState> basetenAction(String action, [Map<String, Object?> fields = const {}]) async =>
-      BasetenState.fromJson(await _post('/api/app/provider', {'action': action, ...fields}));
+  Future<ProviderList> providers() async => ProviderList.fromJson(await _send(() => _http.get(_url('/api/app/providers'), headers: _headers)));
+
+  Future<ProviderList> moveBackup(String provider, String direction) async =>
+      ProviderList.fromJson(await _post('/api/app/providers', {'action': 'move-backup', 'provider': provider, 'direction': direction}));
+
+  Future<ProviderState> provider(String id) async =>
+      ProviderState.fromJson(await _send(() => _http.get(_url('/api/app/provider', {'provider': id}), headers: _headers)));
+
+  Future<ProviderState> providerAction(String id, String action, [Map<String, Object?> fields = const {}]) async =>
+      ProviderState.fromJson(await _post('/api/app/provider', {'provider': id, 'action': action, ...fields}));
+
+  /// The provider's own model list (empty when it has none to offer).
+  Future<List<String>> providerModels(String id) async {
+    final body = await _post('/api/app/provider', {'provider': id, 'action': 'models'});
+    final list = body['models'];
+    return list is List ? list.whereType<String>().toList() : const [];
+  }
+
+  // --- context window -------------------------------------------------------------------------
+
+  Future<ContextUsage> context({int days = 8}) async =>
+      ContextUsage.fromJson(await _send(() => _http.get(_url('/api/app/context', {'days': '$days'}), headers: _headers)));
 
   // --- brain --------------------------------------------------------------------------------
 

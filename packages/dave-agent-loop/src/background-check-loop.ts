@@ -137,7 +137,7 @@ async function runBackgroundCheckTick(deps: BackgroundCheckLoopDeps, check: Back
       }
     }
 
-    const provider = modelConfigProvider(deps.db, deps.ownerUserId, () => undefined);
+    const provider = modelConfigProvider(deps.db, deps.ownerUserId, () => undefined, "background");
     const loop = new AgentLoop(provider, liveRegistry);
     const marketNote =
       (check.symbols?.length ?? 0) > 0

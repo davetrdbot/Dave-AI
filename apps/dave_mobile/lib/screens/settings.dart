@@ -8,12 +8,14 @@ import '../push/push_service.dart';
 import '../session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import 'context.dart';
+import 'providers.dart';
 
 class _SettingsData {
-  _SettingsData(this.bot, this.settings, this.baseten, this.notifications, this.serviceRunning, this.batteryExempt);
+  _SettingsData(this.bot, this.settings, this.providers, this.notifications, this.serviceRunning, this.batteryExempt);
   final BotState bot;
   final AppSettings settings;
-  final BasetenState baseten;
+  final ProviderList providers;
   final bool notifications;
   final bool serviceRunning;
   final bool batteryExempt;
@@ -32,11 +34,11 @@ class SettingsScreen extends StatelessWidget {
     return LoadedPage<_SettingsData>(
       title: 'Settings',
       load: (api) async {
-        final results = await Future.wait([api.bot(), api.settings(), api.baseten()]);
+        final results = await Future.wait([api.bot(), api.settings(), api.providers()]);
         return _SettingsData(
           results[0] as BotState,
           results[1] as AppSettings,
-          results[2] as BasetenState,
+          results[2] as ProviderList,
           await Session.notificationsEnabled(),
           await PushService.isRunning,
           await PushService.isIgnoringBatteryOptimizations,
@@ -48,7 +50,7 @@ class SettingsScreen extends StatelessWidget {
         SliverToBoxAdapter(child: _MarketsSection(s: data.settings, reload: reload)),
         SliverToBoxAdapter(child: _BehaviourSection(s: data.settings, reload: reload)),
         SliverToBoxAdapter(child: _AlertsSection(s: data.settings, reload: reload)),
-        SliverToBoxAdapter(child: _AiSection(s: data.settings, baseten: data.baseten, reload: reload)),
+        SliverToBoxAdapter(child: _AiSection(s: data.settings, providers: data.providers, reload: reload)),
         SliverToBoxAdapter(child: _NotificationSection(data: data, reload: reload)),
         const SliverToBoxAdapter(child: _ConnectionSection()),
       ],
@@ -473,9 +475,9 @@ class _AlertsPageState extends State<_AlertsPage> {
 }
 
 class _AiSection extends StatelessWidget {
-  const _AiSection({required this.s, required this.baseten, required this.reload});
+  const _AiSection({required this.s, required this.providers, required this.reload});
   final AppSettings s;
-  final BasetenState baseten;
+  final ProviderList providers;
   final Future<void> Function() reload;
 
   @override
@@ -488,13 +490,27 @@ class _AiSection extends StatelessWidget {
       children: [
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.sparkles),
-          title: const Text('Baseten'),
-          subtitle: Text(baseten.keys.isEmpty ? 'No keys yet' : '${baseten.keys.length} key${baseten.keys.length == 1 ? '' : 's'}  ·  ${baseten.isPrimary ? 'Main AI' : 'Not in use'}'),
+          title: const Text('AI providers'),
+          subtitle: Text(
+            [
+              providers.main == null ? 'No main AI' : 'Main: ${providers.main!.name}',
+              if (providers.backups.isNotEmpty) '${providers.backups.length} backup${providers.backups.length == 1 ? '' : 's'}',
+            ].join('  ·  '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
           trailing: const CupertinoListTileChevron(),
           onTap: () async {
-            await pushScoped<void>(context, const BasetenPage());
+            await pushScoped<void>(context, const ProvidersPage());
             await reload();
           },
+        ),
+        CupertinoListTile(
+          leading: const Icon(CupertinoIcons.gauge),
+          title: const Text('Context & usage'),
+          subtitle: const Text('How full Dave\'s context is, and today\'s AI use'),
+          trailing: const CupertinoListTileChevron(),
+          onTap: () => pushScoped<void>(context, const ContextScreen()),
         ),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.hourglass),
@@ -520,93 +536,6 @@ class _AiSection extends StatelessWidget {
         ),
       ],
     );
-  }
-}
-
-/// Baseten, the one AI provider the app manages: its keys, the model, and whether Dave uses it.
-class BasetenPage extends StatelessWidget {
-  const BasetenPage({super.key});
-
-  @override
-  Widget build(BuildContext context) => _BasetenBody();
-}
-
-class _BasetenBody extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => LoadedPage<BasetenState>(
-        title: 'Baseten',
-        load: (api) => api.baseten(),
-        builder: (context, b, reload) => [
-          SliverToBoxAdapter(
-            child: CupertinoListSection.insetGrouped(
-              footer: ListFooter(b.isPrimary
-                  ? 'Dave uses Baseten for every answer and trade decision.'
-                  : 'Dave is using a different AI right now. Add a key, then make Baseten his main AI.'),
-              children: [
-                CupertinoListTile(
-                  leading: Icon(b.isPrimary ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.circle, color: resolve(context, b.isPrimary ? CupertinoColors.systemGreen : CupertinoColors.tertiaryLabel)),
-                  title: Text(b.isPrimary ? 'Baseten is Dave\'s main AI' : 'Make Baseten Dave\'s main AI'),
-                  onTap: b.isPrimary || b.keys.isEmpty ? null : () => _guarded(context, (api) => api.basetenAction('use-baseten'), reload),
-                ),
-                CupertinoListTile(
-                  leading: const Icon(CupertinoIcons.cube),
-                  title: const Text('Model'),
-                  subtitle: Text(b.model, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  trailing: const CupertinoListTileChevron(),
-                  onTap: b.keys.isEmpty
-                      ? null
-                      : () async {
-                          final model = await promptText(context, title: 'Model', message: 'The Baseten model id, exactly as Baseten lists it.', initial: b.model, placeholder: b.defaultModel);
-                          if (model != null && model.isNotEmpty && context.mounted) await _guarded(context, (api) => api.basetenAction('set-model', {'model': model}), reload);
-                        },
-                ),
-              ],
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: CupertinoListSection.insetGrouped(
-              header: ListHeader('API keys  ${b.keys.length}'),
-              footer: const ListFooter('With more than one key, Dave rotates to the next when one is slow or rate-limited. Keys are stored on your server and never shown in full.'),
-              children: [
-                for (final k in b.keys)
-                  CupertinoListTile(
-                    leading: Icon(k.healthy ? CupertinoIcons.checkmark_seal_fill : CupertinoIcons.exclamationmark_circle, color: resolve(context, k.healthy ? CupertinoColors.systemGreen : CupertinoColors.systemOrange)),
-                    title: Text('${k.label}${k.isPrimary ? '  ·  first' : ''}'),
-                    subtitle: Text(k.lastError ?? k.maskedKey, maxLines: 1, overflow: TextOverflow.ellipsis),
-                    trailing: const CupertinoListTileChevron(),
-                    onTap: () => _keyOptions(context, k, reload),
-                  ),
-                CupertinoListTile(
-                  leading: Icon(CupertinoIcons.plus_circle_fill, color: resolve(context, CupertinoColors.systemBlue)),
-                  title: Text('Add a key', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
-                  onTap: () async {
-                    final key = await promptText(context, title: 'Add a Baseten key', message: 'Paste an API key from your Baseten account.', placeholder: 'API key', action: 'Add');
-                    if (key != null && key.isNotEmpty && context.mounted) await _guarded(context, (api) => api.basetenAction('add-key', {'apiKey': key}), reload);
-                  },
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-
-  Future<void> _keyOptions(BuildContext context, BasetenKey k, Future<void> Function() reload) async {
-    final choice = await showCupertinoModalPopup<String>(
-      context: context,
-      builder: (ctx) => CupertinoActionSheet(
-        title: Text(k.label),
-        message: Text(k.maskedKey),
-        actions: [
-          CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'check'), child: const Text('Test this key')),
-          if (!k.isPrimary) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'primary'), child: const Text('Try this key first')),
-          CupertinoActionSheetAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, 'remove'), child: const Text('Remove key')),
-        ],
-        cancelButton: CupertinoActionSheetAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-      ),
-    );
-    if (!context.mounted || choice == null) return;
-    final action = switch (choice) { 'check' => 'check-key', 'primary' => 'make-primary-key', _ => 'remove-key' };
-    await _guarded(context, (api) => api.basetenAction(action, {'keyId': k.id}), reload);
   }
 }
 

@@ -116,6 +116,48 @@ final _skills = [
   {'id': 'breakout', 'name': 'Range breakout', 'description': 'Asian range high/low breakout with a retest entry.', 'source': 'self-created', 'permanent': false, 'active': false, 'contentChars': 1800},
 ];
 
+/// A day of usage in the phone's own time zone, busiest in the afternoon, plus the last requests.
+Map<String, Object?> _context() {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final hours = <Map<String, Object?>>[];
+  for (var h = 0; h <= 23; h++) {
+    final at = today.add(Duration(hours: h));
+    if (at.isAfter(now) || h < 7) continue;
+    final calls = 20 + (h - 7) * 3;
+    hours.add({
+      'start': at.millisecondsSinceEpoch,
+      'calls': calls,
+      'promptTokens': calls * 9800,
+      'completionTokens': calls * 240,
+      'cachedTokens': calls * 4000,
+      'estimatedCalls': 0,
+      'peakPromptTokens': 41200 + h * 300,
+      'bySource': {'autonomous': {'calls': calls - 4, 'tokens': (calls - 4) * 9000}, 'chat': {'calls': 4, 'tokens': 4 * 30000}},
+    });
+  }
+  hours.add({'start': today.subtract(const Duration(hours: 5)).millisecondsSinceEpoch, 'calls': 40, 'promptTokens': 400000, 'completionTokens': 9000, 'cachedTokens': 0, 'estimatedCalls': 0, 'peakPromptTokens': 30000, 'bySource': {'autonomous': {'calls': 40, 'tokens': 409000}}});
+  return {
+    'current': {'provider': 'baseten', 'providerName': 'Baseten Model APIs', 'model': 'deepseek-ai/DeepSeek-V3.2', 'contextWindow': 163840},
+    'chat': {
+      'at': now.subtract(const Duration(minutes: 3)).millisecondsSinceEpoch,
+      'source': 'chat',
+      'provider': 'baseten',
+      'model': 'deepseek-ai/DeepSeek-V3.2',
+      'promptTokens': 38650,
+      'completionTokens': 410,
+      'cachedTokens': 21000,
+      'estimated': false,
+      'contextWindow': 163840,
+      'parts': {'tools': 24100, 'systemPrompt': 6200, 'messages': 5100, 'skills': 1650, 'memory': 900, 'liveContext': 700},
+      'toolCount': 128,
+      'messageCount': 23,
+    },
+    'autonomous': null,
+    'hours': hours,
+  };
+}
+
 http.Client _fakeServer() => MockClient((req) async {
       Object? body;
       switch (req.url.path) {
@@ -137,6 +179,20 @@ http.Client _fakeServer() => MockClient((req) async {
               {'id': 'k2', 'label': 'Baseten 2', 'maskedKey': 'bt-l…1f2e', 'model': 'deepseek-ai/DeepSeek-V3.2', 'healthy': false, 'isPrimary': false, 'lastError': 'Rate limited, retry in 30s'},
             ],
           };
+        case '/api/app/providers':
+          body = {
+            'primary': 'baseten',
+            'backups': ['deepseek'],
+            'providers': [
+              {'provider': 'baseten', 'name': 'Baseten Model APIs', 'keyCount': 2, 'healthyKeys': 1, 'model': 'deepseek-ai/DeepSeek-V3.2', 'isPrimary': true, 'backupPosition': null},
+              {'provider': 'deepseek', 'name': 'DeepSeek', 'keyCount': 1, 'healthyKeys': 1, 'model': 'deepseek-chat', 'isPrimary': false, 'backupPosition': 1},
+              {'provider': 'groq', 'name': 'Groq', 'keyCount': 1, 'healthyKeys': 1, 'model': 'llama-3.3-70b-versatile', 'isPrimary': false, 'backupPosition': null},
+              {'provider': 'claude', 'name': 'Anthropic Claude', 'keyCount': 0, 'healthyKeys': 0, 'model': 'claude-sonnet-5', 'isPrimary': false, 'backupPosition': null},
+              {'provider': 'openai', 'name': 'OpenAI', 'keyCount': 0, 'healthyKeys': 0, 'model': 'gpt-5', 'isPrimary': false, 'backupPosition': null},
+            ],
+          };
+        case '/api/app/context':
+          body = _context();
         case '/api/app/trades':
           body = {'ok': true};
         case '/api/app/skills':
@@ -295,10 +351,38 @@ void main() {
       await _advance(tester);
       await _shot(tester, 'settings_3_$mode');
 
-      await tester.tap(find.text('Baseten'));
+      await tester.tap(find.text('AI providers'));
       await _advance(tester);
-      await _shot(tester, 'baseten_$mode');
+      await _shot(tester, 'providers_$mode');
+      expect(find.text('Backup 1'), findsOneWidget);
+      expect(find.text('Anthropic Claude'), findsOneWidget);
+      await tester.tap(find.text('Baseten Model APIs'));
+      await _advance(tester);
+      await _shot(tester, 'provider_$mode');
       expect(find.text('Baseten 2'), findsOneWidget);
+      expect(find.text('Dave\'s main AI'), findsOneWidget);
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
+
+      await tester.tap(find.text('Context & usage'));
+      await _advance(tester);
+      await _shot(tester, 'context_$mode');
+      expect(find.text('Context window'), findsOneWidget);
+      expect(find.text('38.6K/164K (23.6%)'), findsOneWidget);
+      expect(find.text('Tools'), findsOneWidget);
+      expect(find.text('62.4%'), findsOneWidget, reason: 'tools share of the request');
+      expect(find.text('4.3%'), findsOneWidget, reason: 'skills share -- small parts still show a real percentage');
+      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -600));
+      await _advance(tester);
+      await _shot(tester, 'context_today_$mode');
+      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, 600));
+      await _advance(tester);
+      await tester.tap(find.text('Auto-trading').first);
+      await _advance(tester);
+      await _shot(tester, 'context_auto_$mode');
+      expect(find.textContaining('No auto-trading cycle recorded yet'), findsOneWidget);
       await tester.tap(find.byType(CupertinoNavigationBarBackButton));
       await _advance(tester);
 

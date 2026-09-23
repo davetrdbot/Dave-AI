@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/api/models.dart';
 import 'package:dave_mobile/push/push_service.dart';
+import 'package:dave_mobile/screens/context.dart';
 import 'package:dave_mobile/theme.dart';
 import 'package:dave_mobile/widgets/performance.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -269,6 +270,63 @@ void main() {
       expect(s.pairGroups, isNotEmpty);
       expect(s.sessions, contains('london'));
       expect(s.primaryTimeout.value, 20);
+    });
+  });
+
+  group('context usage', () {
+    test('token counts read like the panel', () {
+      expect(formatTokens(512), '512');
+      expect(formatTokens(8600), '8.6K');
+      expect(formatTokens(163840), '164K');
+      expect(formatTokens(1048000), '1.0M');
+    });
+    test('a snapshot knows how full the window is, and a missing window is not invented', () {
+      final s = ContextSnapshot.fromJson({'at': 0, 'provider': 'baseten', 'promptTokens': 16384, 'contextWindow': 163840, 'estimated': false, 'parts': {'tools': 10000}})!;
+      expect(s.fill, closeTo(0.1, 1e-9));
+      expect(s.parts['tools'], 10000);
+      expect(s.parts['messages'], 0);
+      final noWindow = ContextSnapshot.fromJson({'at': 0, 'provider': 'x', 'promptTokens': 5})!;
+      expect(noWindow.fill, isNull);
+      expect(ContextSnapshot.fromJson(null), isNull);
+    });
+    test('hours land on the phone\'s own day, empty hours included, and days total up', () {
+      final today = DateTime(2026, 9, 23);
+      final u = ContextUsage.fromJson({
+        'current': {'providerName': 'Baseten', 'model': 'm', 'contextWindow': 1000},
+        'hours': [
+          {'start': DateTime(2026, 9, 23, 9).millisecondsSinceEpoch, 'calls': 3, 'promptTokens': 300, 'completionTokens': 30, 'peakPromptTokens': 120, 'bySource': {'chat': {'calls': 1, 'tokens': 110}, 'autonomous': {'calls': 2, 'tokens': 220}}},
+          {'start': DateTime(2026, 9, 23, 14).millisecondsSinceEpoch, 'calls': 1, 'promptTokens': 100, 'completionTokens': 10, 'peakPromptTokens': 100, 'bySource': {'chat': {'calls': 1, 'tokens': 110}}},
+          {'start': DateTime(2026, 9, 22, 23).millisecondsSinceEpoch, 'calls': 5, 'promptTokens': 500, 'completionTokens': 0, 'peakPromptTokens': 100, 'bySource': {}},
+        ],
+      });
+      final day = u.hoursOf(today);
+      expect(day.length, 24);
+      expect(day[9].calls, 3);
+      expect(day[14].tokens, 110);
+      expect(day[0].calls, 0);
+      final t = UsageTotals(day);
+      expect(t.calls, 4);
+      expect(t.tokens, 440);
+      expect(t.peakPromptTokens, 120);
+      expect(t.bySource['chat']!.tokens, 220);
+      final days = u.daily(DateTime(2026, 9, 23, 18), 2);
+      expect(days[0].totals.calls, 4);
+      expect(days[1].totals.calls, 5, reason: 'yesterday');
+    });
+    test('the providers list keeps Dave\'s order', () {
+      final l = ProviderList.fromJson({
+        'providers': [
+          {'provider': 'b2', 'name': 'B2', 'keyCount': 1, 'backupPosition': 2},
+          {'provider': 'main', 'name': 'Main', 'keyCount': 1, 'isPrimary': true},
+          {'provider': 'b1', 'name': 'B1', 'keyCount': 1, 'backupPosition': 1},
+          {'provider': 'spare', 'name': 'Spare', 'keyCount': 2},
+          {'provider': 'none', 'name': 'None', 'keyCount': 0},
+        ],
+      });
+      expect(l.main!.provider, 'main');
+      expect(l.backups.map((p) => p.provider), ['b1', 'b2']);
+      expect(l.withKeys.map((p) => p.provider), ['spare']);
+      expect(l.others.map((p) => p.provider), ['none']);
     });
   });
 }

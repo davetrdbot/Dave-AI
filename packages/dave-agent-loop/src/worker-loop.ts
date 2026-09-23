@@ -113,7 +113,7 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
         return;
       }
       await client.sendMessage(params);
-    });
+    }, "worker");
     const loop = new AgentLoop(provider, liveRegistry);
 
     const systemPrompt = `You are ${worker.name}, a real subagent Dave created to help its user. Your standing assignment: ${worker.task}\n\nYour current task right now: ${task}\n\nYou have run_script: you can write and run real code (bash/python/node, with network access) in a disposable sandbox, pass files into it and get files back out. Use it whenever the task is measurable by code -- pull a live feed, compute an indicator, backtest a rule, parse data the user sent, check a number before you quote it -- rather than estimating.

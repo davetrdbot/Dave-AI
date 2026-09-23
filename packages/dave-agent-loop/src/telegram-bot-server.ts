@@ -573,7 +573,7 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
       return;
     }
     await client.sendMessage({ chat_id: chatId, text });
-  });
+  }, "autonomous");
 
   setAutonomousBusy(deps.ownerUserId, "autonomous trading cycle");
   // Real interrupt wiring (user, live, this session): a real incoming chat message must be able

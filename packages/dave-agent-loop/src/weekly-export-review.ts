@@ -92,7 +92,7 @@ export async function reviewWeeklyExport(deps: WeeklyExportReviewDeps, result: W
   const runScript = E2B_TOOLS.find((t) => t.name === "run_script");
   if (runScript) registry.register(adaptTools([runScript], { userId: deps.ownerUserId, db: deps.db }));
 
-  const provider = modelConfigProvider(deps.db, deps.ownerUserId, () => undefined);
+  const provider = modelConfigProvider(deps.db, deps.ownerUserId, () => undefined, "review");
   const loop = new AgentLoop(provider, registry);
   const task = buildExportReviewPrompt(result, preview, raw.length > PREVIEW_CHARS);
 

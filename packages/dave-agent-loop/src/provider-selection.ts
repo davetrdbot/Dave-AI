@@ -1,5 +1,18 @@
 import type { DaveDatabase } from "@dave/db";
-import { generateWithKeyFailover, getModelConfig, type Provider, type CompletionRequest, type CompletionResult, type ProviderName } from "@dave/brain";
+import {
+  generateWithKeyFailover,
+  getModelConfig,
+  listProviderKeys,
+  PROVIDER_CATALOG,
+  resolveProviderAlias,
+  knownContextWindow,
+  fetchModelContextWindow,
+  type Provider,
+  type CompletionRequest,
+  type CompletionResult,
+  type ProviderName,
+} from "@dave/brain";
+import { recordModelCall, type UsageSource } from "./context-usage.js";
 import { getProviderTimeoutMs, MAX_TIMEOUT_SECONDS } from "./provider-timeout-config.js";
 import { AllConfiguredProvidersFailedError, classifyProviderError, describeProviderFailure } from "./error-messages.js";
 
@@ -66,7 +79,32 @@ export interface NoticeOptions {
 
 export type NotifyFn = (text: string, options?: NoticeOptions) => void | Promise<void>;
 
-export function modelConfigProvider(db: DaveDatabase, userId: string, notify: NotifyFn): Provider {
+/** Context windows the providers reported, by model id. Filled in the background; until a
+ *  provider answers (or if it never reports one), the published table is used. */
+const reportedWindows = new Map<string, number | null>();
+
+function modelAndWindow(db: DaveDatabase, userId: string, provider: ProviderName): { model?: string; contextWindow?: number } {
+  try {
+    const keys = listProviderKeys(db, userId, provider);
+    const key = keys.find((k) => k.isPrimary) ?? keys[0];
+    const model = key?.config.model ?? PROVIDER_CATALOG[resolveProviderAlias(provider)]?.defaultModel;
+    if (!model) return {};
+    const cacheKey = `${provider}:${model}`;
+    if (!reportedWindows.has(cacheKey) && key) {
+      reportedWindows.set(cacheKey, null); // one lookup per model per process
+      void fetchModelContextWindow(provider, key.config, model).then((w) => reportedWindows.set(cacheKey, w ?? null));
+    }
+    return { model, contextWindow: reportedWindows.get(cacheKey) ?? knownContextWindow(model) };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * `source` labels every call for the app's usage panel (chat, the autonomous cycle, background
+ * checks, workers, reviews) -- see context-usage.ts.
+ */
+export function modelConfigProvider(db: DaveDatabase, userId: string, notify: NotifyFn, source: UsageSource = "chat"): Provider {
   return {
     name: "model-config" as ProviderName,
     async generate(req: CompletionRequest, defaultTimeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
@@ -92,8 +130,12 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: No
         // provider/key with a hard-trimmed tool list rather than immediately burning a whole
         // provider switch over something a smaller request would have avoided.
         let reqForThisProvider = req;
+        const record = (result: CompletionResult, sent: CompletionRequest): CompletionResult => {
+          recordModelCall({ userId, source, provider, ...modelAndWindow(db, userId, provider), req: sent, result });
+          return result;
+        };
         try {
-          return await generateWithKeyFailover(
+          return record(await generateWithKeyFailover(
             db,
             userId,
             provider,
@@ -116,7 +158,7 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: No
               },
             },
             signal
-          );
+          ), reqForThisProvider);
         } catch (err) {
           // Real bug fixed (user, live: /stop cancelled one in-flight call, but "still thinking"
           // never stopped). An abort was being caught here and treated as just "this provider
@@ -129,7 +171,7 @@ export function modelConfigProvider(db: DaveDatabase, userId: string, notify: No
             try {
               reqForThisProvider = { ...req, tools: req.tools.slice(0, EMERGENCY_TOOL_TRIM) };
               await notify(`⚠️ ${provider} call failed — too many tools in request, retrying with a trimmed set`);
-              return await generateWithKeyFailover(db, userId, provider, reqForThisProvider, timeoutMs, {}, signal);
+              return record(await generateWithKeyFailover(db, userId, provider, reqForThisProvider, timeoutMs, {}, signal), reqForThisProvider);
             } catch (retryErr) {
               if (signal?.aborted) throw retryErr;
               const retryReason = retryErr instanceof Error ? retryErr.message : String(retryErr);

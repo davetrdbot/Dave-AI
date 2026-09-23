@@ -428,8 +428,9 @@ class AppSettings {
   }
 }
 
-class BasetenKey {
-  BasetenKey({required this.id, required this.label, required this.maskedKey, required this.model, required this.healthy, required this.isPrimary, this.lastError});
+/// One stored API key for a provider. The real key never reaches the phone -- only a masked form.
+class ProviderKey {
+  ProviderKey({required this.id, required this.label, required this.maskedKey, required this.model, required this.healthy, required this.isPrimary, this.lastError});
   final String id;
   final String label;
   final String maskedKey;
@@ -439,21 +440,51 @@ class BasetenKey {
   final String? lastError;
 }
 
-/// The Baseten provider: whether Dave uses it, and its keys.
-class BasetenState {
-  BasetenState({required this.isPrimary, required this.defaultModel, required this.keys});
+/// One AI provider in full: its keys, the model, and where it sits in Dave's order.
+class ProviderState {
+  ProviderState({
+    required this.provider,
+    required this.name,
+    required this.isPrimary,
+    required this.defaultModel,
+    required this.keys,
+    this.backupPosition,
+    this.manualModelEntry = false,
+    this.requiresExtraConfig = const [],
+    this.notes = '',
+  });
+  final String provider;
+  final String name;
   final bool isPrimary;
   final String defaultModel;
-  final List<BasetenKey> keys;
+  final List<ProviderKey> keys;
+
+  /// 1-based place among the backups, or null when it is not a backup.
+  final int? backupPosition;
+
+  /// True when the provider has no model list to pick from -- the model id is typed.
+  final bool manualModelEntry;
+
+  /// Extra fields a key needs besides the API key itself (accountId, region, secretAccessKey).
+  final List<String> requiresExtraConfig;
+  final String notes;
+
+  bool get isBackup => backupPosition != null;
 
   /// The model every key uses (they are kept the same), or the catalog default with no keys.
   String get model => keys.isEmpty ? defaultModel : keys.first.model;
 
-  factory BasetenState.fromJson(Map<String, dynamic> j) => BasetenState(
+  factory ProviderState.fromJson(Map<String, dynamic> j) => ProviderState(
+        provider: _str(j['provider'], 'baseten'),
+        name: _str(j['name'], 'Baseten'),
         isPrimary: j['isPrimary'] == true,
         defaultModel: _str(j['defaultModel']),
+        backupPosition: _int(j['backupPosition']),
+        manualModelEntry: j['manualModelEntry'] == true,
+        requiresExtraConfig: j['requiresExtraConfig'] is List ? (j['requiresExtraConfig'] as List).whereType<String>().toList() : const [],
+        notes: _str(j['notes']),
         keys: _list(j['keys'])
-            .map((k) => BasetenKey(
+            .map((k) => ProviderKey(
                   id: _str(k['id']),
                   label: _str(k['label'], 'Key'),
                   maskedKey: _str(k['maskedKey']),
@@ -464,4 +495,215 @@ class BasetenState {
                 ))
             .toList(),
       );
+}
+
+/// A row on the Providers list.
+class ProviderSummary {
+  ProviderSummary({required this.provider, required this.name, required this.keyCount, required this.healthyKeys, required this.model, required this.isPrimary, this.backupPosition});
+  final String provider;
+  final String name;
+  final int keyCount;
+  final int healthyKeys;
+  final String model;
+  final bool isPrimary;
+  final int? backupPosition;
+
+  bool get isBackup => backupPosition != null;
+  bool get inUse => isPrimary || isBackup;
+
+  factory ProviderSummary.fromJson(Map<String, dynamic> j) => ProviderSummary(
+        provider: _str(j['provider']),
+        name: _str(j['name'], _str(j['provider'])),
+        keyCount: _int(j['keyCount']) ?? 0,
+        healthyKeys: _int(j['healthyKeys']) ?? 0,
+        model: _str(j['model']),
+        isPrimary: j['isPrimary'] == true,
+        backupPosition: _int(j['backupPosition']),
+      );
+}
+
+class ProviderList {
+  ProviderList({required this.providers});
+  final List<ProviderSummary> providers;
+
+  ProviderSummary? get main => providers.where((p) => p.isPrimary).firstOrNull;
+  List<ProviderSummary> get backups => providers.where((p) => p.isBackup).toList()..sort((a, b) => a.backupPosition!.compareTo(b.backupPosition!));
+  List<ProviderSummary> get withKeys => providers.where((p) => !p.inUse && p.keyCount > 0).toList();
+  List<ProviderSummary> get others => providers.where((p) => !p.inUse && p.keyCount == 0).toList();
+
+  factory ProviderList.fromJson(Map<String, dynamic> j) => ProviderList(providers: _list(j['providers']).map(ProviderSummary.fromJson).toList());
+}
+
+// --- context window and usage -------------------------------------------------------------------
+
+/// The parts of one request, in the fixed order the panel shows them (and colours them).
+const contextParts = ['tools', 'messages', 'systemPrompt', 'skills', 'memory', 'liveContext'];
+
+const contextPartLabels = {
+  'tools': 'Tools',
+  'messages': 'Messages',
+  'systemPrompt': 'System prompt',
+  'skills': 'Skills',
+  'memory': 'Memory & knowledge',
+  'liveContext': 'Live context',
+};
+
+/// What one request to the AI was made of.
+class ContextSnapshot {
+  ContextSnapshot({
+    required this.at,
+    required this.provider,
+    required this.promptTokens,
+    required this.estimated,
+    required this.parts,
+    required this.toolCount,
+    required this.messageCount,
+    this.model,
+    this.contextWindow,
+    this.completionTokens,
+    this.cachedTokens,
+  });
+  final DateTime at;
+  final String provider;
+  final String? model;
+  final int promptTokens;
+  final int? completionTokens;
+  final int? cachedTokens;
+  final bool estimated;
+  final int? contextWindow;
+  final Map<String, int> parts;
+  final int toolCount;
+  final int messageCount;
+
+  /// Share of the window in use, 0..1, or null when the window is unknown.
+  double? get fill => contextWindow == null || contextWindow == 0 ? null : (promptTokens / contextWindow!).clamp(0, 1).toDouble();
+
+  static ContextSnapshot? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final j = Map<String, dynamic>.from(raw);
+    final parts = j['parts'] is Map ? Map<String, dynamic>.from(j['parts'] as Map) : const <String, dynamic>{};
+    return ContextSnapshot(
+      at: DateTime.fromMillisecondsSinceEpoch(_int(j['at']) ?? 0),
+      provider: _str(j['provider']),
+      model: j['model'] is String ? j['model'] as String : null,
+      promptTokens: _int(j['promptTokens']) ?? 0,
+      completionTokens: _int(j['completionTokens']),
+      cachedTokens: _int(j['cachedTokens']),
+      estimated: j['estimated'] == true,
+      contextWindow: _int(j['contextWindow']),
+      parts: {for (final p in contextParts) p: _int(parts[p]) ?? 0},
+      toolCount: _int(j['toolCount']) ?? 0,
+      messageCount: _int(j['messageCount']) ?? 0,
+    );
+  }
+}
+
+/// Every AI call in one hour.
+class HourUsage {
+  HourUsage({required this.start, required this.calls, required this.promptTokens, required this.completionTokens, required this.cachedTokens, required this.estimatedCalls, required this.peakPromptTokens, required this.bySource});
+  final DateTime start;
+  final int calls;
+  final int promptTokens;
+  final int completionTokens;
+  final int cachedTokens;
+  final int estimatedCalls;
+  final int peakPromptTokens;
+  final Map<String, ({int calls, int tokens})> bySource;
+
+  int get tokens => promptTokens + completionTokens;
+
+  factory HourUsage.fromJson(Map<String, dynamic> j) {
+    final src = j['bySource'] is Map ? Map<String, dynamic>.from(j['bySource'] as Map) : const <String, dynamic>{};
+    return HourUsage(
+      start: DateTime.fromMillisecondsSinceEpoch(_int(j['start']) ?? 0),
+      calls: _int(j['calls']) ?? 0,
+      promptTokens: _int(j['promptTokens']) ?? 0,
+      completionTokens: _int(j['completionTokens']) ?? 0,
+      cachedTokens: _int(j['cachedTokens']) ?? 0,
+      estimatedCalls: _int(j['estimatedCalls']) ?? 0,
+      peakPromptTokens: _int(j['peakPromptTokens']) ?? 0,
+      bySource: {
+        for (final e in src.entries)
+          if (e.value is Map) e.key: (calls: _int((e.value as Map)['calls']) ?? 0, tokens: _int((e.value as Map)['tokens']) ?? 0),
+      },
+    );
+  }
+}
+
+/// Totals over a set of hours (one local day, usually).
+class UsageTotals {
+  UsageTotals(List<HourUsage> hours)
+      : calls = hours.fold(0, (s, h) => s + h.calls),
+        promptTokens = hours.fold(0, (s, h) => s + h.promptTokens),
+        completionTokens = hours.fold(0, (s, h) => s + h.completionTokens),
+        cachedTokens = hours.fold(0, (s, h) => s + h.cachedTokens),
+        estimatedCalls = hours.fold(0, (s, h) => s + h.estimatedCalls),
+        peakPromptTokens = hours.fold(0, (s, h) => s > h.peakPromptTokens ? s : h.peakPromptTokens),
+        bySource = _sumSources(hours);
+  final int calls;
+  final int promptTokens;
+  final int completionTokens;
+  final int cachedTokens;
+  final int estimatedCalls;
+  final int peakPromptTokens;
+  final Map<String, ({int calls, int tokens})> bySource;
+
+  int get tokens => promptTokens + completionTokens;
+
+  static Map<String, ({int calls, int tokens})> _sumSources(List<HourUsage> hours) {
+    final out = <String, ({int calls, int tokens})>{};
+    for (final h in hours) {
+      for (final e in h.bySource.entries) {
+        final prev = out[e.key] ?? (calls: 0, tokens: 0);
+        out[e.key] = (calls: prev.calls + e.value.calls, tokens: prev.tokens + e.value.tokens);
+      }
+    }
+    return out;
+  }
+}
+
+class ContextUsage {
+  ContextUsage({required this.providerName, required this.hours, this.model, this.contextWindow, this.chat, this.autonomous});
+  final String providerName;
+  final String? model;
+  final int? contextWindow;
+  final ContextSnapshot? chat;
+  final ContextSnapshot? autonomous;
+  final List<HourUsage> hours;
+
+  /// The 24 hours of [day] in the phone's own time zone, empty hours included.
+  List<HourUsage> hoursOf(DateTime day) {
+    // Matched on the local calendar hour, not the exact instant, so a zone with a half-hour offset
+    // still lands each server hour on one row.
+    final byHour = <int, HourUsage>{};
+    for (final h in hours) {
+      final l = h.start.toLocal();
+      if (l.year == day.year && l.month == day.month && l.day == day.day) byHour[l.hour] = h;
+    }
+    return [
+      for (var i = 0; i < 24; i++)
+        byHour[i] ?? HourUsage(start: DateTime(day.year, day.month, day.day, i), calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, estimatedCalls: 0, peakPromptTokens: 0, bySource: const {}),
+    ];
+  }
+
+  /// Totals per local day for the last [days] days, newest first.
+  List<({DateTime day, UsageTotals totals})> daily(DateTime now, int days) => [
+        for (var i = 0; i < days; i++)
+          (() {
+            final d = DateTime(now.year, now.month, now.day - i);
+            return (day: d, totals: UsageTotals(hours.where((h) => h.start.year == d.year && h.start.month == d.month && h.start.day == d.day).toList()));
+          })(),
+      ];
+
+  factory ContextUsage.fromJson(Map<String, dynamic> j) {
+    final cur = j['current'] is Map ? Map<String, dynamic>.from(j['current'] as Map) : const <String, dynamic>{};
+    return ContextUsage(
+      providerName: _str(cur['providerName'], _str(cur['provider'])),
+      model: cur['model'] is String ? cur['model'] as String : null,
+      contextWindow: _int(cur['contextWindow']),
+      chat: ContextSnapshot.fromJson(j['chat']),
+      autonomous: ContextSnapshot.fromJson(j['autonomous']),
+      hours: _list(j['hours']).map(HourUsage.fromJson).toList(),
+    );
+  }
 }
