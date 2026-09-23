@@ -7,6 +7,7 @@ Xvfb :99 -screen 0 1024x768x16 >/dev/null 2>&1 &
 XVFB=$!
 sleep 2
 wineboot --init
+wine64 --version 2>/dev/null || wine --version
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d win10 /f
 curl -fsSL -o /tmp/mt5setup.exe https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe
 wine /tmp/mt5setup.exe /auto || true   # exits non-zero on a harmless 32-bit helper; checked below

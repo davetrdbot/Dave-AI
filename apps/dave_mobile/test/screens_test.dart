@@ -196,11 +196,13 @@ http.Client _fakeServer() => MockClient((req) async {
         case '/api/app/mt5':
           body = {
             'agent': {'url': 'http://dave-mt5.railway.internal:8081'},
+            'pairGroup': ['VOL_80', 'BOOM_100', 'CRASH_500', 'VOL_75'],
             'summary': 'MT5 is running and logged in (40123456 on Deriv-Demo, chart VOL_80 M1). The EA last reported 3s ago.',
             'status': {
               'installed': true, 'compiled': true, 'running': true, 'login': 'logged-in', 'configured': true,
               'account': {'login': '40123456', 'server': 'Deriv-Demo', 'symbol': 'VOL_80', 'period': 'M1'},
               'inputs': {'PushSeconds': 8},
+              'marketWatch': ['VOL_80', 'BOOM_100', 'CRASH_500'],
               'relay': {'count': 1200, 'errors': 0, 'lastAt': DateTime.now().millisecondsSinceEpoch / 1000 - 3, 'lastStatus': 200},
             },
           };
@@ -380,6 +382,8 @@ void main() {
       await tester.tap(find.text('MetaTrader 5'));
       await _advance(tester);
       await _shot(tester, 'mt5_$mode');
+      expect(find.text('VOL_80, BOOM_100, CRASH_500'), findsOneWidget);
+      expect(find.text('Use my pair group'), findsOneWidget);
       expect(find.text('Chart symbol'), findsOneWidget);
       expect(find.text('VOL_80'), findsOneWidget);
       expect(find.text('8s'), findsOneWidget);

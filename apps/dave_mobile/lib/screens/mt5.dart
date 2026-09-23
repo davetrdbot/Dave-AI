@@ -69,6 +69,34 @@ class Mt5Page extends StatelessWidget {
               if (v.configured && a != null)
                 SliverToBoxAdapter(
                   child: CupertinoListSection.insetGrouped(
+                    header: const ListHeader('Market Watch'),
+                    footer: const ListFooter('The pairs MT5 has in Market Watch. Each one gets its own chart. Changing them restarts MT5 on the same account.'),
+                    children: [
+                      CupertinoListTile(
+                        title: const Text('Pairs'),
+                        subtitle: Text(v.marketWatch.isEmpty ? 'Only the EA\'s chart' : v.marketWatch.join(', '), maxLines: 3),
+                        trailing: const CupertinoListTileChevron(),
+                        onTap: () async {
+                          final s = await promptText(context,
+                              title: 'Market Watch', message: 'Pairs separated by commas, exactly as your broker names them.', initial: v.marketWatch.join(', '), placeholder: 'VOL_80, BOOM_100, EURUSD');
+                          if (s == null || !context.mounted) return;
+                          if (s.trim().isEmpty) return showError(context, 'Enter at least one pair.');
+                          await act('settings', {'marketWatch': s});
+                        },
+                      ),
+                      if (v.pairGroup.isNotEmpty && v.pairGroup.join(',') != v.marketWatch.join(','))
+                        CupertinoListTile(
+                          leading: Icon(CupertinoIcons.square_stack_3d_up, color: resolve(context, CupertinoColors.systemBlue)),
+                          title: Text('Use my pair group', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
+                          subtitle: Text(v.pairGroup.join(', '), maxLines: 2),
+                          onTap: () => act('settings', {'marketWatch': v.pairGroup}),
+                        ),
+                    ],
+                  ),
+                ),
+              if (v.configured && a != null)
+                SliverToBoxAdapter(
+                  child: CupertinoListSection.insetGrouped(
                     header: const ListHeader('EA'),
                     footer: const ListFooter('The chart is only where the EA sits -- it analyses every symbol Dave asks for. Changes restart MT5 on the same account.'),
                     children: [

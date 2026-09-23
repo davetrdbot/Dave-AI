@@ -28,6 +28,8 @@ export interface Mt5CloudStatus {
   configured: boolean;
   account: { login: string; server: string; symbol: string; period: string } | null;
   inputs: Record<string, string>;
+  /** Pairs MT5 itself opens: each is in Market Watch with its own chart (on top of the EA's). */
+  marketWatch?: string[];
   relay: { count: number; errors: number; lastAt: number | null; lastStatus: number | null; lastError: string | null };
 }
 
@@ -115,6 +117,8 @@ export interface Mt5CloudAccount {
   server: string;
   symbol?: string;
   period?: string;
+  /** Pairs for MT5's Market Watch, each on its own chart. */
+  marketWatch?: string[];
 }
 
 /** Logs the container's MT5 into this account and starts the EA, reporting to this bot. The
@@ -128,12 +132,34 @@ export async function mt5CloudConnect(userId: string, account: Mt5CloudAccount):
 }
 
 /** Changes the chart / EA inputs and restarts the terminal on the same login. */
-export function mt5CloudSettings(userId: string, settings: { symbol?: string; period?: string; inputs?: Record<string, string | number | boolean> }): Promise<Mt5CloudResult> {
+export function mt5CloudSettings(
+  userId: string,
+  settings: { symbol?: string; period?: string; marketWatch?: string[]; inputs?: Record<string, string | number | boolean> },
+): Promise<Mt5CloudResult> {
   return call<Mt5CloudResult>(userId, "POST", "/settings", settings, 360_000);
 }
 
 export function mt5CloudRestart(userId: string): Promise<Mt5CloudResult> {
   return call<Mt5CloudResult>(userId, "POST", "/restart", {}, 60_000);
+}
+
+const SYMBOL_RE = /^[A-Za-z0-9_.#+-]{1,32}$/;
+export const MT5_MARKET_WATCH_MAX = 30;
+
+/** "VOL_80, BOOM_100 eurusd" -> ["VOL_80", "BOOM_100", "EURUSD"]: split on commas/spaces, drop
+ *  duplicates. Throws with a plain reason when something isn't a symbol or there are too many. */
+export function parseMarketWatch(input: string | string[]): string[] {
+  const raw = Array.isArray(input) ? input : input.split(/[\s,;]+/);
+  const out: string[] = [];
+  for (const r of raw) {
+    const s = String(r).trim();
+    if (!s) continue;
+    if (!SYMBOL_RE.test(s)) throw new Error(`"${s}" doesn't look like a symbol.`);
+    const norm = /^[a-z]{6}$/.test(s) ? s.toUpperCase() : s;
+    if (!out.includes(norm)) out.push(norm);
+  }
+  if (out.length > MT5_MARKET_WATCH_MAX) throw new Error(`Up to ${MT5_MARKET_WATCH_MAX} pairs -- each one opens a chart in MT5.`);
+  return out;
 }
 
 /** EA inputs the trader may change from settings. Everything else (the URL, token, bridge switch)
@@ -149,7 +175,8 @@ export function describeMt5CloudStatus(s: Mt5CloudStatus): string {
   if (s.login === "failed") return `MT5 could not log in to ${acct}: ${s.loginDetail ?? "the broker refused the login"}. Check the login, password and server name.`;
   if (s.login === "connecting") return `MT5 is running but not connected to ${s.account?.server} yet${s.loginDetail ? ` (${s.loginDetail})` : ""}. If this lasts more than a minute, check the server name.`;
   const relay = s.relay.lastAt ? ` The EA last reported ${Math.max(0, Math.round(Date.now() / 1000 - s.relay.lastAt))}s ago.` : " The EA has not reported yet.";
-  return `MT5 is running${s.login === "logged-in" ? " and logged in" : ""} (${acct}, chart ${s.account?.symbol} ${s.account?.period}).${relay}`;
+  const mw = s.marketWatch?.length ? ` Market Watch: ${s.marketWatch.join(", ")}.` : "";
+  return `MT5 is running${s.login === "logged-in" ? " and logged in" : ""} (${acct}, chart ${s.account?.symbol} ${s.account?.period}).${mw}${relay}`;
 }
 
 export interface Mt5CloudToolDefinition {
@@ -179,12 +206,13 @@ export const MT5_CLOUD_TOOLS: Mt5CloudToolDefinition[] = [
   {
     name: "mt5_cloud_settings",
     description:
-      `Change the container's MT5 setup and restart it on the same login: the EA's chart symbol/timeframe, and EA inputs (${MT5_CLOUD_EDITABLE_INPUTS.join(", ")}). Only when the trader asks for it. The EA analyses any symbol regardless of its chart.`,
+      `Change the container's MT5 setup and restart it on the same login: the EA's chart symbol/timeframe, the pairs in MT5's Market Watch (each gets its own chart), and EA inputs (${MT5_CLOUD_EDITABLE_INPUTS.join(", ")}). Only when the trader asks for it. The EA analyses any symbol regardless of its chart.`,
     parameters: {
       type: "object",
       properties: {
         symbol: { type: "string", description: "Chart symbol, exactly as the broker names it." },
         period: { type: "string", enum: ["M1", "M5", "M15", "M30", "H1", "H4", "D1"] },
+        marketWatch: { type: "array", items: { type: "string" }, description: `The pairs MT5 shows in Market Watch, each on its own chart (replaces the list; up to ${MT5_MARKET_WATCH_MAX}). Exactly as the broker names them.` },
         inputs: { type: "object", description: `EA inputs to change, e.g. {"PushSeconds": 8}. Allowed: ${MT5_CLOUD_EDITABLE_INPUTS.join(", ")}.` },
       },
     },
@@ -192,7 +220,8 @@ export const MT5_CLOUD_TOOLS: Mt5CloudToolDefinition[] = [
       const inputs = (args.inputs && typeof args.inputs === "object" ? args.inputs : undefined) as Record<string, string | number | boolean> | undefined;
       const bad = inputs ? Object.keys(inputs).filter((k) => !(MT5_CLOUD_EDITABLE_INPUTS as readonly string[]).includes(k)) : [];
       if (bad.length) throw new Error(`Not editable: ${bad.join(", ")}. Allowed: ${MT5_CLOUD_EDITABLE_INPUTS.join(", ")}.`);
-      return mt5CloudSettings(ctx.userId, { symbol: args.symbol as string | undefined, period: args.period as string | undefined, inputs });
+      const marketWatch = Array.isArray(args.marketWatch) ? parseMarketWatch(args.marketWatch as string[]) : undefined;
+      return mt5CloudSettings(ctx.userId, { symbol: args.symbol as string | undefined, period: args.period as string | undefined, marketWatch, inputs });
     },
   },
   {

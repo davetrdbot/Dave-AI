@@ -21,6 +21,7 @@ delete process.env.MT5_AGENT_SECRET;
 // --- a stand-in MT5 container agent ----------------------------------------------------------------
 const seen: { path: string; secret?: string; body: any }[] = [];
 let configured: any = null;
+let marketWatch: string[] = [];
 const agent = createServer(async (req, res) => {
   let raw = "";
   for await (const c of req) raw += c;
@@ -33,9 +34,11 @@ const agent = createServer(async (req, res) => {
   if (req.headers["x-dave-agent-secret"] !== "agent-secret-xyz") return reply(401, { error: "unauthorized" });
   if (req.url === "/configure") {
     configured = { login: body.login, server: body.server, symbol: body.symbol, period: body.period ?? "M1" };
+    marketWatch = body.marketWatch ?? [];
     return reply(200, { ok: true });
   }
   if (req.url === "/settings") {
+    if (body.marketWatch) marketWatch = body.marketWatch;
     configured = { ...configured, ...(body.symbol ? { symbol: body.symbol } : {}), ...(body.period ? { period: body.period } : {}) };
     return reply(200, { ok: true });
   }
@@ -48,6 +51,7 @@ const agent = createServer(async (req, res) => {
       configured: !!configured,
       account: configured,
       inputs: {},
+      marketWatch,
       relay: { count: 3, errors: 0, lastAt: Date.now() / 1000 - 2, lastStatus: 200, lastError: null },
     });
   return reply(404, { error: "not found" });
@@ -118,7 +122,9 @@ assert.equal(conf.body.symbol, "VOL_80", "the chart defaults to the market Dave 
 const hook = getOrCreateEaWebhook(USER);
 assert.equal(conf.body.webhookUrl, `http://dave-bot.railway.internal:8080${hook.path}`, "EA reports to the bot over the private network");
 assert.equal(conf.body.token, hook.token);
+assert.deepEqual(conf.body.marketWatch, ["VOL_80", "BOOM_100"], "Market Watch starts as the pairs Dave trades");
 assert.match(lastText(), /running and logged in \(40123456 on Deriv-Demo/);
+assert.match(lastText(), /Market Watch: VOL_80, BOOM_100/);
 console.log("   ✓\n");
 
 console.log("[4] Settings from Telegram: timeframe and symbol restart the EA on the same login\n");
@@ -132,6 +138,21 @@ await flow.tryHandleMt5Entry(deps, CHAT, "500", 31);
 assert.match(lastText(), /2 to 120/);
 await flow.tryHandleMt5Entry(deps, CHAT, "8", 32);
 assert.deepEqual(seen.filter((s) => s.path === "/settings").pop()!.body.inputs, { PushSeconds: 8 });
+console.log("   ✓\n");
+
+console.log("[4b] Market Watch: MT5 itself gets the pairs -- typed, or the pair group in one tap\n");
+assert.match(buttons(), /mt5c:mw/);
+await flow.handleMt5Callback(deps, CHAT, "mt5c:mw");
+assert.match(lastText(), /Now: VOL_80, BOOM_100/);
+assert.match(buttons(), /mt5c:mw:group/);
+await flow.tryHandleMt5Entry(deps, CHAT, "VOL_80, bad symbol!", 33);
+assert.match(lastText(), /doesn't look like a symbol/);
+await flow.tryHandleMt5Entry(deps, CHAT, "VOL_80, eurusd  BOOM_100,VOL_80", 34);
+assert.deepEqual(seen.filter((s) => s.path === "/settings").pop()!.body.marketWatch, ["VOL_80", "EURUSD", "BOOM_100"], "commas/spaces, dupes dropped");
+await flow.handleMt5Callback(deps, CHAT, "mt5c:mw:group");
+assert.deepEqual(seen.filter((s) => s.path === "/settings").pop()!.body.marketWatch, ["VOL_80", "BOOM_100"]);
+const { parseMarketWatch } = await import("@dave/ea-bridge");
+assert.throws(() => parseMarketWatch(Array.from({ length: 31 }, (_, i) => `P${i}`)), /Up to 30/);
 console.log("   ✓\n");
 
 console.log("[5] A command cancels a half-finished flow; an unrelated message is not swallowed\n");

@@ -23,7 +23,7 @@ RUN apt-get update \
     && wget -qNP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
     && dpkg --add-architecture i386 \
     && apt-get update \
-    && apt-get install -y --no-install-recommends winehq-stable \
+    && apt-get install -y --no-install-recommends winehq-stable wine-stable-amd64 \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY mt5/agent.py mt5/start.sh mt5/install-mt5.sh /opt/dave/

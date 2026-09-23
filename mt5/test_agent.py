@@ -89,7 +89,7 @@ check(agent.relay_stats["errors"] == 2 and agent.relay_stats["count"] == 3, "rel
 
 print("[2] config: start-up ini + EA preset in MetaTrader's format")
 state = {"login": "12345678", "password": "p@ss", "server": "Deriv-Demo", "webhookUrl": BOT + "/hooks/ea/abc", "token": "abc",
-         "symbol": "VOL_80", "period": "M5", "inputs": {"PushSeconds": 7, "EnablePush": False, "UseFileBridge": False, "Evil\nKey": 1}}
+         "symbol": "VOL_80", "period": "M5", "marketWatch": ["VOL_80", "BOOM_100", "EURUSD"], "inputs": {"PushSeconds": 7, "EnablePush": False, "UseFileBridge": False, "Evil\nKey": 1}}
 agent.write_config(state)
 ini = agent.read_text(os.path.join(agent.MT5_DIR, "Config", "dave-startup.ini"))
 preset = agent.read_text(os.path.join(agent.MT5_DIR, "MQL5", "Presets", "dave.set"))
@@ -101,6 +101,15 @@ check("UseFileBridge=true" in preset, "preset forces the file bridge on")
 check("WebhookURL=%s/hooks/ea/abc" % BOT in preset and "EaToken=abc" in preset, "preset carries the bot URL and token")
 check("PushSeconds=7" in preset and "EnablePush=false" in preset, "preset carries the trader's inputs (bools lowercase)")
 check("UseFileBridge=false" not in preset and "Evil" not in preset, "inputs cannot switch the bridge off or inject lines")
+check("ProfileLast=Dave" in ini, "MT5 opens its own 'Dave' chart profile")
+prof = os.path.join(agent.MT5_DIR, "MQL5", "Profiles", "Charts", "Dave")
+charts = sorted(os.listdir(prof))
+syms = [agent.read_text(os.path.join(prof, c)).split("symbol=")[1].split()[0] for c in charts]
+check(syms == ["BOOM_100", "EURUSD"], "one chart per Market Watch pair (the EA's own chart comes from [StartUp])")
+check("period_type=0" in agent.read_text(os.path.join(prof, charts[0])) and "period_size=5" in agent.read_text(os.path.join(prof, charts[0])), "pair charts use the chosen timeframe")
+agent.write_config({**state, "marketWatch": ["GBPUSD"]})
+check(len(os.listdir(prof)) == 1, "a new list replaces the old charts instead of piling up")
+check("MarketWatch" not in preset, "Market Watch is MT5's, not an EA input")
 
 print("[3] login state from the terminal journal (lines as MT5 writes them)")
 logs = os.path.join(agent.MT5_DIR, "logs")
@@ -147,6 +156,10 @@ code, body = call("POST", "/configure", {"login": "123", "password": "x", "serve
 check(code == 400 and "http" in body["error"], "non-http webhook refused")
 code, body = call("POST", "/settings", {"period": "M7"})
 check(code in (400, 409), "bad period refused")
+code, body = call("POST", "/settings", {"marketWatch": ["EURUSD", "bad pair!"]})
+check(code == 400 and "marketWatch" in body["error"], "a bad Market Watch pair is refused")
+code, body = call("POST", "/settings", {"marketWatch": ["P%d" % i for i in range(31)]})
+check(code == 400, "more than 30 Market Watch pairs refused")
 code, body = call("POST", "/configure", {"login": "123", "password": "x", "server": "S", "webhookUrl": BOT + "/hooks/ea/t"})
 check(code == 409 and "installing" in body["error"], "before MT5 is installed, configure says so instead of failing oddly")
 code, body = call("GET", "/status")

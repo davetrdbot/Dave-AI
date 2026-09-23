@@ -710,7 +710,7 @@ class ContextUsage {
 
 /// MetaTrader 5 running in Dave's own container (no VPS).
 class Mt5View {
-  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt});
+  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt, this.marketWatch = const [], this.pairGroup = const []});
   final String summary;
   final String? agentUrl;
   final bool installed;
@@ -721,6 +721,10 @@ class Mt5View {
   final ({String login, String server, String symbol, String period})? account;
   final Map<String, String> inputs;
   final DateTime? lastReportAt;
+  /// Pairs MT5 itself has in Market Watch, each on its own chart.
+  final List<String> marketWatch;
+  /// The active pair group -- offered as a one-tap Market Watch.
+  final List<String> pairGroup;
 
   bool get hasAgent => agentUrl != null;
   int get pushSeconds => int.tryParse(inputs['PushSeconds'] ?? '') ?? 8;
@@ -742,6 +746,8 @@ class Mt5View {
       account: acct == null ? null : (login: _str(acct['login']), server: _str(acct['server']), symbol: _str(acct['symbol']), period: _str(acct['period'])),
       inputs: {for (final e in inputs.entries) e.key: '${e.value}'},
       lastReportAt: relay?['lastAt'] is num ? DateTime.fromMillisecondsSinceEpoch(((relay!['lastAt'] as num) * 1000).round()) : null,
+      marketWatch: st?['marketWatch'] is List ? [for (final s in st!['marketWatch'] as List) '$s'] : const [],
+      pairGroup: j['pairGroup'] is List ? [for (final s in j['pairGroup'] as List) '$s'] : const [],
     );
   }
 }

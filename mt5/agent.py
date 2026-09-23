@@ -177,7 +177,34 @@ def ea_inputs(state):
     return inputs
 
 
+PROFILE = "Dave"
+# chart .chr files store the timeframe as a unit (0 minutes, 1 hours, 2 days) and a size.
+CHR_PERIODS = {"M1": (0, 1), "M5": (0, 5), "M15": (0, 15), "M30": (0, 30), "H1": (1, 1), "H4": (1, 4), "D1": (2, 1)}
+
+
+def write_profile(state):
+    """MetaTrader's own chart profile "Dave": one chart per Market Watch pair. Opening a chart puts
+    its pair in Market Watch, so MT5 itself starts with every pair loaded and on screen -- not just
+    the EA's chart. The EA's chart comes from [StartUp] on top of these."""
+    folder = os.path.join(MT5_DIR, "MQL5", "Profiles", "Charts", PROFILE)
+    os.makedirs(folder, exist_ok=True)
+    for name in os.listdir(folder):
+        if name.lower().endswith(".chr"):
+            os.remove(os.path.join(folder, name))
+    unit, size = CHR_PERIODS.get(state.get("period", "M1"), (0, 1))
+    pairs = [p for p in (state.get("marketWatch") or []) if p != state.get("symbol")]
+    for i, sym in enumerate(pairs, 1):
+        write_utf16(os.path.join(folder, "chart%02d.chr" % i), "\n".join([
+            "<chart>", "id=%d" % (133000000000000000 + i), "symbol=%s" % sym,
+            "period_type=%d" % unit, "period_size=%d" % size, "mode=1", "scale=4", "grid=0", "scroll=1", "shift=1",
+            "ohlc=1", "bidline=1", "windows_total=1", "", "<window>", "height=100.000000", "objects=0", "",
+            "<indicator>", "name=Main", "path=", "apply=1", "show_data=1", "fixed_height=-1", "</indicator>",
+            "</window>", "</chart>", "",
+        ]))
+
+
 def write_config(state):
+    write_profile(state)
     preset = "\n".join("%s=%s" % kv for kv in ea_inputs(state).items()) + "\n"
     write_utf16(os.path.join(MT5_DIR, "MQL5", "Presets", "dave.set"), preset)
     ini = "\n".join([
@@ -193,6 +220,8 @@ def write_config(state):
         "Enabled=1",
         "Account=0",
         "Profile=0",
+        "[Charts]",
+        "ProfileLast=%s" % PROFILE,
         "[StartUp]",
         "Expert=%s" % EA_REL,
         "ExpertParameters=dave.set",
@@ -278,6 +307,7 @@ def status():
         "configured": bool(state.get("login")),
         "account": {k: state.get(k) for k in ("login", "server", "symbol", "period")} if state.get("login") else None,
         "inputs": state.get("inputs") or {},
+        "marketWatch": state.get("marketWatch") or [],
         "relay": relay,
     }
 
@@ -299,6 +329,10 @@ def check_payload(body, full):
         return "symbol looks wrong"
     if "inputs" in body and not isinstance(body["inputs"], dict):
         return "inputs must be an object"
+    if "marketWatch" in body:
+        mw = body["marketWatch"]
+        if not isinstance(mw, list) or len(mw) > 30 or not all(isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_.#+\-]{1,32}", x) for x in mw):
+            return "marketWatch must be a list of symbols (up to 30)"
     return None
 
 
@@ -374,22 +408,25 @@ class Handler(BaseHTTPRequestHandler):
                 "webhookUrl": str(body["webhookUrl"]).strip(), "token": body.get("token"),
                 "symbol": str(body.get("symbol") or state.get("symbol") or "EURUSD"), "period": str(body.get("period") or state.get("period") or "M1").upper(),
                 "inputs": body.get("inputs") if isinstance(body.get("inputs"), dict) else state.get("inputs") or {},
+                "marketWatch": body.get("marketWatch") if isinstance(body.get("marketWatch"), list) else state.get("marketWatch") or [],
             })
             save_state(state)
             result = apply_and_restart(state)
             return self._json(200 if result["ok"] else 409, result)
         if self.path == "/settings":
-            if not state.get("login"):
-                return self._json(409, {"error": "not configured yet -- send /configure first"})
             err = check_payload(body, False)
             if err:
                 return self._json(400, {"error": err})
+            if not state.get("login"):
+                return self._json(409, {"error": "not configured yet -- send /configure first"})
             if "symbol" in body:
                 state["symbol"] = str(body["symbol"])
             if "period" in body:
                 state["period"] = str(body["period"]).upper()
             if "inputs" in body:
                 state["inputs"] = {**(state.get("inputs") or {}), **body["inputs"]}
+            if "marketWatch" in body:
+                state["marketWatch"] = body["marketWatch"]
             save_state(state)
             result = apply_and_restart(state)
             return self._json(200 if result["ok"] else 409, result)

@@ -6,6 +6,7 @@ import {
   mt5CloudSettings,
   mt5CloudRestart,
   describeMt5CloudStatus,
+  parseMarketWatch,
   type Mt5CloudStatus,
 } from "@dave/ea-bridge";
 import { getActiveGroupInfo } from "@dave/trading";
@@ -21,7 +22,7 @@ import type { CommandRouterDeps } from "./command-router.js";
  * conversation history or to disk on the bot side (the container keeps it -- it has to, to log in).
  */
 
-type Step = "login" | "password" | "server" | "symbol" | "push";
+type Step = "login" | "password" | "server" | "symbol" | "push" | "marketwatch";
 interface Pending {
   step: Step;
   login?: string;
@@ -42,6 +43,7 @@ function menu(status: Mt5CloudStatus | undefined, hasAgent: boolean): InlineKeyb
   if (!hasAgent) return keyboard([[coloredButton("Refresh", "blue", "mt5c:refresh")]]);
   const rows = [[coloredButton(status?.configured ? "Change account" : "Connect account", "green", "mt5c:connect")]];
   if (status?.configured) {
+    rows.push([coloredButton("Market Watch pairs", "blue", "mt5c:mw")]);
     rows.push([coloredButton("Chart symbol", "blue", "mt5c:symbol"), coloredButton("Timeframe", "blue", "mt5c:period")]);
     rows.push([coloredButton("Report interval", "blue", "mt5c:push"), coloredButton("Restart MT5", "blue", "mt5c:restart")]);
   }
@@ -87,6 +89,31 @@ export async function handleMt5Callback(deps: CommandRouterDeps, chatId: number,
       pending.set(k, { step: "symbol", at: Date.now() });
       await ask("Send the symbol for the EA's chart, exactly as your broker names it (e.g. <code>VOL_80</code> or <code>EURUSD</code>). The EA analyses every symbol Dave asks for regardless -- this is just the chart it sits on.");
       return;
+    case "mt5c:mw": {
+      pending.set(k, { step: "marketwatch", at: Date.now() });
+      const group = activeGroupSymbols(deps.userId);
+      const current = await mt5CloudStatus(deps.userId).then((st) => st.marketWatch ?? [], () => []);
+      await deps.client.sendMessage({
+        chat_id: chatId,
+        text:
+          "<b>Market Watch</b>\n" +
+          `Now: ${current.length ? escapeHtml(current.join(", ")) : "only the EA's chart"}\n\n` +
+          "Send the pairs MT5 should have, separated by commas (e.g. <code>VOL_80, BOOM_100, EURUSD</code>), exactly as your broker names them. Each one goes into Market Watch and gets its own chart. This replaces the list.",
+        parse_mode: "HTML",
+        reply_markup: group.length ? keyboard([[coloredButton(`Use my pair group (${group.length})`, "green", "mt5c:mw:group")]]) : undefined,
+      });
+      return;
+    }
+    case "mt5c:mw:group": {
+      pending.delete(k);
+      const group = activeGroupSymbols(deps.userId);
+      if (!group.length) {
+        await ask("Your active pair group is empty -- send the pairs instead.");
+        return;
+      }
+      await runAndReport(deps, chatId, `Loading ${escapeHtml(group.join(", "))} into MT5's Market Watch...`, () => mt5CloudSettings(deps.userId, { marketWatch: group.slice(0, 30) }));
+      return;
+    }
     case "mt5c:push":
       pending.set(k, { step: "push", at: Date.now() });
       await ask("How often should the EA report, in seconds? (2 to 120; 8 is the usual.)");
@@ -137,9 +164,11 @@ export async function tryHandleMt5Entry(deps: CommandRouterDeps, chatId: number,
       return true;
     case "server": {
       pending.delete(k);
-      const symbol = defaultChartSymbol(deps.userId);
+      const group = activeGroupSymbols(deps.userId);
+      const symbol = group[0] ?? "EURUSD";
+      // Market Watch starts as the pairs Dave trades; /mt5 -> Market Watch pairs changes it.
       await runAndReport(deps, chatId, `Connecting ${p.login} on ${escapeHtml(value)}... compiling the EA and starting MT5. This can take a couple of minutes.`, () =>
-        mt5CloudConnect(deps.userId, { login: p.login!, password: p.password!, server: value, symbol }),
+        mt5CloudConnect(deps.userId, { login: p.login!, password: p.password!, server: value, symbol, marketWatch: group.slice(0, 30) }),
       );
       return true;
     }
@@ -151,6 +180,22 @@ export async function tryHandleMt5Entry(deps: CommandRouterDeps, chatId: number,
       pending.delete(k);
       await runAndReport(deps, chatId, `Moving the EA to ${escapeHtml(value)}...`, () => mt5CloudSettings(deps.userId, { symbol: value }));
       return true;
+    case "marketwatch": {
+      let pairs: string[];
+      try {
+        pairs = parseMarketWatch(value);
+      } catch (err) {
+        await say(`${escapeHtml(err instanceof Error ? err.message : String(err))} Send the pairs again, separated by commas.`);
+        return true;
+      }
+      if (!pairs.length) {
+        await say("Send at least one pair, e.g. <code>VOL_80, EURUSD</code>.");
+        return true;
+      }
+      pending.delete(k);
+      await runAndReport(deps, chatId, `Loading ${escapeHtml(pairs.join(", "))} into MT5's Market Watch...`, () => mt5CloudSettings(deps.userId, { marketWatch: pairs }));
+      return true;
+    }
     case "push": {
       const n = Number(value);
       if (!Number.isInteger(n) || n < 2 || n > 120) {
@@ -190,13 +235,12 @@ async function runAndReport(deps: CommandRouterDeps, chatId: number, working: st
   await handleMt5Cloud(deps, chatId);
 }
 
-/** The first symbol of the active pair group -- the market Dave actually trades -- else EURUSD. */
-function defaultChartSymbol(userId: string): string {
+/** The active pair group -- the markets Dave actually trades. */
+function activeGroupSymbols(userId: string): string[] {
   try {
-    const { effectiveSymbols } = getActiveGroupInfo(userId);
-    return effectiveSymbols?.[0] ?? "EURUSD";
+    return [...(getActiveGroupInfo(userId).effectiveSymbols ?? [])];
   } catch {
-    return "EURUSD";
+    return [];
   }
 }
 

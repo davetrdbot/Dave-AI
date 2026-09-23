@@ -33,7 +33,12 @@ already compiled, attached to a chart and logged in to your account. It replaces
 
 Dave compiles the EA, starts MT5 logged in with the EA on a chart, and tells you whether the
 broker accepted the login. From then on `/mt5` (or the app) changes the chart symbol, timeframe
-and EA report interval, and restarts MT5 if it ever gets stuck. The container restarts MT5 by
+and EA report interval, and restarts MT5 if it ever gets stuck.
+
+**Market Watch.** MT5 starts with your active pair group in Market Watch, each pair on its own
+chart (MetaTrader's own chart profile "Dave", written by the agent -- nothing to do with the EA's
+inputs). `/mt5 → Market Watch pairs` (or the app) replaces the list: type the pairs separated by
+commas, or tap *Use my pair group*. Up to 30. The container restarts MT5 by
 itself if it exits.
 
 The default build is lean -- no desktop -- so it fits Railway's trial/free limits (1 GB RAM).
