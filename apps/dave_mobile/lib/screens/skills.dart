@@ -28,6 +28,43 @@ class _SkillsScreenState extends State<SkillsScreen> {
   // which lives outside the page's own reload callback.
   var _generation = 0;
 
+  /// "+" offers both ways to add a skill: write one by hand, or install one from GitHub.
+  Future<void> _add() async {
+    final choice = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Add a skill'),
+        actions: [
+          CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'write'), child: const Text('Write a skill')),
+          CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'github'), child: const Text('Install from GitHub')),
+        ],
+        cancelButton: CupertinoActionSheetAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'write') await _write();
+    if (choice == 'github') await _install();
+  }
+
+  Future<void> _write() async {
+    final api = AppScope.of(context).api;
+    final saved = await pushScoped<bool>(
+      context,
+      EditorPage(
+        title: 'New skill',
+        saveLabel: 'Create',
+        fields: const [
+          EditorField(label: 'Name', placeholder: 'London breakout'),
+          EditorField(label: 'Description', placeholder: 'One line: what the strategy is', required: false),
+          EditorField(label: 'Strategy', placeholder: 'The complete rules Dave should follow: bias, entry, stop, target, when not to trade.', multiline: true, monospace: true),
+        ],
+        footer: 'Write it the way you would explain it to another trader. Dave follows it exactly once you make it the active strategy.',
+        onSave: (v) => api.createSkill(name: v[0], description: v[1], content: v[2]),
+      ),
+    );
+    if (saved == true && mounted) setState(() => _generation++);
+  }
+
   Future<void> _install() async {
     final url = await showCupertinoDialog<String>(context: context, builder: (_) => const _InstallDialog());
     if (url == null || url.trim().isEmpty || !mounted) return;
@@ -50,8 +87,8 @@ class _SkillsScreenState extends State<SkillsScreen> {
       title: 'Skills',
       trailing: CupertinoButton(
         padding: EdgeInsets.zero,
-        onPressed: _install,
-        child: const Icon(CupertinoIcons.add, semanticLabel: 'Install from GitHub'),
+        onPressed: _add,
+        child: const Icon(CupertinoIcons.add, semanticLabel: 'Add a skill'),
       ),
       load: (api) => api.skills(),
       builder: (context, skills, reload) {
@@ -63,8 +100,8 @@ class _SkillsScreenState extends State<SkillsScreen> {
                 child: EmptyState(
                   icon: CupertinoIcons.square_stack_3d_up,
                   title: 'No skills yet',
-                  message: 'A skill is a complete trading strategy Dave can follow. Install one from GitHub to start.',
-                  action: CupertinoButton.filled(onPressed: _install, child: const Text('Install from GitHub')),
+                  message: 'A skill is a complete trading strategy Dave can follow. Write your own or install one from GitHub.',
+                  action: CupertinoButton.filled(onPressed: _add, child: const Text('Add a skill')),
                 ),
               ),
             ),
@@ -233,6 +270,27 @@ class _SkillDetailState extends State<SkillDetail> {
                       ? CupertinoButton(color: resolve(context, CupertinoColors.systemGrey5), onPressed: _busy ? null : () => _run((api) => api.deactivateSkill()), child: Text('Stop using this strategy', style: TextStyle(color: resolve(context, CupertinoColors.label))))
                       : CupertinoButton.filled(onPressed: _busy ? null : () => _run((api) => api.activateSkill(s.id)), child: const Text('Use this strategy')),
                 ),
+                if (!s.permanent)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: Space.s4),
+                    child: CupertinoButton(
+                      onPressed: _busy
+                          ? null
+                          : () async {
+                              final api = AppScope.of(context).api;
+                              final saved = await pushScoped<bool>(
+                                context,
+                                EditorPage(
+                                  title: 'Edit ${s.name}',
+                                  fields: [EditorField(label: 'Strategy', initial: s.content ?? '', multiline: true, monospace: true)],
+                                  onSave: (v) => api.updateSkill(s.id, v[0]),
+                                ),
+                              );
+                              if (saved == true) await _load();
+                            },
+                      child: const Text('Edit strategy'),
+                    ),
+                  ),
                 ContentCard(
                   child: SelectableText(
                     s.content ?? '',

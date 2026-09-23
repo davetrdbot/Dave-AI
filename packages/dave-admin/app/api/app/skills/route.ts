@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listSkills, createSkill, deleteSkill, installSkillFromGithub, PermanentSkillError, DuplicateSkillNameError, SkillNotFoundError } from "@dave/skills";
+import { listSkills, createSkill, deleteSkill, updateSkillContent, installSkillFromGithub, PermanentSkillError, DuplicateSkillNameError, SkillNotFoundError } from "@dave/skills";
 import { getActiveStrategySkillId, setActiveStrategySkill, clearActiveStrategySkill } from "@dave/trading";
 import { withDevice } from "../../../../server/require-device";
 
@@ -61,6 +61,14 @@ export const POST = withDevice(async ({ userId, req }) => {
         const skill = createSkill(userId, { name: body.name, description: body.description ?? "", content: body.content, source: "self-created" });
         return NextResponse.json({ ok: true, skill });
       }
+      case "update": {
+        // Only the trader's own and installed skills are editable; built-ins stay as shipped.
+        if (!body.skillId || typeof body.content !== "string" || !body.content.trim()) return NextResponse.json({ error: "skillId and content are required." }, { status: 400 });
+        const existing = listSkills(userId).find((s) => s.id === body.skillId);
+        if (!existing) return NextResponse.json({ error: "No such skill." }, { status: 404 });
+        if (existing.permanent) return NextResponse.json({ error: "Built-in skills can't be edited." }, { status: 403 });
+        return NextResponse.json({ ok: true, skill: updateSkillContent(userId, body.skillId, body.content) });
+      }
       case "activate": {
         if (!body.skillId) return NextResponse.json({ error: "skillId is required." }, { status: 400 });
         if (!listSkills(userId).some((s) => s.id === body.skillId)) return NextResponse.json({ error: "No such skill." }, { status: 404 });
@@ -72,7 +80,7 @@ export const POST = withDevice(async ({ userId, req }) => {
         return NextResponse.json({ ok: true, activeSkillId: null });
       }
       default:
-        return NextResponse.json({ error: "action must be one of: install-github, create, activate, deactivate." }, { status: 400 });
+        return NextResponse.json({ error: "action must be one of: install-github, create, update, activate, deactivate." }, { status: 400 });
     }
   } catch (err) {
     // These three are expected outcomes of a valid request, not server faults -- a 4xx with the

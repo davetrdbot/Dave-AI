@@ -5,7 +5,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../app_scope.dart';
 import '../theme.dart';
-import '../widgets/charts.dart';
+import '../widgets/performance.dart';
 import '../widgets/common.dart';
 
 class _HomeData {
@@ -35,18 +35,10 @@ class HomeScreen extends StatelessWidget {
         return [
           SliverToBoxAdapter(child: _BalanceCard(d: d)),
           SliverToBoxAdapter(child: _TradingCard(bot: data.bot, eaConnected: d.eaConnected, onChanged: reload)),
-          SliverToBoxAdapter(child: _OpenTrades(d: d)),
+          SliverToBoxAdapter(child: _OpenTrades(d: d, onChanged: reload)),
           if (d.pendingOrders.isNotEmpty) SliverToBoxAdapter(child: _PendingOrders(orders: d.pendingOrders)),
+          SliverToBoxAdapter(child: PerformanceCard(trades: d.trades)),
           SliverToBoxAdapter(child: _Results(d: d)),
-          SliverToBoxAdapter(
-            child: ContentCard(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const SectionLabel('Last 26 weeks'),
-                const SizedBox(height: Space.s3),
-                PnlHeatmap(days: d.heatmap),
-              ]),
-            ),
-          ),
         ];
       },
     );
@@ -179,8 +171,9 @@ class _TradingCardState extends State<_TradingCard> {
 }
 
 class _OpenTrades extends StatelessWidget {
-  const _OpenTrades({required this.d});
+  const _OpenTrades({required this.d, required this.onChanged});
   final Dashboard d;
+  final Future<void> Function() onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -199,14 +192,41 @@ class _OpenTrades extends StatelessWidget {
     }
     return CupertinoListSection.insetGrouped(
       header: ListHeader(header),
-      children: [for (final p in d.positions) _PositionTile(p: p)],
+      footer: const ListFooter('Tap a trade to close it.'),
+      children: [for (final p in d.positions) _PositionTile(p: p, onChanged: onChanged)],
     );
   }
 }
 
 class _PositionTile extends StatelessWidget {
-  const _PositionTile({required this.p});
+  const _PositionTile({required this.p, required this.onChanged});
   final Position p;
+  final Future<void> Function() onChanged;
+
+  /// Closing is irreversible and moves real money, so it is always confirmed, and the sheet says
+  /// exactly which trade and at roughly what result.
+  Future<void> _close(BuildContext context) async {
+    final result = p.pnl == null ? '' : ' at about ${formatMoney(p.pnl!, signed: true)}';
+    final ok = await confirmDestructive(
+      context,
+      title: 'Close ${p.symbol} ${p.isBuy ? 'buy' : 'sell'}?',
+      message: 'Closes ${p.lots} lots at the market price$result. This cannot be undone.',
+      action: 'Close trade',
+    );
+    if (!ok || !context.mounted) return;
+    HapticFeedback.mediumImpact();
+    final sent = await runAction(context, (api) => api.closeTrade(p.ticket));
+    if (!sent || !context.mounted) return;
+    await showCupertinoDialog<void>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Close sent'),
+        content: const Text('MT5 closes it on its next check-in, usually within seconds. You will get a notification when it is done.'),
+        actions: [CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
+    await onChanged();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -216,6 +236,7 @@ class _PositionTile extends StatelessWidget {
       if (p.tp != null) 'TP ${formatPrice(p.tp!)}',
     ].join('  ·  ');
     return CupertinoListTile(
+      onTap: () => _close(context),
       leading: Icon(p.isBuy ? CupertinoIcons.arrow_up_right : CupertinoIcons.arrow_down_right, color: resolve(context, CupertinoColors.secondaryLabel)),
       title: Text('${p.symbol}  ${p.isBuy ? 'Buy' : 'Sell'}'),
       subtitle: Text(levels),
@@ -252,7 +273,7 @@ class _Results extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ContentCard(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const SectionLabel('Results'),
+          const SectionLabel('All time'),
           const SizedBox(height: Space.s3),
           Row(children: [
             Expanded(child: StatTile(value: d.winRatePercent == null ? '--' : '${d.winRatePercent}%', label: 'Win rate')),

@@ -71,6 +71,15 @@ class HeatDay {
   final int trades;
 }
 
+/// One realised trade -- the raw material for the range views and the P&L chart.
+class ClosedTrade {
+  ClosedTrade({required this.at, required this.pnl, required this.symbol, this.isBuy});
+  final DateTime at;
+  final double pnl;
+  final String symbol;
+  final bool? isBuy;
+}
+
 class Dashboard {
   Dashboard({
     required this.balance,
@@ -89,6 +98,7 @@ class Dashboard {
     required this.winRatePercent,
     required this.realisedPnl,
     required this.heatmap,
+    required this.trades,
     required this.emptyReason,
   });
 
@@ -108,6 +118,10 @@ class Dashboard {
   final int? winRatePercent;
   final double realisedPnl;
   final List<HeatDay> heatmap;
+
+  /// Closed trades over the last year, oldest first. Ranges and charts are built from these in
+  /// the phone's own time zone.
+  final List<ClosedTrade> trades;
   final String? emptyReason;
 
   /// Floating P&L across everything open right now.
@@ -136,6 +150,10 @@ class Dashboard {
       winRatePercent: _int(results['winRatePercent']),
       realisedPnl: _num(results['realisedPnl']) ?? 0,
       heatmap: _list(heat['buckets']).map((b) => HeatDay(_str(b['day']), _num(b['pnl']) ?? 0, _int(b['trades']) ?? 0)).toList(),
+      trades: _list(j['trades'])
+          .where((t) => t['at'] is num && t['pnl'] is num)
+          .map((t) => ClosedTrade(at: _ms(t['at'])!, pnl: _num(t['pnl'])!, symbol: _str(t['symbol'], '?'), isBuy: t['side'] == null ? null : t['side'] == 'buy'))
+          .toList(),
       emptyReason: j['emptyReason'] is String ? j['emptyReason'] as String : null,
     );
   }
@@ -261,5 +279,185 @@ class TradeEvent {
         tp: _num(j['tp']),
         pnl: _num(j['pnl']),
         reason: j['reason'] is String ? j['reason'] as String : null,
+      );
+}
+
+/// One knowledge entry in full.
+class KnowledgeDetail {
+  KnowledgeDetail({required this.id, required this.title, required this.useWhen, required this.content, required this.createdAt});
+  final String id;
+  final String title;
+  final String useWhen;
+  final String content;
+  final DateTime? createdAt;
+
+  factory KnowledgeDetail.fromJson(Map<String, dynamic> j) =>
+      KnowledgeDetail(id: _str(j['id']), title: _str(j['title'], 'Untitled'), useWhen: _str(j['useWhen']), content: _str(j['content']), createdAt: _ms(j['createdAt']));
+}
+
+/// A bounded number setting: its value and the range the server accepts.
+class Bounded {
+  Bounded(this.value, this.min, this.max);
+  final double value;
+  final double min;
+  final double max;
+
+  factory Bounded.fromJson(Object? v, double fallback, double min, double max) {
+    final m = _map(v);
+    return Bounded(_num(m['value']) ?? fallback, _num(m['min']) ?? min, _num(m['max']) ?? max);
+  }
+}
+
+/// Stop loss / take profit / lot size: off, a fixed value, or Dave decides.
+class RiskMode {
+  RiskMode(this.mode, this.value, this.unit);
+  final String mode; // off | on | auto
+  final double? value;
+  final String unit;
+
+  factory RiskMode.fromJson(Object? v) {
+    final m = _map(v);
+    return RiskMode(_str(m['mode'], 'off'), _num(m['value']), _str(m['unit']));
+  }
+
+  String get summary => switch (mode) {
+        'on' => value == null ? 'Fixed' : '${_trim(value!)} $unit',
+        'auto' => 'Dave decides',
+        _ => 'Off',
+      };
+}
+
+String _trim(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
+
+class PairGroupOption {
+  PairGroupOption(this.id, this.name, this.symbols);
+  final String id;
+  final String name;
+  final int symbols;
+}
+
+class AlertToggle {
+  AlertToggle(this.id, this.label, this.on);
+  final String id;
+  final String label;
+  final bool on;
+}
+
+/// Every bot setting the app can change, as /api/app/settings returns it.
+class AppSettings {
+  AppSettings({
+    required this.riskReward,
+    required this.confidence,
+    required this.autoApproveBelowThreshold,
+    required this.stopLoss,
+    required this.takeProfit,
+    required this.lotSize,
+    required this.maxOpenTrades,
+    required this.maxDailyLossPct,
+    required this.session,
+    required this.sessions,
+    required this.pairGroup,
+    required this.pairGroups,
+    required this.autoApproval,
+    required this.selfPause,
+    required this.twoStepTrading,
+    required this.sequentialThinking,
+    required this.memoryWriteApproval,
+    required this.deepLossPercent,
+    required this.alerts,
+    required this.primaryTimeout,
+    required this.fallbackTimeout,
+  });
+
+  final Bounded riskReward;
+  final Bounded confidence;
+  final bool autoApproveBelowThreshold;
+  final RiskMode stopLoss;
+  final RiskMode takeProfit;
+  final RiskMode lotSize;
+  final int? maxOpenTrades;
+  final double? maxDailyLossPct;
+  final String session;
+  final List<String> sessions;
+  final String? pairGroup;
+  final List<PairGroupOption> pairGroups;
+  final bool autoApproval;
+  final bool selfPause;
+  final bool twoStepTrading;
+  final bool sequentialThinking;
+  final bool memoryWriteApproval;
+  final Bounded deepLossPercent;
+  final List<AlertToggle> alerts;
+  final Bounded primaryTimeout;
+  final Bounded fallbackTimeout;
+
+  factory AppSettings.fromJson(Map<String, dynamic> j) {
+    final t = _map(j['trading']);
+    final b = _map(j['behaviour']);
+    final a = _map(j['alerts']);
+    final ai = _map(j['ai']);
+    final session = _map(t['session']);
+    final group = _map(t['pairGroup']);
+    return AppSettings(
+      riskReward: Bounded.fromJson(t['riskReward'], 1, 0.1, 100),
+      confidence: Bounded.fromJson(t['confidenceThreshold'], 70, 0, 100),
+      autoApproveBelowThreshold: t['autoApproveBelowThreshold'] == true,
+      stopLoss: RiskMode.fromJson(t['stopLoss']),
+      takeProfit: RiskMode.fromJson(t['takeProfit']),
+      lotSize: RiskMode.fromJson(t['lotSize']),
+      maxOpenTrades: _int(t['maxOpenTrades']),
+      maxDailyLossPct: _num(t['maxDailyLossPct']),
+      session: _str(session['value'], 'all'),
+      sessions: session['options'] is List ? (session['options'] as List).whereType<String>().toList() : const ['all'],
+      pairGroup: group['value'] is String ? group['value'] as String : null,
+      pairGroups: _list(group['options']).map((g) => PairGroupOption(_str(g['id']), _str(g['name'], '?'), _int(g['symbols']) ?? 0)).toList(),
+      autoApproval: b['autoApproval'] == true,
+      selfPause: b['selfPause'] == true,
+      twoStepTrading: b['twoStepTrading'] == true,
+      sequentialThinking: b['sequentialThinking'] == true,
+      memoryWriteApproval: b['memoryWriteApproval'] == true,
+      deepLossPercent: Bounded.fromJson(a['deepLossPercent'], 50, 5, 95),
+      alerts: _list(a['toggles']).map((x) => AlertToggle(_str(x['id']), _str(x['label']), x['on'] != false)).toList(),
+      primaryTimeout: Bounded.fromJson(ai['primaryTimeoutSeconds'], 20, 3, 120),
+      fallbackTimeout: Bounded.fromJson(ai['fallbackTimeoutSeconds'], 5, 3, 120),
+    );
+  }
+}
+
+class BasetenKey {
+  BasetenKey({required this.id, required this.label, required this.maskedKey, required this.model, required this.healthy, required this.isPrimary, this.lastError});
+  final String id;
+  final String label;
+  final String maskedKey;
+  final String model;
+  final bool healthy;
+  final bool isPrimary;
+  final String? lastError;
+}
+
+/// The Baseten provider: whether Dave uses it, and its keys.
+class BasetenState {
+  BasetenState({required this.isPrimary, required this.defaultModel, required this.keys});
+  final bool isPrimary;
+  final String defaultModel;
+  final List<BasetenKey> keys;
+
+  /// The model every key uses (they are kept the same), or the catalog default with no keys.
+  String get model => keys.isEmpty ? defaultModel : keys.first.model;
+
+  factory BasetenState.fromJson(Map<String, dynamic> j) => BasetenState(
+        isPrimary: j['isPrimary'] == true,
+        defaultModel: _str(j['defaultModel']),
+        keys: _list(j['keys'])
+            .map((k) => BasetenKey(
+                  id: _str(k['id']),
+                  label: _str(k['label'], 'Key'),
+                  maskedKey: _str(k['maskedKey']),
+                  model: _str(k['model']),
+                  healthy: k['healthy'] == true,
+                  isPrimary: k['isPrimary'] == true,
+                  lastError: k['lastError'] is String ? k['lastError'] as String : null,
+                ))
+            .toList(),
       );
 }

@@ -42,6 +42,27 @@ Map<String, Object?> _dashboard() {
     });
   }
   final now = DateTime.now().millisecondsSinceEpoch;
+  // Individual closes for the range views: a year of history plus a few from today.
+  final trades = <Map<String, Object?>>[];
+  final symbols = ['XAUUSD', 'Volatility 75 Index', 'EURUSD', 'GBPJPY'];
+  for (final b in buckets) {
+    final day = DateTime.parse(b['day']! as String);
+    final n = b['trades']! as int;
+    for (var k = 0; k < n; k++) {
+      trades.add({
+        'at': day.add(Duration(hours: 8 + k * 3, minutes: 17 * k)).millisecondsSinceEpoch,
+        'pnl': double.parse(((b['pnl']! as double) / n).toStringAsFixed(2)),
+        'symbol': symbols[k % symbols.length],
+        'side': k.isEven ? 'buy' : 'sell',
+      });
+    }
+  }
+  final midnight = DateTime(today.year, today.month, today.day);
+  for (final (h, pnl) in [(1, 12.4), (3, -6.1), (4, 18.9), (7, 9.3)]) {
+    final at = midnight.add(Duration(hours: h, minutes: 12));
+    if (at.isBefore(today)) trades.add({'at': at.millisecondsSinceEpoch, 'pnl': pnl, 'symbol': 'XAUUSD', 'side': 'buy'});
+  }
+  trades.sort((a, b) => (a['at']! as int).compareTo(b['at']! as int));
   return {
     'account': {'balance': 2481.36, 'equity': 2512.86, 'freeMargin': 2301.1, 'leverage': 500, 'updatedAt': now - 8000},
     'ea': {'connected': true, 'lastSeenAt': now - 4000},
@@ -58,6 +79,7 @@ Map<String, Object?> _dashboard() {
     },
     'results': {'closedTrades': 64, 'wins': 39, 'losses': 25, 'winRatePercent': 61, 'realisedPnl': 612.44},
     'heatmap': {'days': 365, 'buckets': buckets},
+    'trades': trades,
     'emptyReason': null,
   };
 }
@@ -100,7 +122,23 @@ http.Client _fakeServer() => MockClient((req) async {
         case '/api/app/dashboard':
           body = _dashboard();
         case '/api/app/brain':
-          body = _brain;
+          final kid = req.url.queryParameters['knowledgeId'];
+          body = kid == null ? _brain : {'id': kid, 'title': 'V75 fakes the first London breakout', 'useWhen': 'A London-open breakout on V75 with no retest', 'content': 'The first push out of the Asian range on V75 reverses more often than not.', 'createdAt': 0};
+        case '/api/app/settings':
+          body = jsonDecode(File('test/fixtures/settings.json').readAsStringSync());
+        case '/api/app/provider':
+          body = {
+            'provider': 'baseten',
+            'name': 'Baseten Model APIs',
+            'defaultModel': 'deepseek-ai/DeepSeek-V3.2',
+            'isPrimary': true,
+            'keys': [
+              {'id': 'k1', 'label': 'Baseten 1', 'maskedKey': 'bt-l…6789', 'model': 'deepseek-ai/DeepSeek-V3.2', 'healthy': true, 'isPrimary': true, 'lastError': null},
+              {'id': 'k2', 'label': 'Baseten 2', 'maskedKey': 'bt-l…1f2e', 'model': 'deepseek-ai/DeepSeek-V3.2', 'healthy': false, 'isPrimary': false, 'lastError': 'Rate limited, retry in 30s'},
+            ],
+          };
+        case '/api/app/trades':
+          body = {'ok': true};
         case '/api/app/skills':
           final id = req.url.queryParameters['id'];
           body = id == null
@@ -194,14 +232,41 @@ void main() {
       expect(find.text('Dave'), findsWidgets);
       expect(find.textContaining('Volatility 75 Index'), findsOneWidget);
 
-      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -900));
+      // Closing a trade asks first, and names the trade.
+      await tester.tap(find.textContaining('XAUUSD  Buy'));
       await _advance(tester);
-      await _shot(tester, 'home_scrolled_$mode');
+      await _shot(tester, 'close_confirm_$mode');
+      expect(find.text('Close trade'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await _advance(tester);
+
+      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -700));
+      await _advance(tester);
+      await _shot(tester, 'home_performance_$mode');
+      expect(find.text('1M'), findsOneWidget);
+
+      await tester.tap(find.text('1D'));
+      await _advance(tester);
+      await _shot(tester, 'home_1d_$mode');
+      await tester.tap(find.text('1W'));
+      await _advance(tester);
+      await _shot(tester, 'home_1w_$mode');
+      await tester.tap(find.text('1Y'));
+      await _advance(tester);
+      await _shot(tester, 'home_1y_$mode');
 
       await tester.tap(find.byIcon(CupertinoIcons.lightbulb).last);
       await _advance(tester);
       await _shot(tester, 'brain_$mode');
       expect(find.textContaining('54% full'), findsOneWidget);
+      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -700));
+      await _advance(tester);
+      await _shot(tester, 'brain_scrolled_$mode');
+      await tester.tap(find.text('Add something about you'));
+      await _advance(tester);
+      await _shot(tester, 'brain_add_$mode');
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
 
       await tester.tap(find.byIcon(CupertinoIcons.square_stack_3d_up).last);
       await _advance(tester);
@@ -220,6 +285,28 @@ void main() {
       await _shot(tester, 'settings_$mode');
       expect(find.text('Autonomous trading'), findsOneWidget);
       expect(find.text('5 min'), findsOneWidget);
+      expect(find.text('30 pips'), findsOneWidget, reason: 'stop loss summary from the real settings JSON');
+
+      final settingsScroll = find.byType(CustomScrollView).first;
+      await tester.drag(settingsScroll, const Offset(0, -650));
+      await _advance(tester);
+      await _shot(tester, 'settings_2_$mode');
+      await tester.drag(settingsScroll, const Offset(0, -650));
+      await _advance(tester);
+      await _shot(tester, 'settings_3_$mode');
+
+      await tester.tap(find.text('Baseten'));
+      await _advance(tester);
+      await _shot(tester, 'baseten_$mode');
+      expect(find.text('Baseten 2'), findsOneWidget);
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
+
+      await tester.tap(find.text('Self-aware alerts'));
+      await _advance(tester);
+      await _shot(tester, 'alerts_$mode');
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
 
       await tester.pumpWidget(const SizedBox()); // dispose, cancelling the dashboard's refresh timer
     });

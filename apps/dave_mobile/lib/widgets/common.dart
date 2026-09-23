@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 
 import '../api/client.dart';
 import '../app_scope.dart';
@@ -265,3 +266,157 @@ Future<void> showError(BuildContext context, Object error) => showCupertinoDialo
         actions: [CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
       ),
     );
+
+/// Asks for one short value in an alert -- a number, a model id, a name.
+Future<String?> promptText(
+  BuildContext context, {
+  required String title,
+  String? message,
+  String initial = '',
+  String placeholder = '',
+  TextInputType keyboardType = TextInputType.text,
+  String action = 'Save',
+}) {
+  final controller = TextEditingController(text: initial);
+  return showCupertinoDialog<String>(
+    context: context,
+    builder: (ctx) => CupertinoAlertDialog(
+      title: Text(title),
+      content: Padding(
+        padding: const EdgeInsets.only(top: Space.s3),
+        child: Column(children: [
+          if (message != null) ...[Text(message), const SizedBox(height: Space.s3)],
+          CupertinoTextField(controller: controller, placeholder: placeholder, keyboardType: keyboardType, autofocus: true, autocorrect: false),
+        ]),
+      ),
+      actions: [
+        CupertinoDialogAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: Text(action)),
+      ],
+    ),
+  ).whenComplete(controller.dispose);
+}
+
+/// One field on an [EditorPage].
+class EditorField {
+  const EditorField({required this.label, this.initial = '', this.placeholder = '', this.multiline = false, this.required = true, this.monospace = false});
+  final String label;
+  final String initial;
+  final String placeholder;
+  final bool multiline;
+  final bool required;
+  final bool monospace;
+}
+
+/// A full-screen form for writing something longer -- a memory entry, a lesson, a whole skill.
+///
+/// [onSave] gets the field values in order; the page closes only once it succeeds, and a failure
+/// is shown in place so nothing typed is lost.
+class EditorPage extends StatefulWidget {
+  const EditorPage({super.key, required this.title, required this.fields, required this.onSave, this.saveLabel = 'Save', this.footer});
+  final String title;
+  final List<EditorField> fields;
+  final Future<void> Function(List<String> values) onSave;
+  final String saveLabel;
+  final String? footer;
+
+  @override
+  State<EditorPage> createState() => _EditorPageState();
+}
+
+class _EditorPageState extends State<EditorPage> {
+  late final _controllers = [for (final f in widget.fields) TextEditingController(text: f.initial)];
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    for (final c in _controllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final values = [for (final c in _controllers) c.text.trim()];
+    for (var i = 0; i < widget.fields.length; i++) {
+      if (widget.fields[i].required && values[i].isEmpty) {
+        setState(() => _error = '${widget.fields[i].label} is empty.');
+        return;
+      }
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.onSave(values);
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CupertinoPageScaffold(
+      backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+      navigationBar: CupertinoNavigationBar(
+        middle: Text(widget.title),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: _busy ? null : _save,
+          child: _busy ? const CupertinoActivityIndicator() : Text(widget.saveLabel, style: const TextStyle(fontWeight: FontWeight.w600)),
+        ),
+      ),
+      child: SafeArea(
+        child: ListView(padding: const EdgeInsets.fromLTRB(Space.s4, Space.s4, Space.s4, Space.s6), children: [
+          for (var i = 0; i < widget.fields.length; i++) ...[
+            Padding(
+              padding: const EdgeInsets.only(left: Space.s2, bottom: Space.s1),
+              child: ListHeader(widget.fields[i].label),
+            ),
+            CupertinoTextField(
+              controller: _controllers[i],
+              placeholder: widget.fields[i].placeholder,
+              autofocus: i == 0,
+              minLines: widget.fields[i].multiline ? 6 : 1,
+              maxLines: widget.fields[i].multiline ? null : 1,
+              keyboardType: widget.fields[i].multiline ? TextInputType.multiline : TextInputType.text,
+              padding: const EdgeInsets.all(Space.s3),
+              style: TextStyle(fontSize: widget.fields[i].monospace ? 14 : 16, fontFamily: widget.fields[i].monospace ? 'monospace' : null, color: resolve(context, CupertinoColors.label)),
+              decoration: BoxDecoration(color: resolve(context, CupertinoColors.secondarySystemGroupedBackground), borderRadius: BorderRadius.circular(10)),
+            ),
+            const SizedBox(height: Space.s4),
+          ],
+          if (_error != null) Text(_error!, style: TextStyle(fontSize: 14, color: resolve(context, CupertinoColors.systemRed))),
+          if (widget.footer != null) Padding(padding: const EdgeInsets.only(left: Space.s2), child: ListFooter(widget.footer!)),
+        ]),
+      ),
+    );
+  }
+}
+
+/// Pushes [page] with the same API scope, so screens deeper in the stack can call the server.
+Future<T?> pushScoped<T>(BuildContext context, Widget page) {
+  final scope = AppScope.of(context);
+  return Navigator.of(context).push<T>(CupertinoPageRoute<T>(builder: (_) => AppScope(api: scope.api, onUnpaired: scope.onUnpaired, child: page)));
+}
+
+/// Runs a server call from a button: unpaired goes to the connect screen, anything else is shown.
+/// Returns whether it succeeded.
+Future<bool> runAction(BuildContext context, Future<void> Function(DaveApi api) action) async {
+  final scope = AppScope.of(context);
+  try {
+    await action(scope.api);
+    HapticFeedback.selectionClick();
+    return true;
+  } on UnpairedException catch (e) {
+    scope.onUnpaired(e.message);
+  } catch (e) {
+    if (context.mounted) await showError(context, e);
+  }
+  return false;
+}

@@ -146,7 +146,7 @@ class TradeStreamHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     await _notifications.initialize(
-      settings: const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')),
+      settings: const InitializationSettings(android: AndroidInitializationSettings('@drawable/ic_stat_dave')),
     );
     await _notifications
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
@@ -350,6 +350,8 @@ class PushService {
         serviceTypes: [ForegroundServiceTypes.remoteMessaging],
         notificationTitle: 'Dave',
         notificationText: 'Connecting…',
+        // White silhouette declared in the manifest -- Android status bar icons must be one colour.
+        notificationIcon: const NotificationIcon(metaDataName: 'com.daveai.dave_mobile.NOTIFICATION_ICON'),
         callback: startCallback,
       );
     }

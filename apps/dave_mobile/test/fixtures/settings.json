@@ -1,0 +1,185 @@
+{
+  "trading": {
+    "riskReward": {
+      "value": 1,
+      "min": 0.1,
+      "max": 100
+    },
+    "confidenceThreshold": {
+      "value": 70,
+      "min": 0,
+      "max": 100
+    },
+    "autoApproveBelowThreshold": true,
+    "stopLoss": {
+      "mode": "on",
+      "value": 30,
+      "unit": "pips"
+    },
+    "takeProfit": {
+      "mode": "off",
+      "value": null,
+      "unit": "pips"
+    },
+    "lotSize": {
+      "mode": "auto",
+      "value": null,
+      "unit": "lots"
+    },
+    "maxOpenTrades": 3,
+    "maxDailyLossPct": null,
+    "session": {
+      "value": "all",
+      "options": [
+        "all",
+        "sydney",
+        "asian",
+        "london",
+        "new_york"
+      ]
+    },
+    "pairGroup": {
+      "value": null,
+      "options": [
+        {
+          "id": "synthetic",
+          "name": "Synthetic",
+          "symbols": 10
+        },
+        {
+          "id": "forex",
+          "name": "Forex",
+          "symbols": 28
+        },
+        {
+          "id": "crypto",
+          "name": "Crypto",
+          "symbols": 12
+        },
+        {
+          "id": "metals",
+          "name": "Metals",
+          "symbols": 4
+        },
+        {
+          "id": "indexes",
+          "name": "Indexes",
+          "symbols": 8
+        },
+        {
+          "id": "energies",
+          "name": "Energies",
+          "symbols": 3
+        },
+        {
+          "id": "stocks",
+          "name": "Stocks",
+          "symbols": 20
+        },
+        {
+          "id": "fallback",
+          "name": "Fallback",
+          "symbols": 0
+        }
+      ]
+    }
+  },
+  "behaviour": {
+    "autoApproval": false,
+    "selfPause": true,
+    "twoStepTrading": false,
+    "sequentialThinking": false,
+    "memoryWriteApproval": false
+  },
+  "alerts": {
+    "deepLossPercent": {
+      "value": 50,
+      "min": 5,
+      "max": 95
+    },
+    "toggles": [
+      {
+        "id": "loss_duration",
+        "label": "Loss-duration nudges (5m / 10m in the red)",
+        "on": true
+      },
+      {
+        "id": "deep_loss",
+        "label": "Deep-loss danger (approaching the stop)",
+        "on": true
+      },
+      {
+        "id": "recovery",
+        "label": "Recovery (back to profit after a loss)",
+        "on": true
+      },
+      {
+        "id": "breakeven",
+        "label": "Breakeven guard (up ~1R — move stop to BE)",
+        "on": true
+      },
+      {
+        "id": "stuck",
+        "label": "Stuck trade (flat near breakeven 15+ min)",
+        "on": true
+      },
+      {
+        "id": "hot_hand",
+        "label": "Hot-hand warning (3+ wins in a row)",
+        "on": true
+      },
+      {
+        "id": "profit_stable",
+        "label": "Profit stability (in profit 5 min — plan still valid?)",
+        "on": true
+      },
+      {
+        "id": "profit_drop",
+        "label": "Profit reduction (profit starting to fall back)",
+        "on": true
+      },
+      {
+        "id": "peak_pullback",
+        "label": "Peak pullback (gave back part of the peak)",
+        "on": true
+      },
+      {
+        "id": "range",
+        "label": "Range detected (chop — expected move never came)",
+        "on": false
+      },
+      {
+        "id": "quick_profit_check",
+        "label": "Quick profit check (10 min — still on target?)",
+        "on": true
+      },
+      {
+        "id": "sl_near",
+        "label": "Nearly stopped out (89% of the way to SL)",
+        "on": true
+      },
+      {
+        "id": "sl_critical",
+        "label": "About to be stopped out (95% to SL)",
+        "on": true
+      },
+      {
+        "id": "tp_near",
+        "label": "Nearly at target (85% of the way to TP)",
+        "on": true
+      }
+    ]
+  },
+  "ai": {
+    "primaryTimeoutSeconds": {
+      "value": 20,
+      "min": 3,
+      "max": 120
+    },
+    "fallbackTimeoutSeconds": {
+      "value": 5,
+      "min": 3,
+      "max": 120
+    }
+  }
+}

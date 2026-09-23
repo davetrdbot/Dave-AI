@@ -176,5 +176,37 @@ class DaveApi {
     return (events: events, latestId: latest is num ? latest.toInt() : afterId);
   }
 
+  Future<Map<String, dynamic>> _post(String path, Map<String, Object?> body) =>
+      _send(() => _http.post(_url(path), headers: {..._headers, 'content-type': 'application/json'}, body: jsonEncode(body)));
+
+  // --- settings ---------------------------------------------------------------------------
+
+  Future<AppSettings> settings() async => AppSettings.fromJson(await _send(() => _http.get(_url('/api/app/settings'), headers: _headers)));
+
+  /// Changes one setting; returns what the server actually stored.
+  Future<AppSettings> updateSetting(String id, Object? value) async => AppSettings.fromJson(await _post('/api/app/settings', {'id': id, 'value': value}));
+
+  Future<BasetenState> baseten() async => BasetenState.fromJson(await _send(() => _http.get(_url('/api/app/provider'), headers: _headers)));
+
+  Future<BasetenState> basetenAction(String action, [Map<String, Object?> fields = const {}]) async =>
+      BasetenState.fromJson(await _post('/api/app/provider', {'action': action, ...fields}));
+
+  // --- brain --------------------------------------------------------------------------------
+
+  Future<Brain> brainAction(String action, [Map<String, Object?> fields = const {}]) async => Brain.fromJson(await _post('/api/app/brain', {'action': action, ...fields}));
+
+  Future<KnowledgeDetail> knowledge(String id) async =>
+      KnowledgeDetail.fromJson(await _send(() => _http.get(_url('/api/app/brain', {'knowledgeId': id}), headers: _headers)));
+
+  // --- skills and trades --------------------------------------------------------------------
+
+  Future<void> createSkill({required String name, required String description, required String content}) =>
+      _skillAction({'action': 'create', 'name': name, 'description': description, 'content': content});
+
+  Future<void> updateSkill(String id, String content) => _skillAction({'action': 'update', 'skillId': id, 'content': content});
+
+  /// Queues a close with the EA. It is confirmed by the EA's next report, not by this call.
+  Future<void> closeTrade(String ticket) => _post('/api/app/trades', {'action': 'close', 'ticket': ticket});
+
   void close() => _http.close();
 }

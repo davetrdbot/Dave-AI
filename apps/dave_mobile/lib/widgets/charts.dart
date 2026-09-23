@@ -30,6 +30,41 @@ class ChartColors {
   static const knowledge = CupertinoDynamicColor.withBrightness(color: Color(0xFF30B0C7), darkColor: Color(0xFF23A0B0));
 }
 
+/// The diverging scale every P&L heatmap uses: the neutral grey midpoint lerps toward the profit or
+/// loss pole, so "no trades" and "broke even" read as nothing and intensity is magnitude.
+Color heatColor(BuildContext context, double? pnl, double maxAbs) {
+  final neutral = resolve(context, ChartColors.neutral);
+  if (pnl == null || pnl == 0) return neutral;
+  final pole = resolve(context, pnl > 0 ? ChartColors.profit : ChartColors.loss);
+  final t = math.min(1.0, pnl.abs() / (maxAbs <= 0 ? 1 : maxAbs));
+  return Color.lerp(neutral, pole, 0.3 + 0.7 * t)!;
+}
+
+/// "Loss [swatches] Profit" -- the heatmap's legend.
+class HeatLegend extends StatelessWidget {
+  const HeatLegend({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    Widget swatch(Color c) => Container(
+          width: 11,
+          height: 11,
+          margin: const EdgeInsets.symmetric(horizontal: 1.5),
+          decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(2.5)),
+        );
+    return Row(children: [
+      Text('Loss', style: TextStyle(fontSize: 12, color: secondary)),
+      const SizedBox(width: Space.s2),
+      for (final v in [-1.0, -0.55, -0.15]) swatch(heatColor(context, v, 1)),
+      swatch(heatColor(context, 0, 1)),
+      for (final v in [0.15, 0.55, 1.0]) swatch(heatColor(context, v, 1)),
+      const SizedBox(width: Space.s2),
+      Text('Profit', style: TextStyle(fontSize: 12, color: secondary)),
+    ]);
+  }
+}
+
 /// GitHub-style grid of daily realised P&L: one column per week, one row per weekday.
 ///
 /// Diverging, because P&L has a real zero -- a loss day and a flat day must not look alike. Cells
@@ -79,24 +114,20 @@ class _PnlHeatmapState extends State<PnlHeatmap> {
 
   static String _key(DateTime d) => '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
-  Color _colorFor(BuildContext context, HeatDay? day, double maxAbs) {
-    final neutral = resolve(context, ChartColors.neutral);
-    if (day == null || day.pnl == 0) return neutral;
-    final pole = resolve(context, day.pnl > 0 ? ChartColors.profit : ChartColors.loss);
-    final t = math.min(1.0, day.pnl.abs() / maxAbs);
-    return Color.lerp(neutral, pole, 0.3 + 0.7 * t)!;
-  }
+  Color _colorFor(BuildContext context, HeatDay? day, double maxAbs) => heatColor(context, day?.pnl, maxAbs);
 
   @override
   Widget build(BuildContext context) {
     final cols = _grid();
     final maxAbs = widget.days.isEmpty ? 1.0 : widget.days.map((d) => d.pnl.abs()).reduce(math.max).clamp(1e-9, double.infinity);
-    final secondary = resolve(context, CupertinoColors.secondaryLabel);
 
     return LayoutBuilder(builder: (context, box) {
-      const gap = 3.0;
-      final pitch = box.maxWidth / cols.length;
-      final cell = (pitch - gap).clamp(4.0, 16.0);
+      // Fits any span: a year (53 columns) packs tight with hairline gaps, a month (5 columns)
+      // gets big, easy-to-tap cells instead of being stretched across the card.
+      final fit = box.maxWidth / cols.length;
+      final gap = fit < 9 ? 1.5 : 3.0;
+      final cell = math.max(2.0, math.min(fit - gap, 30.0));
+      final pitch = cell + gap;
       final height = 7 * (cell + gap);
 
       _Cell? cellAt(Offset p) {
@@ -134,15 +165,7 @@ class _PnlHeatmapState extends State<PnlHeatmap> {
           child: Text(_describe(_selected), style: TextStyle(fontSize: 13, color: resolve(context, _selected == null ? CupertinoColors.secondaryLabel : CupertinoColors.label))),
         ),
         const SizedBox(height: Space.s2),
-        Row(children: [
-          Text('Loss', style: TextStyle(fontSize: 12, color: secondary)),
-          const SizedBox(width: Space.s2),
-          for (final t in [1.0, 0.55, 0.15]) _swatch(Color.lerp(resolve(context, ChartColors.neutral), resolve(context, ChartColors.loss), 0.3 + 0.7 * t)!),
-          _swatch(resolve(context, ChartColors.neutral)),
-          for (final t in [0.15, 0.55, 1.0]) _swatch(Color.lerp(resolve(context, ChartColors.neutral), resolve(context, ChartColors.profit), 0.3 + 0.7 * t)!),
-          const SizedBox(width: Space.s2),
-          Text('Profit', style: TextStyle(fontSize: 12, color: secondary)),
-        ]),
+        const HeatLegend(),
       ]);
     });
   }
@@ -154,13 +177,6 @@ class _PnlHeatmapState extends State<PnlHeatmap> {
     }
     return null;
   }
-
-  Widget _swatch(Color c) => Container(
-        width: 11,
-        height: 11,
-        margin: const EdgeInsets.symmetric(horizontal: 1.5),
-        decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(2.5)),
-      );
 
   String _describe(_Cell? c) {
     if (c == null) return 'Tap a day to see its result.';

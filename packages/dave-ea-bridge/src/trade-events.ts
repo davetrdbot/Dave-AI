@@ -96,9 +96,67 @@ export function appendTradeEvents(userId: string, incoming: NewTradeEvent[], now
     added.push(event);
   }
   if (added.length === 0) return [];
+  // Closes also go to the long history BEFORE the event log is trimmed, so the matching "opened"
+  // event (which carries the side) is still there to look up.
+  const closes = added.filter((e): e is Extract<TradeEvent, { type: "closed" }> => e.type === "closed");
+  if (closes.length > 0) {
+    const sideOf = new Map(log.events.flatMap((e) => (e.type === "opened" ? [[e.ticket, e.side] as const] : [])));
+    appendClosedTrades(
+      userId,
+      closes.map((c) => ({ ticket: c.ticket, symbol: c.symbol, side: sideOf.get(c.ticket), pnl: c.pnl, reason: c.reason, closedAt: c.at })),
+    );
+  }
   if (log.events.length > TRADE_EVENT_LOG_CAP) log.events = log.events.slice(-TRADE_EVENT_LOG_CAP);
   writeLog(userId, log);
   return added;
+}
+
+/** One realised trade, as the EA reported its close. */
+export interface ClosedTradeRecord {
+  ticket: string;
+  symbol: string;
+  side?: "buy" | "sell";
+  pnl?: number;
+  reason: EaClosedPosition["reason"];
+  closedAt: number;
+}
+
+/**
+ * The long record of every close -- what the app's heatmap and P&L chart are drawn from.
+ *
+ * Separate from the event log because the two have opposite needs: the event log is a short
+ * replay buffer (500) for notifications, while a year of daily P&L needs every close. Records are
+ * tiny, so 5000 (years of normal trading) still rewrites in well under a millisecond.
+ */
+export const CLOSED_TRADE_HISTORY_CAP = 5000;
+
+export function closedTradeHistoryPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trade-events", userId, "closed-trades.json");
+}
+
+export function readClosedTradeHistory(userId: string): ClosedTradeRecord[] {
+  const path = closedTradeHistoryPath(userId);
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    return Array.isArray(parsed) ? (parsed as ClosedTradeRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function appendClosedTrades(userId: string, records: ClosedTradeRecord[]): void {
+  const path = closedTradeHistoryPath(userId);
+  let history = readClosedTradeHistory(userId);
+  const seen = new Set(history.map((r) => r.ticket));
+  for (const r of records) {
+    if (seen.has(r.ticket)) continue;
+    seen.add(r.ticket);
+    history.push(r);
+  }
+  if (history.length > CLOSED_TRADE_HISTORY_CAP) history = history.slice(-CLOSED_TRADE_HISTORY_CAP);
+  if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(history), "utf8");
 }
 
 /** Everything after `afterId`, oldest first. */

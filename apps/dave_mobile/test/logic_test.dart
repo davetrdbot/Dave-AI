@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/api/models.dart';
 import 'package:dave_mobile/push/push_service.dart';
 import 'package:dave_mobile/theme.dart';
+import 'package:dave_mobile/widgets/performance.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -205,6 +207,58 @@ void main() {
       }));
       expect(result.token, 'tok');
       expect(result.deviceId, 'd1');
+    });
+  });
+
+  group('performance ranges', () {
+    final now = DateTime(2026, 9, 23, 15, 30);
+    ClosedTrade t(DateTime at, double pnl) => ClosedTrade(at: at, pnl: pnl, symbol: 'X');
+    final trades = [
+      t(DateTime(2025, 9, 1), 100), // over a year ago
+      t(DateTime(2026, 9, 16, 23, 59), -20), // 7 days + a minute before today's midnight: outside 1W
+      t(DateTime(2026, 9, 17, 0, 1), 30), // first minute of the 7-day window
+      t(DateTime(2026, 9, 22, 23, 59), 5), // yesterday, late
+      t(DateTime(2026, 9, 23, 0, 0), 10), // today, midnight
+      t(DateTime(2026, 9, 23, 14, 0), -4), // today
+    ];
+
+    test('1D means today since local midnight, not the last 24 hours', () {
+      final day = tradesInRange(trades, PnlRange.day, now);
+      expect(day.map((x) => x.pnl), [10, -4]);
+    });
+    test('1W is the last seven calendar days including today', () {
+      expect(tradesInRange(trades, PnlRange.week, now).map((x) => x.pnl), [30, 5, 10, -4]);
+    });
+    test('1Y excludes anything older than a year', () {
+      expect(tradesInRange(trades, PnlRange.year, now).length, 5);
+    });
+    test('stats', () {
+      final s = RangeStats(tradesInRange(trades, PnlRange.week, now));
+      expect(s.pnl, 41);
+      expect(s.winRatePercent, 75);
+      expect(RangeStats(const []).winRatePercent, isNull);
+    });
+    test('days are bucketed in local time', () {
+      final days = localDays(tradesInRange(trades, PnlRange.week, now));
+      final today = days.firstWhere((d) => d.day == '2026-09-23');
+      expect(today.pnl, 6);
+      expect(today.trades, 2);
+    });
+  });
+
+  group('settings', () {
+    test('the real server settings JSON parses completely', () {
+      // test/fixtures/settings.json is dumped from the admin server's own readAppSettings().
+      final s = AppSettings.fromJson(jsonDecode(File('test/fixtures/settings.json').readAsStringSync()) as Map<String, dynamic>);
+      expect(s.stopLoss.summary, '30 pips');
+      expect(s.lotSize.summary, 'Dave decides');
+      expect(s.takeProfit.summary, 'Off');
+      expect(s.maxOpenTrades, 3);
+      expect(s.alerts.length, 14);
+      expect(s.alerts.firstWhere((a) => a.id == 'range').on, isFalse);
+      expect(s.pairGroups, isNotEmpty);
+      expect(s.sessions, contains('london'));
+      expect(s.primaryTimeout.value, 20);
     });
   });
 }
