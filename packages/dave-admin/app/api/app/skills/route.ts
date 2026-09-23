@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { listSkills, createSkill, deleteSkill, installSkillFromGithub, PermanentSkillError, DuplicateSkillNameError, SkillNotFoundError } from "@dave/skills";
 import { getActiveStrategySkillId, setActiveStrategySkill, clearActiveStrategySkill } from "@dave/trading";
-import { withDevice } from "../../../../server/require-device.js";
+import { withDevice } from "../../../../server/require-device";
 
 /**
  * Skills from the app: browse, install from GitHub, activate, remove.

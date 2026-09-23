@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { readMemoryEntries, FROZEN_PAIR_CHAR_BUDGET } from "@dave/memory";
 import { knowledgeList } from "@dave/knowledge";
-import { withDevice } from "../../../../server/require-device.js";
+import { withDevice } from "../../../../server/require-device";
 
 /**
  * The brain: everything Dave durably knows, in the two stores it actually keeps.

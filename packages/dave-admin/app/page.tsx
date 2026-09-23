@@ -31,15 +31,36 @@ function useApi(userId: string) {
 export default function AdminPage() {
   const [userId, setUserId] = useState("default");
   const [tab, setTab] = useState<Tab>("stats");
+  const api = useApi(userId);
+  // The dot used to be hardcoded green: a permanent "all good" on a trading dashboard, shown
+  // even with no terminal connected at all. A status light that cannot report bad news is worse
+  // than no status light, so it reports the real EA connection and says which in words too.
+  const [eaConnected, setEaConnected] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      api("/api/status/ea")
+        .then((r) => !cancelled && setEaConnected(r.connected === true))
+        .catch(() => !cancelled && setEaConnected(false));
+    load();
+    const id = setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [api]);
 
   return (
     <>
       <header>
         <div className="brand">
-          <span className="dot" />
+          <span className={eaConnected === false ? "dot bad" : "dot"} />
           <div>
             <h1>Dave — Admin Panel</h1>
-            <div className="sub">Monitoring and configuration only — trading actions happen via Telegram</div>
+            <div className="sub">
+              {eaConnected === null ? "Checking terminal…" : eaConnected ? "Terminal connected" : "Terminal not connected"}
+            </div>
           </div>
         </div>
         <div className="row">
@@ -181,9 +202,17 @@ function ActivityHeatmap({ api }: { userId: string; api: ReturnType<typeof useAp
   }
   const maxAbs = Math.max(1, ...days.map((d) => Math.abs(d.pnl)));
   const colorFor = (pnl: number | undefined) => {
-    if (pnl === undefined) return "rgba(255,255,255,0.05)";
+    // A day with no closed trades falls through to the stylesheet's own neutral, which is defined
+    // against the current theme. The previous hardcoded rgba(255,255,255,0.05) was white-on-white
+    // the moment the panel stopped being dark -- every empty cell vanished and took the grid's
+    // shape with it.
+    if (pnl === undefined) return undefined;
+    // Diverging, because P&L has a real zero: red below it, green above, intensity by magnitude.
+    // The hues come from the theme's semantic status tokens so they adapt with light/dark rather
+    // than being frozen at one theme's values.
     const intensity = Math.min(1, Math.abs(pnl) / maxAbs);
-    return pnl >= 0 ? `rgba(74, 222, 128, ${0.15 + intensity * 0.7})` : `rgba(248, 113, 113, ${0.15 + intensity * 0.7})`;
+    const hue = pnl >= 0 ? "var(--green)" : "var(--red)";
+    return `color-mix(in srgb, ${hue} ${Math.round((0.25 + intensity * 0.75) * 100)}%, transparent)`;
   };
   const weeks: typeof cells[] = [];
   for (let w = 0; w < WEEKS; w++) weeks.push(cells.slice(w * 7, w * 7 + 7));
@@ -213,7 +242,17 @@ function ActivityHeatmap({ api }: { userId: string; api: ReturnType<typeof useAp
 }
 
 // --- J8: real trade distribution by pair group ---
-const PIE_COLORS = ["#6ea8fe", "#9b8cff", "#4ade80", "#f87171", "#fbbf24", "#38bdf8", "#f472b6"];
+/**
+ * One hue, stepped by lightness, rather than seven unrelated colours.
+ *
+ * The previous palette was blue/purple/green/red/yellow/cyan/pink -- the "rainbow tiles" the
+ * design skill names as a slop trap, and worse here because two of those colours (green, red)
+ * mean profit and loss everywhere else in this panel. A pair group is not good or bad; colouring
+ * "Metals" red said something the chart did not mean.
+ *
+ * Ordered dark to light so the largest slice reads first, and distinguishable in greyscale.
+ */
+const PIE_COLORS = ["#0050a8", "#0064cf", "#007aff", "#3d9bff", "#6fb4ff", "#9ccdff", "#c7e2ff"];
 function PairGroupPie({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
   const [groups, setGroups] = useState<{ label: string; count: number }[] | null>(null);
 
@@ -236,7 +275,7 @@ function PairGroupPie({ api }: { userId: string; api: ReturnType<typeof useApi> 
                 <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
               ))}
             </Pie>
-            <Tooltip contentStyle={{ background: "#131a2b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
+            <Tooltip contentStyle={{ background: "var(--bg-elevated)", border: "0.5px solid var(--separator-opaque)", borderRadius: 10, color: "var(--label)", boxShadow: "var(--shadow-card)" }} />
             <Legend />
           </PieChart>
         </ResponsiveContainer>
@@ -265,12 +304,12 @@ function OutcomeRangeChart({ api }: { userId: string; api: ReturnType<typeof use
       ) : (
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
-            <XAxis dataKey="day" stroke="#8a93a8" fontSize={11} />
-            <YAxis stroke="#8a93a8" fontSize={11} />
-            <Tooltip contentStyle={{ background: "#131a2b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
-            <Area dataKey="band" stroke="none" fill="rgba(110,168,254,0.25)" />
-            <Line dataKey="avg" stroke="#9b8cff" strokeWidth={2} dot={{ r: 3 }} />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--separator)" />
+            <XAxis dataKey="day" stroke="var(--label-secondary)" fontSize={11} />
+            <YAxis stroke="var(--label-secondary)" fontSize={11} />
+            <Tooltip contentStyle={{ background: "var(--bg-elevated)", border: "0.5px solid var(--separator-opaque)", borderRadius: 10, color: "var(--label)", boxShadow: "var(--shadow-card)" }} />
+            <Area dataKey="band" stroke="none" fill="color-mix(in srgb, var(--accent) 18%, transparent)" />
+            <Line dataKey="avg" stroke="var(--accent)" strokeWidth={2} dot={{ r: 2.5 }} />
           </ComposedChart>
         </ResponsiveContainer>
       )}
@@ -748,7 +787,7 @@ function ProviderKeysCard({ api, title, apiPath, providerListPath }: { userId: s
           style={{ width: 620 }}
         />
       </div>
-      {extraConfigError && <div style={{ color: "var(--danger, #c0392b)", marginBottom: 10 }}>{extraConfigError}</div>}
+      {extraConfigError && <div style={{ color: "var(--red)", marginBottom: 10 }}>{extraConfigError}</div>}
 
       <details style={{ marginBottom: 10 }}>
         <summary style={{ cursor: "pointer", color: "var(--text-dim)" }}>Bulk-add (paste up to 10 keys, one per line)</summary>
@@ -998,7 +1037,7 @@ function TradingLoopPanel({ userId }: { userId: string }) {
         </div>
       )}
 
-      <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid #2a2a2a" }} />
+      <hr style={{ margin: "16px 0", border: "none", borderTop: "0.5px solid var(--separator)" }} />
 
       <div className="row" style={{ marginBottom: 10, gap: 8 }}>
         <span>Confidence threshold:</span>

@@ -1,333 +1,529 @@
+/*
+ * Dave admin panel — Apple HIG / Liquid Glass.
+ *
+ * Rewritten against .claude/skills/apple-design. The previous stylesheet was, almost line for
+ * line, the failure mode that skill's restraint reference documents: dark by default, two accent
+ * colours, translucent glass on every card, and a coloured glow on the status dot. Applying more
+ * effects is what makes a UI read as generic rather than Apple; the identity is deference.
+ *
+ * The rules this file actually follows, and why each one cuts against the obvious instinct:
+ *
+ *   - LIGHT IS THE DEFAULT. Dark is a real adaptation via prefers-color-scheme, not the baseline.
+ *     A dark-by-default dashboard reads as generic dark-SaaS.
+ *   - ONE ACCENT (systemBlue), lots of neutral. No second accent. Semantic status colours
+ *     (green/red) are state, not decoration, and never used as brand.
+ *   - GLASS IS CHROME ONLY — the header, and nothing else. Never glass on glass. Content cards
+ *     are calm and opaque, because the content is the point.
+ *   - TYPE AND SPACE CARRY HIERARCHY, not boxes, borders or glow. There is no glow in this file.
+ *   - UTILITY SURFACE, so the motion budget is near-invisible: short transitions, no springs
+ *     bouncing, nothing cinematic. This is a dashboard someone checks on their phone between
+ *     trades, not a landing page.
+ *
+ * Accessibility is not a section at the bottom; it is in the tokens. Every translucent surface has
+ * a prefers-reduced-transparency fallback, every transition respects prefers-reduced-motion, and
+ * interactive targets meet the 44px minimum.
+ */
+
 :root {
-  --bg: #0a0e17;
-  --bg-grad-2: #131a2b;
-  --glass: rgba(255, 255, 255, 0.05);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-hover: rgba(255, 255, 255, 0.08);
-  --text: #e8ecf4;
-  --text-dim: #8a93a8;
-  --accent: #6ea8fe;
-  --accent-2: #9b8cff;
-  --green: #4ade80;
-  --red: #f87171;
-  --yellow: #fbbf24;
-  --radius: 16px;
+  color-scheme: light dark;
+
+  /* Apple's semantic system colours, light. Named for their ROLE, not their value -- that is what
+     makes the dark block below a redefinition rather than a second theme. */
+  --bg: #f2f2f7; /* systemGroupedBackground */
+  --bg-elevated: #ffffff; /* secondarySystemGroupedBackground -- cards sit on the grouped bg */
+  /* For a surface NESTED inside a card (a stat tile). A third step is needed because dark mode
+     has no shadows to separate layers -- there, depth is a lighter fill, not a drop shadow. */
+  --bg-nested: #f7f7fa;
+  --bg-input: #ffffff;
+  --label: #1c1c1e;
+  --label-secondary: rgba(60, 60, 67, 0.6);
+  --label-tertiary: rgba(60, 60, 67, 0.3);
+  --separator: rgba(60, 60, 67, 0.18);
+  --separator-opaque: #c6c6c8;
+
+  /* The one accent. */
+  --accent: #007aff; /* systemBlue */
+  --accent-pressed: #0062cc;
+
+  /* Status, not brand. Only ever used to mean something. */
+  --green: #34c759;
+  --red: #ff3b30;
+  --orange: #ff9500;
+
+  /* Chrome glass. A layer that samples what is behind it -- fill + blur + a light top edge. */
+  --chrome-fill: rgba(255, 255, 255, 0.72);
+  --chrome-blur: saturate(180%) blur(20px);
+  --chrome-highlight: rgba(255, 255, 255, 0.5);
+
+  /* 8pt grid. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+
+  /* Continuous-ish corners. CSS cannot do a true G2 squircle, so these are honest radii. */
+  --radius: 12px;
+  --radius-lg: 16px;
+
+  /* Shadows are for elevation only -- never for glow. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 1px rgba(0, 0, 0, 0.03);
+  --shadow-chrome: 0 1px 0 rgba(0, 0, 0, 0.06);
+
+  --tap: 44px; /* HIG minimum touch target */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --bg-elevated: #1c1c1e;
+    --bg-nested: #2c2c2e; /* tertiarySystemGroupedBackground */
+    --bg-input: #2c2c2e;
+    --label: #ffffff;
+    --label-secondary: rgba(235, 235, 245, 0.6);
+    --label-tertiary: rgba(235, 235, 245, 0.3);
+    --separator: rgba(84, 84, 88, 0.6);
+    --separator-opaque: #38383a;
+
+    --accent: #0a84ff;
+    --accent-pressed: #409cff;
+
+    --green: #30d158;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+
+    --chrome-fill: rgba(30, 30, 32, 0.72);
+    --chrome-highlight: rgba(255, 255, 255, 0.08);
+
+    --shadow-card: none;
+    --shadow-chrome: 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+}
+
+/* Reduce Transparency: the glass becomes genuinely opaque rather than merely less blurry.
+   Required by the materials skill -- a translucent surface that stays translucent under this
+   setting is the accessibility failure, not a lesser effect. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --chrome-fill: var(--bg-elevated);
+    --chrome-blur: none;
+  }
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
-  background: radial-gradient(1200px 800px at 10% -10%, var(--bg-grad-2), var(--bg) 60%),
-    radial-gradient(1000px 700px at 110% 10%, #1a1030, var(--bg) 55%);
-  background-color: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
-  min-height: 100vh;
+  padding: 0;
 }
 
+body {
+  background: var(--bg);
+  color: var(--label);
+  /* SF Pro on Apple platforms, the platform UI font elsewhere. */
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.47;
+  letter-spacing: -0.01em;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------------------------------------------------------- chrome */
+
+/* The ONLY glass in this file. Floating chrome that content scrolls under. */
 header {
-  padding: 24px clamp(16px, 4vw, 40px) 8px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  padding-top: max(var(--s3), env(safe-area-inset-top));
+  background: var(--chrome-fill);
+  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur);
+  /* The light top edge is what makes glass read as a physical layer rather than a tint. */
+  box-shadow: inset 0 1px 0 var(--chrome-highlight), var(--shadow-chrome);
+  border-bottom: 0.5px solid var(--separator);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-.brand .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 10px var(--green);
-  flex-shrink: 0;
-}
-.brand h1 {
-  font-size: 20px;
-  margin: 0;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-}
-.brand .sub {
-  color: var(--text-dim);
-  font-size: 12px;
+  gap: var(--s2);
+  min-width: 0;
 }
 
+/* A status dot means connected / not connected. No glow -- the colour is the signal. */
+.brand .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+}
+.brand .dot.bad {
+  background: var(--red);
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.brand .sub {
+  color: var(--label-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Segmented-control tabs, the iOS pattern: one recessed track, the selection raised inside it. */
 nav {
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 0 clamp(16px, 4vw, 40px);
-  margin-bottom: 20px;
+  gap: 2px;
+  padding: 2px;
+  margin: var(--s3) var(--s4) 0;
+  background: color-mix(in srgb, var(--label) 6%, transparent);
+  border-radius: 9px;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+nav::-webkit-scrollbar {
+  display: none;
+}
+
 nav button {
-  background: var(--glass);
-  border: 1px solid var(--glass-border);
-  color: var(--text-dim);
-  padding: 8px 14px;
-  border-radius: 999px;
+  flex: 1 0 auto;
+  min-height: 32px;
+  padding: 0 var(--s3);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
   font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
-  backdrop-filter: blur(10px);
-  transition: all 0.15s ease;
-}
-nav button:hover {
-  background: var(--glass-hover);
-  color: var(--text);
+  transition: background 0.15s ease;
 }
 nav button.active {
-  color: var(--bg);
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  border-color: transparent;
+  background: var(--bg-elevated);
   font-weight: 600;
+  box-shadow: var(--shadow-card);
 }
 
 main {
-  padding: 0 clamp(16px, 4vw, 40px) 60px;
-  max-width: 1200px;
+  padding: var(--s4);
+  padding-bottom: max(var(--s7), env(safe-area-inset-bottom));
+  max-width: 980px;
   margin: 0 auto;
+  display: grid;
+  gap: var(--s4);
 }
 
+/* ---------------------------------------------------------------- content */
+
+/* Opaque, calm, quiet. Deliberately NOT glass -- see the file header. */
 .card {
-  background: var(--glass);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  padding: 20px;
-  margin-bottom: 16px;
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-lg);
+  padding: var(--s4);
+  box-shadow: var(--shadow-card);
 }
+
 .card h2 {
-  margin: 0 0 14px;
-  font-size: 15px;
-  color: var(--text-dim);
+  margin: 0 0 var(--s3);
+  font-size: 13px;
+  font-weight: 590;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  font-weight: 600;
+  color: var(--label-secondary);
+}
+
+.sub,
+.dim,
+.meta,
+.stat-note {
+  color: var(--label-secondary);
+  font-size: 13px;
+}
+
+.label {
+  color: var(--label-secondary);
+  font-size: 13px;
+}
+
+/* A number is the hero of a dashboard, so it gets the type weight rather than a box. */
+.balance-card {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-lg);
+  padding: var(--s5) var(--s4);
+  box-shadow: var(--shadow-card);
+}
+.balance-value {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  /* Tabular figures stop the number jittering as it ticks. */
+  font-variant-numeric: tabular-nums;
+}
+.balance-sub {
+  color: var(--label-secondary);
+  font-size: 13px;
+  margin-top: var(--s1);
+  font-variant-numeric: tabular-nums;
 }
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-}
-.stat-tile {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  padding: 16px;
-}
-.stat-tile .value {
-  font-size: 26px;
-  font-weight: 700;
-}
-.stat-tile .label {
-  font-size: 12px;
-  color: var(--text-dim);
-  margin-top: 4px;
-}
-.stat-note {
-  font-size: 11.5px;
-  color: var(--text-dim);
-  margin-top: 14px;
-  line-height: 1.5;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--s3);
 }
 
-.badge {
-  display: inline-flex;
+/* Nested inside .card, so it uses the third surface step rather than repeating the card's own
+   fill. In dark that step is the ONLY thing separating a tile from its card, since there are no
+   shadows there -- with --bg-elevated the tiles became invisible as tiles. Caught by looking at
+   a dark-mode screenshot, not by reading the CSS. */
+.stat-tile {
+  background: var(--bg-nested);
+  border-radius: var(--radius);
+  padding: var(--s3) var(--s4);
+}
+.stat-tile .value {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.stat-tile .label {
+  margin-top: 2px;
+}
+
+.row {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
+  gap: var(--s3);
+  flex-wrap: wrap;
 }
-.badge.ok {
-  background: rgba(74, 222, 128, 0.15);
-  color: var(--green);
+
+/* Grouped-list rows, the iOS Settings pattern: hairline separators, no boxes per row. */
+.feed-item,
+.group-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) 0;
+  border-bottom: 0.5px solid var(--separator);
 }
-.badge.bad {
-  background: rgba(248, 113, 113, 0.15);
+.feed-item:last-child,
+.group-card:last-child {
+  border-bottom: 0;
+}
+
+.symbols {
+  color: var(--label-secondary);
+  font-size: 13px;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------- controls */
+
+.btn {
+  min-height: var(--tap);
+  padding: 0 var(--s4);
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 590;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+.btn:hover {
+  background: var(--accent-pressed);
+}
+.btn:active {
+  opacity: 0.8;
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Secondary: tinted, not outlined. Apple uses a tint fill for the quieter action. */
+.btn.secondary {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+.btn.secondary:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Destructive reads red because of what it DOES. This is the one place red is a control. */
+.btn.danger {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
   color: var(--red);
 }
-.badge.warn {
-  background: rgba(251, 191, 36, 0.15);
-  color: var(--yellow);
+.btn.danger:hover {
+  background: color-mix(in srgb, var(--red) 18%, transparent);
+}
+
+input,
+select,
+textarea {
+  min-height: var(--tap);
+  padding: 0 var(--s3);
+  border: 0.5px solid var(--separator-opaque);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--label);
+  font: inherit;
+  font-size: 16px; /* 16px or iOS zooms the page on focus */
+}
+textarea {
+  padding: var(--s3);
+  min-height: 96px;
+  line-height: 1.5;
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+.btn:focus-visible,
+nav button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Status chips. Tinted, never glowing. */
+.badge,
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 3px var(--s2);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 590;
+  background: color-mix(in srgb, var(--label) 8%, transparent);
+  color: var(--label-secondary);
+  white-space: nowrap;
+}
+.badge.ok,
+.pill.ok {
+  background: color-mix(in srgb, var(--green) 15%, transparent);
+  color: color-mix(in srgb, var(--green) 80%, var(--label));
+}
+.badge.bad,
+.pill.bad {
+  background: color-mix(in srgb, var(--red) 15%, transparent);
+  color: color-mix(in srgb, var(--red) 80%, var(--label));
+}
+
+/* ---------------------------------------------------------------- tables */
+
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
 }
 th {
   text-align: left;
-  color: var(--text-dim);
-  font-weight: 600;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--glass-border);
-  font-size: 11.5px;
+  padding: var(--s2) var(--s3) var(--s2) 0;
+  font-size: 12px;
+  font-weight: 590;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
+  color: var(--label-secondary);
+  border-bottom: 0.5px solid var(--separator);
+  white-space: nowrap;
 }
 td {
-  padding: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  vertical-align: top;
+  padding: var(--s3) var(--s3) var(--s3) 0;
+  border-bottom: 0.5px solid var(--separator);
+  font-variant-numeric: tabular-nums;
 }
 tr:last-child td {
-  border-bottom: none;
-}
-.table-wrap {
-  overflow-x: auto;
+  border-bottom: 0;
 }
 
-.row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-input[type="text"],
-select {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--glass-border);
-  color: var(--text);
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 13px;
-}
-button.btn {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  border: none;
-  color: #06090f;
-  font-weight: 700;
-  padding: 9px 16px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 13px;
-}
-button.btn.secondary.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #06090f;
-  font-weight: 700;
-}
-button.btn.secondary {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
-}
-button.btn.danger {
-  background: rgba(248, 113, 113, 0.18);
-  color: var(--red);
-}
-button.btn:hover {
-  filter: brightness(1.08);
-}
-
-.group-card {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 10px;
-}
-.group-card .symbols {
-  color: var(--text-dim);
-  font-size: 12.5px;
-  margin-top: 4px;
-}
-.pill {
-  display: inline-block;
-  background: rgba(110, 168, 254, 0.15);
-  color: var(--accent);
-  border-radius: 6px;
-  padding: 2px 8px;
-  font-size: 11px;
-  margin: 2px 4px 2px 0;
-}
-
-.feed-item {
-  padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  font-size: 13px;
-}
-.feed-item .meta {
-  color: var(--text-dim);
-  font-size: 11.5px;
-}
-
-.placeholder {
-  color: var(--text-dim);
-  font-size: 13px;
-  padding: 20px 0;
-  text-align: center;
-}
-
-@media (max-width: 640px) {
-  .stat-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  th,
-  td {
-    padding: 8px 6px;
-  }
-}
-
-.balance-card {
-  background: linear-gradient(135deg, rgba(110, 168, 254, 0.12), rgba(155, 140, 255, 0.12)), var(--glass);
-  text-align: center;
-  padding: 32px 20px;
-}
-
-.balance-value {
-  font-size: 44px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-.balance-value.dim {
-  background: none;
-  -webkit-background-clip: unset;
-  color: var(--text-dim);
-}
-
-.balance-sub {
-  color: var(--text-dim);
-  font-size: 13px;
-  margin-top: 8px;
-}
+/* ---------------------------------------------------------------- heatmap */
 
 .heatmap-scroll {
   overflow-x: auto;
-  padding-bottom: 8px;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: var(--s2);
 }
-
 .heatmap-grid {
   display: flex;
   gap: 3px;
-  width: max-content;
+  min-width: max-content;
 }
-
 .heatmap-col {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: repeat(7, 1fr);
   gap: 3px;
 }
 
+/*
+ * P&L has a meaningful zero, so the scale is DIVERGING (loss -> neutral -> profit), not
+ * sequential. A sequential green ramp would render a bad day and a flat day as the same
+ * near-empty cell, which is exactly the thing the trader needs to tell apart at a glance.
+ * Intensity is applied by the component as an alpha on these two hues.
+ */
 .heatmap-cell {
   width: 11px;
   height: 11px;
   border-radius: 2px;
+  background: color-mix(in srgb, var(--label) 7%, transparent);
+}
+
+/* ---------------------------------------------------------------- empty */
+
+/* An empty state says WHY it is empty. HIG's ContentUnavailableView, not a blank panel. */
+.placeholder {
+  padding: var(--s6) var(--s4);
+  text-align: center;
+  color: var(--label-secondary);
+  font-size: 14px;
+}
+
+/* ---------------------------------------------------------------- motion */
+
+/*
+ * Utility surface: the motion budget is near-invisible by design. Every transition in this file
+ * is a short opacity/colour fade. Nothing moves, nothing springs, nothing is cinematic.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -9,8 +9,8 @@ import {
   InvalidIntervalError,
   MIN_TRADING_LOOP_MINUTES,
   MAX_TRADING_LOOP_MINUTES,
-} from "../../../../server/bot-control.js";
-import { withDevice } from "../../../../server/require-device.js";
+} from "../../../../server/bot-control";
+import { withDevice } from "../../../../server/require-device";
 
 /**
  * Start / stop the bot, set the scan interval, and switch execution between normal and watch-only.

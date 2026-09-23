@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus } from "@dave/ea-bridge";
 import { listJournalEntries } from "@dave/workers";
 import { getRiskSettings } from "@dave/trading";
-import { withDevice } from "../../../../server/require-device.js";
+import { withDevice } from "../../../../server/require-device";
 
 /**
  * Everything the app's home screen needs, in ONE call.

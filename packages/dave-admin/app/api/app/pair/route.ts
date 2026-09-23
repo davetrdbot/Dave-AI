@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { redeemPairingCode, PairingCodeInvalidError } from "../../../../server/device-auth.js";
+import { redeemPairingCode, PairingCodeInvalidError } from "../../../../server/device-auth";
 
 /**
  * The app's bootstrap call, and the ONLY route under /api/app/ that does not require a device

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createPairingCode, listDevices, revokeDevice, PAIRING_CODE_TTL_MS } from "../../../server/device-auth.js";
+import { createPairingCode, listDevices, revokeDevice, PAIRING_CODE_TTL_MS } from "../../../server/device-auth";
 
 /**
  * The WEB PANEL side of device pairing -- deliberately NOT under /api/app/, because this is the

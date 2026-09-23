@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyDeviceToken } from "./device-auth.js";
+import { verifyDeviceToken } from "./device-auth";
 
 /**
  * The route-level half of device auth for everything under `/api/app/*`.
