@@ -16,9 +16,8 @@ already compiled, attached to a chart and logged in to your account. It replaces
    |---|---|
    | `RAILWAY_DOCKERFILE_PATH` | `mt5/Dockerfile` |
    | `MT5_AGENT_SECRET` | a long random string (keep it) |
-   | `CUSTOM_USER` / `PASSWORD` | a login for the web desktop (optional, recommended) |
-2. **Add a volume** mounted at `/config`. MetaTrader and your login live there, so a redeploy
-   doesn't reinstall or log out.
+2. **Add a volume** mounted at `/data` (0.5 GB is plenty -- it only holds your login settings;
+   MetaTrader itself is built into the image). Without it, a redeploy means connecting again.
 3. **On the bot service**, add:
    | Variable | Value |
    |---|---|
@@ -37,8 +36,9 @@ broker accepted the login. From then on `/mt5` (or the app) changes the chart sy
 and EA report interval, and restarts MT5 if it ever gets stuck. The container restarts MT5 by
 itself if it exits.
 
-**Want to look at it?** Give the MT5 service a public domain on port 3000 and open it in a
-browser: that's the MT5 desktop (protected by `CUSTOM_USER` / `PASSWORD`).
+The default build is lean -- no desktop -- so it fits Railway's trial/free limits (1 GB RAM).
+**Want to watch MT5 in a browser?** Build `mt5/Dockerfile.desktop` instead (more memory; needs a
+`/config` volume and `CUSTOM_USER` / `PASSWORD`), give it a public domain on port 3000, and open it.
 
 ## Anywhere else (a PC, a server)
 

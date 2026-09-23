@@ -1,7 +1,8 @@
 name: MT5 container image
 
-# Proves mt5/Dockerfile builds on real Docker (the build sandbox has too little disk for it), and
-# runs the agent's own tests. Builds only -- nothing is pushed.
+# Builds mt5/Dockerfile on real Docker and RUNS it: the agent comes up, MetaTrader is installed in
+# the image, and a /configure compiles the EA and starts MT5 with it on a chart. Builds only --
+# nothing is pushed anywhere.
 on:
   push:
     paths: ["mt5/**", "ea/DaveEA.mq5", ".github/workflows/mt5-image.yml"]
@@ -18,11 +19,22 @@ jobs:
         run: python3 mt5/test_agent.py
       - name: Build image
         run: docker build -f mt5/Dockerfile -t dave-mt5:ci .
-      - name: Agent starts in the image
+      - name: Image size
+        run: docker image ls dave-mt5:ci
+      - name: Run it -- EA compiles, MT5 starts with it on a chart
         run: |
-          docker run --rm --entrypoint python3 -e MT5_AGENT_SECRET=ci-secret-123 -e AGENT_PORT=8081 -d --name dave-mt5 -p 8081:8081 dave-mt5:ci /opt/dave/agent.py
-          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8081/health && break; sleep 1; done
-          curl -fs -H 'x-dave-agent-secret: ci-secret-123' http://127.0.0.1:8081/status
-          docker exec dave-mt5 test -f /opt/dave/DaveEA.mq5
-          docker exec dave-mt5 wine --version
-          docker rm -f dave-mt5
+          docker run -d --name dave-mt5 -m 1g -e MT5_AGENT_SECRET=ci-secret-123 -p 8081:8081 dave-mt5:ci
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8081/health && break; sleep 1; done
+          H='x-dave-agent-secret: ci-secret-123'
+          curl -fs -H "$H" http://127.0.0.1:8081/status | tee /tmp/status.json
+          grep -q '"installed": true' /tmp/status.json
+          curl -s -m 400 -X POST -H "$H" -H 'content-type: application/json' http://127.0.0.1:8081/configure \
+            -d '{"login":"12345678","password":"x","server":"MetaQuotes-Demo","webhookUrl":"http://127.0.0.1:9/hooks/ea/t","symbol":"EURUSD","period":"M1"}' | tee /tmp/configure.json
+          grep -q '"ok": true' /tmp/configure.json
+          for i in $(seq 1 60); do curl -fs -H "$H" http://127.0.0.1:8081/logs > /tmp/logs.json; grep -q "loaded successfully" /tmp/logs.json && break; sleep 3; done
+          python3 -c "import json;d=json.load(open('/tmp/logs.json'));print(d['terminal'][-1500:])"
+          grep -q "loaded successfully" /tmp/logs.json
+          docker stats --no-stream dave-mt5
+      - name: Container log
+        if: always()
+        run: docker logs dave-mt5 2>&1 | tail -40 || true

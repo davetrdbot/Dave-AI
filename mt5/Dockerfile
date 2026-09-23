@@ -1,36 +1,34 @@
-# Dave's MT5 container: MetaTrader 5 under Wine, with the Dave EA already on a chart and logged in
-# to the trader's account -- the part a Windows VPS used to be needed for.
+# Dave's MT5 container -- the lean build (the default).
 #
-# Build context is the REPO ROOT (the EA source lives in ea/). On Railway: new service from this
-# repo, variable RAILWAY_DOCKERFILE_PATH=mt5/Dockerfile. See mt5/README.md.
+# MetaTrader 5 under Wine on a virtual screen (Xvfb), with the Dave EA and the agent Dave talks to.
+# No desktop: it fits Railway's trial/free limits (1 GB RAM, 0.5 GB volume). MetaTrader is installed
+# INTO THE IMAGE at build time, so the volume only has to hold the login settings (a few KB).
+# Want to watch MT5 in a browser? Use Dockerfile.desktop instead (needs more memory).
 #
-# Base: linuxserver's KasmVNC image (Debian bookworm) -- the same base the community MT5 images
-# use. It gives MT5 a real display, and a password-protected web desktop on port 3000 so you can
-# look at the terminal whenever you want to.
-FROM ghcr.io/linuxserver/baseimage-kasmvnc:debianbookworm
+# Build context: the repo root. On Railway: RAILWAY_DOCKERFILE_PATH=mt5/Dockerfile.
+FROM debian:bookworm-slim
 
-ENV TITLE="Dave MT5" \
-    WINEPREFIX=/config/.wine \
+ENV WINEPREFIX=/opt/wine \
     WINEDEBUG=-all \
+    WINEARCH=win64 \
+    DISPLAY=:99 \
     AGENT_PORT=8081 \
+    DAVE_STATE_DIR=/data/dave \
     DAVE_EA_SOURCE=/opt/dave/DaveEA.mq5
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 curl wget gnupg2 ca-certificates procps \
+    && apt-get install -y --no-install-recommends ca-certificates curl wget gnupg2 python3 procps xvfb xauth \
     && mkdir -pm755 /etc/apt/keyrings \
-    && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
-    && wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
+    && wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
+    && wget -qNP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
     && dpkg --add-architecture i386 \
     && apt-get update \
-    && apt-get install --install-recommends -y winehq-stable \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    && apt-get install -y --no-install-recommends winehq-stable \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-COPY mt5/agent.py mt5/start.sh /opt/dave/
+COPY mt5/agent.py mt5/start.sh mt5/install-mt5.sh /opt/dave/
 COPY ea/DaveEA.mq5 /opt/dave/DaveEA.mq5
-COPY mt5/autostart /defaults/autostart
-RUN chmod +x /opt/dave/start.sh
+RUN chmod +x /opt/dave/*.sh && /opt/dave/install-mt5.sh
 
-# 3000: web desktop (protect it with CUSTOM_USER / PASSWORD). 8081: the agent Dave talks to.
-EXPOSE 3000 8081
-VOLUME /config
+EXPOSE 8081
+CMD ["/opt/dave/start.sh"]
