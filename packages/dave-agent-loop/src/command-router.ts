@@ -160,7 +160,8 @@ export interface CommandRouterDeps {
   db: DaveDatabase;
   client: TelegramClient;
   userId: string; // the one Dave account these commands operate on
-  publicBaseUrl: string;
+  /** Public HTTPS base URL; absent when the bot polls Telegram (no public address). */
+  publicBaseUrl?: string;
   /** Optional -- only needed for the real /trades close/close-all/close-losers buttons. */
   executor?: TradeExecutor;
 }
@@ -2449,8 +2450,13 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
       }
     } else if (data === "eaexec:ea") {
       setEaTradingMode(deps.userId);
-      if (chatId) {
-        const { filename, content, webhookUrl, token } = personalizeEaFile(deps.userId, deps.publicBaseUrl);
+      if (chatId && !deps.publicBaseUrl) {
+        await deps.client.sendMessage({
+          chat_id: chatId,
+          text: "The EA reports to this server over the internet, so the server needs a public web address first. Set PUBLIC_BASE_URL to it (Railway sets one automatically when you generate a domain), restart, then choose the EA again.",
+        });
+      } else if (chatId) {
+        const { filename, content, webhookUrl, token } = personalizeEaFile(deps.userId, deps.publicBaseUrl!);
         await deps.client.sendDocument({
           chat_id: chatId,
           document: { buffer: Buffer.from(content, "utf8"), filename },

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
-import { TelegramClient, createTelegramWebhookServer, enableTelegramWebhook, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, sendSelfDeletingMessage, chunkForTelegram, getActiveIndicator, setActiveIndicator, clearActiveIndicator, withThinkingIndicator, type ActionType, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
+import { TelegramClient, createTelegramWebhookServer, startUpdateDelivery, writeTelegramStatus, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, sendSelfDeletingMessage, chunkForTelegram, getActiveIndicator, setActiveIndicator, clearActiveIndicator, withThinkingIndicator, type ActionType, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { resetConsolidationFailures } from "@dave/memory";
 import { invokeWebhookTrigger } from "@dave/db";
 import { userUploadDir } from "@dave/e2b";
@@ -32,6 +32,7 @@ import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandl
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
 import { takeControlNotices, describeControlNotice } from "./control-notices.js";
 import { deliverDueReminders } from "./reminder-delivery.js";
+import { setupGaps } from "./setup-gaps.js";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
 const CONTROL_WATCH_MS = 5_000;
@@ -75,13 +76,19 @@ export interface TelegramBotServerDeps {
   db: DaveDatabase;
   executor: TradeExecutor;
   botToken: string;
-  publicBaseUrl: string;
+  /** Public HTTPS base URL for the webhook. Absent -> the bot polls Telegram itself. */
+  publicBaseUrl?: string;
   systemPrompt: string;
+  /** Called with the webhook HTTP server BEFORE Telegram is told to deliver to it, so the first
+   *  update never lands on a route that doesn't exist yet. */
+  mount?: (server: Server) => void;
 }
 
 export interface TelegramBotServer {
   server: Server;
-  webhookUrl: string;
+  /** Where Telegram delivers updates; undefined in polling mode. */
+  webhookUrl?: string;
+  mode: "webhook" | "polling";
   /** Real gap fixed (user: "a hardcoded message to send when a trade is closed"): exposed so a
    *  caller (main.ts, wiring EaBridge's real onClosedPosition/onManualClose events) can send a
    *  fast, consistent, non-LLM-generated notification straight to the user's chat -- without
@@ -767,7 +774,8 @@ export function getOrBuildRegistry(deps: TelegramBotServerDeps, client: Telegram
  */
 export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promise<TelegramBotServer> {
   const client = new TelegramClient(deps.botToken);
-  const registration = await enableTelegramWebhook(client, deps.ownerUserId, deps.publicBaseUrl);
+  writeTelegramStatus({ state: "starting" });
+  const me = await client.getMe().catch(() => undefined);
   // Real gap fixed: registerDefaultCommandMenu (setMyCommands) only
   // ever existed as a tool Dave itself could choose to call -- nothing
   // called it automatically at startup, so the real 9 commands never
@@ -800,8 +808,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   // in production ever called -- same class of gap as F5 above.
   wireFeedbackLoop({ db: deps.db, client, ownerUserId: deps.ownerUserId });
 
-  const server = createTelegramWebhookServer({
-    onUpdate: async (_userId: string, update: TelegramUpdate) => {
+  const onUpdate = async (_userId: string, update: TelegramUpdate): Promise<void> => {
+    {
       // Real fix (Step 18.5 re-verification): a real `poll_answer` update
       // is how Telegram genuinely delivers a feedback poll's answer --
       // there is no separate inbound channel for it. `poll_id` (NOT
@@ -1017,7 +1025,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // safe to call unconditionally on every message, not just during a real onboarding window.
       if (message.text) {
         const bootstrapTransport: Transport = { send: async (_userId, text) => { await client.sendMessage({ chat_id: chatId, text }); } };
-        if (await new BootstrapFlow(bootstrapTransport).handleMessage(deps.ownerUserId, message.text)) return;
+        if (await new BootstrapFlow(bootstrapTransport, undefined, (u) => setupGaps(deps.db, u)).handleMessage(deps.ownerUserId, message.text)) return;
       }
 
       let userContent: string | ContentBlock[];
@@ -1063,8 +1071,9 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       }
 
       await runAgentTurn(deps, client, chatId, historyKey, userContent, message.text, message.message_id);
-    },
-  });
+    }
+  };
+  const server = createTelegramWebhookServer({ onUpdate });
 
   // Real bug fixed (user, live: "it's not analyzing any [expletive] thing" -- reported right
   // after a routine deploy). Root cause confirmed: startAutonomousTradingLoop's setInterval is
@@ -1167,5 +1176,11 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     },
   });
 
-  return { server, webhookUrl: `${deps.publicBaseUrl}${registration.path}`, client };
+  // Last, so every timer and handler above exists before the first update can arrive. The route is
+  // mounted before Telegram is told about it: registering first meant a message already waiting
+  // (typically the trader's answer to "What should I call you?") was delivered to a 404, and
+  // Telegram then backs off retrying -- the trader just sees silence.
+  deps.mount?.(server);
+  const delivery = await startUpdateDelivery({ client, db: deps.db, ownerUserId: deps.ownerUserId, publicBaseUrl: deps.publicBaseUrl, onUpdate, username: me?.username });
+  return { server, webhookUrl: delivery.webhookUrl, mode: delivery.mode, client };
 }

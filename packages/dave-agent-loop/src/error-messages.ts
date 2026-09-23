@@ -83,6 +83,12 @@ export function friendlyErrorMessage(err: unknown): string {
     // clean, human-readable line naming every provider actually tried and a short classification
     // of what went wrong with each -- never the raw JSON body, and never a repeat of what a live
     // key-switch/provider-switch notice (provider-selection.ts) already told the user moments ago.
+    // A fresh install has no keys at all -- that is setup, not a failure, and "All configured
+    // providers failed: openai (no working keys)" told a new user nothing about what to do.
+    if (err.attempts.every((a) => /no stored keys for provider/.test(a.reason))) {
+      const names = [...new Set(err.attempts.map((a) => a.provider))].join(" or ");
+      return `⚠️ I don't have a key for ${names} yet, so I can't think or answer. Add one in the web panel's AI providers card, or in the Dave app under Settings → AI providers -- then message me again.`;
+    }
     const parts = err.attempts.map((a) => {
       const noStoredKeys = /no stored keys for provider "([^"]+)"/.exec(a.reason);
       return `${a.provider} (${noStoredKeys ? "no working keys" : describeProviderFailure(a.reason)})`;

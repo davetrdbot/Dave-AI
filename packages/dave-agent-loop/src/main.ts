@@ -6,7 +6,7 @@ import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
 import { EaBridge, DynamicTradeExecutor, setEaPushInterval } from "@dave/ea-bridge";
 import { createHiddenWebhookServer } from "@dave/memory";
 import { startWatchdog, startHeartbeatLoop } from "@dave/safety";
-import { getTelegramCredentials, type TelegramClient } from "@dave/telegram";
+import { getTelegramCredentials, writeTelegramStatus, type TelegramClient } from "@dave/telegram";
 import { startTelegramBotServer } from "./telegram-bot-server.js";
 import { getPrimaryChatId } from "./primary-chat.js";
 import { buildClosedTradeMessage, buildManualCloseMessage, buildManualModifyMessage, buildWatchdogAlertMessage } from "./trade-notifications.js";
@@ -75,6 +75,8 @@ function resolvePublicBaseUrl(): string | undefined {
  * to keep in sync.
  */
 const ADMIN_INTERNAL_PORT = 3980;
+/** How often a bot with no token (or a failed start) tries again. */
+const TELEGRAM_RETRY_MS = 5_000;
 
 function spawnAdminPanel(dataDir: string): ChildProcess | undefined {
   const adminDir = join(process.cwd(), "packages", "dave-admin");
@@ -306,12 +308,14 @@ export async function main(): Promise<void> {
       // the Telegram bot, but a missing token shouldn't take down the
       // whole process (health check + every webhook server still runs)
       // -- it just means the bot itself isn't live yet.
+      writeTelegramStatus({ state: "waiting-for-token", detail: "Pair a bot in the web panel's Telegram card." });
       return false;
     }
-    if (!publicBaseUrl) {
-      console.error("[telegram] no PUBLIC_BASE_URL / RAILWAY_PUBLIC_DOMAIN available -- Telegram needs a public HTTPS URL to push updates to. Telegram bot disabled, everything else still running.");
-      return false;
-    }
+    // No public HTTPS address (a VPS without a domain, a home machine, Docker on a laptop) no longer
+    // means "no bot": it polls Telegram instead of waiting for pushes. It used to log an error here
+    // and stay offline forever -- after pairing had already succeeded, which is exactly the
+    // "it asked my name and then nothing worked" report from a trader who forked the repo.
+    if (!publicBaseUrl) console.log("[telegram] no PUBLIC_BASE_URL / RAILWAY_PUBLIC_DOMAIN -- fetching messages from Telegram instead of using a webhook");
     try {
       const bot = await startTelegramBotServer({
         ownerUserId,
@@ -324,11 +328,11 @@ export async function main(): Promise<void> {
         botToken: telegramBotToken,
         publicBaseUrl,
         systemPrompt: loadSystemPrompt(),
+        mount: (server) => routes.push(["/hooks/telegram/", subServerHandler(server)]),
       });
-      routes.push(["/hooks/telegram/", subServerHandler(bot.server)]);
       telegramClient = bot.client;
       telegramWired = true;
-      console.log(`[telegram] webhook registered: ${bot.webhookUrl}`);
+      console.log(bot.mode === "webhook" ? `[telegram] webhook registered: ${bot.webhookUrl}` : "[telegram] online, fetching messages from Telegram (no public URL)");
       return true;
     } catch (err) {
       // A bad/expired bot token, or Telegram's API being unreachable,
@@ -336,7 +340,9 @@ export async function main(): Promise<void> {
       // subsystem (EA/R_Feed webhooks, health check) still needs to
       // come up. Left to retry on the next poll tick rather than
       // permanently giving up on one transient failure.
-      console.error(`[telegram] failed to start (${err instanceof Error ? err.message : String(err)}) -- will retry`);
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error(`[telegram] failed to start (${reason}) -- will retry`);
+      writeTelegramStatus({ state: "error", detail: `The bot could not start: ${reason}. Retrying every few seconds.` });
       return false;
     }
   }
@@ -346,12 +352,20 @@ export async function main(): Promise<void> {
     // Expected, not an error: a fresh deploy legitimately has no token
     // paired yet. console.log, not console.error, so this doesn't show
     // up flagged red in Railway's dashboard as if the process crashed.
-    console.log("[telegram] not live yet (no token set) -- checking every 30s; pair it from the admin panel to bring it online with no restart needed");
+    console.log(`[telegram] not live yet -- checking every ${TELEGRAM_RETRY_MS / 1000}s; pair it from the admin panel to bring it online with no restart needed`);
+    // A cheap database read while no token exists, so a pairing done in the web panel brings the
+    // bot online within seconds (it was 30s, long enough for the trader to message a bot that
+    // wasn't listening yet and conclude it was broken). The guard stops overlapping attempts.
+    let attempting = false;
     telegramRetryTimer = setInterval(() => {
-      void tryStartTelegram().then((started) => {
-        if (started && telegramRetryTimer) clearInterval(telegramRetryTimer);
-      });
-    }, 30_000);
+      if (attempting) return;
+      attempting = true;
+      void tryStartTelegram()
+        .then((started) => {
+          if (started && telegramRetryTimer) clearInterval(telegramRetryTimer);
+        })
+        .finally(() => (attempting = false));
+    }, TELEGRAM_RETRY_MS);
   }
 
   const root = createServer((req, res) => {

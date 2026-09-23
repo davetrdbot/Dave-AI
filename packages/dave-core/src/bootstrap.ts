@@ -72,10 +72,27 @@ export const defaultRealTaskDetector: RealTaskDetector = (message) => {
   return !trivialAnswerLike && /[?]|please|help|can you|show me|what('|)s/i.test(message);
 };
 
+/**
+ * The name inside an answer to "What should I call you?". People answer in a sentence as often as
+ * with a bare name -- "call me Sam", "I'm Sam", "my name is Sam" -- and the whole sentence used to
+ * be saved as the name ("Got it, Call me Sam."). A bare answer is kept as typed.
+ */
+export function extractPreferredName(message: string): string {
+  const text = message.trim().replace(/[.!]+$/, "");
+  const m = text.match(/^(?:(?:you can |just )?call me|my name is|my name's|name's|i am|i'm|im|it's|its|this is)\s+(.+)$/i);
+  const name = (m ? m[1] : text).trim().replace(/^["']|["']$/g, "");
+  return name.length > 40 ? name.slice(0, 40).trim() : name;
+}
+
+/** What still stands between a fresh install and Dave trading, in plain words -- empty when
+ *  nothing does. Supplied by the caller, which can see keys and the EA connection. */
+export type SetupGaps = (userId: string) => string[];
+
 export class BootstrapFlow {
   constructor(
     private readonly transport: Transport,
-    private readonly isRealTask: RealTaskDetector = defaultRealTaskDetector
+    private readonly isRealTask: RealTaskDetector = defaultRealTaskDetector,
+    private readonly setupGaps?: SetupGaps
   ) {}
 
   /** Step 3.5/BOOTSTRAP trigger: called the moment pairing is confirmed. Dave speaks first. */
@@ -115,7 +132,7 @@ export class BootstrapFlow {
 
     switch (progress.state) {
       case "awaiting-name": {
-        const name = message.trim();
+        const name = extractPreferredName(message);
         appendUserFact(userId, `Prefers to be called: ${name}`);
         progress.name = name;
         progress.state = "awaiting-style";
@@ -134,10 +151,15 @@ export class BootstrapFlow {
         // mention from onboarding entirely"): this used to make onboarding wait on the user
         // uploading a rules file before Dave would trade at all. Dave's real trading behavior
         // (prompts/trading.md) is now built in, not something the user has to hand over first.
+        // It used to say "I'm already scanning the markets" unconditionally -- on a fresh install
+        // with no AI key and no MT5 connected, which was simply untrue. It now says what is
+        // actually left to do, and only claims to be working when nothing is.
+        const gaps = this.setupGaps?.(userId) ?? [];
         await this.transport.send(
           userId,
-          `Got it, ${name}. I'll keep "${style}" in mind. I'm already scanning the markets — ` +
-            `I'll come to you when I find something real worth trading.`
+          gaps.length === 0
+            ? `Got it, ${name}. I'll keep "${style}" in mind. Send /start_trading whenever you want me hunting, or just ask me anything.`
+            : `Got it, ${name}. I'll keep "${style}" in mind.\n\nBefore I can trade for you:\n${gaps.map((g) => `• ${g}`).join("\n")}`
         );
         return true;
       }

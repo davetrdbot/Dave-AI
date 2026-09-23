@@ -12,3 +12,5 @@ export * from "./telegram-credentials.js";
 export * from "./telegram-otp.js";
 export * from "./telegram-webhook.js";
 export * from "./self-delete.js";
+export * from "./bot-status.js";
+export * from "./update-delivery.js";

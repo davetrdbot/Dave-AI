@@ -66,7 +66,13 @@ function generateOtp(): string {
  * used with a webhook before (a prior deploy, a different tool, an
  * earlier test), not just on a bot that's never touched the API.
  */
-export async function startTelegramOtpPairing(db: DaveDatabase, userId: string, botToken: string, chatId: number): Promise<{ otp: string; botUsername: string }> {
+export async function startTelegramOtpPairing(
+  db: DaveDatabase,
+  userId: string,
+  botToken: string,
+  chatId?: number,
+): Promise<{ otp: string; botUsername: string; sentToChat: boolean }> {
+  const knownChat = chatId !== undefined && Number.isFinite(chatId) && chatId !== 0 ? chatId : undefined;
   ensureTable(db);
   const client = new TelegramClient(botToken);
   let me: { username: string };
@@ -79,18 +85,24 @@ export async function startTelegramOtpPairing(db: DaveDatabase, userId: string, 
   const existing = db.query(TABLE, userId, {});
   const otp = generateOtp();
   if (existing.length > 0) {
-    db.update(TABLE, userId, existing[0].id as string, { bot_token: botToken, chat_id: String(chatId), otp });
+    db.update(TABLE, userId, existing[0].id as string, { bot_token: botToken, chat_id: knownChat === undefined ? "" : String(knownChat), otp });
   } else {
-    db.insert(TABLE, userId, { bot_token: botToken, chat_id: String(chatId), otp });
+    db.insert(TABLE, userId, { bot_token: botToken, chat_id: knownChat === undefined ? "" : String(knownChat), otp });
   }
 
   await client.deleteWebhook().catch(() => {}); // best-effort -- proceed even if there was nothing to delete
-  await client.sendMessage({
-    chat_id: chatId,
-    text: `Your pairing code is: ${otp}\n\nSend this exact code back to me here (as a normal message) to finish connecting.`,
-  });
+  // Telegram refuses to let a bot message someone who has never pressed Start on it -- the usual
+  // case on a brand-new bot. That used to throw out of this function and break the whole start
+  // step. It is only a courtesy message; the code is on the web panel either way.
+  let sentToChat = false;
+  if (knownChat !== undefined) {
+    sentToChat = await client
+      .sendMessage({ chat_id: knownChat, text: `Your pairing code is: ${otp}\n\nSend this exact code back to me here (as a normal message) to finish connecting.` })
+      .then(() => true)
+      .catch(() => false);
+  }
 
-  return { otp, botUsername: me.username };
+  return { otp, botUsername: me.username, sentToChat };
 }
 
 /** Step 2: real getUpdates() against the real bot -- confirms once the user's own message text matches the stored OTP. */
@@ -112,9 +124,25 @@ export async function checkTelegramOtpPairing(db: DaveDatabase, userId: string):
     // process re-registering the webhook).
     return { confirmed: false, reason: `Could not poll Telegram for your reply: ${err instanceof Error ? err.message : String(err)}` };
   }
-  const chatId = Number(pending.chat_id);
-  const matched = updates.some((u) => u.message?.chat.id === chatId && u.message.text?.trim() === pending.otp);
-  if (!matched) return { confirmed: false, reason: "OTP not seen yet -- paste it into the bot chat and check again" };
+  // No chat ID entered: the chat that sends the code is the chat. The code is shown only on the
+  // password-protected panel, so whoever sends it is whoever is at that panel.
+  const expectedChat = pending.chat_id ? Number(pending.chat_id) : undefined;
+  const match = updates.find((u) => u.message?.text?.trim() === pending.otp && (expectedChat === undefined || u.message.chat.id === expectedChat));
+  const chatId = match?.message?.chat.id ?? expectedChat ?? 0;
+  if (!match) {
+    const other = updates.find((u) => u.message?.chat.id !== undefined && u.message.text?.trim() === pending.otp);
+    if (other) {
+      return {
+        confirmed: false,
+        reason: `The code arrived from chat ${other.message!.chat.id}, not the chat ID you entered (${chatId}). Start pairing again with ${other.message!.chat.id} as the chat ID.`,
+      };
+    }
+    return { confirmed: false, reason: `Code not seen yet. Send ${pending.otp} to the bot in Telegram as a normal message, then check again.` };
+  }
+
+  // Mark everything up to the code as read. Otherwise Telegram hands the code message (and anything
+  // sent before it) to the bot again once it comes online, and Dave "replies" to a pairing code.
+  await client.getUpdates({ offset: Math.max(...updates.map((u) => u.update_id)) + 1, timeout: 0 }).catch(() => undefined);
 
   setTelegramCredentials(db, userId, { botToken: pending.bot_token, chatId });
   db.deleteRow(TABLE, userId, pending.id);
@@ -135,6 +163,21 @@ export async function checkTelegramOtpPairing(db: DaveDatabase, userId: string):
 
   return { confirmed: true };
 }
+
+/** True while a pairing started in the web panel is waiting for its code. The running bot stays
+ *  off getUpdates/the webhook during this window so it can't steal the code message. */
+export function hasPendingTelegramPairing(db: DaveDatabase, userId: string, now = Date.now()): boolean {
+  try {
+    ensureTable(db);
+    // An abandoned pairing must not keep the bot offline forever.
+    return db.query(TABLE, userId, {}).some((r) => now - Number(r.updated_at ?? r.created_at ?? 0) < PAIRING_WINDOW_MS);
+  } catch {
+    return false;
+  }
+}
+
+/** How long a started pairing holds the bot off Telegram while it waits for the code. */
+export const PAIRING_WINDOW_MS = 15 * 60_000;
 
 export function getTelegramPairingStatus(db: DaveDatabase, userId: string): { paired: boolean; chatId?: number } {
   const creds = getTelegramCredentials(db, userId);

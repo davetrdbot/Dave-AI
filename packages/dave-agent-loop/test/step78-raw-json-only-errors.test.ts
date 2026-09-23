@@ -43,7 +43,14 @@ assert.equal((multiMessage.match(/\n/g) ?? []).length, 0, "must be ONE line, not
 
 console.log("\n[4] 'no stored keys' stays a distinct, honestly-labeled internal state, not a fabricated endpoint error...\n");
 const noKeysErr = new AllConfiguredProvidersFailedError([{ provider: "claude", reason: 'no stored keys for provider "claude"' }]);
-assert.equal(friendlyErrorMessage(noKeysErr), "⚠️ All configured providers failed: claude (no working keys). Check /providers.");
+// Every provider tried simply had no key -- a fresh install, so the message says how to add one
+// (and still names the provider) instead of reporting a "failure".
+assert.equal(friendlyErrorMessage(noKeysErr), "⚠️ I don't have a key for claude yet, so I can't think or answer. Add one in the web panel's AI providers card, or in the Dave app under Settings → AI providers -- then message me again.");
+// Mixed with a real failure, it stays the one-line failure summary.
+assert.equal(
+  friendlyErrorMessage(new AllConfiguredProvidersFailedError([{ provider: "claude", reason: 'no stored keys for provider "claude"' }, { provider: "mistral", reason: "HTTP 429 rate limit" }])).startsWith("⚠️ All configured providers failed: claude (no working keys), mistral"),
+  true,
+);
 
 console.log("\n[5] Zero configured providers gets a real, honest, actionable message...\n");
 assert.equal(friendlyErrorMessage(new AllConfiguredProvidersFailedError([])), "⚠️ No provider is configured at all — add one via /providers.");

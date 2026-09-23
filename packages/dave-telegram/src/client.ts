@@ -269,7 +269,12 @@ function isLocalFile(input: FileInput): input is LocalFile {
 }
 
 export class TelegramClient {
-  constructor(private readonly token: string, private readonly baseUrl = "https://api.telegram.org") {}
+  /** `TELEGRAM_API_BASE_URL` points every client at another Bot API server -- a self-hosted
+   *  telegram-bot-api, or a stand-in for an end-to-end test of pairing and startup. */
+  constructor(
+    private readonly token: string,
+    private readonly baseUrl = process.env.TELEGRAM_API_BASE_URL?.replace(/\/$/, "") || "https://api.telegram.org",
+  ) {}
 
   private async call<T>(method: string, body?: Record<string, unknown>): Promise<T> {
     const res = await fetch(`${this.baseUrl}/bot${this.token}/${method}`, {

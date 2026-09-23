@@ -630,66 +630,106 @@ function CredentialsPanel({ userId }: { userId: string }) {
   );
 }
 
+/** What the bot process reports about itself (see @dave/telegram bot-status.ts). */
+function describeBot(bot: any): { tone: "ok" | "warn" | "bad"; text: string } {
+  if (!bot) return { tone: "warn", text: "Bot not started yet" };
+  switch (bot.state) {
+    case "online":
+      return { tone: "ok", text: `Bot online${bot.username ? ` as @${bot.username}` : ""}${bot.mode === "polling" ? " (fetching messages; no public address)" : ""}` };
+    case "starting":
+      return { tone: "warn", text: "Bot starting..." };
+    case "waiting-for-token":
+      return { tone: "warn", text: "Waiting for pairing" };
+    default:
+      return { tone: "bad", text: bot.detail ?? "The bot could not start." };
+  }
+}
+
 function TelegramOtpCard({ api }: { userId: string; api: ReturnType<typeof useApi> }) {
   const [status, setStatus] = useState<any>(null);
   const [form, setForm] = useState({ botToken: "", chatId: "" });
-  const [otp, setOtp] = useState<string | null>(null);
-  const [checking, setChecking] = useState(false);
+  const [pending, setPending] = useState<{ otp: string; botUsername: string } | null>(null);
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  const reload = useCallback(() => {
-    api("/api/telegram-otp").then(setStatus);
-  }, [api]);
+  const reload = useCallback(() => api("/api/telegram-otp").then(setStatus).catch(() => undefined), [api]);
 
   useEffect(() => {
     reload();
+    // Keep the bot's state live: after pairing it goes waiting -> starting -> online within
+    // seconds, and a failure shows up here with its reason instead of only in the server log.
+    const id = setInterval(reload, 4000);
+    return () => clearInterval(id);
   }, [reload]);
 
   const start = async () => {
     setMessage(null);
-    const res = await api("/api/telegram-otp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start", botToken: form.botToken, chatId: form.chatId }) });
-    if (res.error) {
-      setMessage(res.error);
-      return;
+    setBusy(true);
+    try {
+      const res = await api("/api/telegram-otp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start", botToken: form.botToken, chatId: form.chatId }) });
+      if (res.error) {
+        setMessage(res.error);
+        return;
+      }
+      setPending({ otp: res.otp, botUsername: res.botUsername });
+    } catch {
+      setMessage("The server did not answer. Check that it is running, then try again.");
+    } finally {
+      setBusy(false);
     }
-    setOtp(res.otp);
-    setMessage(`Paste this code into a message to @${res.botUsername} on Telegram, then click "Check status".`);
   };
 
   const check = async () => {
-    setChecking(true);
-    const res = await api("/api/telegram-otp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "check" }) });
-    setChecking(false);
-    if (res.confirmed) {
-      setMessage("Paired! Your bot token and chat ID are now stored.");
-      setOtp(null);
-      reload();
-    } else {
-      setMessage(res.reason ?? "Not confirmed yet.");
+    setBusy(true);
+    try {
+      const res = await api("/api/telegram-otp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "check" }) });
+      if (res.confirmed) {
+        setPending(null);
+        setMessage("Paired. The bot comes online in a few seconds -- watch the status above, then say hi to it in Telegram.");
+        reload();
+      } else {
+        setMessage(res.reason ?? "Not confirmed yet.");
+      }
+    } catch {
+      setMessage("The server did not answer. Try again in a moment.");
+    } finally {
+      setBusy(false);
     }
   };
 
+  const bot = describeBot(status?.bot);
   return (
     <div className="card">
       <h2>Telegram Pairing</h2>
-      <div className="row" style={{ marginBottom: 8 }}>
+      <div className="row" style={{ marginBottom: 8, gap: 8 }}>
         <span className={`badge ${status?.paired ? "ok" : "warn"}`}>{status?.paired ? `Paired (chat ${status.chatId})` : "Not paired"}</span>
+        {status?.paired && <span className={`badge ${bot.tone === "ok" ? "ok" : "warn"}`}>{bot.text}</span>}
       </div>
+      {status?.paired && bot.tone === "bad" && <div className="stat-note" style={{ marginBottom: 8 }}>{bot.text}</div>}
       <div className="row" style={{ marginBottom: 10 }}>
         <input type="text" placeholder="Bot token (from @BotFather)" value={form.botToken} onChange={(e) => setForm({ ...form, botToken: e.target.value })} style={{ width: 280 }} />
-        <input type="text" placeholder="Chat ID" value={form.chatId} onChange={(e) => setForm({ ...form, chatId: e.target.value })} style={{ width: 140 }} />
-        <button className="btn" onClick={start}>
+        <input type="text" placeholder="Chat ID (optional)" value={form.chatId} onChange={(e) => setForm({ ...form, chatId: e.target.value })} style={{ width: 160 }} />
+        <button className="btn" onClick={start} disabled={busy || !form.botToken.trim()}>
           Start pairing
         </button>
       </div>
-      {otp && (
-        <div className="row" style={{ marginBottom: 10, alignItems: "center" }}>
-          <span className="pill" style={{ fontSize: 20, letterSpacing: 2 }}>
-            {otp}
-          </span>
-          <button className="btn secondary" onClick={check} disabled={checking}>
-            {checking ? "Checking..." : "Check status"}
-          </button>
+      {pending && (
+        <div style={{ marginBottom: 10 }}>
+          <ol className="stat-note" style={{ margin: "0 0 10px 18px", padding: 0 }}>
+            <li>
+              Open <a href={`https://t.me/${pending.botUsername}`} target="_blank" rel="noreferrer">@{pending.botUsername}</a> in Telegram and press Start.
+            </li>
+            <li>Send it this code as a normal message.</li>
+            <li>Come back here and press Check.</li>
+          </ol>
+          <div className="row" style={{ alignItems: "center" }}>
+            <span className="pill" style={{ fontSize: 20, letterSpacing: 2 }}>
+              {pending.otp}
+            </span>
+            <button className="btn secondary" onClick={check} disabled={busy}>
+              {busy ? "Checking..." : "Check"}
+            </button>
+          </div>
         </div>
       )}
       {message && <div className="stat-note">{message}</div>}
