@@ -28,7 +28,7 @@ const { createBackgroundCheck, BACKGROUND_CHECK_TOOLS, MAX_CHECK_SYMBOLS } = awa
 const OWNER = "trader-1";
 const repoRoot = join(import.meta.dirname, "..", "..", "..");
 const read = (p: string) => readFileSync(join(repoRoot, p), "utf8");
-const SYNTHETICS = ["VOL_80", "CRASH_100", "BOOM_500", "STORM_500", "FLAMES", "VOL_10"];
+const SYNTHETICS = ["VOL_80", "CRASH_100", "BOOM_500", "STORM_500", "VOL_10"];
 
 console.log("=== Background checks can genuinely watch SYNTHETIC pairs, not just coins ===\n");
 
@@ -104,7 +104,7 @@ assert.match(identity, /market\.json/, "…and the file the script reads");
 assert.match(identity, /Scenario/i, "the trader explicitly asked for a scenario");
 assert.match(identity, /VOL_80[\s\S]{0,600}196740/, "the scenario must be concrete, with a real pair and a real level");
 assert.match(identity, /not a volatility index you can look up/i, "the lookalike trap must be called out by name");
-for (const s of ["CRASH_100", "BOOM_500", "STORM_500", "FLAMES", "VOL_10"]) {
+for (const s of ["CRASH_100", "BOOM_500", "STORM_500", "VOL_10"]) {
   assert.ok(identity.includes(s), `the prompt should name ${s} so Dave recognises it as a synthetic`);
 }
 console.log("    confirmed: prompt teaches it with a real VOL_80 scenario and names the synthetics");

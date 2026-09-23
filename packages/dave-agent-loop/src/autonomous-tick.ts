@@ -714,6 +714,17 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     rawSuite: rawMergedSuite,
   });
 
+  // Real waste fixed (live logs: FLAMES had no history loaded in MT5, every timeframe errored,
+  // and every cycle still paid for a full model call only to hear "no data, SKIP"). With nothing
+  // received for this symbol and no open position that might need managing, there is nothing for
+  // the model to decide -- record the skip honestly and move on.
+  if (timeframesReceived.length === 0 && positions.length === 0) {
+    const reason = `no analysis data from the EA for ${symbol} on any timeframe`;
+    logTick(userId, `${symbol}: ${reason} -- skipped without a model call`);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason });
+    return { action: "NONE", notable: false };
+  }
+
   const primaryTfResult = suiteByTimeframe.find((r) => r.tf === "H1")?.data ?? suiteByTimeframe.find((r) => r.data)?.data;
   const priceInfo = (primaryTfResult as { price?: { bid?: number; ask?: number; close?: number } } | null)?.price;
   const referencePrice = priceInfo?.bid ?? priceInfo?.ask ?? priceInfo?.close ?? 0;

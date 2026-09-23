@@ -59,8 +59,30 @@ export function isBotRunning(userId: string): boolean {
   return readJsonFile<boolean>(tradingFlagPath(userId, "autonomous-trading-enabled"), false) === true;
 }
 
-export function setBotRunning(userId: string, running: boolean): void {
+/** Mirrors packages/dave-agent-loop/src/control-notices.ts: the bot relays these to Telegram. */
+export function controlNoticesPath(userId: string): string {
+  return join(root(), "data", "agent-loop", userId, "control-notices.json");
+}
+
+export type ControlSource = "app" | "web";
+
+function appendControlNotice(userId: string, event: string, source: ControlSource): void {
+  const path = controlNoticesPath(userId);
+  const existing = readJsonFile<unknown>(path, []);
+  const notices = Array.isArray(existing) ? existing : [];
+  notices.push({ event, source, at: Date.now() });
+  writeJsonFile(path, notices.slice(-20));
+}
+
+/**
+ * Turns autonomous scanning on or off. The bot's control watcher picks the change up within a
+ * few seconds -- arming the loop if it wasn't running -- and, when `source` is given and the
+ * value really changed, tells the trader in Telegram where the change came from.
+ */
+export function setBotRunning(userId: string, running: boolean, source?: ControlSource): void {
+  const changed = isBotRunning(userId) !== running;
   writeJsonFile(tradingFlagPath(userId, "autonomous-trading-enabled"), running);
+  if (changed && source) appendControlNotice(userId, running ? "trading-started" : "trading-stopped", source);
 }
 
 /** Whether a normal decision may auto-execute. Defaults TRUE, matching the bot side -- a missing
@@ -69,8 +91,10 @@ export function isExecutionEnabled(userId: string): boolean {
   return readJsonFile<boolean>(tradingFlagPath(userId, "autonomous-execution-enabled"), true) === true;
 }
 
-export function setExecutionEnabled(userId: string, enabled: boolean): void {
+export function setExecutionEnabled(userId: string, enabled: boolean, source?: ControlSource): void {
+  const changed = isExecutionEnabled(userId) !== enabled;
   writeJsonFile(tradingFlagPath(userId, "autonomous-execution-enabled"), enabled);
+  if (changed && source) appendControlNotice(userId, enabled ? "execution-on" : "execution-off", source);
 }
 
 export function getIntervalMinutes(userId: string): number {

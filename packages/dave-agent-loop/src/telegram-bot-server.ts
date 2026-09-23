@@ -30,6 +30,10 @@ import { addPendingDelegation, getPendingDelegationQueue, clearPendingDelegation
 import { loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingLovableMcpEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
+import { takeControlNotices, describeControlNotice } from "./control-notices.js";
+
+/** How often the bot picks up trading changes made from the app or web panel. */
+const CONTROL_WATCH_MS = 5_000;
 import { isAutonomousTradingEnabled, setAutonomousTradingEnabled, setAutonomousExecutionEnabled, isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { wireMorningBrief } from "./morning-brief-handler.js";
 import { wireFeedbackLoop } from "./feedback-loop-handler.js";
@@ -223,7 +227,7 @@ async function runAgentTurn(
       // Both forms of the same answer -- see FinalMessage in thinking-indicator.ts. The rich
       // markdown transport needs the model's ORIGINAL text; the HTML one needs the converted
       // version, and neither can be derived from the other at send time.
-      let finalText: { html: string; markdown?: string };
+      let finalText: { html: string; markdown?: string } | null;
       if (result.status === "aborted") {
         // Real, plain visibility into the exact bug this closes (user, live: "/stop didn't work,
         // still showing typing") -- confirms in the logs that an abort genuinely reached and
@@ -246,6 +250,12 @@ async function runAgentTurn(
         // a bug because it was one. A real, minimal, honest completion signal instead.
         const rawFinalText = result.status === "done" ? result.text || "✅ Done." : result.question.question;
         finalText = { html: markdownToTelegramHtml(rawFinalText), markdown: rawFinalText };
+        // Real bug fixed (trader, live: Dave answered with send_telegram, then his closing text --
+        // "I've replied. Waiting for the user..." -- arrived as a second message). When the LAST
+        // thing a turn did was send a message itself, that message WAS the answer and whatever
+        // text follows is the model narrating to itself. Only the last step counts: an early
+        // "on it" message followed by real work still gets its final answer delivered.
+        if (result.status === "done" && endedWithOwnMessage(result.steps)) finalText = null;
       }
       return { result, finalText };
     }, { replyToMessageId });
@@ -279,6 +289,15 @@ async function runAgentTurn(
     // in the chat forever with nothing left to clean it up.
     await ensureNoOrphanedIndicator(client, chatId);
   }
+}
+
+/** Tools that put a finished message in the chat on their own. */
+const MESSAGE_TOOLS = new Set(["send_telegram", "tg_rich_message", "tg_rich_blocks", "reply_to_message", "send_rich_draft"]);
+
+/** Whether a turn's last act was successfully sending a message itself -- see runAgentTurn. */
+export function endedWithOwnMessage(steps: { toolName: string; isError: boolean }[]): boolean {
+  const last = steps[steps.length - 1];
+  return last !== undefined && MESSAGE_TOOLS.has(last.toolName) && !last.isError;
 }
 
 /** Exported for tests, and used above as runAgentTurn's own last-resort safety net: finalizes and
@@ -1053,6 +1072,14 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   // the user's real, persisted intent (autonomous-trading-state.ts) says trading should be on,
   // genuinely re-arm it here, at boot, against the last chat we know they actually messaged from
   // (primary-chat.ts) -- and tell them it happened, so a restart is never silently invisible.
+  // Real bug fixed (trader, live: after a redeploy that landed mid-reply, every trading cycle
+  // for the next 15 minutes logged "skipped -- a real user turn is already in flight", and any
+  // message they sent got the "I'm busy, queue it?" prompt). busy.json lives on the volume, so a
+  // turn killed by the deploy leaves it set, and only its 15-minute age limit ever cleared it.
+  // The same bug was already fixed for the autonomous marker below; this is the user-turn half.
+  // A process that has only just started cannot have a user turn already in flight.
+  clearBusy(deps.ownerUserId);
+
   if (isAutonomousTradingEnabled(deps.ownerUserId)) {
     // Real bug fixed (user, live: three straight "previous autonomous cycle is still running"
     // skips after this exact resume block ran, one full minute apart, with zero real cycles
@@ -1082,6 +1109,28 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       console.error(`[trading-loop] autonomous trading was enabled for ${deps.ownerUserId} but no primary chat is known yet -- cannot resume until the user messages Dave at least once`);
     }
   }
+
+  // Real bug fixed (trader, live: "start trading" in the app showed on, nothing ran, and no
+  // message came). The app and the web panel run in the admin process: they can write the
+  // trading flag but cannot arm this process's timer or send Telegram messages, and the flag
+  // alone can only HOLD a loop that is already armed (trading-loop.ts). This watcher closes both
+  // gaps: it arms the loop whenever the flag says on and nothing is running, and relays the
+  // admin side's notices ("turned on from the app") to the chat.
+  const controlWatcher = setInterval(() => {
+    try {
+      const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
+      if (chatId === undefined) return; // notices wait until there is a chat to tell
+      for (const notice of takeControlNotices(deps.ownerUserId)) {
+        void client.sendMessage({ chat_id: chatId, text: describeControlNotice(notice) }).catch(() => undefined);
+      }
+      if (isAutonomousTradingEnabled(deps.ownerUserId) && !isAutonomousTradingRunning(deps.ownerUserId)) {
+        startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId), 0);
+      }
+    } catch (err) {
+      console.error(`[control-watcher] ${deps.ownerUserId}:`, err);
+    }
+  }, CONTROL_WATCH_MS);
+  controlWatcher.unref?.();
 
   // Dave's own background checks (mark_level / check_marked_levels / cancel_marked_level). Started
   // unconditionally rather than only alongside autonomous trading: a marked level is Dave watching

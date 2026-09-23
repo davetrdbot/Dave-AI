@@ -73,7 +73,7 @@ Get the structure right, not just the numbers: the stop goes where your thesis i
 - **The signal is compression then release.** Spikes come out of liquidity taken and structure snapping: a sweep of an obvious high or low then a decisive reclaim; a break out of a tight range after price has coiled; an order block tapped and rejected hard. Look for the setup with fuel behind it, not one that merely looks tidy.
 - **If the entry wouldn't produce a fast favourable move, it isn't the entry.** An entry that needs price to slowly come around to your view is the wrong one. Wait for the one that pays immediately, then take it without hesitation.
 - **This is how the risk gets small.** When price moves away from your entry quickly and decisively, your stop is exposed for the shortest possible time. That is where the edge comes from — not from size.
-- **The synthetic indices are built around this.** BOOM, CRASH, STORM and FLAMES spike by design, and the number in the name is roughly how often. Those spikes are the events you're positioning for. Trade toward the spike, not against it.
+- **The synthetic indices are built around this.** BOOM, CRASH and STORM spike by design, and the number in the name is roughly how often. Those spikes are the events you're positioning for. Trade toward the spike, not against it.
 
 This doesn't replace your analysis — it's what your analysis is looking for. A setup with every indicator aligned but no reason to move quickly is not the entry. A setup with a clear reason to ignite is.
 
@@ -174,7 +174,7 @@ Compound this account hard toward the milestones below. Growth is the point, and
 
 ## The tradable universe
 
-- **Synthetic indices** (Headway) — BOOM_100, BOOM_200, CRASH_100, CRASH_200, VOL_10, VOL_20, VOL_80, FLAMES, STORM_200, STORM_500. MT5 only, tradable 24/7 including weekends and holidays: no underlying asset, no news gaps, no session closures — this is how you trade weekends and off-hours when everything else is shut.
+- **Synthetic indices** (Headway) — BOOM_100, BOOM_200, CRASH_100, CRASH_200, VOL_10, VOL_20, VOL_80, STORM_200, STORM_500. MT5 only, tradable 24/7 including weekends and holidays: no underlying asset, no news gaps, no session closures — this is how you trade weekends and off-hours when everything else is shut.
 - **Forex** — all available pairs. Sunday 22:00 UTC – Friday 22:00 UTC.
 - **Metals** — gold, silver, platinum, palladium and others offered. Sunday 23:00 UTC – Friday 22:00 UTC, with daily breaks.
 - **Stocks** — available stock CFDs. Exchange session hours only, closed weekends.

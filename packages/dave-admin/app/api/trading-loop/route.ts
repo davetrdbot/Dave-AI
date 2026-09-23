@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
+import { setBotRunning } from "../../../server/bot-control";
 
 /**
  * The trader's explicit request: a real UI control in the admin panel for the autonomous scan
@@ -78,15 +79,10 @@ export async function POST(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get("userId") ?? "default";
   const body = (await req.json()) as { intervalMinutes?: number; enabled?: boolean };
 
-  // Allow setting the persisted enabled flag directly -- useful to re-arm auto-resume
-  // after a manual /stop without having to open Telegram. The in-memory loop itself
-  // only starts when the bot process boots or receives /start_trading; this just sets
-  // the flag so the NEXT boot auto-resumes instead of staying off.
+  // Turns autonomous trading on or off. The bot's control watcher arms (or holds) the loop within
+  // a few seconds and tells the trader in Telegram -- the same path the phone app uses.
   if (typeof body.enabled === "boolean") {
-    const path = enabledFlagPath(userId, "autonomous-trading-enabled");
-    const dir = dirname(path);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(path, JSON.stringify(body.enabled), "utf8");
+    setBotRunning(userId, body.enabled, "web");
     return NextResponse.json({ ok: true, enabled: body.enabled });
   }
 

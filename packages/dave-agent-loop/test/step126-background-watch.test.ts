@@ -104,14 +104,14 @@ try {
   console.log("    confirmed: 4 marks on one symbol -> 1 EA round trip");
 
   console.log("\n[8] One unreachable symbol never stops the others being checked...\n");
-  createWatch(USER, { symbol: "FLAMES", kind: "price_at_or_above", level: 1, reason: "unpriceable symbol" });
+  createWatch(USER, { symbol: "NOT_A_SYMBOL", kind: "price_at_or_above", level: 1, reason: "unpriceable symbol" });
   createWatch(USER, { symbol: "VOL_10", kind: "price_at_or_above", level: 1, reason: "priceable symbol" });
   const mixed = await runWatchSweep({ userId: USER, analysis: analysisAt({ VOL_10: 5 }), notify: async () => {} });
   assert.ok(
     mixed.some((w) => w.symbol === "VOL_10"),
     "a symbol that could not be priced must not prevent the rest of the sweep"
   );
-  console.log("    confirmed: FLAMES unpriceable, VOL_10 still evaluated and fired");
+  console.log("    confirmed: NOT_A_SYMBOL unpriceable, VOL_10 still evaluated and fired");
 
   console.log("\n[9] The active list is bounded -- it shares an EA with the trading loop...\n");
   let hitLimit = false;

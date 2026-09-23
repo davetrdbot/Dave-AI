@@ -251,7 +251,7 @@ export const BACKGROUND_CHECK_TOOLS: BackgroundCheckToolDefinitionShape[] = [
           type: "array",
           items: { type: "string" },
           description:
-            `REQUIRED whenever the check is about a synthetic pair (VOL_80, CRASH_100, BOOM_500, STORM_500, FLAMES, VOL_10, and the rest). Those exist only inside the connected MT5 terminal -- they are on no public API, so a script CANNOT fetch them from the internet and must not try. Name them here and each tick fetches their real live analysis from the EA and writes it into the sandbox as "market.json" for your script to read. Up to ${MAX_CHECK_SYMBOLS}. Leave empty only for things genuinely on the public internet, like crypto or a news feed.`,
+            `REQUIRED whenever the check is about a synthetic pair (VOL_80, CRASH_100, BOOM_500, STORM_500, VOL_10, and the rest). Those exist only inside the connected MT5 terminal -- they are on no public API, so a script CANNOT fetch them from the internet and must not try. Name them here and each tick fetches their real live analysis from the EA and writes it into the sandbox as "market.json" for your script to read. Up to ${MAX_CHECK_SYMBOLS}. Leave empty only for things genuinely on the public internet, like crypto or a news feed.`,
         },
         timeframe: { type: "string", description: "Timeframe for the symbol fetch (M1/M3/M5/M15/H1/H4). Defaults to M15." },
         checkEveryMs: { type: "number", description: `How often to poll, in ms. Default ${DEFAULT_CHECK_EVERY_MS}ms (5 min); floor of ${MIN_CHECK_EVERY_MS}ms -- never busy-loop.` },

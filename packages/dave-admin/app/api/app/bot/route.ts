@@ -61,8 +61,8 @@ export const POST = withDevice(async ({ userId, req }) => {
       throw err;
     }
   }
-  if (body.executionEnabled !== undefined) setExecutionEnabled(userId, body.executionEnabled);
-  if (body.running !== undefined) setBotRunning(userId, body.running);
+  if (body.executionEnabled !== undefined) setExecutionEnabled(userId, body.executionEnabled, "app");
+  if (body.running !== undefined) setBotRunning(userId, body.running, "app");
 
   const running = isBotRunning(userId);
   return NextResponse.json({

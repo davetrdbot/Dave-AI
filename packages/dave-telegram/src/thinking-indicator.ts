@@ -477,7 +477,9 @@ export class ThinkingIndicator {
 export async function withThinkingIndicator<T>(
   client: TelegramClient,
   chatId: number,
-  task: (indicator: ThinkingIndicator) => Promise<{ result: T; finalText: string | FinalMessage }>,
+  // `finalText: null` means the turn already delivered its answer itself (a message tool was its
+  // last act): the progress message is cleaned up and nothing further is sent.
+  task: (indicator: ThinkingIndicator) => Promise<{ result: T; finalText: string | FinalMessage | null }>,
   options: { replyToMessageId?: number; fallbackMessage?: boolean } = {}
 ): Promise<T> {
   const indicator = new ThinkingIndicator(client, chatId, "typing", {
@@ -487,7 +489,8 @@ export async function withThinkingIndicator<T>(
   await indicator.start();
   try {
     const { result, finalText } = await task(indicator);
-    await indicator.finalize(finalText);
+    if (finalText === null) await indicator.cleanupOnFailure();
+    else await indicator.finalize(finalText);
     return result;
   } catch (err) {
     // Real bug fixed (trader, live: saw "⚠️ All configured providers failed: upstage (request
