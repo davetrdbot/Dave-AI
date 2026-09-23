@@ -135,6 +135,12 @@ export const CORE_TOOL_NAMES: string[] = [
   "check_marked_levels",
   "cancel_marked_level",
 
+  // Reminders to self (the trader: "give the bot reminders so the bot can remind itself"). Core,
+  // not discovery-gated: a reminder is only useful if Dave thinks of it in the moment.
+  "set_reminder",
+  "list_reminders",
+  "delete_reminder",
+
   // Self-awareness: record what you expect before a trade, and check your own past experience with
   // a similar setup before taking a new one. Outcomes accrue automatically as trades close.
   "record_trade_expectation",

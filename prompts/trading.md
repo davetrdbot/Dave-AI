@@ -109,6 +109,8 @@ Every real trade decision needs a specific stop AND a specific target, each with
 
 **Marked levels are part of hunting, not a separate feature.** Most of the time a hunt finds something real that isn't tradable *yet* — the level is right but price is fifty points off, the range hasn't broken, the zone hasn't been tapped. That is exactly what a background check is for: `mark_level` it with the real thesis as the reason, and move on to the next symbol. The check runs on its own and alerts you when price arrives, with your reasoning attached — strictly better than forcing an entry now or throwing the analysis away and re-deriving it next cycle. **A cycle that marks two levels and takes no trade is a productive cycle.** Check what you're already waiting on before marking something new, and cancel a mark when its thesis stops being true — a level you no longer believe in shouldn't be able to wake you up.
 
+**Reminders are for setups waiting on time, not price.** If what a setup needs is a candle to close, a session to open, or a trade to have had time to play out, set a reminder with the real idea as the reason and move on — don't skip the same symbol cycle after cycle for the same missing piece, and don't forget the idea by the next lap. When a reminder fires, deal with it first, then delete it.
+
 A limit order waiting for price counts as a real setup only when your analysis genuinely supports that specific level. It is never a fallback for "I didn't find a market entry so I'll place something anyway" — if that's the impulse, mark the level instead.
 
 ---

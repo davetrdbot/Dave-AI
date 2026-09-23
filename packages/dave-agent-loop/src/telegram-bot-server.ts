@@ -31,6 +31,7 @@ import { loadConversationHistory, saveConversationHistory } from "./conversation
 import { dispatchCommand, dispatchCallback, tryHandlePendingModelEntry, tryHandlePendingVoiceEntry, tryHandlePendingKeyEntry, tryHandlePendingTtsKeyEntry, tryHandlePendingE2BKeyEntry, tryHandlePendingLimitEntry, tryHandlePendingRiskEntry, tryHandlePendingTrailingEntry, tryHandlePendingApprovalReply, tryHandlePendingMcpUrlEntry, tryHandlePendingActivePairEntry, tryHandlePendingConfidenceEntry, tryHandlePendingFirecrawlKeyEntry, tryHandlePendingLovableMcpEntry, tryHandlePendingMcpServerEntry, tryHandlePendingPushIntervalEntry, type CommandRouterDeps } from "./command-router.js";
 import { recordActiveChat, getPrimaryChatId } from "./primary-chat.js";
 import { takeControlNotices, describeControlNotice } from "./control-notices.js";
+import { deliverDueReminders } from "./reminder-delivery.js";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
 const CONTROL_WATCH_MS = 5_000;
@@ -134,7 +135,7 @@ function describeStep(step: AgentStep): { action: ActionType; text: string } {
     return { action: "tools", text: `${name.replace(/_/g, " ")}` };
   }
   // Background work that outlives this turn: arming a watch is not the same as reading a value.
-  if (name.endsWith("_background_check") || name === "mark_level" || name === "check_marked_levels" || name === "cancel_marked_level") {
+  if (name.endsWith("_background_check") || name.endsWith("_reminder") || name === "list_reminders" || name === "mark_level" || name === "check_marked_levels" || name === "cancel_marked_level") {
     return { action: "watch", text: `${name.replace(/_/g, " ")}` };
   }
   if (name.startsWith("get_") || name === "find_setup" || name === "hunt_for_setup") return { action: "api", text: `Checking ${name.replace(/^get_/, "")}` };
@@ -1126,6 +1127,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       if (isAutonomousTradingEnabled(deps.ownerUserId) && !isAutonomousTradingRunning(deps.ownerUserId)) {
         startAutonomousTradingLoop(deps.ownerUserId, () => runAutonomousTradingCycle(deps, client, chatId), 0);
       }
+      deliverDueReminders(deps.ownerUserId, (text) => client.sendMessage({ chat_id: chatId, text }).then(() => undefined));
     } catch (err) {
       console.error(`[control-watcher] ${deps.ownerUserId}:`, err);
     }

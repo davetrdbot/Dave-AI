@@ -33,6 +33,7 @@ import '../theme.dart';
 ///     rather than never.
 
 const _tradeChannelId = 'dave_trades';
+const _reminderChannelId = 'dave_reminders';
 const _serviceChannelId = 'dave_connection';
 const _serviceId = 7300;
 
@@ -54,6 +55,11 @@ void startCallback() {
 ///
 /// No emoji anywhere -- the design direction is Apple's, and a trade alert reads as a fact.
 ({String title, String body}) describeTradeEvent(TradeEvent e) {
+  if (e.isReminder) {
+    final title = e.symbol.isEmpty || e.symbol == '?' ? 'Reminder' : 'Reminder  ·  ${e.symbol}';
+    final why = e.reason == null || e.reason!.isEmpty ? '' : '\nWhy: ${e.reason}';
+    return (title: title, body: '${e.text ?? ''}$why'.trim());
+  }
   if (e.isOpen) {
     final side = e.isBuy == null ? '' : (e.isBuy! ? ' buy' : ' sell');
     final parts = <String>[
@@ -81,6 +87,8 @@ void startCallback() {
 String _lots(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
 /// The summary for a long gap, so ten missed fills are one notification, not ten.
+/// Only trades are summarised -- see [TradeStreamHandler._catchUp]; reminders are always shown
+/// one by one, because each carries its own instruction.
 ({String title, String body}) describeCatchUp(List<TradeEvent> events) {
   final opened = events.where((e) => e.isOpen).length;
   final closed = events.length - opened;
@@ -156,6 +164,14 @@ class TradeStreamHandler extends TaskHandler {
           description: 'A trade opened or closed.',
           importance: Importance.high,
         ));
+    await _notifications
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(const AndroidNotificationChannel(
+          _reminderChannelId,
+          'Reminders',
+          description: 'A reminder Dave set for himself.',
+          importance: Importance.high,
+        ));
     unawaited(_run());
   }
 
@@ -216,12 +232,16 @@ class TradeStreamHandler extends TaskHandler {
     // stream's "ready" frame sets the starting point instead.
     if (last == null) return;
     final result = await api.eventsAfter(last);
-    if (result.events.isEmpty) return;
-    if (result.events.length > _maxIndividualCatchUp) {
-      final s = describeCatchUp(result.events);
-      await _show(result.events.last.id, s.title, s.body);
+    for (final r in result.events.where((e) => e.isReminder)) {
+      final d = describeTradeEvent(r);
+      await _show(r.id, d.title, d.body, reminder: true);
+    }
+    final trades = result.events.where((e) => !e.isReminder).toList();
+    if (trades.length > _maxIndividualCatchUp) {
+      final s = describeCatchUp(trades);
+      await _show(trades.last.id, s.title, s.body);
     } else {
-      for (final e in result.events) {
+      for (final e in trades) {
         final d = describeTradeEvent(e);
         await _show(e.id, d.title, d.body);
       }
@@ -275,27 +295,37 @@ class TradeStreamHandler extends TaskHandler {
       }
       return;
     }
-    if (frame.event == 'trade') {
+    if (frame.event == 'trade' || frame.event == 'reminder') {
       final e = TradeEvent.fromJson(data);
       final d = describeTradeEvent(e);
-      await _show(e.id, d.title, d.body);
+      await _show(e.id, d.title, d.body, reminder: e.isReminder);
       await Session.setLastEventId(e.id);
     }
   }
 
-  Future<void> _show(int id, String title, String body) => _notifications.show(
+  Future<void> _show(int id, String title, String body, {bool reminder = false}) => _notifications.show(
         id: id & 0x7fffffff,
         title: title,
         body: body,
-        notificationDetails: const NotificationDetails(
-          android: AndroidNotificationDetails(
-            _tradeChannelId,
-            'Trades',
-            channelDescription: 'A trade opened or closed.',
-            importance: Importance.high,
-            priority: Priority.high,
-            category: AndroidNotificationCategory.message,
-          ),
+        notificationDetails: NotificationDetails(
+          android: reminder
+              ? AndroidNotificationDetails(
+                  _reminderChannelId,
+                  'Reminders',
+                  channelDescription: 'A reminder Dave set for himself.',
+                  importance: Importance.high,
+                  priority: Priority.high,
+                  category: AndroidNotificationCategory.reminder,
+                  styleInformation: BigTextStyleInformation(body),
+                )
+              : const AndroidNotificationDetails(
+                  _tradeChannelId,
+                  'Trades',
+                  channelDescription: 'A trade opened or closed.',
+                  importance: Importance.high,
+                  priority: Priority.high,
+                  category: AndroidNotificationCategory.message,
+                ),
         ),
       );
 }

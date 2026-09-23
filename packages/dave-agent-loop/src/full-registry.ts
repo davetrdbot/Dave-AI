@@ -10,7 +10,7 @@ import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
 import { PAIR_GROUP_TOOLS } from "@dave/trading";
-import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS, BACKGROUND_CHECK_TOOLS, type BackgroundCheck } from "@dave/workers";
+import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS, BACKGROUND_CHECK_TOOLS, REMINDER_TOOLS, type BackgroundCheck } from "@dave/workers";
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS, MEMORY_EXTRA_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
@@ -314,6 +314,10 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
     return tool;
   });
   registry.register(backgroundCheckTools);
+
+  // Reminders: Dave's notes to his future self. Only a file record -- the bot's control watcher
+  // (telegram-bot-server.ts) fires them, so nothing needs arming here.
+  registry.register(adaptTools(REMINDER_TOOLS, ownerCtx));
 
   registry.register(adaptTools(MEMORY_TOOLS, { actorId: deps.userId }));
   registry.register(adaptTools(MEMORY_EXTRA_TOOLS, { actorId: deps.userId }));

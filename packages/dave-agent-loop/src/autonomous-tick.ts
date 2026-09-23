@@ -40,6 +40,7 @@ import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
 import { logTrade, getTradeLifecycle } from "@dave/feedback";
 import { runScriptInE2B } from "@dave/e2b";
+import { createReminder, deleteReminder, listReminders, formatReminderLine } from "@dave/workers";
 import {
   recordTickDecision,
   formatRecentDecisions,
@@ -110,6 +111,26 @@ function safeTickKnowledgeIndex(userId: string): string | undefined {
   } catch (err) {
     console.error(`[tick] could not load knowledge for ${userId} -- continuing without it:`, err);
     return undefined;
+  }
+}
+
+/** Dave's reminders for the cycle: pending ones, and ones that fired recently and still wait on
+ *  him. Same fail-safe contract as the knowledge loader -- a bad store costs the cycle nothing. */
+export function buildTickRemindersLine(userId: string, now = Date.now()): string | null {
+  try {
+    const reminders = listReminders(userId, { includeFired: true }, now);
+    if (reminders.length === 0) return null;
+    const fired = reminders.filter((r) => r.status === "fired");
+    const pending = reminders.filter((r) => r.status === "pending");
+    const parts = ["YOUR REMINDERS (notes you set for yourself -- set more with setReminder, remove with deleteReminderIds):"];
+    if (fired.length > 0) {
+      parts.push(`Fired and waiting on you -- act on each now if it still applies (it may be about another symbol: use requestedNextSymbol), then put its id in deleteReminderIds:`, ...fired.map((r) => formatReminderLine(r, now)));
+    }
+    if (pending.length > 0) parts.push("Pending:", ...pending.map((r) => formatReminderLine(r, now)));
+    return parts.join("\n");
+  } catch (err) {
+    console.error(`[tick] could not load reminders for ${userId} -- continuing without them:`, err);
+    return null;
   }
 }
 
@@ -261,6 +282,11 @@ export interface TickDecision {
   /** Language for `script`. Defaults to python, which is what nearly every real calculation here
    *  wants. */
   scriptLanguage?: "bash" | "python" | "node";
+  /** Optional on ANY decision (the trader: reminders must work "in the analyzing part" too) -- a
+   *  note to Dave's future self, with the reason behind it. */
+  setReminder?: { text: string; reason: string; inMinutes: number; symbol?: string };
+  /** Optional on ANY decision -- ids of reminders to remove (dealt with, or no longer relevant). */
+  deleteReminderIds?: string[];
 }
 
 export interface TickOutcome {
@@ -352,6 +378,19 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
       description: "optional -- request a SPECIFIC symbol for the NEXT cycle instead of round-robin order, with a real, genuine reason (e.g. related to a trade you took, or something you want to confirm once a candle closes)",
     },
     requestedNextReason: { type: "string", description: "the real reason for requestedNextSymbol -- required alongside it to mean anything" },
+    setReminder: {
+      type: "object",
+      description:
+        "optional on ANY decision -- a reminder to your future self, for something worth coming back to later than the next cycle (a candle close, a level not reached yet, a session opening, a trade to review once it has played out). It fires as a message to the trader and comes back to you here with your reason.",
+      properties: {
+        text: { type: "string", description: "what to do or check when it fires, written so it makes sense on its own later" },
+        reason: { type: "string", description: "the idea or observation that made you set it -- required" },
+        inMinutes: { type: "number", description: "minutes from now until it fires (1 to 43200)" },
+        symbol: { type: "string", description: "optional symbol it is about" },
+      },
+      required: ["text", "reason", "inMinutes"],
+    },
+    deleteReminderIds: { type: "array", items: { type: "string" }, description: "optional on ANY decision -- ids of your reminders to delete: ones you have acted on, or that no longer matter" },
   };
   // Real, confirmed bug fixed (user, live: the bot placed a trade at a literal 0% confidence --
   // "what's the point of placing the market then"). Root cause: `confidence` sat in `properties`
@@ -429,7 +468,36 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     requestedNextReason: typeof obj.requestedNextReason === "string" ? obj.requestedNextReason : undefined,
     script: typeof obj.script === "string" && obj.script.trim().length > 0 ? obj.script : undefined,
     scriptLanguage: obj.scriptLanguage === "bash" || obj.scriptLanguage === "node" ? obj.scriptLanguage : "python",
+    setReminder: coerceReminder(obj.setReminder),
+    deleteReminderIds: Array.isArray(obj.deleteReminderIds) ? obj.deleteReminderIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0) : undefined,
   };
+}
+
+/** Applies a decision's optional reminder fields. Never fails the cycle: a bad reminder is logged
+ *  and dropped, the trading decision still stands. */
+export function applyReminderChanges(userId: string, symbol: string, decision: Pick<TickDecision, "setReminder" | "deleteReminderIds">): void {
+  for (const id of decision.deleteReminderIds ?? []) {
+    const removed = deleteReminder(userId, id);
+    logTick(userId, removed ? `${symbol}: deleted reminder ${id} -- ${removed.text}` : `${symbol}: asked to delete reminder ${id}, which does not exist`);
+  }
+  if (decision.setReminder) {
+    try {
+      const r = createReminder(userId, { ...decision.setReminder, symbol: decision.setReminder.symbol ?? symbol, source: "autonomous" });
+      logTick(userId, `${symbol}: set reminder ${r.id} for ${new Date(r.dueAt).toISOString()} -- ${r.text} (why: ${r.reason})`);
+    } catch (err) {
+      logTick(userId, `${symbol}: could not set reminder -- ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+function coerceReminder(raw: unknown): TickDecision["setReminder"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const text = typeof r.text === "string" ? r.text.trim() : "";
+  const reason = typeof r.reason === "string" ? r.reason.trim() : "";
+  const inMinutes = typeof r.inMinutes === "number" ? r.inMinutes : Number(r.inMinutes);
+  if (!text || !reason || !Number.isFinite(inMinutes)) return undefined;
+  return { text, reason, inMinutes, symbol: typeof r.symbol === "string" && r.symbol.trim() ? r.symbol.trim() : undefined };
 }
 
 /** Text-JSON fallback for a provider that doesn't return a real tool call. */
@@ -485,6 +553,8 @@ RUN_SCRIPT runs one real script (bash/python/node) and hands you its genuine out
 If a SELF-AWARE ALERT appears below, one of your real open positions is genuinely close to hitting its SL -- REQUEST_CANDLES there fetches for that at-risk symbol instead. After the candles come back, act directly with MODIFY (tighten/loosen/adjust), DELETE_TICKET (cut it now), PARTIAL_CLOSE, or SKIP if it genuinely still looks fine.
 
 You may also set requestedNextSymbol (with a real requestedNextReason) on ANY decision to ask that a specific symbol be analyzed next cycle instead of the mechanical round-robin order -- e.g. to follow up on a trade you just took, or to check back once a candle you're watching closes. Optional, never required.
+
+REMINDERS: on ANY decision you may also set setReminder (text, reason, inMinutes, optional symbol) -- a note to your future self for something worth coming back to LATER than the next cycle: an H1 or H4 candle you want closed before committing, a level price hasn't reached yet, a session about to open, a trade to review once it has had time to play out. The reason is required: write the idea that made you set it, so it still makes sense when it fires. When it fires, the trader gets it as a message and phone notification, and it shows up under YOUR REMINDERS below as "fired" -- act on it then, and remove it with deleteReminderIds. Also delete any pending reminder that no longer matters. Set a reminder instead of skipping the same setup cycle after cycle while waiting for one thing; do not set one for something you would check next cycle anyway, and do not set a second reminder for something already pending.
 
 sl/tp: apply automatically when the mode shown below is "on" -- you don't need to compute them, and the field won't even be offered to you. When "auto," you must compute a real sl/tp yourself from the analysis (structure, ATR, support/resistance) and the tool call requires it. A stop placed unreasonably close to price will be rejected -- size it to real, current volatility, not habit. When "off," don't include it.
 
@@ -882,6 +952,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     basketRiskLine,
     spreadNewsRiskLine,
     formatRecentDecisions(userId),
+    buildTickRemindersLine(userId),
     selfAwareAlertLine,
     activeStrategySkillLine,
   ].filter((line): line is string => line !== null);
@@ -1115,6 +1186,8 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     logTick(userId, `${symbol}: requesting ${decision.requestedNextSymbol} for the next cycle -- ${overrideReason}`);
     setPendingSymbolOverride(userId, decision.requestedNextSymbol, overrideReason);
   }
+
+  applyReminderChanges(userId, symbol, decision);
 
   // The cursor always advances after a real decision, regardless of outcome -- this is what
   // keeps the loop moving through the whole group instead of getting stuck on one symbol.

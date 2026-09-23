@@ -174,6 +174,7 @@ export const TOOL_CATALOG_CATEGORIES: Record<string, string[]> = {
     "journal_search",
   ],
   "Background checks": ["start_background_check", "list_background_checks", "get_background_check", "stop_background_check"],
+  Reminders: ["set_reminder", "list_reminders", "delete_reminder"],
   "Web & search": ["add_firecrawl_key", "list_firecrawl_keys", "remove_firecrawl_key", "web_search", "scrape_url"],
   "Sandbox & self-improvement": [
     "davesbx",

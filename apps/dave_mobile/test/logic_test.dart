@@ -129,6 +129,16 @@ void main() {
       expect(d.title, 'XAUUSD opened');
       expect(d.body, 'New position');
     });
+    test('a reminder shows what Dave wanted and why', () {
+      final d = describeTradeEvent(TradeEvent.fromJson(
+          {'id': 5, 'type': 'reminder', 'ticket': 'ab12', 'symbol': 'VOL_80', 'text': 'Re-check the long after the H1 close', 'reason': 'Sitting on H1 demand, M15 still falling'}));
+      expect(d.title, 'Reminder  ·  VOL_80');
+      expect(d.body, 'Re-check the long after the H1 close\nWhy: Sitting on H1 demand, M15 still falling');
+    });
+    test('a reminder about no symbol has a plain title', () {
+      final d = describeTradeEvent(TradeEvent.fromJson({'id': 6, 'type': 'reminder', 'ticket': 'cd34', 'symbol': '', 'text': 'London opens', 'reason': 'Wanted fresh volume'}));
+      expect(d.title, 'Reminder');
+    });
     test('a long gap is summarised as one notification', () {
       final events = [
         TradeEvent.fromJson({'id': 1, 'type': 'opened', 'symbol': 'A'}),

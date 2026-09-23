@@ -42,6 +42,19 @@ export type TradeEvent =
       /** Realised P&L when the EA reported it; the last known floating P&L otherwise. */
       pnl?: number;
       reason: EaClosedPosition["reason"];
+    }
+  | {
+      /** One of Dave's own reminders firing (see dave-workers/reminders.ts). Rides this same
+       *  numbered log so the phone gets it through the connection -- and the catch-up -- it
+       *  already holds for trades. `ticket` is the reminder id, which keeps the log's dedup. */
+      id: number;
+      at: number;
+      type: "reminder";
+      ticket: string;
+      /** The symbol it is about, or "" when it is not about one. */
+      symbol: string;
+      text: string;
+      reason: string;
     };
 
 type NewTradeEvent = TradeEvent extends infer E ? (E extends TradeEvent ? Omit<E, "id" | "at"> : never) : never;
@@ -157,6 +170,11 @@ function appendClosedTrades(userId: string, records: ClosedTradeRecord[]): void 
   if (history.length > CLOSED_TRADE_HISTORY_CAP) history = history.slice(-CLOSED_TRADE_HISTORY_CAP);
   if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(history), "utf8");
+}
+
+/** Records a fired reminder for the phone. Idempotent per reminder id. */
+export function appendReminderEvent(userId: string, reminder: { id: string; text: string; reason: string; symbol?: string }, now = Date.now()): TradeEvent[] {
+  return appendTradeEvents(userId, [{ type: "reminder", ticket: reminder.id, symbol: reminder.symbol ?? "", text: reminder.text, reason: reminder.reason }], now);
 }
 
 /** Everything after `afterId`, oldest first. */

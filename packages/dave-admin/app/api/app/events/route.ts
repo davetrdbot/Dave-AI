@@ -3,7 +3,8 @@ import { readTradeEventsAfter, latestTradeEventId } from "@dave/ea-bridge";
 import { withDevice } from "../../../../server/require-device";
 
 /**
- * Trade open/close events for the phone -- the server half of push WITHOUT Firebase.
+ * Trade open/close events (and Dave's reminders) for the phone -- the server half of push WITHOUT
+ * Firebase.
  *
  * Researched before building (the trader asked for it explicitly). The options that avoid FCM on
  * Android are: (a) UnifiedPush, which needs the trader to install a separate distributor app such
@@ -46,8 +47,13 @@ export const GET = withDevice(async ({ userId, req }) => {
 
   if (params.get("format") === "json") {
     const after = resumeFrom ?? 0;
-    const events = readTradeEventsAfter(userId, after);
-    return NextResponse.json({ events, latestId: events.length > 0 ? events[events.length - 1].id : latestTradeEventId(userId) });
+    // Reminder events only go to an app that says it understands them: an older build would read
+    // one as a trade close and show a nonsense notification.
+    const withReminders = params.get("include") === "reminders";
+    const all = readTradeEventsAfter(userId, after);
+    const events = all.filter((e) => withReminders || e.type !== "reminder");
+    // latestId covers the filtered-out events too, so an older app still moves past them.
+    return NextResponse.json({ events, latestId: all.length > 0 ? all[all.length - 1].id : latestTradeEventId(userId) });
   }
 
   let lastId = resumeFrom ?? latestTradeEventId(userId);
@@ -77,7 +83,9 @@ export const GET = withDevice(async ({ userId, req }) => {
           return; // a half-written file is retried on the next tick, never surfaced as an error
         }
         for (const e of events) {
-          send(`id: ${e.id}\nevent: trade\ndata: ${JSON.stringify(e)}\n\n`);
+          // A reminder goes out under its own SSE event name, which an older app build simply
+          // ignores (it only listens for "trade").
+          send(`id: ${e.id}\nevent: ${e.type === "reminder" ? "reminder" : "trade"}\ndata: ${JSON.stringify(e)}\n\n`);
           lastId = e.id;
         }
       };

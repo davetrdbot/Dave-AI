@@ -5,6 +5,7 @@ import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bri
 import { getSkill, listSkills } from "@dave/skills";
 import { loadFrozenSnapshot, FROZEN_PAIR_CHAR_BUDGET } from "@dave/memory";
 import { knowledgeList } from "@dave/knowledge";
+import { listReminders, formatReminderLine } from "@dave/workers";
 import type { ContentBlock } from "@dave/brain";
 
 /**
@@ -220,6 +221,21 @@ export function buildLiveSettingsBlock(userId: string): string {
     );
   }
 
+  // Dave's reminders to himself (the trader: "the bot can remind itself of something"). Pending
+  // ones so he never sets a duplicate and knows what is coming; fired ones so a reminder that went
+  // off between turns actually reaches him, not just the chat.
+  const reminders = safeLoadReminders(userId);
+  if (reminders) {
+    lines.push(
+      "",
+      "<reminders>",
+      reminders,
+      "</reminders>",
+      "",
+      "These are reminders you set for yourself, each with the reason you had. A FIRED one has already been sent to the trader -- act on it if it still applies (or tell them why it no longer does), then remove it with delete_reminder. Delete pending ones that no longer matter; do not set a duplicate of one already listed.",
+    );
+  }
+
   return lines.filter((l) => l !== "").join("\n");
 }
 
@@ -331,6 +347,18 @@ function safeLoadMemory(userId: string): string | undefined {
     return [...sections, meter].join("\n\n");
   } catch (err) {
     console.error(`[live-context] could not load memory for ${userId} -- continuing without it:`, err);
+    return undefined;
+  }
+}
+
+function safeLoadReminders(userId: string): string | undefined {
+  try {
+    const now = Date.now();
+    const reminders = listReminders(userId, { includeFired: true }, now);
+    if (reminders.length === 0) return undefined;
+    return reminders.map((r) => formatReminderLine(r, now)).join("\n");
+  } catch (err) {
+    console.error(`[live-context] could not load reminders for ${userId} -- continuing without them:`, err);
     return undefined;
   }
 }

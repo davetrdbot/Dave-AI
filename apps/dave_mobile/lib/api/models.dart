@@ -251,10 +251,10 @@ class BotState {
 
 /// One trade open or close from /api/app/events.
 class TradeEvent {
-  TradeEvent({required this.id, required this.type, required this.ticket, required this.symbol, this.isBuy, this.lots, this.openPrice, this.sl, this.tp, this.pnl, this.reason});
+  TradeEvent({required this.id, required this.type, required this.ticket, required this.symbol, this.isBuy, this.lots, this.openPrice, this.sl, this.tp, this.pnl, this.reason, this.text});
 
   final int id;
-  final String type; // "opened" | "closed"
+  final String type; // "opened" | "closed" | "reminder"
   final String ticket;
   final String symbol;
   final bool? isBuy;
@@ -263,9 +263,12 @@ class TradeEvent {
   final double? sl;
   final double? tp;
   final double? pnl;
-  final String? reason; // tp | sl | dave | manual
+  final String? reason; // tp | sl | dave | manual -- or, on a reminder, why Dave set it
+  /// A reminder's own words (what Dave wanted to come back to). Null on a trade.
+  final String? text;
 
   bool get isOpen => type == 'opened';
+  bool get isReminder => type == 'reminder';
 
   factory TradeEvent.fromJson(Map<String, dynamic> j) => TradeEvent(
         id: _int(j['id']) ?? 0,
@@ -279,6 +282,7 @@ class TradeEvent {
         tp: _num(j['tp']),
         pnl: _num(j['pnl']),
         reason: j['reason'] is String ? j['reason'] as String : null,
+        text: j['text'] is String ? j['text'] as String : null,
       );
 }
 
