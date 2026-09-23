@@ -88,6 +88,8 @@ export interface EaReport {
    * use it for position sizing"): genuinely absent from both the EA's real report payload and
    * these server-side types until now -- AccountInfoInteger(ACCOUNT_LEVERAGE) on the EA side. */
   leverage?: number;
+  /** MT5's Algo Trading button AND the EA's own trading permission -- false means orders will fail. */
+  algoTrading?: boolean;
   positions: EaPosition[];
   pendingOrders: EaPendingOrder[];
   results?: EaCommandResult[];
@@ -102,6 +104,8 @@ export interface AccountSnapshot {
   margin?: number;
   freeMargin?: number;
   leverage?: number;
+  /** Absent from EAs built before this field existed. */
+  algoTrading?: boolean;
   updatedAt: number;
 }
 
@@ -442,6 +446,7 @@ function saveAccountSnapshot(userId: string, report: EaReport): void {
     margin: report.margin,
     freeMargin: report.freeMargin,
     leverage: report.leverage,
+    algoTrading: typeof report.algoTrading === "boolean" ? report.algoTrading : undefined,
     updatedAt: Date.now(),
   } satisfies AccountSnapshot);
 }

@@ -465,6 +465,10 @@ string BuildReportJson()
           // Item 12 real gap fixed: leverage was never reported at all, so Dave had no real
           // basis for position sizing beyond raw balance/equity. Real MT5 field, not guessed.
           "\"leverage\":" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LEVERAGE)) + "," +
+          // Whether this EA may place trades right now: the terminal's Algo Trading button AND the
+          // EA's own "allow algo trading" permission. Off = every order fails, so Dave says so up
+          // front instead of discovering it on the first trade.
+          "\"algoTrading\":" + ((TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && MQLInfoInteger(MQL_TRADE_ALLOWED)) ? "true" : "false") + "," +
           "\"positions\":[" + positions + "]," +
           "\"pendingOrders\":[" + pendingOrders + "]," +
           "\"results\":[" + results + "]," +

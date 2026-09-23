@@ -77,7 +77,7 @@ export function buildLiveSettingsBlock(userId: string): string {
   // only shows up on a turn where the model happens to call it. Surfaced here instead, proactively
   // on EVERY turn (same pattern as every other setting in this block), so it's never missed.
   const accountLine = account
-    ? `Account: balance ${account.balance} | equity ${account.equity} | margin ${account.margin} | free margin ${account.freeMargin}${account.leverage !== undefined ? ` | leverage 1:${account.leverage}` : " | leverage: not reported by the EA yet"}`
+    ? `Account: balance ${account.balance} | equity ${account.equity} | margin ${account.margin} | free margin ${account.freeMargin}${account.leverage !== undefined ? ` | leverage 1:${account.leverage}` : " | leverage: not reported by the EA yet"}${account.algoTrading === false ? " | ⚠️ ALGO TRADING IS OFF in MT5 -- every order will be refused until it's on. Tell the trader: press Algo Trading in MT5 (or /mt5 -> Restart MT5 if it runs in Dave's container)." : ""}`
     : "Account: no EA report received yet";
 
   const lines = [
