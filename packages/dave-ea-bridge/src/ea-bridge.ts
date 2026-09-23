@@ -3,6 +3,7 @@ import { EaTradeExecutor } from "./ea-trade-executor.js";
 import { detectManualCloses } from "./manual-close-detector.js";
 import { detectManualModifications, type ManualModification } from "./manual-modify-detector.js";
 import { runTrailingTick } from "@dave/trading";
+import { appendTradeEvents, deriveTradeEvents } from "./trade-events.js";
 
 /**
  * The real composition wiring the webhook, the executor's pending-result
@@ -71,11 +72,11 @@ export class EaBridge {
   createServer() {
     return createEaWebhookServer({
       onConnect: (userId) => this.events.onConnect?.(userId),
-      onReport: (userId, report, previous) => this.handleReport(userId, report, previous.positions),
+      onReport: (userId, report, previous) => this.handleReport(userId, report, previous.positions, previous.isFirstReport ?? false),
     });
   }
 
-  private handleReport(userId: string, report: EaReport, previousPositions: EaPosition[]): void {
+  private handleReport(userId: string, report: EaReport, previousPositions: EaPosition[], isFirstReport = false): void {
     const daveClosedThisCycle = new Set<string>();
     const daveModifiedThisCycle = new Set<string>();
 
@@ -111,6 +112,25 @@ export class EaBridge {
     for (const closed of report.closedPositions ?? []) {
       if (!this.shouldNotifyClose(userId, closed.ticket)) continue; // item 14: already notified this ticket
       this.events.onClosedPosition?.(userId, closed);
+    }
+
+    // Durable open/close log for the mobile app's notifications (trade-events.ts). Its own pass,
+    // deduped by the log itself, so it neither depends on nor disturbs the Telegram close-dedup
+    // above. Wrapped: a failed write here must never break report handling -- the EA's commands
+    // still have to go back in this same response.
+    try {
+      appendTradeEvents(
+        userId,
+        deriveTradeEvents({
+          previous: previousPositions,
+          current: report.positions ?? [],
+          closedPositions: report.closedPositions ?? [],
+          daveClosed: daveClosedThisCycle,
+          isFirstReport,
+        })
+      );
+    } catch (err) {
+      console.error(`[ea-bridge] could not record trade events for ${userId}:`, err);
     }
 
     // Real breakeven/trailing drive loop: every reported open position that

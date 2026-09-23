@@ -454,7 +454,14 @@ export interface EaReportHandlers {
    * getLastKnownState() from inside this handler would already return
    * the NEW state (a real bug this signature exists to prevent).
    */
-  onReport?: (userId: string, report: EaReport, previous: { positions: EaPosition[]; pendingOrders: EaPendingOrder[] }) => void;
+  onReport?: (
+    userId: string,
+    report: EaReport,
+    // isFirstReport: no state had ever been saved for this user before this report. Optional so
+    // existing handlers keep compiling; trade-events.ts needs it to avoid treating every
+    // already-open position as "just opened" the first time a terminal ever reports.
+    previous: { positions: EaPosition[]; pendingOrders: EaPendingOrder[]; isFirstReport?: boolean }
+  ) => void;
   /** Fires once per genuine (re)connection -- see `isNewConnection`. */
   onConnect?: (userId: string) => void;
 }
@@ -499,7 +506,9 @@ export function createEaWebhookServer(handlers: EaReportHandlers = {}): Server {
     }
     markSeen(userId);
 
-    const previous = getLastKnownState(userId);
+    // Checked BEFORE the save below creates the file -- afterwards it always exists.
+    const isFirstReport = !existsSync(lastKnownStatePath(userId));
+    const previous = { ...getLastKnownState(userId), isFirstReport };
     saveLastKnownState(userId, report.positions ?? [], report.pendingOrders ?? []);
     saveAccountSnapshot(userId, report);
     storeAnalysisResults(userId, report.results ?? []);
