@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend, ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid } from "recharts";
 
-type Tab = "stats" | "groups" | "teams" | "models" | "selfimprove" | "db" | "mcp" | "credentials" | "settings";
+type Tab = "stats" | "phone" | "groups" | "teams" | "models" | "selfimprove" | "db" | "mcp" | "credentials" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "stats", label: "Live Stats" },
+  { id: "phone", label: "Phone App" },
   { id: "groups", label: "Pair Groups" },
   { id: "teams", label: "Agent Teams" },
   { id: "models", label: "AI Models" },
@@ -31,6 +32,14 @@ function useApi(userId: string) {
 export default function AdminPage() {
   const [userId, setUserId] = useState("default");
   const [tab, setTab] = useState<Tab>("stats");
+  // Start on the user the bot actually runs as (OWNER_USER_ID), not the literal "default" --
+  // see app/api/owner/route.ts for what went wrong otherwise.
+  useEffect(() => {
+    fetch("/api/owner")
+      .then((r) => r.json())
+      .then((r) => typeof r.ownerUserId === "string" && r.ownerUserId && setUserId(r.ownerUserId))
+      .catch(() => undefined);
+  }, []);
   const api = useApi(userId);
   // The dot used to be hardcoded green: a permanent "all good" on a trading dashboard, shown
   // even with no terminal connected at all. A status light that cannot report bad news is worse
@@ -78,6 +87,7 @@ export default function AdminPage() {
 
       <main>
         {tab === "stats" && <StatsPanel userId={userId} />}
+        {tab === "phone" && <PhonePanel userId={userId} />}
         {tab === "groups" && <GroupsPanel userId={userId} />}
         {tab === "teams" && <TeamsPanel userId={userId} />}
         {tab === "models" && <ModelsPanel userId={userId} />}
@@ -1060,5 +1070,91 @@ function TradingLoopPanel({ userId }: { userId: string }) {
       </div>
       {savedNote && <div className="stat-note">{savedNote}</div>}
     </div>
+  );
+}
+
+// --- Phone app pairing ---
+/**
+ * The only place a pairing code can come from. The /api/pairing-code endpoint existed, but with no
+ * button for it the only way to pair a phone was a terminal command -- which is not a setup step
+ * anyone should have to take. Deliberately in the WEB panel (behind its own Basic Auth) and not in
+ * the app: the trusted surface mints the credential, so a stolen phone cannot mint another one.
+ */
+function PhonePanel({ userId }: { userId: string }) {
+  const api = useApi(userId);
+  const [devices, setDevices] = useState<{ id: string; label: string; pairedAt: number; lastSeenAt?: number }[] | null>(null);
+  const [code, setCode] = useState<{ code: string; expiresAt: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const endpoint = typeof window !== "undefined" ? window.location.origin : "";
+
+  const load = useCallback(() => {
+    api("/api/pairing-code")
+      .then((r) => setDevices(r.devices ?? []))
+      .catch(() => setError("Could not load paired phones."));
+  }, [api]);
+  useEffect(load, [load]);
+
+  const mint = async () => {
+    setError(null);
+    try {
+      const r = await api("/api/pairing-code", { method: "POST" });
+      setCode({ code: r.code, expiresAt: r.expiresAt });
+    } catch {
+      setError("Could not create a pairing code.");
+    }
+  };
+
+  const revoke = async (id: string) => {
+    if (!window.confirm("Disconnect this phone? It will need a new code to connect again.")) return;
+    await api(`/api/pairing-code?deviceId=${encodeURIComponent(id)}`, { method: "DELETE" });
+    load();
+  };
+
+  return (
+    <>
+      <div className="card">
+        <h2>Connect the phone app</h2>
+        <p className="sub" style={{ marginTop: 0 }}>
+          Open the app, and enter this server address and a pairing code. You only do this once per phone.
+        </p>
+        <div className="label">Server address</div>
+        <div style={{ fontSize: 17, fontWeight: 600, margin: "4px 0 16px", wordBreak: "break-all" }}>{endpoint}</div>
+        {code ? (
+          <>
+            <div className="label">Pairing code</div>
+            <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: "0.12em", fontVariantNumeric: "tabular-nums", margin: "4px 0" }}>{code.code}</div>
+            <div className="stat-note">Works once, expires at {new Date(code.expiresAt).toLocaleTimeString()}.</div>
+            <div className="row" style={{ marginTop: 16 }}>
+              <button className="btn secondary" onClick={mint}>New code</button>
+            </div>
+          </>
+        ) : (
+          <button className="btn" onClick={mint}>Get a pairing code</button>
+        )}
+        {error && <div className="stat-note" style={{ color: "var(--red)" }}>{error}</div>}
+      </div>
+
+      <div className="card">
+        <h2>Connected phones</h2>
+        {devices === null ? (
+          <div className="placeholder">Loading...</div>
+        ) : devices.length === 0 ? (
+          <div className="placeholder">No phones connected yet.</div>
+        ) : (
+          devices.map((d) => (
+            <div className="feed-item" key={d.id}>
+              <div>
+                <div style={{ fontWeight: 600 }}>{d.label}</div>
+                <div className="meta">
+                  Connected {new Date(d.pairedAt).toLocaleDateString()}
+                  {d.lastSeenAt ? ` · last seen ${new Date(d.lastSeenAt).toLocaleString()}` : ""}
+                </div>
+              </div>
+              <button className="btn danger" onClick={() => revoke(d.id)}>Disconnect</button>
+            </div>
+          ))
+        )}
+      </div>
+    </>
   );
 }

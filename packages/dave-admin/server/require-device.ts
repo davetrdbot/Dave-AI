@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyDeviceToken } from "./device-auth";
+import { resolveUserId } from "./owner";
 
 /**
  * The route-level half of device auth for everything under `/api/app/*`.
@@ -38,7 +39,8 @@ function bearerToken(req: NextRequest): string | undefined {
 export function withDevice(handler: (ctx: DeviceContext) => Promise<NextResponse> | NextResponse) {
   return async (req: NextRequest): Promise<NextResponse> => {
     const token = bearerToken(req);
-    const userId = req.nextUrl.searchParams.get("userId") ?? "default";
+    // The bot's real owner by default (OWNER_USER_ID), not a hardcoded "default" -- see owner.ts.
+    const userId = resolveUserId(req.nextUrl.searchParams.get("userId"));
     if (!token || !verifyDeviceToken(userId, token)) {
       // Deliberately identical for a missing, malformed, unknown and revoked token: telling the
       // caller which one it was is free information for anyone probing.

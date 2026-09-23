@@ -198,4 +198,42 @@ console.log("[6] A corrupt state file fails CLOSED\n");
   console.log("   ✓ corrupt state authenticates nobody\n");
 }
 
+// ---------------------------------------------------------------------------
+console.log("[7] With OWNER_USER_ID set, an app that names no user reads the OWNER's data\n");
+
+{
+  // The bot stores under OWNER_USER_ID ?? "default". The app sends no userId. Before owner.ts,
+  // every device route defaulted to "default" regardless -- so on any deployment with
+  // OWNER_USER_ID set, the phone paired fine and then showed an empty account.
+  const { resolveUserId, ownerUserId } = await import("../server/owner.js");
+  const saved = process.env.OWNER_USER_ID;
+  try {
+    delete process.env.OWNER_USER_ID;
+    assert.equal(ownerUserId(), "default", "unset -> the bot's own fallback");
+    process.env.OWNER_USER_ID = "8235751653";
+    assert.equal(resolveUserId(null), "8235751653", "no userId from the app -> the bot's real owner");
+    assert.equal(resolveUserId(""), "8235751653", "an empty userId is treated as none");
+    assert.equal(resolveUserId("someone-else"), "someone-else", "an explicit userId still wins (web panel multi-user box)");
+
+    // End to end through the guard: pair and verify with no userId anywhere.
+    const { code } = createPairingCode(ownerUserId());
+    const { token } = redeemPairingCode(ownerUserId(), code, "Owner phone");
+    const { withDevice } = await import("../server/require-device.js");
+    let seenUser = "";
+    const handler = withDevice(async ({ userId }) => {
+      seenUser = userId;
+      const { NextResponse } = await import("next/server");
+      return NextResponse.json({ ok: true });
+    });
+    const { NextRequest } = await import("next/server");
+    const res = await handler(new NextRequest("http://x/api/app/dashboard", { headers: { authorization: `Bearer ${token}` } }));
+    assert.equal(res.status, 200, "the owner's token is accepted with no userId in the URL");
+    assert.equal(seenUser, "8235751653", "and the route acts on the owner, not on 'default'");
+    console.log("   ✓ no userId -> owner; explicit userId still wins; guard acts on the owner\n");
+  } finally {
+    if (saved === undefined) delete process.env.OWNER_USER_ID;
+    else process.env.OWNER_USER_ID = saved;
+  }
+}
+
 console.log("=== All sections passed ===");

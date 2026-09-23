@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolveUserId } from "../../../../server/owner";
 import { redeemPairingCode, PairingCodeInvalidError } from "../../../../server/device-auth";
 
 /**
@@ -11,7 +12,7 @@ import { redeemPairingCode, PairingCodeInvalidError } from "../../../../server/d
  */
 
 export async function POST(req: NextRequest) {
-  const userId = req.nextUrl.searchParams.get("userId") ?? "default";
+  const userId = resolveUserId(req.nextUrl.searchParams.get("userId"));
   let body: { code?: string; label?: string };
   try {
     body = (await req.json()) as { code?: string; label?: string };

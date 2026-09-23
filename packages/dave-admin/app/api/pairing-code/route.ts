@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolveUserId } from "../../../server/owner";
 import { createPairingCode, listDevices, revokeDevice, PAIRING_CODE_TTL_MS } from "../../../server/device-auth";
 
 /**
@@ -12,12 +13,12 @@ import { createPairingCode, listDevices, revokeDevice, PAIRING_CODE_TTL_MS } fro
  */
 
 export async function GET(req: NextRequest) {
-  const userId = req.nextUrl.searchParams.get("userId") ?? "default";
+  const userId = resolveUserId(req.nextUrl.searchParams.get("userId"));
   return NextResponse.json({ devices: listDevices(userId) });
 }
 
 export async function POST(req: NextRequest) {
-  const userId = req.nextUrl.searchParams.get("userId") ?? "default";
+  const userId = resolveUserId(req.nextUrl.searchParams.get("userId"));
   const { code, expiresAt } = createPairingCode(userId);
   return NextResponse.json({
     code,
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const userId = req.nextUrl.searchParams.get("userId") ?? "default";
+  const userId = resolveUserId(req.nextUrl.searchParams.get("userId"));
   const deviceId = req.nextUrl.searchParams.get("deviceId");
   if (!deviceId) return NextResponse.json({ error: "deviceId is required" }, { status: 400 });
   const revoked = revokeDevice(userId, deviceId);
