@@ -321,7 +321,7 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
         "REQUEST_CANDLES fetches one fresh real batch of candles (for the at-risk symbol if a SELF-AWARE ALERT is active below, otherwise for the symbol you're currently analyzing) so you decide with current price action, not stale data -- optional, never required, available on any cycle, at most once; you'll be asked to decide again right after with the candles in hand. " +
         "RUN_SCRIPT runs one real script (needs script) against this symbol's full analysis suite and hands you its actual output before you decide -- use it ONLY when the decision genuinely turns on a number you cannot reliably work out in your head, and never as a routine step; optional, never required, at most once; you'll be asked to decide again right after with the output in hand. " +
-        "SKIP if there's genuinely nothing. ASK only for real, specific ambiguity.",
+        "SKIP if there's genuinely nothing. ASK for real, specific ambiguity -- and ASK when the SAME blocker (a saved lesson, a setting, an account limit) has now stopped you trading for several cycles in a row: tell the trader plainly which lesson or limit it is, what it keeps stopping, and what they could decide. Say it once; if your recent decisions show you already asked, keep going without repeating it.",
     },
     symbol: { type: "string" },
     script: {
@@ -836,7 +836,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     clockLine,
     tickMemory ? `WHAT YOU REMEMBER (already known -- treat as standing instructions):\n${tickMemory}` : null,
     tickKnowledge
-      ? `WHAT YOU HAVE LEARNED AND SAVED (your own past conclusions -- apply any whose "use when" fits this symbol right now):\n${tickKnowledge}`
+      ? `WHAT YOU HAVE LEARNED AND SAVED (your own past conclusions -- guidance, not rules: your settings and the trader's instructions outrank them. Apply any whose "use when" fits this symbol right now. If one of them is the reason you keep skipping, say so with ASK rather than skipping silently cycle after cycle):\n${tickKnowledge}`
       : null,
     `SYMBOL: ${symbol}`,
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
