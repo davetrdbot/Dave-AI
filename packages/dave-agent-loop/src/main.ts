@@ -1,6 +1,7 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
 import { EaBridge, DynamicTradeExecutor, setEaPushInterval } from "@dave/ea-bridge";
@@ -147,6 +148,29 @@ export function resolveDataRoot(env: NodeJS.ProcessEnv, cwd: string): string {
   return env.DAVE_DATA_ROOT ?? env.RAILWAY_VOLUME_MOUNT_PATH ?? cwd;
 }
 
+/**
+ * DAVE_CREDENTIALS_KEY encrypts every saved API key and token. When the deployment doesn't set one
+ * (a one-click Railway template can't generate a fresh secret per deploy), the bot makes its own
+ * the first time and keeps it on the volume, so it survives redeploys. An explicit env var always
+ * wins. Returns where the key came from.
+ */
+export function ensureCredentialsKey(env: NodeJS.ProcessEnv, dataRoot: string): "env" | "file" | "created" {
+  if (env.DAVE_CREDENTIALS_KEY?.trim()) return "env";
+  const file = join(dataRoot, ".dave-credentials-key");
+  if (existsSync(file)) {
+    const saved = readFileSync(file, "utf8").trim();
+    if (saved) {
+      env.DAVE_CREDENTIALS_KEY = saved;
+      return "file";
+    }
+  }
+  mkdirSync(dataRoot, { recursive: true });
+  const key = randomBytes(32).toString("hex");
+  writeFileSync(file, key + "\n", { mode: 0o600 });
+  env.DAVE_CREDENTIALS_KEY = key;
+  return "created";
+}
+
 /** Kept in sync by hand with ea/DaveEA.mq5's own compiled `PushSeconds` input -- see the boot-time
  *  re-assert below for why the source value alone was never enough to actually take effect. */
 const DESIRED_EA_PUSH_SECONDS = 8;
@@ -156,6 +180,9 @@ export async function main(): Promise<void> {
   // configured env var again -- falls all the way back to process.cwd() (the pre-fix behavior)
   // only when Railway's own volume-mount env var genuinely isn't present either (e.g. local dev).
   process.env.DAVE_DATA_ROOT = resolveDataRoot(process.env, process.cwd());
+  if (ensureCredentialsKey(process.env, process.env.DAVE_DATA_ROOT) === "created") {
+    console.log("[dave] no DAVE_CREDENTIALS_KEY set -- created one and saved it on the volume");
+  }
   const ownerUserId = process.env.OWNER_USER_ID ?? "default";
   // Real gap fixed: every admin-panel API route (telegram-otp,
   // e2b-keys, database-automation, provider-keys, ...) consistently
