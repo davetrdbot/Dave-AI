@@ -1,4 +1,5 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../api/client.dart';
@@ -598,7 +599,8 @@ class _NotificationSection extends StatelessWidget {
       final granted = await PushService.requestNotificationPermission();
       if (!granted) {
         if (context.mounted) {
-          await showError(context, 'Notifications are turned off for Dave in Android settings. Turn them on there, then try again.');
+          final where = defaultTargetPlatform == TargetPlatform.iOS ? 'iPhone Settings > Notifications' : 'Android settings';
+          await showError(context, 'Notifications are turned off for Dave in $where. Turn them on there, then try again.');
         }
         return;
       }
@@ -614,8 +616,9 @@ class _NotificationSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) => CupertinoListSection.insetGrouped(
         header: const ListHeader('Phone notifications'),
-        footer: const ListFooter(
-            'Alerts come straight from your own server -- no Firebase, nothing else to install. Android requires a small ongoing "Dave" notification while Dave stays connected. Some phones also need battery optimisation turned off for Dave, or they cut the connection to save power.'),
+        footer: ListFooter(defaultTargetPlatform == TargetPlatform.iOS
+            ? 'Alerts come straight from your own server. On iPhone they arrive while Dave is open or recently used: iOS pauses the connection after a while in the background, and Dave catches up on anything missed the next time it runs.'
+            : 'Alerts come straight from your own server -- no Firebase, nothing else to install. Android requires a small ongoing "Dave" notification while Dave stays connected. Some phones also need battery optimisation turned off for Dave, or they cut the connection to save power.'),
         children: [
           CupertinoListTile(
             leading: const Icon(CupertinoIcons.bell),
@@ -623,8 +626,9 @@ class _NotificationSection extends StatelessWidget {
             subtitle: Text(data.notifications ? (data.serviceRunning ? 'Connected' : 'Starting…') : 'Off'),
             trailing: CupertinoSwitch(value: data.notifications, onChanged: (v) => _toggle(context, v)),
           ),
-          CupertinoListTile(
-            leading: const Icon(CupertinoIcons.battery_25),
+          if (defaultTargetPlatform == TargetPlatform.android)
+            CupertinoListTile(
+              leading: const Icon(CupertinoIcons.battery_25),
             title: const Text('Battery optimisation'),
             subtitle: Text(data.batteryExempt ? 'Off for Dave -- alerts stay reliable' : 'On -- your phone may cut the connection'),
             trailing: data.batteryExempt ? null : const CupertinoListTileChevron(),

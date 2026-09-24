@@ -1,7 +1,8 @@
 """Draws the Dave app icon at every Android size from one description.
 
-Run from apps/dave_mobile:  python3 tool/make_icon.py android/app/src/main/res /tmp/icon-preview.png
-(needs Pillow and numpy).
+Run from apps/dave_mobile:
+  python3 tool/make_icon.py android/app/src/main/res /tmp/icon-preview.png ios/Runner/Assets.xcassets/AppIcon.appiconset
+(needs Pillow and numpy). The iOS folder is optional.
 
 Design: deep blue -> indigo field, three rising frosted-glass bars, and a white trend line with an
 end dot. Everything is drawn at 4x and downsampled, so edges are clean at every density.
@@ -160,4 +161,15 @@ for name, f in density.items():
     save(down(stat, nb), f"{RES}/drawable-{name}/ic_stat_dave.png")
 
 save(squircle_icon(1024, inset=0.08), PREVIEW)
+
+# 5. iOS: one full-bleed, opaque 1024 image -- iOS applies its own rounded mask and makes every
+#    other size from it (single-size app icon, Xcode 14+). Alpha is not allowed in an iOS icon.
+if len(sys.argv) > 3:
+    ios = sys.argv[3]
+    bg = gradient(1024)
+    bars, line, _ = glyph_layers(1024, scale=0.84)
+    save(down(compose(bg, bars, line), 1024).convert("RGB"), f"{ios}/Icon-1024.png")
+    with open(f"{ios}/Contents.json", "w") as f:
+        f.write('{\n  "images" : [\n    {\n      "filename" : "Icon-1024.png",\n      "idiom" : "universal",\n'
+                '      "platform" : "ios",\n      "size" : "1024x1024"\n    }\n  ],\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n')
 print("ok")

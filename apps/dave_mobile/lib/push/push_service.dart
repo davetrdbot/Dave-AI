@@ -154,7 +154,11 @@ class TradeStreamHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     await _notifications.initialize(
-      settings: const InitializationSettings(android: AndroidInitializationSettings('@drawable/ic_stat_dave')),
+      settings: const InitializationSettings(
+        android: AndroidInitializationSettings('@drawable/ic_stat_dave'),
+        // Permission is asked by the app itself (PushService.requestNotificationPermission).
+        iOS: DarwinInitializationSettings(requestAlertPermission: false, requestBadgePermission: false, requestSoundPermission: false),
+      ),
     );
     await _notifications
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
@@ -326,6 +330,7 @@ class TradeStreamHandler extends TaskHandler {
                   priority: Priority.high,
                   category: AndroidNotificationCategory.message,
                 ),
+          iOS: DarwinNotificationDetails(threadIdentifier: reminder ? _reminderChannelId : _tradeChannelId, interruptionLevel: InterruptionLevel.timeSensitive),
         ),
       );
 }
@@ -363,7 +368,9 @@ class PushService {
     return await FlutterForegroundTask.checkNotificationPermission() == NotificationPermission.granted;
   }
 
-  static Future<bool> get isIgnoringBatteryOptimizations => FlutterForegroundTask.isIgnoringBatteryOptimizations;
+  /// Android only. iPhones have no such switch, so there it is always "fine".
+  static Future<bool> get isIgnoringBatteryOptimizations async =>
+      defaultTargetPlatform != TargetPlatform.android || await FlutterForegroundTask.isIgnoringBatteryOptimizations;
   static Future<bool> requestIgnoreBatteryOptimization() => FlutterForegroundTask.requestIgnoreBatteryOptimization();
 
   static Future<bool> get isRunning => FlutterForegroundTask.isRunningService;

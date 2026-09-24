@@ -1,7 +1,7 @@
 name: Android app
 
 # Builds the Dave admin app (apps/dave_mobile) and, on main, publishes the APK as a GitHub Release
-# so the phone can download it directly. Android only -- there is no iOS build.
+# so the phone can download it directly. The iPhone build is ios-ipa.yml.
 on:
   push:
     paths:

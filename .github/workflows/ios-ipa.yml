@@ -1,0 +1,72 @@
+name: iOS app
+
+# Builds the Dave app (apps/dave_mobile) for iPhone as an UNSIGNED .ipa, for sideloading
+# (Sideloadly, AltStore, TrollStore...). The sideloading tool signs it with your own Apple ID when
+# it installs it, so no Apple developer account or certificates are needed here.
+# Every build is published as a GitHub Release (ios-build-N) so the file can be downloaded directly.
+on:
+  push:
+    paths:
+      - "apps/dave_mobile/**"
+      - ".github/workflows/ios-ipa.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write # to create the release
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/dave_mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+
+      - run: flutter pub get
+
+      # The run number is the build number, so every build is newer than the last.
+      - name: Build (no signing)
+        run: flutter build ios --release --no-codesign --build-number=${{ github.run_number }}
+
+      # An .ipa is just the .app inside a Payload folder, zipped.
+      - name: Package Dave.ipa
+        run: |
+          APP=build/ios/iphoneos/Runner.app
+          test -d "$APP"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" -c "Print :CFBundleIdentifier" -c "Print :MinimumOSVersion" "$APP/Info.plist"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$RUNNER_TEMP/Dave.ipa" Payload)
+          ls -la "$RUNNER_TEMP/Dave.ipa"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dave-ipa
+          path: ${{ runner.temp }}/Dave.ipa
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Dave iPhone app (build ${{ github.run_number }})
+          body: |
+            iPhone app for Dave, unsigned, for sideloading. Download **Dave.ipa**, then install it with
+            Sideloadly (or AltStore / TrollStore) -- it signs the app with your Apple ID as it installs.
+
+            First time: in the web panel open **Phone App**, tap **Get a pairing code**, then enter
+            your server address and the code in the app.
+          files: ${{ runner.temp }}/Dave.ipa
+          prerelease: ${{ github.ref != 'refs/heads/main' }}
+          make_latest: false
