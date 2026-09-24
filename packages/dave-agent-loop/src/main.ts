@@ -12,6 +12,7 @@ import { startTelegramBotServer } from "./telegram-bot-server.js";
 import { getPrimaryChatId } from "./primary-chat.js";
 import { buildClosedTradeMessage, buildManualCloseMessage, buildManualModifyMessage, buildWatchdogAlertMessage } from "./trade-notifications.js";
 import { eaConnectionAlert, cycleErrorAlert } from "./health-alerts.js";
+import { createMarketWatchSync } from "./market-watch-sync.js";
 import { logClosedTrade } from "@dave/feedback";
 import { loadSystemPrompt } from "./system-prompt.js";
 
@@ -282,7 +283,14 @@ export async function main(): Promise<void> {
   // tryStartTelegram() (below) genuinely succeeds; the handlers read it (and the real persisted
   // primary chat) at FIRE time, not at construction time, so a trade closing before Telegram is
   // paired is silently skipped rather than crashing.
+  // Every pair group's pairs in MT5's Market Watch -- sent on boot, on every EA (re)connect, and
+  // when a group changes (checked each minute; the command is cheap and idempotent in the EA).
+  const marketWatch = createMarketWatchSync(ownerUserId);
   const eaBridge = new EaBridge({
+    onCommandResult: (_userId, result) => {
+      const said = marketWatch.describeResult(result);
+      if (said !== undefined) console.log(`[ea] market watch: ${said}`);
+    },
     // Real gap fixed (the trader: "find bugs this bot"): ea-webhook.ts's isNewConnection and
     // CONNECTION_GAP_MS exist specifically to detect the EA coming (back) online -- and this
     // handler threw that detection away on a console.log, so the owner was never told their MT5
@@ -290,6 +298,7 @@ export async function main(): Promise<void> {
     // notice in telegram-bot-server.ts, so the pair can never double-report one transition.
     onConnect: (userId) => {
       console.log(`[ea] connected: ${userId}`);
+      if (userId === ownerUserId) marketWatch.sync(true);
       const message = eaConnectionAlert(userId, true, 0);
       if (message) alertOwner(message);
     },
@@ -329,6 +338,14 @@ export async function main(): Promise<void> {
   // timeout. Re-asserting the intended interval here, on every boot, makes the source the single
   // source of truth: the EA picks it up on its next poll, no recompile and no admin action needed.
   setEaPushInterval(ownerUserId, DESIRED_EA_PUSH_SECONDS);
+  marketWatch.sync(true);
+  setInterval(() => {
+    try {
+      marketWatch.sync();
+    } catch (err) {
+      console.warn(`[ea] market watch sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, 60_000).unref();
 
   const adminProcess = spawnAdminPanel(dirname(dbPath));
 

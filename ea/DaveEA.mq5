@@ -97,6 +97,17 @@ string ResolveBrokerSymbol(const string base)
    return base; // fallback -- caller will see the real SymbolInfo failure rather than a silent swallow
   }
 
+// Market Watch variant: the exact name or a known broker suffix only. No prefix scan -- short
+// names ("V", "MA", "BA") would otherwise switch on some unrelated symbol that merely starts so.
+bool SelectExactOrSuffixed(const string base)
+  {
+   if(SymbolSelect(base, true)) return true;
+   string suffixes[] = {"m", ".raw", ".pro", ".ecn", "+", ".", "_i", "i", "-Cash", ".cash", "c", ".m", "x"};
+   for(int i = 0; i < ArraySize(suffixes); i++)
+      if(SymbolSelect(base + suffixes[i], true)) return true;
+   return false;
+  }
+
 //+------------------------------------------------------------------+
 //| Broker min-stop-distance enforcement -- ported from the reference |
 //| DAVE.mq5. Real MT5 fact: every symbol has a SYMBOL_TRADE_STOPS_   |
@@ -812,6 +823,28 @@ void ExecuteOneCommand(string obj)
       g_pushIntervalSeconds = seconds;
       EventSetTimer(g_pushIntervalSeconds);
       AppendResult(id, true, "push interval set to " + IntegerToString(g_pushIntervalSeconds) + "s", "");
+     }
+   else if(action == "market_watch")
+     {
+      // Every pair from every pair group goes into MT5's own Market Watch (the trader: "all those
+      // group pairs should be automatically added"). Broker suffixes are resolved (EURUSD ->
+      // EURUSDm); pairs this broker doesn't list are reported back, never guessed. No charts.
+      string parts[];
+      int n = StringSplit(JsonGetString(obj, "symbols"), ',', parts);
+      int added = 0, asked = 0;
+      string missing = "";
+      for(int i = 0; i < n; i++)
+        {
+         string base = parts[i];
+         StringTrimLeft(base);
+         StringTrimRight(base);
+         if(StringLen(base) == 0) continue;
+         asked++;
+         if(SelectExactOrSuffixed(base)) added++;
+         else missing += (missing == "" ? "" : ", ") + base;
+        }
+      AppendResult(id, true, IntegerToString(added) + " of " + IntegerToString(asked) + " pairs in Market Watch" +
+                   (missing != "" ? " (not on this broker: " + missing + ")" : ""), "");
      }
    else
      {

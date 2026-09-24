@@ -131,7 +131,14 @@ export type EaCommand =
    * uses. Reverts to the EA's own compiled default if the terminal restarts (a real, honest
    * MT5 limitation -- there is no way to persist this INTO the compiled EA remotely).
    */
-  | { id: string; action: "set_push_interval"; seconds: number };
+  | { id: string; action: "set_push_interval"; seconds: number }
+  /**
+   * Puts every pair from every pair group into MT5's own Market Watch (the trader: "the market
+   * watch -- all those group pairs should be automatically added"). `symbols` is comma-separated;
+   * the EA switches each on with SymbolSelect (resolving broker suffixes like EURUSDm) and reports
+   * which ones this broker doesn't have. No charts are opened -- those stay the active group's.
+   */
+  | { id: string; action: "market_watch"; symbols: string };
 
 /**
  * Real gap fixed (user: "the ea token should have only one token which is revokable e.g
