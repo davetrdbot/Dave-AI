@@ -67,6 +67,7 @@ PERIODS = {"M1", "M2", "M3", "M4", "M5", "M6", "M10", "M12", "M15", "M20", "M30"
 lock = threading.Lock()
 relay_stats = {"count": 0, "errors": 0, "lastAt": None, "lastStatus": None, "lastError": None}
 terminal_proc = None
+terminal_started_at = 0.0
 
 
 def log(*a):
@@ -219,6 +220,67 @@ def write_profile(state):
         ]))
 
 
+# --- broker server lookup ------------------------------------------------------------------------
+#
+# Found for real on a live deploy: the trader typed "Headway-Demo" and MT5 logged in to
+# "MetaQuotes-Demo" instead ("authorization on MetaQuotes-Demo failed (Invalid account)"). A fresh MT5
+# only knows MetaQuotes' own servers (its broker list, servers.dat, is encrypted and can't be written),
+# and an unknown Server= in the start-up config silently falls back to them. A person fixes that in
+# the MT5 window by searching for their broker; headless, the same broker directory is queried here
+# (the approach mt5-gateway uses, MIT) and MT5 is given the server's real address, Server=<host:port>.
+
+RESOLVER_URL = os.environ.get("MT5_RESOLVER_URL", "https://mt5.mtapi.io").rstrip("/")
+HOST_PORT = re.compile(r"^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):\d{2,5}$")
+ROTATE_AFTER_S = 120  # still not connected this long after a start -> try the server's next address
+
+
+def _search_directory(keyword):
+    url = "%s/Search?company=%s" % (RESOLVER_URL, urllib.request.quote(keyword))
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"user-agent": "dave-mt5"}), timeout=20) as r:
+        return json.load(r)
+
+
+def resolve_server(name):
+    """-> (addresses, suggestions, error). addresses: the server's access points, IPv4 first; None if
+    not found. suggestions: real server names that look close, when the directory answered but has no
+    such server. error: set only when the directory couldn't be asked at all."""
+    name = name.strip()
+    if HOST_PORT.match(name):
+        return [name], [], None
+    prefix = re.split(r"[-\s]", name)[0]
+    keywords = [k for k in dict.fromkeys([prefix, re.sub(r"\d+$", "", prefix), name]) if len(k) >= 2]
+    seen, answered, last_error = [], False, None
+    for kw in keywords:
+        try:
+            companies = _search_directory(kw)
+        except Exception as e:  # network, bad JSON -- try the next keyword
+            last_error = str(e)[:200]
+            continue
+        answered = True
+        for company in companies or []:
+            for server in company.get("results") or []:
+                sname = str(server.get("name", ""))
+                seen.append(sname)
+                if sname.lower() == name.lower():
+                    access = [a for a in server.get("access") or [] if HOST_PORT.match(str(a))]
+                    access.sort(key=lambda a: (a.startswith("["), not a.endswith(":443")))
+                    if access:
+                        return access, [], None
+    if not answered:
+        return None, [], last_error or "the broker directory did not answer"
+    low = prefix.lower()
+    close = [n for n in dict.fromkeys(seen) if low in n.lower()]
+    close.sort(key=lambda n: ("demo" not in n.lower()) != ("demo" not in name.lower()))
+    return None, close[:8], None
+
+
+def server_address(state):
+    access = state.get("serverAccess") or []
+    if not access:
+        return state["server"]
+    return access[int(state.get("serverAccessIndex") or 0) % len(access)]
+
+
 def write_config(state):
     write_profile(state)
     preset = "\n".join("%s=%s" % kv for kv in ea_inputs(state).items()) + "\n"
@@ -227,7 +289,7 @@ def write_config(state):
         "[Common]",
         "Login=%s" % state["login"],
         "Password=%s" % state["password"],
-        "Server=%s" % state["server"],
+        "Server=%s" % server_address(state),
         "KeepPrivate=1",
         "NewsEnable=0",
         "[Experts]",
@@ -270,7 +332,14 @@ def stop_terminal():
 
 
 def start_terminal(state):
-    global terminal_proc
+    global terminal_proc, terminal_started_at
+    if not state.get("serverAccess") and not HOST_PORT.match(state.get("server", "")):
+        access, _, _ = resolve_server(state["server"])
+        if access:
+            state["serverAccess"], state["serverAccessIndex"] = access, 0
+            save_state(state)
+            log("server", state["server"], "->", access[0], "(%d addresses)" % len(access))
+    terminal_started_at = time.time()
     write_config(state)
     os.makedirs(BRIDGE_DIR, exist_ok=True)
     terminal_proc = subprocess.Popen(
@@ -419,6 +488,7 @@ def status():
         "inputs": state.get("inputs") or {},
         "marketWatch": state.get("marketWatch") or [],
         "metaquotesIds": state.get("metaquotesIds") or [],
+        "serverAddress": server_address(state) if state.get("login") else None,
         "phonePush": dict(phone_push, eaReports=relay_stats.get("phonePush")),
         "relay": relay,
     }
@@ -519,6 +589,14 @@ class Handler(BaseHTTPRequestHandler):
             err = check_payload(body, True)
             if err:
                 return self._json(400, {"error": err})
+            server_name = str(body["server"]).strip()
+            access, suggestions, lookup_error = resolve_server(server_name)
+            if access is None and lookup_error is None:
+                hint = (" Did you mean: " + ", ".join(suggestions) + "?") if suggestions else " Check the name exactly as MT5 shows it at login."
+                return self._json(400, {"error": "MT5 server \"%s\" wasn't found in the broker directory.%s" % (server_name, hint), "suggestions": suggestions})
+            if access is None:
+                log("broker directory unreachable (%s) -- trying the server name as typed" % lookup_error)
+            state["serverAccess"], state["serverAccessIndex"] = access or [], 0
             state.update({
                 "login": str(body["login"]).strip(), "password": str(body["password"]), "server": str(body["server"]).strip(),
                 "webhookUrl": str(body["webhookUrl"]).strip(), "token": body.get("token"),
@@ -571,6 +649,15 @@ def supervise():
             if state.get("login") and installed() and os.path.exists(ex5_path()) and not terminal_running():
                 log("terminal not running -- starting it again")
                 start_terminal(state)
+            elif state.get("login") and terminal_running() and len(state.get("serverAccess") or []) > 1:
+                # One of a broker's addresses can be down; a wrong password is not a reason to move on.
+                login, _ = login_state()
+                if login == "connecting" and time.time() - terminal_started_at > ROTATE_AFTER_S:
+                    state["serverAccessIndex"] = (int(state.get("serverAccessIndex") or 0) + 1) % len(state["serverAccess"])
+                    save_state(state)
+                    log("still not connected -- trying", server_address(state))
+                    stop_terminal()
+                    start_terminal(state)
         except Exception as e:
             log("supervisor error:", e)
 

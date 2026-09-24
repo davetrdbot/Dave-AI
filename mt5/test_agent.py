@@ -15,8 +15,29 @@ import threading
 import time
 import urllib.request
 
+# A stand-in for the broker directory (mt5.mtapi.io's /Search?company=), so tests never go online.
+DIRECTORY = [{"companyName": "Jarocel (Pty) Ltd", "results": [
+    {"name": "Headway-Demo", "access": ["[2600:3c0c::1]:443", "91.223.236.81:1950", "91.223.236.81:443"]},
+    {"name": "Headway-Real", "access": ["185.237.99.146:443"]}]}]
+directory_queries = []
+
+
+class Directory(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        directory_queries.append(self.path)
+        body = json.dumps(DIRECTORY if "headway" in self.path.lower() else []).encode()
+        self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+_directory = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Directory)
+threading.Thread(target=_directory.serve_forever, daemon=True).start()
+
 tmp = tempfile.mkdtemp()
 os.environ.update({
+    "MT5_RESOLVER_URL": "http://127.0.0.1:%d" % _directory.server_address[1],
     "MT5_DIR": os.path.join(tmp, "mt5"),
     "DAVE_STATE_DIR": os.path.join(tmp, "state"),
     "MT5_AGENT_SECRET": "s3cret-for-tests",
@@ -113,6 +134,18 @@ agent.write_config({**state, "marketWatch": ["GBPUSD"]})
 check(len(os.listdir(prof)) == 1, "a new list replaces the old charts instead of piling up")
 check("MarketWatch" not in preset, "Market Watch is MT5's, not an EA input")
 
+print("[2b] broker server name -> its real address (MT5 alone would fall back to MetaQuotes-Demo)")
+access, sugg, err = agent.resolve_server("Headway-Demo")
+check(access == ["91.223.236.81:443", "91.223.236.81:1950", "[2600:3c0c::1]:443"], "exact name found; IPv4 :443 first, IPv6 last")
+check(any("company=Headway" in q for q in directory_queries), "looked up by the broker part of the name")
+access, sugg, err = agent.resolve_server("headway-demoo")
+check(access is None and err is None and sugg[:1] == ["Headway-Demo"], "a misspelt name is refused with the closest real names")
+check(agent.resolve_server("91.223.236.81:1950")[0] == ["91.223.236.81:1950"], "an address typed as host:port is used as is")
+agent.write_config({**state, "server": "Headway-Demo", "serverAccess": ["91.223.236.81:443", "66.1.1.1:443"], "serverAccessIndex": 1})
+check("Server=66.1.1.1:443" in agent.read_text(os.path.join(agent.MT5_DIR, "Config", "dave-startup.ini")), "MT5 is given the address (the current one after a rotation), not the bare name")
+agent.write_config(state)
+check("Server=Deriv-Demo" in agent.read_text(os.path.join(agent.MT5_DIR, "Config", "dave-startup.ini")), "no lookup result -> the name as typed, as before")
+
 print("[3] login state from the terminal journal (lines as MT5 writes them)")
 logs = os.path.join(agent.MT5_DIR, "logs")
 os.makedirs(logs, exist_ok=True)
@@ -166,6 +199,8 @@ code, body = call("POST", "/settings", {"metaquotesIds": ["AAAAAAAA", "BBBBBBBB"
 check(code == 400, "more than 4 MetaQuotes IDs refused (MT5's own limit)")
 code, body = call("POST", "/settings", {"marketWatch": ["P%d" % i for i in range(31)]})
 check(code == 400, "more than 30 Market Watch pairs refused")
+code, body = call("POST", "/configure", {"login": "123", "password": "x", "server": "Headway-Demoo", "webhookUrl": BOT + "/hooks/ea/t"})
+check(code == 400 and "Headway-Demo" in body["error"] and body["suggestions"][0] == "Headway-Demo", "configure with a wrong server name says so, with suggestions, and starts nothing")
 code, body = call("POST", "/configure", {"login": "123", "password": "x", "server": "S", "webhookUrl": BOT + "/hooks/ea/t"})
 check(code == 409 and "installing" in body["error"], "before MT5 is installed, configure says so instead of failing oddly")
 code, body = call("GET", "/status")
