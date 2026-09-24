@@ -166,7 +166,8 @@ int OnInit()
       FolderCreate(BRIDGE_DIR);
       Print("Dave EA: file bridge on -- reports go through ", BRIDGE_DIR, " (container relay), not WebRequest");
      }
-   Print("Dave EA starting. Webhook: ", WebhookURL, ", magic=", MagicNumber);
+   Print("Dave EA starting. Webhook: ", WebhookURL, ", magic=", MagicNumber,
+         ", phone push ", TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED) ? "on" : "off (no MetaQuotes ID)");
    g_pushIntervalSeconds = PushSeconds;
    EventSetTimer(g_pushIntervalSeconds);
    return(INIT_SUCCEEDED);
@@ -469,6 +470,8 @@ string BuildReportJson()
           // EA's own "allow algo trading" permission. Off = every order fails, so Dave says so up
           // front instead of discovering it on the first trade.
           "\"algoTrading\":" + ((TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && MQLInfoInteger(MQL_TRADE_ALLOWED)) ? "true" : "false") + "," +
+          // Whether MT5 can push to the trader's phone (a MetaQuotes ID is set and push is on).
+          "\"phonePush\":" + (TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED) ? "true" : "false") + "," +
           "\"positions\":[" + positions + "]," +
           "\"pendingOrders\":[" + pendingOrders + "]," +
           "\"results\":[" + results + "]," +

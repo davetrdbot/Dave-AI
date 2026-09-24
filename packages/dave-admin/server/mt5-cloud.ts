@@ -10,6 +10,7 @@ import {
   MT5_CLOUD_EDITABLE_INPUTS,
   MT5_MARKET_WATCH_MAX,
   parseMarketWatch,
+  parseMetaquotesIds,
 } from "@dave/ea-bridge";
 import { getActiveGroupInfo } from "@dave/trading";
 
@@ -56,7 +57,13 @@ export async function mt5CloudAction(userId: string, body: Record<string, unknow
         if (!password) return NextResponse.json({ error: "Enter the account password." }, { status: 400 });
         if (!server) return NextResponse.json({ error: "Enter the server name exactly as MT5 shows it." }, { status: 400 });
         const group = pairGroup(userId);
-        result = await mt5CloudConnect(userId, { login, password, server, symbol: str("symbol") ?? group[0], period: str("period"), marketWatch: group });
+        let metaquotesIds: string[] | undefined;
+        try {
+          metaquotesIds = body.metaquotesIds === undefined ? undefined : parseMetaquotesIds(body.metaquotesIds as string | string[]);
+        } catch (err) {
+          return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+        }
+        result = await mt5CloudConnect(userId, { login, password, server, symbol: str("symbol") ?? group[0], period: str("period"), marketWatch: group, metaquotesIds });
         break;
       }
       case "settings": {
@@ -71,7 +78,13 @@ export async function mt5CloudAction(userId: string, body: Record<string, unknow
             return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
           }
         }
-        result = await mt5CloudSettings(userId, { symbol: str("symbol"), period: str("period"), marketWatch, inputs });
+        let metaquotesIds: string[] | undefined;
+        try {
+          metaquotesIds = body.metaquotesIds === undefined ? undefined : parseMetaquotesIds(body.metaquotesIds as string | string[]);
+        } catch (err) {
+          return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+        }
+        result = await mt5CloudSettings(userId, { symbol: str("symbol"), period: str("period"), marketWatch, metaquotesIds, inputs });
         break;
       }
       case "restart":

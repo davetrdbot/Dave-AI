@@ -203,6 +203,8 @@ http.Client _fakeServer() => MockClient((req) async {
               'account': {'login': '40123456', 'server': 'Deriv-Demo', 'symbol': 'VOL_80', 'period': 'M1'},
               'inputs': {'PushSeconds': 8},
               'marketWatch': ['VOL_80', 'BOOM_100', 'CRASH_500'],
+              'metaquotesIds': ['1A2B3C4D'],
+              'phonePush': {'state': 'on', 'detail': null, 'eaReports': true},
               'relay': {'count': 1200, 'errors': 0, 'lastAt': DateTime.now().millisecondsSinceEpoch / 1000 - 3, 'lastStatus': 200},
             },
           };
@@ -384,6 +386,11 @@ void main() {
       await _shot(tester, 'mt5_$mode');
       expect(find.text('VOL_80, BOOM_100, CRASH_500'), findsOneWidget);
       expect(find.text('Use my pair group'), findsOneWidget);
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
+      await _advance(tester);
+      expect(find.text('1A2B3C4D'), findsOneWidget);
+      expect(find.text('Working -- MT5 confirms push is on'), findsOneWidget);
+      await _shot(tester, 'mt5_push_$mode');
       expect(find.text('Chart symbol'), findsOneWidget);
       expect(find.text('VOL_80'), findsOneWidget);
       expect(find.text('8s'), findsOneWidget);

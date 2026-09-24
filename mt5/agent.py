@@ -106,7 +106,10 @@ def handle_request_file(path):
     with open(out + ".tmp", "wb") as f:
         f.write(("%d\n%s" % (status, answer)).encode("utf-8"))
     os.replace(out + ".tmp", out)
+    m = re.search(r'"phonePush":(true|false)', body)
     with lock:
+        if m:
+            relay_stats["phonePush"] = m.group(1) == "true"
         relay_stats["count"] += 1
         relay_stats["lastAt"] = time.time()
         relay_stats["lastStatus"] = status
@@ -266,6 +269,100 @@ def start_terminal(state):
         cwd=MT5_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     log("terminal started for login", state["login"], "on", state["server"])
+    if "metaquotesIds" in state:
+        threading.Thread(target=apply_metaquotes_ids, args=(list(state.get("metaquotesIds") or []), terminal_proc), daemon=True).start()
+
+
+# --- MetaQuotes ID (push to the MT5 app on the trader's phone) ------------------------------------
+#
+# Checked for real under Wine: MT5 ignores NotificationsEnable/NotificationsIDs in a start-up config,
+# keeps the setting only in its encrypted Config/settings.ini, and did not keep it across a restart.
+# What does work is exactly what a person does: Tools > Options > Notifications, tick "Enable Push
+# notifications", type the ID, OK -- after which the EA reports push on. So the agent does that on
+# the virtual screen after every start, and the EA's report (phonePush) confirms it took.
+
+phone_push = {"state": "not set", "detail": None, "at": None}
+# Positions inside the Options window (620x389 at 1024x768, MT5 build 6182), measured from screenshots.
+OPT_TAB_NOTIFICATIONS = (314, 16)
+OPT_ENABLE_BOX = (150, 61)
+OPT_ID_FIELD = (300, 137)
+OPT_OK = (412, 370)
+
+
+def _x(*args, timeout=15):
+    return subprocess.run(["xdotool", *args], capture_output=True, text=True, timeout=timeout).stdout.strip()
+
+
+def _window(pattern, wait_s):
+    end = time.time() + wait_s
+    while time.time() < end:
+        ids = _x("search", "--name", pattern).split()
+        if ids:
+            return ids[0]
+        time.sleep(2)
+    return None
+
+
+def _box_ticked(win):
+    """Brightness at the centre of the checkbox: about 0.8 with a tick, 0.95-1.0 without."""
+    grab = subprocess.run(["xwd", "-id", win, "-silent"], capture_output=True, timeout=15).stdout
+    out = subprocess.run(["convert", "xwd:-", "-crop", "6x6+%d+%d" % (OPT_ENABLE_BOX[0] - 2, OPT_ENABLE_BOX[1] - 3),
+                          "-colorspace", "gray", "-format", "%[fx:mean]", "info:"], input=grab, capture_output=True, timeout=15).stdout
+    return float(out or 1) < 0.9
+
+
+def _set_phone_push(state, detail=None):
+    with lock:
+        phone_push.update({"state": state, "detail": detail, "at": time.time()})
+
+
+def apply_metaquotes_ids(ids, proc):
+    if not shutil.which("xdotool"):
+        return _set_phone_push("failed", "xdotool is not installed in this container")
+    _set_phone_push("applying")
+    try:
+        main_win = _window(" - ", 180)  # the terminal's title is "<login> - <server> - <account type>"
+        if not main_win or proc.poll() is not None:
+            return _set_phone_push("failed", "MT5 did not open its window")
+        time.sleep(8)  # let it finish loading charts before opening a dialog over them
+        _x("windowactivate", main_win)
+        _x("key", "--window", main_win, "ctrl+o")
+        dlg = _window("^Options$", 30)
+        if not dlg:
+            return _set_phone_push("failed", "the Options window did not open")
+        _x("windowmove", dlg, "0", "0")
+        time.sleep(1)
+        _x("mousemove", "--window", dlg, *map(str, OPT_TAB_NOTIFICATIONS), "click", "1")
+        time.sleep(1.5)
+        if _box_ticked(dlg) != bool(ids):
+            _x("mousemove", "--window", dlg, *map(str, OPT_ENABLE_BOX), "click", "1")
+            time.sleep(1)
+        _x("mousemove", "--window", dlg, *map(str, OPT_ID_FIELD), "click", "--repeat", "3", "1")
+        _x("key", "ctrl+a", "BackSpace")
+        if ids:
+            _x("type", "--delay", "60", ",".join(ids))
+        time.sleep(0.5)
+        _x("mousemove", "--window", dlg, *map(str, OPT_OK), "click", "1")
+        time.sleep(3)  # a report already on its way was made before the change
+        with lock:
+            relay_stats.pop("phonePush", None)  # only a report made after this counts
+        time.sleep(2)
+        if _window("^Options$", 1):
+            _x("key", "Escape")
+            return _set_phone_push("failed", "MT5 did not accept the setting")
+        if not ids:
+            return _set_phone_push("off")
+        # The EA reports whether MT5 can push; wait for a report made after the change.
+        end = time.time() + 90
+        while time.time() < end:
+            with lock:
+                on = relay_stats.get("phonePush")
+            if on is not None:
+                return _set_phone_push("on" if on else "failed", None if on else "MT5 still reports push off -- check the MetaQuotes ID")
+            time.sleep(3)
+        _set_phone_push("set", "entered in MT5; the EA has not reported since")
+    except Exception as e:
+        _set_phone_push("failed", str(e)[:200])
 
 
 def latest_log(folder):
@@ -309,6 +406,8 @@ def status():
         "account": {k: state.get(k) for k in ("login", "server", "symbol", "period")} if state.get("login") else None,
         "inputs": state.get("inputs") or {},
         "marketWatch": state.get("marketWatch") or [],
+        "metaquotesIds": state.get("metaquotesIds") or [],
+        "phonePush": dict(phone_push, eaReports=relay_stats.get("phonePush")),
         "relay": relay,
     }
 
@@ -334,6 +433,10 @@ def check_payload(body, full):
         mw = body["marketWatch"]
         if not isinstance(mw, list) or len(mw) > 30 or not all(isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_.#+\-]{1,32}", x) for x in mw):
             return "marketWatch must be a list of symbols (up to 30)"
+    if "metaquotesIds" in body:
+        ids = body["metaquotesIds"]
+        if not isinstance(ids, list) or len(ids) > 4 or not all(isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9]{8}", x) for x in ids):
+            return "metaquotesIds must be up to 4 MetaQuotes IDs (8 letters/digits each)"
     return None
 
 
@@ -410,6 +513,7 @@ class Handler(BaseHTTPRequestHandler):
                 "symbol": str(body.get("symbol") or state.get("symbol") or "EURUSD"), "period": str(body.get("period") or state.get("period") or "M1").upper(),
                 "inputs": body.get("inputs") if isinstance(body.get("inputs"), dict) else state.get("inputs") or {},
                 "marketWatch": body.get("marketWatch") if isinstance(body.get("marketWatch"), list) else state.get("marketWatch") or [],
+                "metaquotesIds": body.get("metaquotesIds") if isinstance(body.get("metaquotesIds"), list) else state.get("metaquotesIds") or [],
             })
             save_state(state)
             result = apply_and_restart(state)
@@ -428,6 +532,8 @@ class Handler(BaseHTTPRequestHandler):
                 state["inputs"] = {**(state.get("inputs") or {}), **body["inputs"]}
             if "marketWatch" in body:
                 state["marketWatch"] = body["marketWatch"]
+            if "metaquotesIds" in body:
+                state["metaquotesIds"] = body["metaquotesIds"]
             save_state(state)
             result = apply_and_restart(state)
             return self._json(200 if result["ok"] else 409, result)

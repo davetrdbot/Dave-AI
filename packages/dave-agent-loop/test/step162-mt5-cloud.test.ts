@@ -22,6 +22,7 @@ delete process.env.MT5_AGENT_SECRET;
 const seen: { path: string; secret?: string; body: any }[] = [];
 let configured: any = null;
 let marketWatch: string[] = [];
+let metaquotesIds: string[] = [];
 const agent = createServer(async (req, res) => {
   let raw = "";
   for await (const c of req) raw += c;
@@ -35,10 +36,12 @@ const agent = createServer(async (req, res) => {
   if (req.url === "/configure") {
     configured = { login: body.login, server: body.server, symbol: body.symbol, period: body.period ?? "M1" };
     marketWatch = body.marketWatch ?? [];
+    metaquotesIds = body.metaquotesIds ?? [];
     return reply(200, { ok: true });
   }
   if (req.url === "/settings") {
     if (body.marketWatch) marketWatch = body.marketWatch;
+    if (body.metaquotesIds) metaquotesIds = body.metaquotesIds;
     configured = { ...configured, ...(body.symbol ? { symbol: body.symbol } : {}), ...(body.period ? { period: body.period } : {}) };
     return reply(200, { ok: true });
   }
@@ -52,6 +55,8 @@ const agent = createServer(async (req, res) => {
       account: configured,
       inputs: {},
       marketWatch,
+      metaquotesIds,
+      phonePush: { state: metaquotesIds.length ? "on" : "off", detail: null, eaReports: metaquotesIds.length > 0 },
       relay: { count: 3, errors: 0, lastAt: Date.now() / 1000 - 2, lastStatus: 200, lastError: null },
     });
   return reply(404, { error: "not found" });
@@ -113,6 +118,12 @@ await flow.tryHandleMt5Entry(deps, CHAT, "hunter2-secret!", 22);
 assert.deepEqual(deleted, [22], "the password message is deleted the moment it's read");
 assert.ok(sent.every((m) => !m.text.includes("hunter2-secret!")), "the password is never echoed");
 await flow.tryHandleMt5Entry(deps, CHAT, "Deriv-Demo", 23);
+assert.match(lastText(), /MetaQuotes ID/, "then the optional MetaQuotes ID");
+assert.match(buttons(), /mt5c:mq:skip/);
+assert.ok(!seen.some((s) => s.path === "/configure"), "nothing sent to MT5 until the last answer");
+await flow.tryHandleMt5Entry(deps, CHAT, "not an id", 24);
+assert.match(lastText(), /isn't a MetaQuotes ID/);
+await flow.tryHandleMt5Entry(deps, CHAT, "1a2b3c4d", 25);
 const conf = seen.find((s) => s.path === "/configure")!;
 assert.equal(conf.secret, "agent-secret-xyz");
 assert.equal(conf.body.login, "40123456");
@@ -122,9 +133,11 @@ assert.equal(conf.body.symbol, "VOL_80", "the chart defaults to the market Dave 
 const hook = getOrCreateEaWebhook(USER);
 assert.equal(conf.body.webhookUrl, `http://dave-bot.railway.internal:8080${hook.path}`, "EA reports to the bot over the private network");
 assert.equal(conf.body.token, hook.token);
+assert.deepEqual(conf.body.metaquotesIds, ["1A2B3C4D"], "the MetaQuotes ID goes to MT5 with the login");
 assert.deepEqual(conf.body.marketWatch, ["VOL_80", "BOOM_100"], "Market Watch starts as the pairs Dave trades");
 assert.match(lastText(), /running and logged in \(40123456 on Deriv-Demo/);
 assert.match(lastText(), /Market Watch: VOL_80, BOOM_100/);
+assert.match(lastText(), /MT5 phone alerts: on \(MetaQuotes ID 1A2B3C4D\)/);
 console.log("   ✓\n");
 
 console.log("[4] Settings from Telegram: timeframe and symbol restart the EA on the same login\n");
@@ -153,6 +166,19 @@ await flow.handleMt5Callback(deps, CHAT, "mt5c:mw:group");
 assert.deepEqual(seen.filter((s) => s.path === "/settings").pop()!.body.marketWatch, ["VOL_80", "BOOM_100"]);
 const { parseMarketWatch } = await import("@dave/ea-bridge");
 assert.throws(() => parseMarketWatch(Array.from({ length: 31 }, (_, i) => `P${i}`)), /Up to 30/);
+console.log("   ✓\n");
+
+console.log("[4c] MetaQuotes ID from /mt5: change it, or turn MT5's phone alerts off\n");
+assert.match(JSON.stringify(sent.map((m) => m.reply_markup ?? {})), /mt5c:mq"/);
+await flow.handleMt5Callback(deps, CHAT, "mt5c:mq");
+assert.match(lastText(), /Now: 1A2B3C4D/);
+await flow.tryHandleMt5Entry(deps, CHAT, "9Z8Y7X6W, 1A2B3C4D", 35);
+assert.deepEqual(seen.filter((s) => s.path === "/settings").pop()!.body.metaquotesIds, ["9Z8Y7X6W", "1A2B3C4D"]);
+await flow.handleMt5Callback(deps, CHAT, "mt5c:mq");
+await flow.tryHandleMt5Entry(deps, CHAT, "off", 36);
+assert.deepEqual(seen.filter((s) => s.path === "/settings").pop()!.body.metaquotesIds, []);
+const { parseMetaquotesIds } = await import("@dave/ea-bridge");
+assert.throws(() => parseMetaquotesIds("AAAAAAAA BBBBBBBB CCCCCCCC DDDDDDDD EEEEEEEE"), /up to 4/);
 console.log("   ✓\n");
 
 console.log("[5] A command cancels a half-finished flow; an unrelated message is not swallowed\n");

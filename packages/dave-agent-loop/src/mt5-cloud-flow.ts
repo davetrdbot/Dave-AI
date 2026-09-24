@@ -7,6 +7,7 @@ import {
   mt5CloudRestart,
   describeMt5CloudStatus,
   parseMarketWatch,
+  parseMetaquotesIds,
   type Mt5CloudStatus,
 } from "@dave/ea-bridge";
 import { getActiveGroupInfo } from "@dave/trading";
@@ -22,11 +23,12 @@ import type { CommandRouterDeps } from "./command-router.js";
  * conversation history or to disk on the bot side (the container keeps it -- it has to, to log in).
  */
 
-type Step = "login" | "password" | "server" | "symbol" | "push" | "marketwatch";
+type Step = "login" | "password" | "server" | "connectMqid" | "symbol" | "push" | "marketwatch" | "mqid";
 interface Pending {
   step: Step;
   login?: string;
   password?: string;
+  server?: string;
   at: number;
 }
 
@@ -43,7 +45,7 @@ function menu(status: Mt5CloudStatus | undefined, hasAgent: boolean): InlineKeyb
   if (!hasAgent) return keyboard([[coloredButton("Refresh", "blue", "mt5c:refresh")]]);
   const rows = [[coloredButton(status?.configured ? "Change account" : "Connect account", "green", "mt5c:connect")]];
   if (status?.configured) {
-    rows.push([coloredButton("Market Watch pairs", "blue", "mt5c:mw")]);
+    rows.push([coloredButton("Market Watch pairs", "blue", "mt5c:mw"), coloredButton("Phone alerts (MetaQuotes ID)", "blue", "mt5c:mq")]);
     rows.push([coloredButton("Chart symbol", "blue", "mt5c:symbol"), coloredButton("Timeframe", "blue", "mt5c:period")]);
     rows.push([coloredButton("Report interval", "blue", "mt5c:push"), coloredButton("Restart MT5", "blue", "mt5c:restart")]);
   }
@@ -114,6 +116,24 @@ export async function handleMt5Callback(deps: CommandRouterDeps, chatId: number,
       await runAndReport(deps, chatId, `Loading ${escapeHtml(group.join(", "))} into MT5's Market Watch...`, () => mt5CloudSettings(deps.userId, { marketWatch: group.slice(0, 30) }));
       return;
     }
+    case "mt5c:mq": {
+      pending.set(k, { step: "mqid", at: Date.now() });
+      const current = await mt5CloudStatus(deps.userId).then((st) => st.metaquotesIds ?? [], () => []);
+      await ask(
+        "<b>MT5 phone alerts</b>\n" +
+          `Now: ${current.length ? escapeHtml(current.join(", ")) : "off"}\n\n` +
+          MQID_HELP +
+          "\n\nSend your MetaQuotes ID (several separated by commas, up to 4), or <code>off</code> to turn MT5's phone alerts off.",
+      );
+      return;
+    }
+    case "mt5c:mq:skip": {
+      const p = pending.get(k);
+      if (p?.step !== "connectMqid") return;
+      pending.delete(k);
+      await connectNow(deps, chatId, p, []);
+      return;
+    }
     case "mt5c:push":
       pending.set(k, { step: "push", at: Date.now() });
       await ask("How often should the EA report, in seconds? (2 to 120; 8 is the usual.)");
@@ -162,13 +182,38 @@ export async function tryHandleMt5Entry(deps: CommandRouterDeps, chatId: number,
       pending.set(k, { ...p, step: "server", password: value, at: Date.now() });
       await say("Got it (message deleted). Last one: the <b>server</b> name exactly as MT5 shows it at login, e.g. <code>Deriv-Demo</code> or <code>DerivSVG-Server</code>.");
       return true;
-    case "server": {
+    case "server":
+      pending.set(k, { ...p, step: "connectMqid", server: value, at: Date.now() });
+      await deps.client.sendMessage({
+        chat_id: chatId,
+        text: `Optional: your <b>MetaQuotes ID</b>, so MT5 itself also pushes trade alerts to the MT5 app on your phone.\n\n${MQID_HELP}\n\nSend it, or tap Skip (you can add it later from /mt5).`,
+        parse_mode: "HTML",
+        reply_markup: keyboard([[coloredButton("Skip", "blue", "mt5c:mq:skip")]]),
+      });
+      return true;
+    case "connectMqid": {
+      let ids: string[];
+      try {
+        ids = parseMetaquotesIds(value);
+      } catch (err) {
+        await say(`${escapeHtml(err instanceof Error ? err.message : String(err))} Send it again, or tap Skip.`);
+        return true;
+      }
       pending.delete(k);
-      const group = activeGroupSymbols(deps.userId);
-      const symbol = group[0] ?? "EURUSD";
-      // Market Watch starts as the pairs Dave trades; /mt5 -> Market Watch pairs changes it.
-      await runAndReport(deps, chatId, `Connecting ${p.login} on ${escapeHtml(value)}... compiling the EA and starting MT5. This can take a couple of minutes.`, () =>
-        mt5CloudConnect(deps.userId, { login: p.login!, password: p.password!, server: value, symbol, marketWatch: group.slice(0, 30) }),
+      await connectNow(deps, chatId, p, ids);
+      return true;
+    }
+    case "mqid": {
+      let ids: string[];
+      try {
+        ids = parseMetaquotesIds(value);
+      } catch (err) {
+        await say(`${escapeHtml(err instanceof Error ? err.message : String(err))} Send it again, or <code>off</code>.`);
+        return true;
+      }
+      pending.delete(k);
+      await runAndReport(deps, chatId, ids.length ? `Entering MetaQuotes ID ${escapeHtml(ids.join(", "))} in MT5...` : "Turning MT5's phone alerts off...", () =>
+        mt5CloudSettings(deps.userId, { metaquotesIds: ids }),
       );
       return true;
     }
@@ -210,6 +255,18 @@ export async function tryHandleMt5Entry(deps: CommandRouterDeps, chatId: number,
   return false;
 }
 
+const MQID_HELP = "Find it in the <b>MetaTrader 5 app</b> on your phone: <b>Settings → Messages</b> (iPhone) or <b>Menu → Messages</b> (Android) -- 8 letters and digits, e.g. <code>1A2B3C4D</code>.";
+
+/** Last step of Connect account: logs in with Market Watch = the pairs Dave trades. */
+async function connectNow(deps: CommandRouterDeps, chatId: number, p: Pending, metaquotesIds: string[]): Promise<void> {
+  const group = activeGroupSymbols(deps.userId);
+  const symbol = group[0] ?? "EURUSD";
+  // Market Watch starts as the pairs Dave trades; /mt5 -> Market Watch pairs changes it.
+  await runAndReport(deps, chatId, `Connecting ${p.login} on ${escapeHtml(p.server ?? "")}... compiling the EA and starting MT5. This can take a couple of minutes.`, () =>
+    mt5CloudConnect(deps.userId, { login: p.login!, password: p.password!, server: p.server!, symbol, marketWatch: group.slice(0, 30), metaquotesIds }),
+  );
+}
+
 /** Runs a container action, then waits for the terminal to settle and reports what it says. */
 async function runAndReport(deps: CommandRouterDeps, chatId: number, working: string, action: () => Promise<{ ok: boolean; error?: string; compileLog?: string }>): Promise<void> {
   await deps.client.sendMessage({ chat_id: chatId, text: working, parse_mode: "HTML" });
@@ -227,10 +284,13 @@ async function runAndReport(deps: CommandRouterDeps, chatId: number, working: st
   }
   // Logging in takes a few seconds after the terminal starts; answer with what actually happened.
   let status: Mt5CloudStatus | undefined;
-  for (let i = 0; i < 12; i++) {
+  // Entering a MetaQuotes ID in MT5's Options window comes after the start, so wait for that too.
+  for (let i = 0; i < 24; i++) {
     await new Promise((r) => setTimeout(r, 5000));
     status = await mt5CloudStatus(deps.userId).catch(() => undefined);
-    if (status && (status.login === "logged-in" || status.login === "failed")) break;
+    const settled = status && (status.login === "logged-in" || status.login === "failed");
+    if (settled && status!.phonePush?.state !== "applying") break;
+    if (i >= 11 && settled) break;
   }
   await handleMt5Cloud(deps, chatId);
 }

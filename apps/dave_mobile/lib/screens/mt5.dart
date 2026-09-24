@@ -97,6 +97,28 @@ class Mt5Page extends StatelessWidget {
               if (v.configured && a != null)
                 SliverToBoxAdapter(
                   child: CupertinoListSection.insetGrouped(
+                    header: const ListHeader('MT5 phone alerts'),
+                    footer: const ListFooter(
+                        'Your MetaQuotes ID lets MT5 itself push trade alerts to the MetaTrader 5 app on your phone. Find it in that app under Settings > Messages: 8 letters and digits.'),
+                    children: [
+                      CupertinoListTile(
+                        title: const Text('MetaQuotes ID'),
+                        additionalInfo: Text(v.metaquotesIds.isEmpty ? 'Off' : v.metaquotesIds.join(', ')),
+                        subtitle: v.metaquotesIds.isEmpty ? null : Text(_pushLine(v), maxLines: 2),
+                        trailing: const CupertinoListTileChevron(),
+                        onTap: () async {
+                          final s = await promptText(context,
+                              title: 'MetaQuotes ID', message: 'From the MT5 app: Settings > Messages. Leave empty to turn MT5 phone alerts off.', initial: v.metaquotesIds.join(', '), placeholder: '1A2B3C4D');
+                          if (s == null || !context.mounted) return;
+                          await act('settings', {'metaquotesIds': s});
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              if (v.configured && a != null)
+                SliverToBoxAdapter(
+                  child: CupertinoListSection.insetGrouped(
                     header: const ListHeader('EA'),
                     footer: const ListFooter('The chart is only where the EA sits -- it analyses every symbol Dave asks for. Changes restart MT5 on the same account.'),
                     children: [
@@ -148,10 +170,20 @@ class Mt5Page extends StatelessWidget {
     if (login == null || login.isEmpty || !context.mounted) return;
     final password = await promptText(context, title: 'Password', message: 'Sent to your MT5 container only. Not stored on this phone.', obscure: true, action: 'Next');
     if (password == null || password.isEmpty || !context.mounted) return;
-    final server = await promptText(context, title: 'Server', message: 'Exactly as MT5 shows it at login.', placeholder: 'Deriv-Demo', action: 'Connect');
+    final server = await promptText(context, title: 'Server', message: 'Exactly as MT5 shows it at login.', placeholder: 'Deriv-Demo', action: 'Next');
     if (server == null || server.isEmpty || !context.mounted) return;
-    await act('connect', {'login': login, 'password': password, 'server': server});
+    final mq = await promptText(context,
+        title: 'MetaQuotes ID (optional)', message: 'So MT5 also pushes alerts to the MT5 app on your phone. It\'s under Settings > Messages in that app. Leave empty to skip.', placeholder: '1A2B3C4D', action: 'Connect');
+    if (mq == null || !context.mounted) return;
+    await act('connect', {'login': login, 'password': password, 'server': server, if (mq.trim().isNotEmpty) 'metaquotesIds': mq});
   }
+
+  static String _pushLine(Mt5View v) => switch (v.phonePush) {
+        'on' => 'Working -- MT5 confirms push is on',
+        'applying' => 'Entering it in MT5…',
+        'failed' => 'Not working: ${v.phonePushDetail ?? 'MT5 did not accept it'}',
+        _ => v.phonePushDetail ?? 'Set',
+      };
 
   Future<String?> _pickPeriod(BuildContext context, String current) => showCupertinoModalPopup<String>(
         context: context,

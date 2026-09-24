@@ -710,7 +710,7 @@ class ContextUsage {
 
 /// MetaTrader 5 running in Dave's own container (no VPS).
 class Mt5View {
-  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt, this.marketWatch = const [], this.pairGroup = const []});
+  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt, this.marketWatch = const [], this.pairGroup = const [], this.metaquotesIds = const [], this.phonePush = 'not set', this.phonePushDetail});
   final String summary;
   final String? agentUrl;
   final bool installed;
@@ -725,6 +725,11 @@ class Mt5View {
   final List<String> marketWatch;
   /// The active pair group -- offered as a one-tap Market Watch.
   final List<String> pairGroup;
+  /// MetaQuotes IDs MT5 pushes to (the MT5 app on the phone), and whether that is working:
+  /// on | off | applying | set | failed | not set.
+  final List<String> metaquotesIds;
+  final String phonePush;
+  final String? phonePushDetail;
 
   bool get hasAgent => agentUrl != null;
   int get pushSeconds => int.tryParse(inputs['PushSeconds'] ?? '') ?? 8;
@@ -748,6 +753,9 @@ class Mt5View {
       lastReportAt: relay?['lastAt'] is num ? DateTime.fromMillisecondsSinceEpoch(((relay!['lastAt'] as num) * 1000).round()) : null,
       marketWatch: st?['marketWatch'] is List ? [for (final s in st!['marketWatch'] as List) '$s'] : const [],
       pairGroup: j['pairGroup'] is List ? [for (final s in j['pairGroup'] as List) '$s'] : const [],
+      metaquotesIds: st?['metaquotesIds'] is List ? [for (final s in st!['metaquotesIds'] as List) '$s'] : const [],
+      phonePush: st?['phonePush'] is Map ? _str((st!['phonePush'] as Map)['state'], 'not set') : 'not set',
+      phonePushDetail: st?['phonePush'] is Map && (st!['phonePush'] as Map)['detail'] is String ? (st['phonePush'] as Map)['detail'] as String : null,
     );
   }
 }
