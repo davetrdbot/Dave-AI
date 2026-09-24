@@ -171,6 +171,30 @@ export function ensureCredentialsKey(env: NodeJS.ProcessEnv, dataRoot: string): 
   return "created";
 }
 
+/**
+ * The web panel is public, so it must never run without a password. When the deployment doesn't
+ * set ADMIN_PASSWORD (the one-file Railway deploy can't keep a generated one), the bot makes one the
+ * first time, keeps it on the volume, and prints the login in the service's logs -- which only the
+ * people on the Railway project can see. ADMIN_USERNAME defaults to "admin". Explicit env wins.
+ */
+export function ensureAdminLogin(env: NodeJS.ProcessEnv, dataRoot: string): "env" | "file" | "created" {
+  if (!env.ADMIN_USERNAME?.trim()) env.ADMIN_USERNAME = "admin";
+  if (env.ADMIN_PASSWORD?.trim()) return "env";
+  const file = join(dataRoot, ".dave-admin-password");
+  if (existsSync(file)) {
+    const saved = readFileSync(file, "utf8").trim();
+    if (saved) {
+      env.ADMIN_PASSWORD = saved;
+      return "file";
+    }
+  }
+  mkdirSync(dataRoot, { recursive: true });
+  const password = randomBytes(12).toString("base64url");
+  writeFileSync(file, password + "\n", { mode: 0o600 });
+  env.ADMIN_PASSWORD = password;
+  return "created";
+}
+
 /** Kept in sync by hand with ea/DaveEA.mq5's own compiled `PushSeconds` input -- see the boot-time
  *  re-assert below for why the source value alone was never enough to actually take effect. */
 const DESIRED_EA_PUSH_SECONDS = 8;
@@ -182,6 +206,10 @@ export async function main(): Promise<void> {
   process.env.DAVE_DATA_ROOT = resolveDataRoot(process.env, process.cwd());
   if (ensureCredentialsKey(process.env, process.env.DAVE_DATA_ROOT) === "created") {
     console.log("[dave] no DAVE_CREDENTIALS_KEY set -- created one and saved it on the volume");
+  }
+  if (ensureAdminLogin(process.env, process.env.DAVE_DATA_ROOT) !== "env") {
+    const where = resolvePublicBaseUrl() ?? "the web panel";
+    console.log(`[dave] web panel login (made by the bot -- set ADMIN_PASSWORD to choose your own): ${where}  user: ${process.env.ADMIN_USERNAME}  password: ${process.env.ADMIN_PASSWORD}`);
   }
   const ownerUserId = process.env.OWNER_USER_ID ?? "default";
   // Real gap fixed: every admin-panel API route (telegram-otp,

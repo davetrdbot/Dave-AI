@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { getOrCreateEaWebhook } from "./ea-webhook.js";
 
 /**
@@ -54,10 +55,23 @@ export const DEFAULT_MT5_AGENT_URL = "http://dave-mt5.railway.internal:8081";
  * only ever enters their MT5 login, password and server.
  */
 export function getMt5CloudAgent(_userId?: string): Mt5CloudAgent | undefined {
-  const secret = process.env.MT5_AGENT_SECRET?.trim();
+  const secret = process.env.MT5_AGENT_SECRET?.trim() || derivedMt5Secret();
   if (!secret) return undefined;
   const url = process.env.MT5_AGENT_URL?.trim() || DEFAULT_MT5_AGENT_URL;
   return { url: url.replace(/\/$/, ""), secret };
+}
+
+/**
+ * With no MT5_AGENT_SECRET set (the one-file Railway deploy, .railway/railway.ts, can't keep a
+ * generated secret), the bot and the MT5 service derive the same one from the project and
+ * environment ids Railway gives every service in the project. The MT5 control API is only reachable
+ * on that project's private network. Must match mt5/agent.py's _derived_secret().
+ */
+export function derivedMt5Secret(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const project = env.RAILWAY_PROJECT_ID?.trim();
+  const environment = env.RAILWAY_ENVIRONMENT_ID?.trim();
+  if (!project || !environment) return undefined;
+  return createHash("sha256").update(`dave-mt5-agent:${project}:${environment}`).digest("hex");
 }
 
 /**
@@ -101,7 +115,9 @@ async function call<T>(userId: string, method: "GET" | "POST", path: string, bod
     return json;
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") throw new Error("The MT5 container did not answer in time. It may still be starting (the first start installs MT5 and takes a few minutes).");
-    if (err instanceof TypeError) throw new Error(`Could not reach the MT5 container at ${agent.url}: ${(err as Error & { cause?: { code?: string } }).cause?.code ?? err.message}`);
+    const code = err instanceof TypeError ? (err as Error & { cause?: { code?: string } }).cause?.code : undefined;
+    if (code === "ENOTFOUND" || code === "EAI_AGAIN") throw new Error("The MT5 service isn't running in this Railway project. Deploy it with .railway/railway.ts (or mt5/railway-setup.py) -- see mt5/README.md.");
+    if (err instanceof TypeError) throw new Error(`Could not reach the MT5 container at ${agent.url}: ${code ?? err.message}`);
     throw err;
   } finally {
     clearTimeout(timer);

@@ -44,7 +44,19 @@ MT5_DIR = os.environ.get("MT5_DIR", os.path.join(WINEPREFIX, "drive_c", "Program
 STATE_DIR = os.environ.get("DAVE_STATE_DIR", "/config/dave")
 EA_SOURCE = os.environ.get("DAVE_EA_SOURCE", "/opt/dave/DaveEA.mq5")
 PORT = int(os.environ.get("AGENT_PORT", "8081"))
-SECRET = os.environ.get("MT5_AGENT_SECRET", "")
+def _derived_secret():
+    """No MT5_AGENT_SECRET set (a one-file Railway deploy can't keep a generated one): both this
+    service and the bot derive the same value from their project and environment ids, which Railway
+    gives every service in the project. The control API is only reachable on the project's private
+    network anyway; an explicit MT5_AGENT_SECRET always wins. Must match mt5-cloud.ts."""
+    import hashlib
+    project, env = os.environ.get("RAILWAY_PROJECT_ID"), os.environ.get("RAILWAY_ENVIRONMENT_ID")
+    if not project or not env:
+        return ""
+    return hashlib.sha256(("dave-mt5-agent:%s:%s" % (project, env)).encode()).hexdigest()
+
+
+SECRET = os.environ.get("MT5_AGENT_SECRET", "").strip() or _derived_secret()
 RELAY_TIMEOUT_S = float(os.environ.get("RELAY_TIMEOUT_S", "4.5"))
 
 BRIDGE_DIR = os.path.join(MT5_DIR, "MQL5", "Files", "dave_bridge")

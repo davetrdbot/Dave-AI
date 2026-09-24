@@ -1,0 +1,83 @@
+name: Railway (bot + MT5)
+
+# Deploys the whole thing from this repo: .railway/railway.ts describes both services (the bot and
+# MetaTrader 5), and this applies it on every push. On a Railway account with no Dave project yet it
+# creates everything; on an existing one it changes only what differs -- it never deletes anything
+# (destructive changes are refused because --confirm-destructive is not passed).
+#
+# One-time setup, per GitHub repo:
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     RAILWAY_API_TOKEN = an account token from railway.com -> Account Settings -> Tokens
+#   Optional repository variables: RAILWAY_PROJECT (default "dave-ai"), RAILWAY_WORKSPACE.
+# The Railway account also needs GitHub connected (railway.com -> Account -> Integrations), so it can
+# build this repo. Without the secret this workflow does nothing.
+on:
+  push:
+    branches: [main, claude/new-session-7ynkr1]
+    paths:
+      - ".railway/**"
+      - "mt5/**"
+      - "ea/**"
+      - ".github/workflows/railway.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: railway-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      PROJECT: ${{ vars.RAILWAY_PROJECT || 'dave-ai' }}
+      WORKSPACE: ${{ vars.RAILWAY_WORKSPACE }}
+      DAVE_REPO: ${{ github.repository }}
+      DAVE_BRANCH: ${{ github.ref_name }}
+    steps:
+      - name: Needs a Railway token
+        if: env.RAILWAY_API_TOKEN == ''
+        run: echo "::notice::No RAILWAY_API_TOKEN secret -- nothing deployed. See the top of .github/workflows/railway.yml."
+
+      - uses: actions/checkout@v4
+        if: env.RAILWAY_API_TOKEN != ''
+
+      - uses: actions/setup-node@v4
+        if: env.RAILWAY_API_TOKEN != ''
+        with:
+          node-version: 22
+
+      - name: Railway CLI and the config SDK
+        if: env.RAILWAY_API_TOKEN != ''
+        run: |
+          npm install -g @railway/cli@5.62.1
+          (cd .railway && npm ci --no-audit --no-fund)
+
+      - name: Use the project, or create it on a fresh account
+        if: env.RAILWAY_API_TOKEN != ''
+        run: |
+          ws=(); [ -n "$WORKSPACE" ] && ws=(--workspace "$WORKSPACE")
+          if railway link --project "$PROJECT" --environment production "${ws[@]}"; then
+            echo "Using Railway project $PROJECT"
+          else
+            railway init --name "$PROJECT" "${ws[@]}"
+            railway link --project "$PROJECT" --environment production "${ws[@]}"
+            echo "Created Railway project $PROJECT"
+          fi
+
+      - name: Plan
+        if: env.RAILWAY_API_TOKEN != ''
+        run: railway config plan
+
+      - name: Apply (never deletes anything)
+        if: env.RAILWAY_API_TOKEN != ''
+        run: railway config apply --yes
+
+      - name: Public address for the bot (kept if it already has one)
+        if: env.RAILWAY_API_TOKEN != ''
+        run: railway domain --service dave-bot
+
+      - name: Where to go next
+        if: env.RAILWAY_API_TOKEN != ''
+        run: |
+          echo "::notice::Deployed. First start: open the dave-bot service's logs in Railway for the web panel login, then pair Telegram there. MT5: send /mt5 to the bot."

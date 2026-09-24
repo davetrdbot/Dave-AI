@@ -1,0 +1,8 @@
+{
+  "name": "dave-railway-iac",
+  "private": true,
+  "description": "Only for `railway config plan/apply` -- the SDK that .railway/railway.ts imports.",
+  "dependencies": {
+    "railway": "3.11.0"
+  }
+}
