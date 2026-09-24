@@ -50,10 +50,66 @@ jobs:
           (cd "$RUNNER_TEMP/ipa" && zip -qry "$RUNNER_TEMP/Dave.ipa" Payload)
           ls -la "$RUNNER_TEMP/Dave.ipa"
 
+      # Optional: a SIGNED copy, for on-phone installers that can't sign (they need an Ad Hoc /
+      # Enterprise IPA with embedded.mobileprovision). Only runs when these repository secrets exist:
+      #   IOS_CERT_P12_BASE64   base64 of the signing certificate (.p12)
+      #   IOS_CERT_PASSWORD     that .p12's password
+      #   IOS_PROVISION_BASE64  base64 of the .mobileprovision (must include the phone's UDID, or be
+      #                         an Enterprise profile). A wildcard (TEAM.*) profile keeps our bundle id;
+      #                         an explicit one renames the app's bundle id to match it.
+      - name: Sign Dave-signed.ipa (only with a certificate)
+        env:
+          P12: ${{ secrets.IOS_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          PROFILE: ${{ secrets.IOS_PROVISION_BASE64 }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$PROFILE" ]; then echo "No certificate secrets -- unsigned build only."; exit 0; fi
+          set -euo pipefail
+          W="$RUNNER_TEMP/sign"; mkdir -p "$W"
+          echo "$P12" | base64 --decode > "$W/cert.p12"
+          echo "$PROFILE" | base64 --decode > "$W/profile.mobileprovision"
+          KC="$W/sign.keychain-db"; KCPW="$(uuidgen)"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$W/cert.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -v -p codesigning "$KC" | awk 'NR==1{print $2}')
+          test -n "$IDENTITY" || { echo "::error::No signing identity in the .p12"; exit 1; }
+
+          security cms -D -i "$W/profile.mobileprovision" > "$W/profile.plist"
+          APPID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$W/profile.plist")
+          TEAM=${APPID%%.*}; PROFILE_BUNDLE=${APPID#*.}
+          echo "Profile: $(/usr/libexec/PlistBuddy -c 'Print :Name' "$W/profile.plist"), app id $APPID, expires $(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$W/profile.plist")"
+
+          rm -rf "$W/Payload"; cp -R "$RUNNER_TEMP/ipa/Payload" "$W/Payload"
+          APP="$W/Payload/Runner.app"
+          if [ "$PROFILE_BUNDLE" = "*" ]; then
+            BUNDLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist")
+          else
+            BUNDLE="$PROFILE_BUNDLE"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE" "$APP/Info.plist"
+          fi
+          cp "$W/profile.mobileprovision" "$APP/embedded.mobileprovision"
+          /usr/libexec/PlistBuddy -x -c "Print :Entitlements" "$W/profile.plist" > "$W/entitlements.plist"
+          /usr/libexec/PlistBuddy -c "Set :application-identifier $TEAM.$BUNDLE" "$W/entitlements.plist"
+
+          find "$APP/Frameworks" -maxdepth 1 \( -name "*.framework" -o -name "*.dylib" \) -print0 2>/dev/null |
+            while IFS= read -r -d '' f; do codesign --force --sign "$IDENTITY" --keychain "$KC" --timestamp=none "$f"; done
+          codesign --force --sign "$IDENTITY" --keychain "$KC" --entitlements "$W/entitlements.plist" --timestamp=none "$APP"
+          codesign --verify --deep --strict "$APP"
+          (cd "$W" && zip -qry "$RUNNER_TEMP/Dave-signed.ipa" Payload)
+          ls -la "$RUNNER_TEMP/Dave-signed.ipa"
+          security delete-keychain "$KC"
+
       - uses: actions/upload-artifact@v4
         with:
           name: Dave-ipa
-          path: ${{ runner.temp }}/Dave.ipa
+          path: |
+            ${{ runner.temp }}/Dave.ipa
+            ${{ runner.temp }}/Dave-signed.ipa
+          if-no-files-found: ignore
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -62,11 +118,17 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Dave iPhone app (build ${{ github.run_number }})
           body: |
-            iPhone app for Dave, unsigned, for sideloading. Download **Dave.ipa**, then install it with
-            Sideloadly (or AltStore / TrollStore) -- it signs the app with your Apple ID as it installs.
+            iPhone app for Dave.
+            - **Dave.ipa** -- unsigned: install with Sideloadly (Windows/Mac) or an on-phone signer
+              (ESign, Feather, Scarlet...) that signs it as it installs.
+            - **Dave-signed.ipa** (only when this repo has a signing certificate set up) -- already
+              signed, installs directly with on-phone IPA installers.
 
             First time: in the web panel open **Phone App**, tap **Get a pairing code**, then enter
             your server address and the code in the app.
-          files: ${{ runner.temp }}/Dave.ipa
+          files: |
+            ${{ runner.temp }}/Dave.ipa
+            ${{ runner.temp }}/Dave-signed.ipa
+          fail_on_unmatched_files: false
           prerelease: ${{ github.ref != 'refs/heads/main' }}
           make_latest: false
