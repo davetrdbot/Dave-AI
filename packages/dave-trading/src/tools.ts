@@ -9,6 +9,7 @@ import { getRiskSettings } from "./risk-settings.js";
 import { getSettingsLog } from "./settings-log.js";
 import { derivePipSize } from "./pip-size.js";
 import { assessRiskRewardForUser, getMinRiskReward, setMinRiskReward } from "./risk-reward-guard.js";
+import { isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp, type LimitType } from "./pullback-scalp.js";
 import { getDeepLossAlertPercent, setDeepLossAlertPercent } from "./deep-loss-alert-store.js";
 import { getAlertToggles, setAlertToggle, ALERT_CATEGORIES, type AlertCategory } from "./self-aware-alert-toggles.js";
 import { createWatch, listActiveWatches, cancelWatch, type WatchKind } from "./background-watch.js";
@@ -150,6 +151,14 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         price: { type: "number", description: "explicit entry price for pending order types -- auto-calculated from a live quote if omitted" },
         sl: { type: "number" },
         tp: { type: "number" },
+        pullback_scalp: {
+          type: "object",
+          description:
+            "With buy_limit/sell_limit: the pullback scalp opened at market as soon as the limit is placed, riding price INTO the limit " +
+            "(a BUY under a sell_limit, a SELL over a buy_limit). TP1 is the limit price exactly (automatic); give sl (where the pullback " +
+            "idea is wrong) and tp2 (PAST the limit price, short of the limit's own sl). Placed as two positions, one per target.",
+          properties: { sl: { type: "number" }, tp2: { type: "number" } },
+        },
         confidence: { type: "number", description: "your own real assessed confidence (0-100) for this specific trade" },
         // Real bug fixed (the trader, live: an alert reading "📌 Original idea: (reason not
         // recorded)"). This was optional AND described as only mattering "if approval is needed",
@@ -167,12 +176,17 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       },
     },
     execute: async (args, ctx) => {
-      const { confidence, reason, ...rest } = args;
+      const { confidence, reason, pullback_scalp: pullbackArgs, ...rest } = args as Record<string, unknown>;
       const order = rest as unknown as OrderRequest;
       if (isPendingOrderType(order.type) && order.price === undefined) {
         let referencePrice: number | undefined;
         try {
-          const quote = await ctx.analysis.get<{ bid?: number; ask?: number; close?: number }>("price", order.symbol);
+          // Capped: the limit is already placed and the chat is waiting on this reply; a slow EA
+    // means no scalp this time, not a stalled conversation.
+    const quote = await Promise.race([
+      ctx.analysis.get<{ bid?: number; ask?: number; close?: number }>("price", order.symbol),
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), PULLBACK_QUOTE_TIMEOUT_MS).unref()),
+    ]);
           referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
         } catch {
           // EA unreachable -- fall through, resolveEntryPrice below will ask instead of failing silently.
@@ -283,7 +297,8 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         return { needsApproval: true, pendingId: gate.pendingId, confidence, threshold: gate.threshold };
       }
       const result = await tradeExecute(ctx.executor, order);
-      return typeof confidence === "number" ? { ...result, confidence } : result;
+      const pullbackScalp = isLimitType(order.type) && order.price !== undefined ? await pullbackForLimit(ctx, order, pullbackArgs) : undefined;
+      return { ...result, confidence, ...(pullbackScalp ? { pullbackScalp } : {}) };
     },
   },
   {
@@ -583,3 +598,43 @@ export const TRADING_TOOLS: ToolDefinition[] = [
  * not an accidental omission" intent is visible in one place.
  */
 export { enableBreakevenTrailing, disableBreakevenTrailing };
+
+
+const PULLBACK_QUOTE_TIMEOUT_MS = 15_000;
+
+/** The pullback scalp that goes with a chat-placed limit order -- see pullback-scalp.ts. Never
+ *  throws: the limit is already placed, so a problem here is reported alongside it. */
+async function pullbackForLimit(
+  ctx: { userId: string; executor: TradeExecutor; analysis: AnalysisSource },
+  order: OrderRequest,
+  args: unknown,
+): Promise<{ placed: boolean; summary: string }> {
+  const a = (args && typeof args === "object" ? args : {}) as { sl?: unknown; tp2?: unknown };
+  let price: number | undefined;
+  try {
+    // Capped: the limit is already placed and the chat is waiting on this reply; a slow EA
+    // means no scalp this time, not a stalled conversation.
+    const quote = await Promise.race([
+      ctx.analysis.get<{ bid?: number; ask?: number; close?: number }>("price", order.symbol),
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), PULLBACK_QUOTE_TIMEOUT_MS).unref()),
+    ]);
+    // The scalp opens at market: a buy fills at the ask, a sell at the bid.
+    price = order.type === "sell_limit" ? (quote?.ask ?? quote?.close) : (quote?.bid ?? quote?.close);
+  } catch {
+    // no quote -- reported below
+  }
+  if (price === undefined) return { placed: false, summary: "No pullback scalp: couldn't read a live price from the EA." };
+  const planned = planPullbackScalp({
+    limitType: order.type as LimitType,
+    limitEntry: order.price!,
+    limitSl: order.sl,
+    price,
+    lots: order.lots,
+    sl: typeof a.sl === "number" ? a.sl : undefined,
+    tp2: typeof a.tp2 === "number" ? a.tp2 : undefined,
+    minRiskReward: getMinRiskReward(ctx.userId),
+  });
+  if (!planned.ok) return { placed: false, summary: `No pullback scalp: ${planned.reason}.` };
+  const placed = await placePullbackScalp(ctx.executor, order.symbol, planned.plan, { comment: "Dave pullback" });
+  return { placed: Object.values(placed.tickets).some(Boolean), summary: describePullbackScalp(order.symbol, placed) };
+}

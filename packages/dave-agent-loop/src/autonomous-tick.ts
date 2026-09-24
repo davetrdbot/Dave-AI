@@ -1,7 +1,7 @@
 import type { DaveDatabase } from "@dave/db";
 import type { Provider, ToolSpec } from "@dave/brain";
 import type { TradeExecutor, OrderRequest, OrderType, RiskSettings } from "@dave/trading";
-import { getActiveStrategySkillId } from "@dave/trading";
+import { getActiveStrategySkillId, isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp } from "@dave/trading";
 import { getSkill } from "@dave/skills";
 import {
   getRiskSettings,
@@ -254,6 +254,9 @@ export interface TickDecision {
   strategyTag?: string;
   question?: string;
   options?: string[];
+  /** With BUY_LIMIT/SELL_LIMIT: the pullback scalp that rides price into the limit (see
+   *  pullback-scalp.ts). Dave's own SL and TP2 for it; TP1 is always the limit entry itself. */
+  pullbackScalp?: { sl?: number; tp2?: number };
   /** Required for DELETE_TICKET/PARTIAL_CLOSE -- the real ticket to act on. */
   ticket?: string;
   /** Required for PARTIAL_CLOSE -- how many lots of the position to close. */
@@ -357,6 +360,15 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
     },
     scriptLanguage: { type: "string", enum: ["bash", "python", "node"], description: "Language for script. Defaults to python." },
     entry: { type: "number", description: "Required for a pending order type (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP). Omit for market BUY/SELL." },
+    pullbackScalp: {
+      type: "object",
+      description:
+        "With BUY_LIMIT/SELL_LIMIT only: the pullback scalp opened at market the moment the limit is placed, riding price INTO the limit. " +
+        "Under a SELL_LIMIT it is a BUY; over a BUY_LIMIT it is a SELL. TP1 is the limit entry exactly (set automatically). " +
+        "Give sl (where the pullback idea is wrong, from structure) and tp2 (PAST the limit entry -- the overshoot/sweep through the level -- but short of the limit's own SL). " +
+        "TP1 must pay at least the risk:reward floor against this sl.",
+      properties: { sl: { type: "number" }, tp2: { type: "number" } },
+    },
     lots: { type: "number", description: "Required unless the account has a fixed lot size configured -- size your own real lots against the live account balance." },
     confidence: { type: "number", description: "your own honest 0-100 confidence in this specific setup" },
     reason: { type: "string" },
@@ -457,6 +469,13 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     options: Array.isArray(obj.options) ? obj.options.map(String) : undefined,
     ticket: typeof obj.ticket === "string" ? obj.ticket : undefined,
     closeLots: typeof obj.closeLots === "number" ? obj.closeLots : undefined,
+    pullbackScalp:
+      obj.pullbackScalp && typeof obj.pullbackScalp === "object"
+        ? {
+            sl: typeof (obj.pullbackScalp as Record<string, unknown>).sl === "number" ? ((obj.pullbackScalp as Record<string, unknown>).sl as number) : undefined,
+            tp2: typeof (obj.pullbackScalp as Record<string, unknown>).tp2 === "number" ? ((obj.pullbackScalp as Record<string, unknown>).tp2 as number) : undefined,
+          }
+        : undefined,
     pauseMinutes: typeof obj.pauseMinutes === "number" ? obj.pauseMinutes : undefined,
     // Real semantics (must match tradeModify/modifyOrder exactly): explicit null means "remove
     // this SL/TP", a real number means "set it", and genuinely absent/undefined -- including any
@@ -538,7 +557,7 @@ You are in an autonomous trading TICK right now, not a conversation -- there is 
 
 You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open -- including, per open position that has both a real SL and TP, a visual progress bar toward each. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, MODIFY, PAUSE, CONSULT_JOURNAL, REQUEST_CANDLES, RUN_SCRIPT, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
 
-BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set. PREFER LIMIT ORDERS: put a BUY_LIMIT/SELL_LIMIT at the level where the spike starts (the sweep, the order block, the zone) with its stop and target, and let price come to you -- that is how you avoid a wrong entry. Use BUY/SELL only when price is at the ignition point right now.
+BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set. PREFER LIMIT ORDERS: put a BUY_LIMIT/SELL_LIMIT at the level where the spike starts (the sweep, the order block, the zone) with its stop and target, and let price come to you -- that is how you avoid a wrong entry. Use BUY/SELL only when price is at the ignition point right now. EVERY BUY_LIMIT/SELL_LIMIT also opens a PULLBACK SCALP at market, riding price into the limit (a BUY under a SELL_LIMIT, a SELL over a BUY_LIMIT): TP1 = the limit entry exactly (automatic), TP2 past the limit (the overshoot) but short of the limit's own SL, and an SL where the pullback idea is wrong -- give pullbackScalp {sl, tp2} from your analysis with every limit.
 
 You are never idle. A SKIP is never empty: if there is no trade here right now, stage the next one -- a limit at the level your analysis supports, or a setReminder (with the idea as the reason) for the candle close or session the setup is waiting on. Say in your reason what you staged. A bare SKIP is only for a symbol with genuinely nothing forming.
 
@@ -1649,6 +1668,54 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   }
   recordTickDecision(userId, { ts: Date.now(), symbol, action: decisionAction, reason });
 
+  // The pullback scalp (the trader: instead of waiting for the limit, ride the pullback into it).
+  // Only for a limit that is really waiting -- not one converted to market above -- and never
+  // allowed to undo the limit: any problem is reported and the limit stands.
+  let pullbackNote: string | null = null;
+  if (isLimitType(order.type) && order.price !== undefined && referencePrice > 0) {
+    const planned = planPullbackScalp({
+      limitType: order.type,
+      limitEntry: order.price,
+      limitSl: order.sl,
+      price: referencePrice,
+      lots: placed.placedLots,
+      sl: decision.pullbackScalp?.sl,
+      tp2: decision.pullbackScalp?.tp2,
+      minRiskReward,
+    });
+    if (!planned.ok) {
+      logTick(userId, `${symbol}: pullback scalp skipped -- ${planned.reason}`);
+      pullbackNote = `🔁 No pullback scalp: ${planned.reason}.`;
+    } else if (atr > 0 && isSlTooTight(referencePrice, planned.plan.sl, atr)) {
+      logTick(userId, `${symbol}: pullback scalp skipped -- SL ${planned.plan.sl} too tight for ATR ${atr}`);
+      pullbackNote = `🔁 No pullback scalp: its stop would sit inside normal price noise right now.`;
+    } else {
+      const scalp = await placePullbackScalp(executor, symbol, planned.plan, {
+        comment: `Dave pullback`,
+        pushMessage: `Pullback scalp into the ${order.type.replace("_", " ")} at ${order.price}: ${reason}`,
+      });
+      for (const [key, ticket] of Object.entries(scalp.tickets)) {
+        if (!ticket) continue;
+        try {
+          logTrade(db, userId, {
+            ticket,
+            symbol,
+            direction: planned.plan.side,
+            entryPrice: referencePrice,
+            sl: planned.plan.sl,
+            tp: key === "tp1" ? planned.plan.tp1 : planned.plan.tp2,
+            reasoning: [`Pullback scalp (${key.toUpperCase()}) riding price into my ${order.type.replace("_", " ")} at ${order.price}. ${reason}`],
+            confluenceScore: confidence,
+          });
+        } catch {
+          // Logging never blocks a real trade.
+        }
+      }
+      logTick(userId, `${symbol}: pullback scalp ${planned.plan.side} x2 -- tickets ${JSON.stringify(scalp.tickets)}${scalp.errors.length ? ` errors: ${scalp.errors.join("; ")}` : ""}`);
+      pullbackNote = describePullbackScalp(symbol, scalp);
+    }
+  }
+
   return {
     action,
     symbol,
@@ -1662,7 +1729,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     // utility, so a rare pathologically long reason still sends in full across multiple messages
     // rather than failing on Telegram's real 4096-char limit or being silently shortened here.
     message:
-      [buildTradePlacedMessage({ ...order, lots: placed.placedLots }, placed.ticket, confidence), marketConversionNote, floNote, `📋 Why: ${reason || "no reason given"}`]
+      [buildTradePlacedMessage({ ...order, lots: placed.placedLots }, placed.ticket, confidence), marketConversionNote, pullbackNote, floNote, `📋 Why: ${reason || "no reason given"}`]
         .filter((line): line is string => line !== null)
         .join("\n\n") + reducedSizeNote,
   };

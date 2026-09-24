@@ -89,3 +89,6 @@ try {
 } finally {
   rmSync(workDir, { recursive: true, force: true });
 }
+// No EA is connected here, so the sell_limit's pullback-scalp price request is still pending in
+// the background (the reply didn't wait for it); don't let it hold the process open.
+process.exit(0);
