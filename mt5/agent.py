@@ -465,7 +465,9 @@ def login_state():
         return "unknown", None
     last = lines[-1]
     detail = re.sub(r"^\S+\s+\d\s+[\d:.]+\s+\S+\s+", "", last).strip()[:200]
-    if re.search(r"authorized on|authorization on .* (?:successful|passed)", last, re.I) and not re.search(r"failed", last, re.I):
+    # "previous successful authorization performed from <ip> on <date>" is printed right AFTER a
+    # successful login (seen live on a real Headway account) -- it means logged in, not "connecting".
+    if re.search(r"authorized on|authorization on .* (?:successful|passed)|previous successful authorization", last, re.I) and not re.search(r"failed", last, re.I):
         return "logged-in", None
     if re.search(r"failed|invalid account", last, re.I):
         return "failed", detail

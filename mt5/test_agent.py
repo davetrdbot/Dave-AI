@@ -162,6 +162,9 @@ journal("EO\t1\t20:57:11.607\tNetwork\t'12345678': connection to Deriv-Demo lost
 check(agent.login_state() == ("connecting", "'12345678': connection to Deriv-Demo lost"), "connection lost -> connecting, with the reason")
 journal("x", "QQ\t0\t20:58:00.000\tNetwork\t'12345678': authorized on Deriv-Demo through Access Point EU 1")
 check(agent.login_state()[0] == "logged-in", "authorized on -> logged-in")
+journal("x", "QQ\t0\t21:37:22.000\tNetwork\t'5161314': authorized on 91.223.236.81:443 through Access Server #2 (ping: 40.1 ms)",
+        "QR\t0\t21:37:23.000\tNetwork\t'5161314': previous successful authorization performed from 152.55.184.20 on 2026.09.24 21:37:23")
+check(agent.login_state()[0] == "logged-in", "'previous successful authorization' (printed right after a real login, seen live) -> logged-in, not connecting")
 journal("QQ\t0\t20:58:00.000\tNetwork\t'12345678': authorized on Deriv-Demo", "RR\t2\t20:59:00.000\tNetwork\t'12345678': authorization on Deriv-Demo failed (Invalid account)")
 state_, detail = agent.login_state()
 check(state_ == "failed" and "Invalid account" in detail, "newest line wins: a later failed login is reported with its reason")
