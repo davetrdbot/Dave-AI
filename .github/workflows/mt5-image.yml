@@ -25,6 +25,8 @@ jobs:
         run: |
           docker run -d --name dave-mt5 -m 1g -e MT5_AGENT_SECRET=ci-secret-123 -p 8081:8081 dave-mt5:ci
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:8081/health && break; sleep 1; done
+          # Railway's private network can be IPv6-only: where the container has IPv6, the agent must answer on it too.
+          docker exec dave-mt5 python3 -c "import socket,urllib.request as u; socket.has_ipv6 and __import__('os').path.exists('/proc/net/if_inet6') and print('ipv6', u.urlopen('http://[::1]:8081/health', timeout=5).read())"
           H='x-dave-agent-secret: ci-secret-123'
           curl -fs -H "$H" http://127.0.0.1:8081/status | tee /tmp/status.json
           grep -q '"installed": true' /tmp/status.json

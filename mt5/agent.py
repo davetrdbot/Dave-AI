@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -467,8 +468,26 @@ def main():
             compile_ea()
         start_terminal(state)
     threading.Thread(target=supervise, daemon=True).start()
+    serve()
+
+
+class DualStackServer(ThreadingHTTPServer):
+    """IPv6 and IPv4 on one socket: Railway's private network (dave-mt5.railway.internal) can be
+    IPv6-only, while local runs and health checks use IPv4."""
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+def serve():
+    try:
+        server = DualStackServer(("::", PORT), Handler)
+    except OSError:  # no IPv6 on this host
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     log("agent listening on", PORT)
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    server.serve_forever()
 
 
 if __name__ == "__main__":
