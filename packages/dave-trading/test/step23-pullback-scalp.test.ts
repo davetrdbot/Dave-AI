@@ -12,7 +12,7 @@ process.env.DAVE_CREDENTIALS_KEY ??= "test-only-master-key-not-for-production";
  * TP1 at the exact place of the sell limit. Same for a buy limit." TP2 goes PAST the limit (the
  * trader's choice), short of the limit's own stop.
  */
-const { planPullbackScalp, placePullbackScalp, TRADING_TOOLS } = await import("../src/index.js");
+const { planPullbackScalp, placePullbackScalp, pullbackScalpRoom, TRADING_TOOLS } = await import("../src/index.js");
 type OrderRequest = import("../src/index.js").OrderRequest;
 
 console.log("=== Step 23: a pullback scalp rides price into every limit order ===\n");
@@ -83,6 +83,26 @@ assert.deepEqual(sent.map((o) => [o.type, o.price ?? null, o.tp]), [["sell_limit
 assert.equal(out.pullbackScalp?.placed, true);
 assert.match(out.pullbackScalp!.summary, /TP1 110.*TP2 112.*SL 97/);
 console.log("   " + out.pullbackScalp!.summary.replace(/\n/g, "\n   "));
+console.log("   ✓\n");
+
+console.log("[6b] Optional: a sell_limit WITHOUT pullback_scalp is just the limit");
+sent.length = 0;
+const plain = (await tool.execute(
+  { symbol: "VOL_80", type: "sell_limit", lots: 0.02, price: 110, sl: 115, tp: 95, confidence: 80, reason: "just the limit" },
+  { userId: "default", analysis, executor } as never,
+)) as { pullbackScalp?: unknown };
+assert.equal(sent.length, 1);
+assert.equal(plain.pullbackScalp, undefined);
+console.log("   ✓\n");
+
+console.log("[6c] No room for two more positions -> no scalp (too many trades, or leverage stretched)");
+const acct = { balance: 1000, freeMargin: 800, leverage: 500 };
+assert.equal(pullbackScalpRoom(acct, 3, 5).ok, true, "3 open + 2 = 5, at the limit of 5: allowed");
+const full = pullbackScalpRoom(acct, 4, 5);
+assert.ok(!full.ok && /4 open and a limit of 5/.test(full.reason!), "4 open + 2 would be 6 > 5");
+const lev = pullbackScalpRoom({ balance: 1000, freeMargin: 50, leverage: 500 }, 1, undefined);
+assert.ok(!lev.ok && /leverage/.test(lev.reason!), "free margin 5% of balance: too stretched");
+assert.equal(pullbackScalpRoom(undefined, 9, 5).ok, true, "no account snapshot -> left to the broker's own checks");
 console.log("   ✓\n");
 
 console.log("[7] A market order gets no scalp");

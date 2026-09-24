@@ -1,7 +1,7 @@
 import type { DaveDatabase } from "@dave/db";
 import type { Provider, ToolSpec } from "@dave/brain";
 import type { TradeExecutor, OrderRequest, OrderType, RiskSettings } from "@dave/trading";
-import { getActiveStrategySkillId, isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp } from "@dave/trading";
+import { getActiveStrategySkillId, isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp, pullbackScalpRoom } from "@dave/trading";
 import { getSkill } from "@dave/skills";
 import {
   getRiskSettings,
@@ -363,7 +363,8 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
     pullbackScalp: {
       type: "object",
       description:
-        "With BUY_LIMIT/SELL_LIMIT only: the pullback scalp opened at market the moment the limit is placed, riding price INTO the limit. " +
+        "OPTIONAL, with BUY_LIMIT/SELL_LIMIT only, and only when it's worth it (omit it when the account is already busy or leveraged, or TP1 can't pay the floor). " +
+        "The pullback scalp opened at market the moment the limit is placed, riding price INTO the limit. " +
         "Under a SELL_LIMIT it is a BUY; over a BUY_LIMIT it is a SELL. TP1 is the limit entry exactly (set automatically). " +
         "Give sl (where the pullback idea is wrong, from structure) and tp2 (PAST the limit entry -- the overshoot/sweep through the level -- but short of the limit's own SL). " +
         "TP1 must pay at least the risk:reward floor against this sl.",
@@ -557,7 +558,7 @@ You are in an autonomous trading TICK right now, not a conversation -- there is 
 
 You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open -- including, per open position that has both a real SL and TP, a visual progress bar toward each. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, MODIFY, PAUSE, CONSULT_JOURNAL, REQUEST_CANDLES, RUN_SCRIPT, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
 
-BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set. PREFER LIMIT ORDERS: put a BUY_LIMIT/SELL_LIMIT at the level where the spike starts (the sweep, the order block, the zone) with its stop and target, and let price come to you -- that is how you avoid a wrong entry. Use BUY/SELL only when price is at the ignition point right now. EVERY BUY_LIMIT/SELL_LIMIT also opens a PULLBACK SCALP at market, riding price into the limit (a BUY under a SELL_LIMIT, a SELL over a BUY_LIMIT): TP1 = the limit entry exactly (automatic), TP2 past the limit (the overshoot) but short of the limit's own SL, and an SL where the pullback idea is wrong -- give pullbackScalp {sl, tp2} from your analysis with every limit.
+BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set. PREFER LIMIT ORDERS: put a BUY_LIMIT/SELL_LIMIT at the level where the spike starts (the sweep, the order block, the zone) with its stop and target, and let price come to you -- that is how you avoid a wrong entry. Use BUY/SELL only when price is at the ignition point right now. OPTIONAL with a BUY_LIMIT/SELL_LIMIT: a PULLBACK SCALP at market riding price into the limit (a BUY under a SELL_LIMIT, a SELL over a BUY_LIMIT): TP1 = the limit entry exactly (automatic), TP2 past the limit (the overshoot) but short of the limit's own SL, and an SL where the pullback idea is wrong -- include pullbackScalp {sl, tp2} only when there is a real pullback to ride. It is never compulsory: leave it out when many trades are already open or two more positions would pass max open trades, when free margin/leverage is already stretched, or when TP1 can't pay the risk:reward floor. A clean limit alone is fine.
 
 You are never idle. A SKIP is never empty: if there is no trade here right now, stage the next one -- a limit at the level your analysis supports, or a setReminder (with the idea as the reason) for the candle close or session the setup is waiting on. Say in your reason what you staged. A bare SKIP is only for a symbol with genuinely nothing forming.
 
@@ -1669,10 +1670,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   recordTickDecision(userId, { ts: Date.now(), symbol, action: decisionAction, reason });
 
   // The pullback scalp (the trader: instead of waiting for the limit, ride the pullback into it).
-  // Only for a limit that is really waiting -- not one converted to market above -- and never
-  // allowed to undo the limit: any problem is reported and the limit stands.
+  // Optional -- only when Dave asked for it on this decision -- and only for a limit that is really
+  // waiting (not one converted to market above). Never allowed to undo the limit: any problem is
+  // reported and the limit stands.
   let pullbackNote: string | null = null;
-  if (isLimitType(order.type) && order.price !== undefined && referencePrice > 0) {
+  const room = decision.pullbackScalp ? pullbackScalpRoom(account ?? undefined, positions.length, risk.maxOpenTrades) : { ok: true };
+  if (decision.pullbackScalp && !room.ok) {
+    logTick(userId, `${symbol}: pullback scalp skipped -- ${room.reason}`);
+    pullbackNote = `🔁 No pullback scalp: ${room.reason}.`;
+  } else if (decision.pullbackScalp && isLimitType(order.type) && order.price !== undefined && referencePrice > 0) {
     const planned = planPullbackScalp({
       limitType: order.type,
       limitEntry: order.price,

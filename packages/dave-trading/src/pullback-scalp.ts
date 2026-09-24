@@ -1,6 +1,7 @@
 import type { OrderRequest } from "./order-types.js";
 import type { TradeExecutor } from "./trade-executor.js";
 import { ABSOLUTE_MIN_LOTS, tradeExecuteWithMarginRetry } from "./margin-aware-execute.js";
+import { evaluateAccountAwareness } from "./account-awareness.js";
 
 /**
  * The pullback scalp that rides price INTO a limit order (the trader: "when you place a sell limit,
@@ -83,6 +84,30 @@ export function planPullbackScalp(input: PullbackScalpInput): PullbackScalpDecis
 
   const lotsEach = Math.max(ABSOLUTE_MIN_LOTS, Math.floor((input.lots / 2) * 100 + 1e-9) / 100);
   return { ok: true, plan: { side, lotsEach, sl, tp1, tp2, defaulted: { sl: !slValid, tp2: !tp2Valid } } };
+}
+
+/**
+ * The scalp is optional (the trader: "if there are already too many trades and it would break the
+ * risk:reward or leverage, it should not take it -- and it shouldn't be compulsory"). It adds TWO
+ * positions, so the account must have room for both: under the max-open-trades limit after both,
+ * and free margin not already critically low. Same gate every other trade goes through.
+ */
+export function pullbackScalpRoom(
+  account: { balance: number; freeMargin?: number; leverage?: number } | undefined,
+  openPositionsCount: number,
+  maxOpenTrades: number | undefined,
+): { ok: boolean; reason?: string } {
+  if (!account) return { ok: true };
+  // Room for two more means the count after the first one must still be under the limit.
+  const r = evaluateAccountAwareness({ ...account, openPositionsCount: openPositionsCount + 1 }, { maxOpenTrades });
+  if (r.ok) return r;
+  return {
+    ok: false,
+    reason:
+      maxOpenTrades !== undefined && openPositionsCount + 2 > maxOpenTrades
+        ? `the account has ${openPositionsCount} open and a limit of ${maxOpenTrades} -- no room for the scalp's two positions`
+        : "free margin is already too low for two more positions (leverage)",
+  };
 }
 
 export interface PlacedPullbackScalp {

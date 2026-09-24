@@ -1,6 +1,6 @@
 import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
-import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness } from "@dave/trading";
+import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness, pullbackScalpRoom } from "@dave/trading";
 import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, MT5_CLOUD_TOOLS, createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
@@ -109,7 +109,19 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
               throw new Error(`Cannot place this trade -- account awareness gate blocked it: ${awareness.reason}`);
             }
           }
+          // The optional pullback scalp adds two positions: dropped (the limit still goes in) when
+          // the account has no room for them.
+          let scalpBlocked: string | undefined;
+          if (args.pullback_scalp && accountSnapshot) {
+            const room = pullbackScalpRoom(accountSnapshot, getLastKnownState(deps.userId).positions.length, getRiskSettings(deps.userId).maxOpenTrades);
+            if (!room.ok) {
+              scalpBlocked = `No pullback scalp: ${room.reason}.`;
+              args = { ...args };
+              delete args.pullback_scalp;
+            }
+          }
           const result = (await tool.execute(args)) as Record<string, unknown>;
+          if (scalpBlocked) result.pullbackScalp = { placed: false, summary: scalpBlocked };
           const order = args as unknown as OrderRequest;
           const confidence = args.confidence as number | undefined;
           // Real bug fixed (user, live: minutes after placing a real trade itself, Dave asked

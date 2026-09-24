@@ -154,7 +154,8 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         pullback_scalp: {
           type: "object",
           description:
-            "With buy_limit/sell_limit: the pullback scalp opened at market as soon as the limit is placed, riding price INTO the limit " +
+            "OPTIONAL, with buy_limit/sell_limit, only when it's clearly worth it (a real pullback to ride, and the account can carry two more positions). " +
+            "The pullback scalp opened at market as soon as the limit is placed, riding price INTO the limit " +
             "(a BUY under a sell_limit, a SELL over a buy_limit). TP1 is the limit price exactly (automatic); give sl (where the pullback " +
             "idea is wrong) and tp2 (PAST the limit price, short of the limit's own sl). Placed as two positions, one per target.",
           properties: { sl: { type: "number" }, tp2: { type: "number" } },
@@ -297,7 +298,9 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         return { needsApproval: true, pendingId: gate.pendingId, confidence, threshold: gate.threshold };
       }
       const result = await tradeExecute(ctx.executor, order);
-      const pullbackScalp = isLimitType(order.type) && order.price !== undefined ? await pullbackForLimit(ctx, order, pullbackArgs) : undefined;
+      // Optional: only when Dave asked for it with this limit.
+      const wantsScalp = pullbackArgs !== undefined && pullbackArgs !== null && typeof pullbackArgs === "object";
+      const pullbackScalp = wantsScalp && isLimitType(order.type) && order.price !== undefined ? await pullbackForLimit(ctx, order, pullbackArgs) : undefined;
       return { ...result, confidence, ...(pullbackScalp ? { pullbackScalp } : {}) };
     },
   },

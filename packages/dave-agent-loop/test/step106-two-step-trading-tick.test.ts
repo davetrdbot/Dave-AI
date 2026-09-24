@@ -243,12 +243,13 @@ async function main() {
         const sl = c.expectedMarketType === "buy" ? 1.09 : 1.11;
         const tp = c.expectedMarketType === "buy" ? 1.12 : 1.08;
         const { provider } = makeProvider({
-          tickDecision: { action: c.action, symbol: "EURUSD", entry: c.entryNotPassed, confidence: 80, reason: "test no conversion", lots: 0.1, sl, tp },
+          // The pullback scalp is optional: asked for on the SELL_LIMIT, not on the BUY_LIMIT.
+          tickDecision: { action: c.action, symbol: "EURUSD", entry: c.entryNotPassed, confidence: 80, reason: "test no conversion", lots: 0.1, sl, tp, ...(c.action === "SELL_LIMIT" ? { pullbackScalp: {} } : {}) },
         });
         const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
-        // A waiting LIMIT also opens its pullback scalp (two positions, TP1 = the limit price exactly,
-        // TP2 past it); STOP orders don't get one.
-        const isLimit = c.action === "BUY_LIMIT" || c.action === "SELL_LIMIT";
+        // A waiting LIMIT opens its pullback scalp only when asked for (two positions, TP1 = the limit
+        // price exactly, TP2 past it); without it, or on a STOP order, just the order.
+        const isLimit = c.action === "SELL_LIMIT";
         assert.equal(placedOrders.length, isLimit ? 3 : 1, `${c.action} (not passed): the pending order must still fire${isLimit ? ", with its pullback scalp" : ""}`);
         const placed = placedOrders[0];
         if (isLimit) {
