@@ -28,7 +28,6 @@ export default defineRailway(() => {
   const mt5 = service("dave-mt5", {
     source,
     build: { builder: "DOCKERFILE", dockerfilePath: "mt5/Dockerfile", watchPatterns: ["mt5/**", "ea/**"] },
-    deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 },
     replicas: { [REGION]: 1 },
     volumeMounts: { "/data": mt5Volume },
     env: { MT5_AGENT_SECRET: preserve(), RAILWAY_DOCKERFILE_PATH: preserve() },
@@ -39,7 +38,6 @@ export default defineRailway(() => {
     source,
     build: { builder: "NIXPACKS", buildCommand: "pnpm install --frozen-lockfile && pnpm run build" },
     start: "pnpm run start",
-    deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 5 },
     replicas: { [REGION]: 1 },
     volumeMounts: { "/data": botVolume },
     env: {

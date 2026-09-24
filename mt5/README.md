@@ -9,27 +9,28 @@ already compiled, attached to a chart and logged in to your account. It replaces
                         └──── EA reports (file bridge) ┘
 ```
 
-## Deploy on Railway (same project as the bot)
+## Deploy on Railway -- the whole thing, from this repo
 
-1. **New service → GitHub repo → this repo.** In the service's *Variables*:
-   | Variable | Value |
-   |---|---|
-   | `RAILWAY_DOCKERFILE_PATH` | `mt5/Dockerfile` |
-   | `MT5_AGENT_SECRET` | a long random string (keep it) |
-2. **Add a volume** mounted at `/data` (0.5 GB is plenty -- it only holds your login settings;
-   MetaTrader itself is built into the image). Without it, a redeploy means connecting again.
-3. **On the bot service**, add:
-   | Variable | Value |
-   |---|---|
-   | `MT5_AGENT_SECRET` | the same secret |
+`.railway/railway.ts` describes both services -- the bot and MT5 -- with their builds and volumes.
+Nothing secret is in it: the bot makes its own web-panel login (shown in its logs) and encryption
+key, and the bot and MT5 work out their shared secret from the project itself.
 
-   Name the MT5 service `dave-mt5` and that's all the bot needs -- it finds it at
-   `http://dave-mt5.railway.internal:8081`. (A different name: also set `MT5_AGENT_URL`.)
-4. Deploy both. The first start of the MT5 service installs MetaTrader (a few minutes).
-5. In Telegram send **/mt5 → Connect account** and type three things: account number, password
+**Once per GitHub repo:** Settings -> Secrets and variables -> Actions -> add `RAILWAY_API_TOKEN`
+(railway.com -> Account Settings -> Tokens). The Railway account needs GitHub connected.
+
+From then on every push applies it (`.github/workflows/railway.yml`): on a fresh account it creates
+the project, both services, both volumes and the bot's public address; on an existing one it only
+changes what differs and never deletes anything. Same thing by hand: `railway config apply`.
+
+Then:
+1. Open the **dave-bot** service's logs in Railway: the first start prints the web panel address and
+   login (`web panel login ... user: admin password: ...`). Set `ADMIN_PASSWORD` to choose your own.
+2. In the panel, pair Telegram. The first MT5 build takes about 5 minutes.
+3. In Telegram send **/mt5 -> Connect account** and type three things: account number, password
    (Dave deletes the message right after reading it), and server name exactly as MT5 shows it
-   (e.g. `Deriv-Demo`). Or use the app: **Settings → MetaTrader 5**. That's all the trader ever
-   enters -- the container's address and secret are server settings, never typed in chat.
+   (e.g. `Deriv-Demo`). Or use the app: **Settings -> MetaTrader 5**.
+
+Adding MT5 to an older project that only has the bot: `RAILWAY_TOKEN=... python3 mt5/railway-setup.py`.
 
 Dave compiles the EA, starts MT5 logged in with the EA on a chart, and tells you whether the
 broker accepted the login. From then on `/mt5` (or the app) changes the chart symbol, timeframe
