@@ -46,6 +46,34 @@ export interface ParsedSignal {
   reason: string;
 }
 
+export type UpdateAction = "close" | "close_partial" | "breakeven" | "move_sl" | "move_tp" | "cancel";
+
+/** A provider's follow-up about a trade they already gave ("close now", "SL to BE"). */
+export interface ParsedUpdate {
+  action: UpdateAction;
+  symbol?: string;
+  /** New SL/TP for move_sl / move_tp. */
+  price?: number;
+  /** Part to close for close_partial (0-1). */
+  fraction?: number;
+  /** "close all" -- every copied trade from the channel, not just the latest. */
+  all: boolean;
+}
+
+export interface NousUpdate {
+  id: string;
+  chatId: string;
+  chatTitle: string;
+  messageId: number;
+  postedAt: number;
+  text: string;
+  update: ParsedUpdate;
+  tickets: string[];
+  status: "awaiting" | "done" | "skipped" | "expired" | "failed";
+  note?: string;
+  cardMessageId?: number;
+}
+
 export interface NousSignal {
   id: string;
   chatId: string;
@@ -74,6 +102,10 @@ export interface NousTrade {
   tp2?: number;
   reason: string;
   chatTitle: string;
+  /** The channel it came from -- a follow-up post from the same channel can act on it. */
+  chatId?: string;
+  /** The provider's post, so a reply to it is recognised as about this trade. */
+  messageId?: number;
   placedAt: number;
   /** "tp1": riding to TP1; "tp2": stop at entry, riding to TP2. */
   stage: "tp1" | "tp2";
@@ -147,6 +179,21 @@ export function clearNousLogin(userId: string): void {
 }
 
 const signalsPath = (userId: string) => join(dir(userId), "signals.json");
+const updatesPath = (userId: string) => join(dir(userId), "updates.json");
+
+export function listNousUpdates(userId: string): NousUpdate[] {
+  return readJson<NousUpdate[]>(updatesPath(userId), []);
+}
+
+export function getNousUpdate(userId: string, id: string): NousUpdate | undefined {
+  return listNousUpdates(userId).find((u) => u.id === id);
+}
+
+export function saveNousUpdate(userId: string, update: NousUpdate): void {
+  const all = listNousUpdates(userId).filter((u) => u.id !== update.id);
+  all.push(update);
+  writeJson(updatesPath(userId), all.slice(-MAX_SIGNALS));
+}
 const tradesPath = (userId: string) => join(dir(userId), "trades.json");
 const MAX_SIGNALS = 200;
 
@@ -166,7 +213,7 @@ export function saveNousSignal(userId: string, signal: NousSignal): void {
 
 /** The same post seen twice (a reconnect, an edit) is one signal. */
 export function hasNousSignalFor(userId: string, chatId: string, messageId: number): boolean {
-  return listNousSignals(userId).some((s) => s.chatId === chatId && s.messageId === messageId);
+  return listNousSignals(userId).some((s) => s.chatId === chatId && s.messageId === messageId) || listNousUpdates(userId).some((u) => u.chatId === chatId && u.messageId === messageId);
 }
 
 export function listNousTrades(userId: string): NousTrade[] {

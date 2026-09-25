@@ -8,7 +8,8 @@ import { knowledgeDelete, knowledgeDraft, knowledgeSave, knowledgeView } from "@
 import { logTrade } from "@dave/feedback";
 import { getPrimaryChatId } from "../primary-chat.js";
 import { consultJournal } from "../journal-agent.js";
-import { parseSignal } from "./parse.js";
+import { readPost } from "./parse.js";
+import { buildImageContentBlock } from "@dave/vision";
 import { planPlacement, rewardToRisk, type Placement } from "./plan.js";
 import { advanceNousTrade } from "./manager.js";
 import { checkTelegramReachable, startNousListener, type NousPost } from "./userbot.js";
@@ -16,13 +17,17 @@ import {
   getNousConfig,
   getNousLogin,
   getNousSignal,
+  getNousUpdate,
   hasNousSignalFor,
+  listNousSignals,
+  saveNousUpdate,
   lagosTime,
   listNousTrades,
   saveNousSignal,
   saveNousTrades,
   type NousSignal,
   type NousTrade,
+  type NousUpdate,
 } from "./store.js";
 
 /**
@@ -80,17 +85,36 @@ function chatOf(deps: NousDeps): number | undefined {
   return getPrimaryChatId(deps.db, deps.userId);
 }
 
-async function livePrice(userId: string, symbol: string, side: "buy" | "sell"): Promise<number | undefined> {
+async function rawQuote(userId: string, symbol: string): Promise<{ bid?: number; ask?: number; close?: number } | undefined> {
   try {
-    const quote = await Promise.race([
+    return await Promise.race([
       createEaAnalysisSource(userId).get<{ bid?: number; ask?: number; close?: number }>("price", symbol),
       new Promise<undefined>((r) => setTimeout(() => r(undefined), QUOTE_TIMEOUT_MS).unref()),
     ]);
-    // A buy fills at the ask, a sell at the bid.
-    return side === "buy" ? (quote?.ask ?? quote?.close ?? quote?.bid) : (quote?.bid ?? quote?.close ?? quote?.ask);
   } catch {
     return undefined;
   }
+}
+
+async function livePrice(userId: string, symbol: string, side: "buy" | "sell"): Promise<number | undefined> {
+  const quote = await rawQuote(userId, symbol);
+  // A buy fills at the ask, a sell at the bid.
+  return side === "buy" ? (quote?.ask ?? quote?.close ?? quote?.bid) : (quote?.bid ?? quote?.close ?? quote?.ask);
+}
+
+/** Nous's get_price tool: the live bid/ask for any symbol. */
+function priceTool(deps: NousDeps): (symbol: string) => Promise<{ bid?: number; ask?: number } | undefined> {
+  if (deps.quote) {
+    const q = deps.quote;
+    return async (symbol) => {
+      const [bid, ask] = await Promise.all([q(symbol, "sell"), q(symbol, "buy")]);
+      return bid === undefined && ask === undefined ? undefined : { bid, ask };
+    };
+  }
+  return async (symbol) => {
+    const q = await rawQuote(deps.userId, symbol);
+    return q ? { bid: q.bid ?? q.close, ask: q.ask ?? q.close } : undefined;
+  };
 }
 
 export function nousLots(userId: string): number {
@@ -106,8 +130,27 @@ export async function onNousPost(deps: NousDeps, post: NousPost, now = Date.now(
   const config = getNousConfig(userId);
   if (hasNousSignalFor(userId, post.chatId, post.messageId)) return;
   if (now - post.postedAt > config.maxAgeMinutes * 60_000) return; // old news: a reconnect delivering the past
-  const parsed = await parseSignal(deps.provider(), post.text);
-  if (!parsed) return;
+  const fromChannel = listNousTrades(userId).filter((t) => t.chatId === post.chatId || (!t.chatId && t.chatTitle === post.chatTitle));
+  const repliedTo = post.replyToMessageId !== undefined ? fromChannel.find((t) => t.messageId === post.replyToMessageId) : undefined;
+  let image;
+  try {
+    image = post.image ? buildImageContentBlock(post.image, "signal.jpg") : undefined;
+  } catch {
+    image = undefined; // not a readable picture -- go on with the text
+  }
+  const read = await readPost(deps.provider(), {
+    text: post.text,
+    image,
+    openTrades: fromChannel.map(describeTrade),
+    replyingTo: repliedTo ? describeTrade(repliedTo) : undefined,
+    quote: priceTool(deps),
+  });
+  if (!read) return;
+  if (read.kind === "update") {
+    await onNousUpdate(deps, post, read.update, repliedTo ? [repliedTo] : fromChannel, now);
+    return;
+  }
+  const parsed = read.signal;
 
   const signal: NousSignal = {
     id: randomBytes(5).toString("hex"),
@@ -115,7 +158,7 @@ export async function onNousPost(deps: NousDeps, post: NousPost, now = Date.now(
     chatTitle: post.chatTitle,
     messageId: post.messageId,
     postedAt: post.postedAt,
-    text: post.text.slice(0, 3000),
+    text: (post.text || "(signal posted as a picture)").slice(0, 3000),
     signal: parsed,
     status: "awaiting",
   };
@@ -211,6 +254,8 @@ export async function placeNousSignal(deps: NousDeps, signalId: string, now = Da
     tp2: parsed.tp2,
     reason: parsed.reason,
     chatTitle: signal.chatTitle,
+    chatId: signal.chatId,
+    messageId: signal.messageId,
     placedAt: now,
     stage: "tp1",
   };
@@ -366,6 +411,156 @@ function saveSetupKnowledge(userId: string, signal: NousSignal, trade: NousTrade
   } catch {
     return undefined;
   }
+}
+
+// ---- Follow-ups from the provider ("close now", "SL to BE", "SL to 2345", "cancel the limit") ----
+
+export function describeTrade(t: NousTrade): string {
+  return `${t.symbol} ${t.side.toUpperCase()} #${t.ticket}, entry ${t.entry}, SL ${t.sl}, TP ${t.stage === "tp2" ? t.tp2 : t.tp1}${t.filled ? "" : " (pending, not filled yet)"}`;
+}
+
+function describeAction(u: NousUpdate["update"]): string {
+  switch (u.action) {
+    case "close":
+      return "close it now";
+    case "close_partial":
+      return `close ${Math.round((u.fraction ?? 0.5) * 100)}% of it`;
+    case "breakeven":
+      return "move the stop loss to entry (breakeven)";
+    case "move_sl":
+      return `move the stop loss to ${u.price}`;
+    case "move_tp":
+      return `move the take profit to ${u.price}`;
+    case "cancel":
+      return "cancel the pending order";
+  }
+}
+
+/** Which copied trades a follow-up is about: the one it replies to; else the named pair's; else the latest. */
+export function pickUpdateTargets(update: NousUpdate["update"], candidates: NousTrade[]): NousTrade[] {
+  let pool = update.symbol ? candidates.filter((t) => t.symbol === update.symbol) : candidates;
+  if (update.action === "cancel") pool = pool.filter((t) => !t.filled);
+  if (!pool.length) return [];
+  if (update.all || candidates.length === 1) return pool;
+  return [pool.reduce((a, b) => (b.placedAt > a.placedAt ? b : a))];
+}
+
+async function onNousUpdate(deps: NousDeps, post: NousPost, update: NousUpdate["update"], candidates: NousTrade[], now: number): Promise<void> {
+  const targets = pickUpdateTargets(update, candidates);
+  if (!targets.length) return; // about a trade Nous didn't copy -- nothing of ours to touch
+  const record: NousUpdate = {
+    id: randomBytes(5).toString("hex"),
+    chatId: post.chatId,
+    chatTitle: post.chatTitle,
+    messageId: post.messageId,
+    postedAt: post.postedAt,
+    text: (post.text || "(picture)").slice(0, 1500),
+    update,
+    tickets: targets.map((t) => t.ticket),
+    status: "awaiting",
+  };
+  saveNousUpdate(deps.userId, record);
+  if (getNousConfig(deps.userId).autoApprove) {
+    await applyNousUpdate(deps, record.id, now);
+    return;
+  }
+  const blocks: RichBlock[] = [
+    heading(`📣 ${post.chatTitle}: ${describeAction(update)}`),
+    { type: "table", cells: [["Trade", "Now"], ...targets.map((t) => [`${t.symbol} ${t.side.toUpperCase()} #${t.ticket}`, `entry ${t.entry} · SL ${t.sl} · TP ${t.stage === "tp2" ? t.tp2 : t.tp1}`])] },
+    { type: "details", text: "Their post", blocks: [{ type: "pre", text: record.text }] },
+    para(`Do it? Posted ${lagosTime(post.postedAt)}.`),
+  ];
+  const sent = await send(deps, blocks, false, keyboard([[coloredButton("✅ Do it", "green", `nous:uy:${record.id}`), coloredButton("❌ Ignore", "red", `nous:un:${record.id}`)]]));
+  if (sent) {
+    record.cardMessageId = sent;
+    saveNousUpdate(deps.userId, record);
+  }
+}
+
+export async function applyNousUpdate(deps: NousDeps, updateId: string, now = Date.now()): Promise<string> {
+  const { userId } = deps;
+  const record = getNousUpdate(userId, updateId);
+  if (!record) return "That update is gone.";
+  if (record.status !== "awaiting") return `Already ${record.status}.`;
+  await clearUpdateButtons(deps, record);
+  if (now - record.postedAt > APPROVAL_WINDOW_MS) {
+    record.status = "expired";
+    saveNousUpdate(userId, record);
+    return reply(deps, `⌛ "${describeAction(record.update)}" from ${record.chatTitle} expired -- posted ${lagosTime(record.postedAt)}.`);
+  }
+  const state = deps.eaState ? deps.eaState() : getLastKnownState(userId);
+  const trades = listNousTrades(userId);
+  const u = record.update;
+  const lines: string[] = [];
+  let failed = false;
+  for (const ticket of record.tickets) {
+    const trade = trades.find((t) => t.ticket === ticket);
+    const pos = state.positions.find((p) => p.ticket === ticket);
+    const pending = state.pendingOrders.find((p) => p.ticket === ticket);
+    const label = `${trade?.symbol ?? ""} #${ticket}`.trim();
+    try {
+      if (!pos && !pending) {
+        lines.push(`${label}: already closed`);
+        continue;
+      }
+      if (u.action === "close" || u.action === "cancel") {
+        if (pending) {
+          await deps.executor.deletePendingOrder(ticket);
+          lines.push(`${label}: pending order cancelled`);
+        } else if (u.action === "cancel") {
+          lines.push(`${label}: already filled -- not cancelled (it's a live trade now)`);
+        } else {
+          await deps.executor.closePosition(ticket);
+          lines.push(`${label}: closed`);
+        }
+      } else if (!pos) {
+        lines.push(`${label}: still a pending order -- nothing to ${u.action === "close_partial" ? "part-close" : "move"} yet`);
+      } else if (u.action === "close_partial") {
+        const lots = Math.max(0.01, Math.floor(pos.lots * (u.fraction ?? 0.5) * 100) / 100);
+        if (lots >= pos.lots) await deps.executor.closePosition(ticket);
+        else await deps.executor.closePosition(ticket, lots);
+        lines.push(`${label}: closed ${lots >= pos.lots ? "all" : `${lots} of ${pos.lots}`} lots`);
+      } else if (u.action === "breakeven") {
+        await deps.executor.modifyOrder(ticket, { sl: pos.openPrice });
+        if (trade) trade.sl = pos.openPrice;
+        lines.push(`${label}: stop moved to entry ${pos.openPrice}`);
+      } else if (u.action === "move_sl") {
+        await deps.executor.modifyOrder(ticket, { sl: u.price! });
+        if (trade) trade.sl = u.price!;
+        lines.push(`${label}: stop moved to ${u.price}`);
+      } else if (u.action === "move_tp") {
+        await deps.executor.modifyOrder(ticket, { tp: u.price! });
+        if (trade) {
+          if (trade.stage === "tp2") trade.tp2 = u.price!;
+          else trade.tp1 = u.price!;
+        }
+        lines.push(`${label}: take profit moved to ${u.price}`);
+      }
+    } catch (err) {
+      failed = true;
+      lines.push(`${label}: ⚠️ MT5 refused -- ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  saveNousTrades(userId, trades);
+  record.status = failed ? "failed" : "done";
+  record.note = lines.join("; ");
+  saveNousUpdate(userId, record);
+  return reply(deps, `📣 ${record.chatTitle} said "${describeAction(u)}":\n${lines.map((l) => `• ${l}`).join("\n")}`);
+}
+
+export async function skipNousUpdate(deps: NousDeps, updateId: string): Promise<void> {
+  const record = getNousUpdate(deps.userId, updateId);
+  if (!record || record.status !== "awaiting") return;
+  record.status = "skipped";
+  saveNousUpdate(deps.userId, record);
+  await clearUpdateButtons(deps, record);
+  await reply(deps, `Ignored: "${describeAction(record.update)}" from ${record.chatTitle}.`);
+}
+
+async function clearUpdateButtons(deps: NousDeps, record: NousUpdate): Promise<void> {
+  const chatId = chatOf(deps);
+  if (chatId === undefined || !record.cardMessageId) return;
+  await deps.client.editMessageReplyMarkup({ chat_id: chatId, message_id: record.cardMessageId, reply_markup: { inline_keyboard: [] } }).catch(() => undefined);
 }
 
 // ---- Message helpers ----

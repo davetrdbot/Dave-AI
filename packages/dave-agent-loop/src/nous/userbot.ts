@@ -20,7 +20,13 @@ export interface NousPost {
   messageId: number;
   postedAt: number;
   text: string;
+  /** A signal posted as a picture (a screenshot of the setup): the photo's bytes. */
+  image?: Buffer;
+  /** The post this one replies to, if any -- how a provider says "this one: close it". */
+  replyToMessageId?: number;
 }
+
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 function newClient(session: string, apiId: number, apiHash: string): TelegramClient {
   const client = new TelegramClient(new StringSession(session), apiId, apiHash, { connectionRetries: 10, autoReconnect: true });
@@ -148,8 +154,13 @@ export async function startNousListener(userId: string, onPost: (post: NousPost)
       const chat = getNousConfig(userId).chats.find((c) => c.id === chatId);
       if (!chat) return;
       const text = (m.message ?? "").trim();
-      if (!text) return;
-      entry.onPost({ chatId, chatTitle: chat.title, messageId: m.id, postedAt: m.date * 1000, text });
+      let image: Buffer | undefined;
+      if (m.photo) {
+        const bytes = await client.downloadMedia(m, {}).catch(() => undefined);
+        if (Buffer.isBuffer(bytes) && bytes.length <= MAX_IMAGE_BYTES) image = bytes;
+      }
+      if (!text && !image) return;
+      entry.onPost({ chatId, chatTitle: chat.title, messageId: m.id, postedAt: m.date * 1000, text, image, replyToMessageId: m.replyTo?.replyToMsgId });
     } catch (err) {
       console.error(`[nous] ${userId}: handling a post failed:`, err);
     }

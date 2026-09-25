@@ -64,12 +64,16 @@ console.log("   ✓\n");
 
 console.log("[3] The model is only asked when a post looks like a signal, and forced through one tool");
 let calls = 0;
+/** What the fake model answers next: a queue, else "it's the gold signal". */
+const script: Record<string, unknown>[][] = [];
+const seen: { messages: { role: string; content: unknown }[]; tools?: { name: string }[] }[] = [];
 const provider = {
   name: "fake",
-  generate: async (req: { toolChoice?: { name: string } }) => {
+  generate: async (req: { messages: { role: string; content: unknown }[]; tools?: { name: string }[] }) => {
     calls++;
-    assert.equal(req.toolChoice?.name, "report_signal");
-    return { text: "", provider: "fake", latencyMs: 1, toolCalls: [{ id: "1", name: "report_signal", arguments: gold }] };
+    seen.push(req);
+    const next = script.shift() ?? [{ id: "1", name: "report_post", arguments: { ...gold, kind: "signal" } }];
+    return { text: "", provider: "fake", latencyMs: 1, toolCalls: next };
   },
 } as never;
 assert.equal(await parseSignal(provider, "gm traders, big week ahead"), undefined);
@@ -88,13 +92,15 @@ const client = {
   sendMessage: async (m: { text: string }) => (sentText.push(m.text), { message_id: 500 + sentText.length }),
   editMessageReplyMarkup: async () => ({ message_id: 0 }),
 } as never;
+const closes: [string, number | undefined][] = [];
+const cancels: string[] = [];
 const orders: { symbol: string; type: string; lots: number; sl?: number; tp?: number; price?: number }[] = [];
 const modifies: [string, { sl?: number | null; tp?: number | null }][] = [];
 const executor = {
   openOrder: async (o: never) => (orders.push(o), { ticket: "9001" }),
   modifyOrder: async (t: string, c: never) => void modifies.push([t, c]),
-  closePosition: async () => ({ closedLots: 0, remainingLots: 0 }),
-  deletePendingOrder: async () => {},
+  closePosition: async (t: string, lots?: number) => (closes.push([t, lots]), { closedLots: lots ?? 0, remainingLots: 0 }),
+  deletePendingOrder: async (t: string) => void cancels.push(t),
   listOpenPositions: async () => [],
   listPendingOrders: async () => [],
 };
@@ -201,14 +207,75 @@ await onNousPost(deps as never, { ...post, messageId: 5, postedAt: now - 2 * 24 
 assert.equal(orders.length, before + 1, "a two-day-old post is ignored even on auto-approve");
 console.log("   ✓\n");
 
-console.log("[10] The Telegram login is stored encrypted");
+console.log("[10] get_price: Nous looks up the live price itself, e.g. to turn pips into prices");
+store.updateNousConfig(userId, { autoApprove: false });
+seen.length = 0;
+script.push(
+  [{ id: "p1", name: "get_price", arguments: { symbol: "gold" } }],
+  [{ id: "r1", name: "report_post", arguments: { kind: "signal", symbol: "XAUUSD", side: "buy", orderKind: "market", sl: 2345.5, tp1: 2351.5, reason: "30 pips SL, 30 pips TP from market" } }],
+);
+await onNousPost(deps as never, { ...post, messageId: 10, text: "GOLD BUY NOW SL 30 pips TP 30 pips" }, now);
+assert.ok(seen[0].tools!.some((t) => t.name === "get_price"), "get_price is offered");
+const toolAnswer = seen[1].messages.find((m) => m.role === "tool")!;
+assert.match(String(toolAnswer.content), /"symbol":"XAUUSD".*"bid":2348.5/, "the model got the live price back (GOLD -> XAUUSD)");
+const pipCard = sentRich.at(-1)!.blocks.find((b) => b.type === "table")!;
+assert.ok(pipCard.cells!.some((r) => r[0] === "Stop loss" && r[1] === "2345.5"));
+console.log("   ✓\n");
+
+console.log("[11] A picture signal: the screenshot goes to the model");
+seen.length = 0;
+const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082", "hex");
+await onNousPost(deps as never, { ...post, messageId: 11, text: "", image: png }, now);
+const content = seen[0].messages.find((m) => m.role === "user")!.content as { type: string }[];
+assert.ok(content.some((c) => c.type === "image"), "the image is in the request");
+console.log("   ✓\n");
+
+console.log("[12] Follow-ups from the provider: close / breakeven / cancel, with your permission");
+store.saveNousTrades(userId, [
+  { ...t, ticket: "7001", chatId: "-1001", messageId: 50, placedAt: now - 10 * MIN, filled: true, losingSince: undefined, validityAskedAt: undefined },
+  { ...t, ticket: "7002", symbol: "EURUSD", chatId: "-1001", messageId: 51, placedAt: now - 5 * MIN, filled: false, losingSince: undefined, validityAskedAt: undefined },
+]);
+positions = [{ ticket: "7001", symbol: "XAUUSD", type: "buy", lots: 0.04, openPrice: 2348, currentPrice: 2352, pnl: 4 }];
+const eaWithPending = { ...deps, eaState: () => ({ positions, pendingOrders: [{ ticket: "7002", symbol: "EURUSD", type: "buy_limit", lots: 0.01, price: 1.08 }] }) };
+// A reply to the gold signal saying "close half" -> card -> Do it
+script.push([{ id: "u1", name: "report_post", arguments: { kind: "update", action: "close_partial", fraction: 0.5 } }]);
+await onNousPost(eaWithPending as never, { ...post, messageId: 60, text: "secure half here guys", replyToMessageId: 50 }, now);
+let updCard = sentRich.at(-1)!;
+assert.match(updCard.blocks[0].text!, /close 50% of it/);
+assert.ok(updCard.blocks.find((b) => b.type === "table")!.cells!.some((r) => r[0].includes("#7001")), "the reply picks the gold trade");
+const [doIt, ignore] = updCard.reply_markup!.inline_keyboard[0].map((b) => b.callback_data);
+assert.ok(doIt.startsWith("nous:uy:") && ignore.startsWith("nous:un:"));
+assert.equal(closes.length, 0, "nothing done before the tap");
+await (await import("../src/nous/service.js")).applyNousUpdate(eaWithPending as never, doIt.split(":")[2], now + MIN);
+assert.deepEqual(closes, [["7001", 0.02]]);
+// "SL to BE" on gold
+const modsBefore = modifies.length;
+script.push([{ id: "u2", name: "report_post", arguments: { kind: "update", action: "breakeven", symbol: "gold" } }]);
+await onNousPost(eaWithPending as never, { ...post, messageId: 61, text: "Gold move SL to BE" }, now);
+updCard = sentRich.at(-1)!;
+await (await import("../src/nous/service.js")).applyNousUpdate(eaWithPending as never, updCard.reply_markup!.inline_keyboard[0][0].callback_data.split(":")[2], now + MIN);
+assert.deepEqual(modifies.slice(modsBefore), [["7001", { sl: 2348 }]]);
+// "cancel the EURUSD limit" -> deletes the unfilled order
+script.push([{ id: "u3", name: "report_post", arguments: { kind: "update", action: "cancel", symbol: "EURUSD" } }]);
+await onNousPost(eaWithPending as never, { ...post, messageId: 62, text: "cancel eurusd limit" }, now);
+updCard = sentRich.at(-1)!;
+await (await import("../src/nous/service.js")).applyNousUpdate(eaWithPending as never, updCard.reply_markup!.inline_keyboard[0][0].callback_data.split(":")[2], now + MIN);
+assert.deepEqual(cancels, ["7002"]);
+// An update when nothing from that channel is open costs no model call at all
+store.saveNousTrades(userId, []);
+const before12 = calls;
+await onNousPost(deps as never, { ...post, messageId: 63, text: "close now" }, now);
+assert.equal(calls, before12);
+console.log("   ✓\n");
+
+console.log("[13] The Telegram login is stored encrypted");
 store.saveNousLogin(userId, { apiId: 123, apiHash: "0123456789abcdef0123456789abcdef", session: "SESSION-SECRET", account: "Me" });
 const raw = (await import("node:fs")).readFileSync(join(root, "data", "nous", userId, "config.json"), "utf8");
 assert.ok(!raw.includes("SESSION-SECRET") && !raw.includes("0123456789abcdef0123456789abcdef"));
 assert.equal(store.getNousLogin(userId)?.session, "SESSION-SECRET");
 console.log("   ✓\n");
 
-console.log(`[11] Lagos time: ${store.lagosTime(now)}`);
+console.log(`[14] Lagos time: ${store.lagosTime(now)}`);
 assert.match(store.lagosTime(now), /11:00 \(Lagos\)/, "10:00 UTC is 11:00 in Lagos");
 console.log("   ✓\n");
 

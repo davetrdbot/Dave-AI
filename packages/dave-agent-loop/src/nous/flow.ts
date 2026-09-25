@@ -2,7 +2,7 @@ import { coloredButton, keyboard, type InlineKeyboardMarkup } from "@dave/telegr
 import type { CommandRouterDeps } from "../command-router.js";
 import { getNousConfig, listNousTrades, updateNousConfig, type NousChat } from "./store.js";
 import { cancelNousLogin, isNousListening, listNousDialogs, nousLoginBegin, nousLoginCode, nousLoginPassword, nousLogout, stopNousListener } from "./userbot.js";
-import { closeNousTrade, ensureNousListening, nousDepsFor, nousLots, placeNousSignal, skipNousSignal } from "./service.js";
+import { applyNousUpdate, closeNousTrade, ensureNousListening, nousDepsFor, nousLots, placeNousSignal, skipNousSignal, skipNousUpdate } from "./service.js";
 
 /**
  * /nous -- set up and control Nous from Telegram. Like /mt5, the login is a fixed button-and-reply
@@ -127,6 +127,12 @@ export async function handleNousCallback(deps: CommandRouterDeps, chatId: number
       return;
     case "n":
       if (nous && arg) await skipNousSignal(nous, arg);
+      return;
+    case "uy":
+      if (nous && arg) await applyNousUpdate(nous, arg);
+      return;
+    case "un":
+      if (nous && arg) await skipNousUpdate(nous, arg);
       return;
     case "c":
       if (nous && arg) await closeNousTrade(nous, arg);
