@@ -35,6 +35,7 @@ export const DAVE_COMMANDS = [
   { command: "models", description: "🧠 Pick which model each provider uses" },
   { command: "connection", description: "🔌 Check EA/MT5 connection status" },
   { command: "mt5", description: "🖥️ Run MT5 in Dave's own container -- no VPS needed" },
+  { command: "nous", description: "📡 Nous -- copy trades from your signal channels" },
   { command: "ea", description: "📄 Get your personalized MT5 Expert Advisor file" },
   { command: "last_analysis", description: "🔍 See the real last get_all_analysis fetch, timeframe by timeframe" },
   { command: "reset", description: "🔄 Reset this conversation" },

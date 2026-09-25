@@ -34,6 +34,8 @@ import { takeControlNotices, describeControlNotice } from "./control-notices.js"
 import { deliverDueReminders } from "./reminder-delivery.js";
 import { setupGaps } from "./setup-gaps.js";
 import { tryHandleMt5Entry } from "./mt5-cloud-flow.js";
+import { tryHandleNousEntry } from "./nous/flow.js";
+import { startNous } from "./nous/service.js";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
 const CONTROL_WATCH_MS = 5_000;
@@ -992,6 +994,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
         // First: /mt5 account entry. It deletes the password message, so it must see it before
         // anything else could echo it back or hand it to the model.
         if (await tryHandleMt5Entry(routerDeps, chatId, message.text, message.message_id)) return;
+        // Same for the Nous (Telegram login) flow: the api hash, login code and 2FA password.
+        if (await tryHandleNousEntry(routerDeps, chatId, message.text, message.message_id)) return;
         if (await tryHandlePendingKeyEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingTtsKeyEntry(routerDeps, chatId, message.text)) return;
         if (await tryHandlePendingE2BKeyEntry(routerDeps, chatId, message.text)) return;
@@ -1179,6 +1183,19 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
     },
   });
+
+  // Nous: copy trading from the trader's signal channels (reads them through the trader's own
+  // Telegram login, set up from /nous). Starts listening at boot when a login and channels exist.
+  if (deps.executor) {
+    void startNous({
+      userId: deps.ownerUserId,
+      db: deps.db,
+      client,
+      executor: deps.executor,
+      // Key-switch notices from these background calls go nowhere -- Nous's own cards say what matters.
+      provider: () => modelConfigProvider(deps.db, deps.ownerUserId, () => undefined, "background"),
+    });
+  }
 
   // Last, so every timer and handler above exists before the first update can arrive. The route is
   // mounted before Telegram is told about it: registering first meant a message already waiting

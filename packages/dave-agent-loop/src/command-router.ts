@@ -20,6 +20,7 @@ import {
 import { getLastKnownAccountSnapshot, getLastKnownState, getEaConnectionStatus, getOrCreateEaWebhook, revokeEaToken, getTradingModeConfig, setEaTradingMode, setMcpTradingMode, MissingMcpServerUrlError, createEaAnalysisSource, setEaPushInterval, getEaPushIntervalPreference, setPendingPushIntervalEntry, getPendingPushIntervalEntry } from "@dave/ea-bridge";
 import { abortTurn } from "./turn-abort.js";
 import { handleMt5Cloud, handleMt5Callback } from "./mt5-cloud-flow.js";
+import { handleNous, handleNousCallback } from "./nous/flow.js";
 import { setPendingMcpUrlEntry, getPendingMcpUrlEntry } from "./pending-mcp-url-entry.js";
 import { setPendingActivePairEntry, getPendingActivePairEntry } from "./pending-active-pair-entry.js";
 import { formatPnl, buildTradePlacedMessage } from "./trade-notifications.js";
@@ -698,6 +699,7 @@ function settingsTopKeyboard(): ReturnType<typeof keyboard> {
       [coloredButton("Memory", "blue", "settings:memory"), coloredButton("E2B Keys", "blue", "settings:e2b")],
       [coloredButton("Trailing / Breakeven", "blue", "settings:trailing"), coloredButton("Notifications", "blue", "settings:notifications")],
       [coloredButton("Autonomous Trading", "blue", "settings:tradinginterval")],
+      [coloredButton("📡 Nous copy trading (auto-approve, channels, lots)", "blue", "nous:menu")],
       [coloredButton("EA Token", "blue", "settings:eatoken")],
       [coloredButton("AI Response Timeout", "blue", "settings:providertimeout")],
       [coloredButton("Trading Session", "blue", "settings:session")],
@@ -1637,6 +1639,9 @@ async function dispatchCommandByName(deps: CommandRouterDeps, chatId: number, hi
     case "mt5":
       await handleMt5Cloud(deps, chatId, editMessageId);
       break;
+    case "nous":
+      await handleNous(deps, chatId, editMessageId);
+      break;
     case "providers":
       await handleProviders(deps, chatId, editMessageId);
       break;
@@ -1754,6 +1759,10 @@ export async function dispatchCallback(deps: CommandRouterDeps, callback: Telegr
 
   if (data.startsWith("mt5c:") && chatId) {
     await handleMt5Callback(deps, chatId, data, callback.message?.message_id);
+    return;
+  }
+  if (data.startsWith("nous:") && chatId) {
+    await handleNousCallback(deps, chatId, data, callback.message?.message_id);
     return;
   }
 

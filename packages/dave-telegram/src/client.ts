@@ -361,6 +361,11 @@ export class TelegramClient {
     return this.call<{ message_id: number }>("editMessageText", params);
   }
 
+  /** Swaps (or, with an empty keyboard, removes) a sent message's buttons without touching its content. */
+  editMessageReplyMarkup(params: { chat_id: number | string; message_id: number; reply_markup?: InlineKeyboardMarkup }) {
+    return this.call<{ message_id: number }>("editMessageReplyMarkup", params);
+  }
+
   /** Real Bot API method -- deletes a message this bot sent (or, in a group where the bot is
    * admin, any message). Used for self-cleaning up low-value confirmation toasts (self-delete.ts). */
   deleteMessage(params: { chat_id: number | string; message_id: number }) {

@@ -23,6 +23,7 @@
     { "path": "../dave-sandbox" },
     { "path": "../dave-db" },
     { "path": "../dave-core" },
+    { "path": "../dave-crypto" },
     { "path": "../dave-knowledge" },
     { "path": "../dave-mcp-manager" },
     { "path": "../dave-firecrawl" },

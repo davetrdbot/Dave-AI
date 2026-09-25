@@ -59,13 +59,23 @@ export function clearActiveIndicator(chatId: number): void {
   activeIndicators.delete(chatId);
 }
 
+/** A self-deleting message: Telegram's own ephemeral messages are group-only (Bot API 10.2), so in
+ *  the trader's private chat a throwaway note is sent normally and removed on a timer. A restart or
+ *  a message the trader already deleted just leaves it be -- never an error. */
+function scheduleDisappear(ctx: TelegramToolContext, messageId: number | undefined, seconds: unknown): void {
+  if (messageId === undefined || typeof seconds !== "number" || !(seconds > 0)) return;
+  const ms = Math.min(Math.max(seconds, 5), 3600) * 1000;
+  setTimeout(() => void ctx.client.deleteMessage({ chat_id: ctx.chatId, message_id: messageId }).catch(() => undefined), ms).unref();
+}
+
 export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
   {
     name: "send_telegram",
     description:
       "Send a plain real Telegram message. Optional linkPreview controls the URL preview card: 'off' hides it, 'large'/'small' sizes it, 'above' puts it over the text. Leave unset for the default. " +
       "`silent` delivers it with no sound or vibration -- use it for anything that genuinely doesn't need to wake someone (a routine confirmation, an overnight note). " +
-      "`protect` blocks forwarding, copying and screenshots.",
+      "`protect` blocks forwarding, copying and screenshots. " +
+      "`disappearAfterSeconds` makes it a throwaway note that deletes itself (Telegram's real ephemeral messages only exist in groups; this is the private-chat equivalent) -- for a heads-up, a progress note, 'on it'.",
     parameters: {
       type: "object",
       required: ["text"],
@@ -74,6 +84,7 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
         linkPreview: { type: "string", enum: ["off", "small", "large", "above"] },
         silent: { type: "boolean", description: "No sound, no vibration. Still a real message." },
         protect: { type: "boolean", description: "Block forwarding, copying and screenshots." },
+        disappearAfterSeconds: { type: "number", description: "Delete the message by itself after this many seconds (5-3600)." },
       },
     },
     execute: async (args, ctx) => {
@@ -86,7 +97,7 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
             show_above_text: lp === "above" || undefined,
           }
         : undefined;
-      return ctx.client.sendMessage({
+      const sent = await ctx.client.sendMessage({
         chat_id: ctx.chatId,
         text: markdownToTelegramHtml(args.text as string),
         parse_mode: "HTML",
@@ -94,6 +105,8 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
         disable_notification: (args.silent as boolean | undefined) || undefined,
         protect_content: (args.protect as boolean | undefined) || undefined,
       });
+      scheduleDisappear(ctx, sent.message_id, args.disappearAfterSeconds);
+      return sent;
     },
   },
   {
@@ -153,16 +166,20 @@ export const TELEGRAM_TOOLS: TelegramToolDefinition[] = [
         replyToMessageId: { type: "number", description: "Tag this as a reply to a real message id." },
         silent: { type: "boolean", description: "Deliver with no sound or vibration." },
         protect: { type: "boolean", description: "Block forwarding, copying and screenshots." },
+        disappearAfterSeconds: { type: "number", description: "Delete the message by itself after this many seconds (5-3600)." },
       },
     },
-    execute: async (args, ctx) =>
-      ctx.client.sendRichMessage({
+    execute: async (args, ctx) => {
+      const sent = await ctx.client.sendRichMessage({
         chat_id: ctx.chatId,
         rich_message: { blocks: args.blocks as RichBlock[] },
         reply_parameters: args.replyToMessageId ? { message_id: args.replyToMessageId as number, allow_sending_without_reply: true } : undefined,
         disable_notification: (args.silent as boolean | undefined) || undefined,
         protect_content: (args.protect as boolean | undefined) || undefined,
-      }),
+      });
+      scheduleDisappear(ctx, sent.message_id, args.disappearAfterSeconds);
+      return sent;
+    },
   },
   {
     // Real gap fixed (the trader: "add message tag so it can actually tag messages... respond to
