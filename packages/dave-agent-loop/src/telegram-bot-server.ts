@@ -36,6 +36,8 @@ import { setupGaps } from "./setup-gaps.js";
 import { tryHandleMt5Entry } from "./mt5-cloud-flow.js";
 import { tryHandleNousEntry } from "./nous/flow.js";
 import { startNous } from "./nous/service.js";
+import { startScalpCycleSweep } from "./scalp-cycle-sweep.js";
+import { seedStructureTargetsSkill } from "@dave/skills";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
 const CONTROL_WATCH_MS = 5_000;
@@ -1186,7 +1188,22 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
 
   // Nous: copy trading from the trader's signal channels (reads them through the trader's own
   // Telegram login, set up from /nous). Starts listening at boot when a login and channels exist.
+  // The trader's targets-and-scalping strategy, available to switch on from Trading Mode.
+  try {
+    seedStructureTargetsSkill(deps.ownerUserId);
+  } catch (err) {
+    console.error(`[skills] couldn't add the structure-targets skill:`, err);
+  }
   if (deps.executor) {
+    // The pullback scalp's loop: bank $20, in again at the entry, done at the limit.
+    startScalpCycleSweep({
+      userId: deps.ownerUserId,
+      executor: deps.executor,
+      notify: async (text) => {
+        const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
+        if (chatId !== undefined) await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
+      },
+    });
     void startNous({
       userId: deps.ownerUserId,
       db: deps.db,

@@ -300,7 +300,7 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       const result = await tradeExecute(ctx.executor, order);
       // Optional: only when Dave asked for it with this limit.
       const wantsScalp = pullbackArgs !== undefined && pullbackArgs !== null && typeof pullbackArgs === "object";
-      const pullbackScalp = wantsScalp && isLimitType(order.type) && order.price !== undefined ? await pullbackForLimit(ctx, order, pullbackArgs) : undefined;
+      const pullbackScalp = wantsScalp && isLimitType(order.type) && order.price !== undefined ? await pullbackForLimit(ctx, order, pullbackArgs, result.ticket) : undefined;
       return { ...result, confidence, ...(pullbackScalp ? { pullbackScalp } : {}) };
     },
   },
@@ -611,6 +611,7 @@ async function pullbackForLimit(
   ctx: { userId: string; executor: TradeExecutor; analysis: AnalysisSource },
   order: OrderRequest,
   args: unknown,
+  limitTicket: string,
 ): Promise<{ placed: boolean; summary: string }> {
   const a = (args && typeof args === "object" ? args : {}) as { sl?: unknown; tp2?: unknown };
   let price: number | undefined;
@@ -638,6 +639,6 @@ async function pullbackForLimit(
     minRiskReward: getMinRiskReward(ctx.userId),
   });
   if (!planned.ok) return { placed: false, summary: `No pullback scalp: ${planned.reason}.` };
-  const placed = await placePullbackScalp(ctx.executor, order.symbol, planned.plan, { comment: "Dave pullback" });
+  const placed = await placePullbackScalp(ctx.executor, order.symbol, planned.plan, { comment: "Dave pullback" }, { userId: ctx.userId, limitTicket, entryPrice: price });
   return { placed: Object.values(placed.tickets).some(Boolean), summary: describePullbackScalp(order.symbol, placed) };
 }

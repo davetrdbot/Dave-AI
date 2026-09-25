@@ -247,17 +247,16 @@ async function main() {
           tickDecision: { action: c.action, symbol: "EURUSD", entry: c.entryNotPassed, confidence: 80, reason: "test no conversion", lots: 0.1, sl, tp, ...(c.action === "SELL_LIMIT" ? { pullbackScalp: {} } : {}) },
         });
         const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
-        // A waiting LIMIT opens its pullback scalp only when asked for (two positions, TP1 = the limit
-        // price exactly, TP2 past it); without it, or on a STOP order, just the order.
+        // A waiting LIMIT opens its pullback scalp only when asked for (one position aimed at the limit,
+        // run as the $20 cycle); without it, or on a STOP order, just the order.
         const isLimit = c.action === "SELL_LIMIT";
-        assert.equal(placedOrders.length, isLimit ? 3 : 1, `${c.action} (not passed): the pending order must still fire${isLimit ? ", with its pullback scalp" : ""}`);
+        assert.equal(placedOrders.length, isLimit ? 2 : 1, `${c.action} (not passed): the pending order must still fire${isLimit ? ", with its pullback scalp" : ""}`);
         const placed = placedOrders[0];
         if (isLimit) {
           const scalpSide = c.action === "SELL_LIMIT" ? "buy" : "sell";
-          const [a, b] = placedOrders.slice(1);
-          assert.deepEqual([a.type, b.type], [scalpSide, scalpSide], `${c.action}: the scalp goes the other way (${scalpSide})`);
-          assert.equal(a.tp, c.entryNotPassed, `${c.action}: scalp TP1 is exactly the limit price`);
-          assert.ok(c.action === "SELL_LIMIT" ? b.tp! > c.entryNotPassed : b.tp! < c.entryNotPassed, `${c.action}: scalp TP2 is past the limit`);
+          const [a] = placedOrders.slice(1);
+          assert.equal(a.type, scalpSide, `${c.action}: the scalp goes the other way (${scalpSide})`);
+          assert.equal(a.tp, c.entryNotPassed, `${c.action}: the scalp aims exactly at the limit price`);
           assert.ok(outcome.message?.includes("Pullback scalp"), `the trade message reports the scalp (got: "${outcome.message}")`);
         }
         assert.equal(placed.type, c.action.toLowerCase(), `${c.action} with entry ${c.entryNotPassed} NOT yet reached by live price ${LIVE} must be placed exactly as decided, unconverted (got ${placed.type})`);

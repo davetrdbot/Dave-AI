@@ -12,6 +12,7 @@ export * from "./margin-aware-execute.js";
 export * from "./pip-size.js";
 export * from "./risk-reward-guard.js";
 export * from "./pullback-scalp.js";
+export * from "./scalp-cycle.js";
 export * from "./deep-loss-alert-store.js";
 export * from "./self-aware-alert-toggles.js";
 export * from "./background-watch.js";

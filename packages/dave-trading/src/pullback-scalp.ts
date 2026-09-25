@@ -2,6 +2,7 @@ import type { OrderRequest } from "./order-types.js";
 import type { TradeExecutor } from "./trade-executor.js";
 import { ABSOLUTE_MIN_LOTS, tradeExecuteWithMarginRetry } from "./margin-aware-execute.js";
 import { evaluateAccountAwareness } from "./account-awareness.js";
+import { registerScalpCycle, TAKE_PROFIT_USD } from "./scalp-cycle.js";
 
 /**
  * The pullback scalp that rides price INTO a limit order (the trader: "when you place a sell limit,
@@ -9,13 +10,12 @@ import { evaluateAccountAwareness } from "./account-awareness.js";
  * pullback the opposite way, a scalp, with its own SL and TP1/TP2. TP1 exactly at the sell limit.
  * Same for a buy limit.")
  *
- *   SELL LIMIT at L  ->  BUY now, TP1 = L exactly, TP2 past L (the overshoot/sweep through the
- *                        level -- the trader's choice), SL below where the pullback idea is wrong.
- *   BUY LIMIT  at L  ->  mirror image: SELL now, TP1 = L, TP2 below L.
+ *   SELL LIMIT at L  ->  BUY now toward L, SL below where the pullback idea is wrong.
+ *   BUY LIMIT  at L  ->  mirror image: SELL now toward L.
  *
- * Two targets on one idea are two positions (MT5 gives a position one TP): part A closes at TP1,
- * part B at TP2, both with the same SL. TP2 is kept short of the limit order's own stop loss -- past
- * that, the limit's idea is already dead.
+ * One position, target L, run as a cycle (scalp-cycle.ts -- the trader's later rule): +$20 banked,
+ * in again when price returns to the entry, closed for good at L. The plan still computes a TP2
+ * past L for callers that show it, but nothing is placed there any more.
  */
 
 export type LimitType = "buy_limit" | "sell_limit";
@@ -112,48 +112,70 @@ export function pullbackScalpRoom(
 
 export interface PlacedPullbackScalp {
   plan: PullbackScalpPlan;
-  tickets: { tp1?: string; tp2?: string };
+  tickets: { tp1?: string };
   errors: string[];
+  lots?: number;
+  /** Running as a $-take / re-entry cycle (scalp-cycle.ts). */
+  cycled?: boolean;
 }
 
-/** Opens both parts at market. A failure of either is reported, never thrown -- the limit order
- *  it accompanies is already placed and stands on its own. */
+/**
+ * Opens the scalp at market -- one position, aimed at the limit's price -- and, when `cycle` is
+ * given, hands it to the scalp cycle (scalp-cycle.ts): bank TAKE_PROFIT_USD at a time, go in again
+ * when price comes back to this entry, close for good when price reaches the limit. A failure is
+ * reported, never thrown -- the limit order it accompanies is already placed and stands on its own.
+ */
 export async function placePullbackScalp(
   executor: TradeExecutor,
   symbol: string,
   plan: PullbackScalpPlan,
   note: { comment?: string; pushMessage?: string } = {},
+  cycle?: { userId: string; limitTicket: string; entryPrice: number },
 ): Promise<PlacedPullbackScalp> {
   const tickets: PlacedPullbackScalp["tickets"] = {};
   const errors: string[] = [];
-  for (const [key, tp] of [["tp1", plan.tp1], ["tp2", plan.tp2]] as const) {
-    const order: OrderRequest = {
+  const lots = Math.max(ABSOLUTE_MIN_LOTS, Math.round(plan.lotsEach * 2 * 100) / 100);
+  try {
+    const placed = await tradeExecuteWithMarginRetry(executor, {
       symbol,
       type: plan.side,
-      lots: plan.lotsEach,
+      lots,
       sl: plan.sl,
-      tp,
-      comment: `${note.comment ?? "Dave pullback"} ${key.toUpperCase()}`.slice(0, 28).trimEnd(),
+      tp: plan.tp1,
+      comment: (note.comment ?? "Dave pullback").slice(0, 28),
       pushMessage: note.pushMessage,
-    };
-    try {
-      const placed = await tradeExecuteWithMarginRetry(executor, order);
-      tickets[key] = placed.ticket;
-    } catch (err) {
-      errors.push(`${key.toUpperCase()} part: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    tickets.tp1 = placed.ticket;
+    if (cycle) {
+      registerScalpCycle(cycle.userId, {
+        id: placed.ticket,
+        symbol,
+        side: plan.side,
+        entry: cycle.entryPrice,
+        limitPrice: plan.tp1,
+        limitTicket: cycle.limitTicket,
+        sl: plan.sl,
+        lots: placed.placedLots,
+        ticket: placed.ticket,
+        phase: "open",
+        openedAt: Date.now(),
+        rounds: 0,
+        banked: 0,
+        createdAt: Date.now(),
+      });
     }
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : String(err));
   }
-  return { plan, tickets, errors };
+  return { plan, tickets, errors, lots, cycled: !!cycle && !!tickets.tp1 };
 }
 
 /** One line for chat. */
 export function describePullbackScalp(symbol: string, placed: PlacedPullbackScalp): string {
   const p = placed.plan;
-  const opened = [placed.tickets.tp1 && `#${placed.tickets.tp1} → TP1 ${round(p.tp1)}`, placed.tickets.tp2 && `#${placed.tickets.tp2} → TP2 ${round(p.tp2)}`].filter(Boolean);
-  const head = `🔁 Pullback scalp: ${p.side.toUpperCase()} ${symbol}, ${opened.length} × ${p.lotsEach} lots, riding ${p.side === "buy" ? "up" : "down"} to the limit`;
-  const body = opened.length ? `${opened.join(", ")}, SL ${round(p.sl)}` : "not opened";
-  const errs = placed.errors.length ? `\n⚠️ ${placed.errors.join("; ")}` : "";
-  return `${head}\n${body}${errs}`;
+  if (!placed.tickets.tp1) return `🔁 Pullback scalp: not opened${placed.errors.length ? ` -- ${placed.errors.join("; ")}` : ""}`;
+  const loop = placed.cycled ? `banking $${TAKE_PROFIT_USD} at a time, going in again when price comes back, closing for good at the limit ${round(p.tp1)}` : `target the limit ${round(p.tp1)}`;
+  return `🔁 Pullback scalp: ${p.side.toUpperCase()} ${symbol} ${placed.lots} lots #${placed.tickets.tp1}, SL ${round(p.sl)} -- ${loop}`;
 }
 
 function round(n: number): number {

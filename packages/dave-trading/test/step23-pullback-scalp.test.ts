@@ -54,7 +54,7 @@ r = planPullbackScalp({ limitType: "sell_limit", limitEntry: 110, price: 111, lo
 assert.ok(!r.ok && /no pullback left/.test(r.reason));
 console.log("   ✓\n");
 
-console.log("[5] Placed as two positions, one per target, same stop");
+console.log("[5] Placed as ONE position aimed at the limit (the $20 cycle runs it from there)");
 const sent: OrderRequest[] = [];
 const executor = {
   openOrder: async (o: OrderRequest) => (sent.push(o), { ticket: `T${sent.length}` }),
@@ -67,8 +67,8 @@ const executor = {
 const plan = planPullbackScalp({ limitType: "sell_limit", limitEntry: 110, limitSl: 115, price: 100, lots: 0.02, sl: 97, tp2: 112, minRiskReward: 1 });
 assert.ok(plan.ok);
 const placed = await placePullbackScalp(executor, "VOL_80", plan.plan);
-assert.deepEqual(placed.tickets, { tp1: "T1", tp2: "T2" });
-assert.deepEqual(sent.map((o) => [o.type, o.lots, o.sl, o.tp]), [["buy", 0.01, 97, 110], ["buy", 0.01, 97, 112]]);
+assert.deepEqual(placed.tickets, { tp1: "T1" });
+assert.deepEqual(sent.map((o) => [o.type, o.lots, o.sl, o.tp]), [["buy", 0.02, 97, 110]], "the limit's full size, TP at the limit");
 console.log("   ✓\n");
 
 console.log("[6] Through Dave's own trade tool: a sell_limit brings its BUY pullback scalp with it");
@@ -79,9 +79,9 @@ const out = (await tool.execute(
   { symbol: "VOL_80", type: "sell_limit", lots: 0.02, price: 110, sl: 115, tp: 95, confidence: 80, reason: "sell the premium zone", pullback_scalp: { sl: 97, tp2: 112 } },
   { userId: "default", analysis, executor } as never,
 )) as { ticket: string; pullbackScalp?: { placed: boolean; summary: string } };
-assert.deepEqual(sent.map((o) => [o.type, o.price ?? null, o.tp]), [["sell_limit", 110, 95], ["buy", null, 110], ["buy", null, 112]]);
+assert.deepEqual(sent.map((o) => [o.type, o.price ?? null, o.tp]), [["sell_limit", 110, 95], ["buy", null, 110]]);
 assert.equal(out.pullbackScalp?.placed, true);
-assert.match(out.pullbackScalp!.summary, /TP1 110.*TP2 112.*SL 97/);
+assert.match(out.pullbackScalp!.summary, /SL 97 -- banking \$20 at a time.*limit 110/);
 console.log("   " + out.pullbackScalp!.summary.replace(/\n/g, "\n   "));
 console.log("   ✓\n");
 

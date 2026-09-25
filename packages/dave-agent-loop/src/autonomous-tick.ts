@@ -1699,7 +1699,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       const scalp = await placePullbackScalp(executor, symbol, planned.plan, {
         comment: `Dave pullback`,
         pushMessage: `Pullback scalp into the ${order.type.replace("_", " ")} at ${order.price}: ${reason}`,
-      });
+      }, { userId, limitTicket: placed.ticket, entryPrice: referencePrice });
       for (const [key, ticket] of Object.entries(scalp.tickets)) {
         if (!ticket) continue;
         try {
@@ -1709,15 +1709,15 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
             direction: planned.plan.side,
             entryPrice: referencePrice,
             sl: planned.plan.sl,
-            tp: key === "tp1" ? planned.plan.tp1 : planned.plan.tp2,
-            reasoning: [`Pullback scalp (${key.toUpperCase()}) riding price into my ${order.type.replace("_", " ")} at ${order.price}. ${reason}`],
+            tp: planned.plan.tp1,
+            reasoning: [`Pullback scalp (${key.toUpperCase()}, $20 at a time until the limit) riding price into my ${order.type.replace("_", " ")} at ${order.price}. ${reason}`],
             confluenceScore: confidence,
           });
         } catch {
           // Logging never blocks a real trade.
         }
       }
-      logTick(userId, `${symbol}: pullback scalp ${planned.plan.side} x2 -- tickets ${JSON.stringify(scalp.tickets)}${scalp.errors.length ? ` errors: ${scalp.errors.join("; ")}` : ""}`);
+      logTick(userId, `${symbol}: pullback scalp ${planned.plan.side} (cycle) -- tickets ${JSON.stringify(scalp.tickets)}${scalp.errors.length ? ` errors: ${scalp.errors.join("; ")}` : ""}`);
       pullbackNote = describePullbackScalp(symbol, scalp);
     }
   }

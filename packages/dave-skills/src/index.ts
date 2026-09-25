@@ -4,3 +4,4 @@ export * from "./github-install.js";
 export * from "./jsonl-install.js";
 export * from "./tools.js";
 export * from "./internal-tool-docs.js";
+export * from "./structure-targets-skill.js";
