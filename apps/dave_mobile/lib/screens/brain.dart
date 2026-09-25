@@ -160,7 +160,7 @@ class _Entries extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(
+  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
         header: ListHeader('$title  ${entries.length}'),
         children: [
           if (entries.isEmpty) CupertinoListTile(title: Text(empty, style: TextStyle(color: resolve(context, CupertinoColors.secondaryLabel)))),
@@ -206,7 +206,7 @@ class _Knowledge extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(
+  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
         header: ListHeader('Knowledge  ${items.length}'),
         footer: const ListFooter('Lessons about markets and Dave\'s own trading. They survive a reset.'),
         children: [
@@ -260,7 +260,7 @@ class _KnowledgePageState extends State<_KnowledgePage> {
     final k = _k;
     final secondary = resolve(context, CupertinoColors.secondaryLabel);
     return CupertinoPageScaffold(
-      backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+      backgroundColor: const Color(0x00000000),
       navigationBar: CupertinoNavigationBar(middle: Text(widget.title, overflow: TextOverflow.ellipsis)),
       child: SafeArea(
         child: k == null

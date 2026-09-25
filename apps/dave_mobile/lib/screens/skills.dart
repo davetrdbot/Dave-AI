@@ -110,7 +110,7 @@ class _SkillsScreenState extends State<SkillsScreen> {
         final active = skills.where((s) => s.active).toList();
         return [
           SliverToBoxAdapter(
-            child: CupertinoListSection.insetGrouped(
+            child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
               header: const ListHeader('ACTIVE STRATEGY'),
               footer: ListFooter(active.isEmpty
                   ? 'No strategy active -- Dave trades on his own judgment and default analysis.'
@@ -124,7 +124,7 @@ class _SkillsScreenState extends State<SkillsScreen> {
             ),
           ),
           SliverToBoxAdapter(
-            child: CupertinoListSection.insetGrouped(
+            child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
               header: ListHeader('ALL SKILLS  ${skills.length}'),
               children: [for (final s in skills) _SkillTile(skill: s, onChanged: reload)],
             ),
@@ -253,7 +253,7 @@ class _SkillDetailState extends State<SkillDetail> {
   Widget build(BuildContext context) {
     final s = _skill;
     return CupertinoPageScaffold(
-      backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+      backgroundColor: const Color(0x00000000),
       navigationBar: CupertinoNavigationBar(middle: Text(widget.name, overflow: TextOverflow.ellipsis)),
       child: SafeArea(
         child: s == null

@@ -27,7 +27,7 @@ class ProvidersPage extends StatelessWidget {
           final backups = list.backups;
           return [
             SliverToBoxAdapter(
-              child: CupertinoListSection.insetGrouped(
+              child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 header: const ListHeader('In use'),
                 footer: const ListFooter('Dave answers with his main AI. If it fails or is too slow, he tries the backups in this order.'),
                 children: [
@@ -40,13 +40,13 @@ class ProvidersPage extends StatelessWidget {
             ),
             if (list.withKeys.isNotEmpty)
               SliverToBoxAdapter(
-                child: CupertinoListSection.insetGrouped(
+                child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                   header: const ListHeader('Have keys, not in use'),
                   children: [for (final p in list.withKeys) _row(context, p, null, () => open(p))],
                 ),
               ),
             SliverToBoxAdapter(
-              child: CupertinoListSection.insetGrouped(
+              child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 header: ListHeader('All providers  ${list.others.length}'),
                 footer: const ListFooter('Tap one to add a key. A provider joins Dave\'s order only when you make it the main AI or a backup.'),
                 children: [for (final p in list.others) _row(context, p, null, () => open(p))],
@@ -114,7 +114,7 @@ class ProviderPage extends StatelessWidget {
           final role = p.isPrimary ? 'Dave\'s main AI' : p.isBackup ? 'Backup ${p.backupPosition}' : 'Not in use';
           return [
             SliverToBoxAdapter(
-              child: CupertinoListSection.insetGrouped(
+              child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 header: const ListHeader('Use'),
                 footer: ListFooter(p.keys.isEmpty
                     ? 'Add a key below before Dave can use ${p.name}.'
@@ -146,7 +146,7 @@ class ProviderPage extends StatelessWidget {
               ),
             ),
             SliverToBoxAdapter(
-              child: CupertinoListSection.insetGrouped(
+              child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 children: [
                   CupertinoListTile(
                     leading: const Icon(CupertinoIcons.cube),
@@ -159,7 +159,7 @@ class ProviderPage extends StatelessWidget {
               ),
             ),
             SliverToBoxAdapter(
-              child: CupertinoListSection.insetGrouped(
+              child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 header: ListHeader('API keys  ${p.keys.length}'),
                 footer: const ListFooter('With more than one key, Dave rotates to the next when one is slow or rate-limited. Keys are stored on your server and never shown in full.'),
                 children: [
@@ -260,7 +260,7 @@ class _ModelPickerPageState extends State<_ModelPickerPage> {
               ),
             ),
             SliverToBoxAdapter(
-              child: CupertinoListSection.insetGrouped(
+              child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 footer: ListFooter(models.isEmpty ? '${widget.name} did not return a model list. Type the model id instead.' : 'The list comes from ${widget.name} itself.'),
                 children: [
                   for (final m in shown)

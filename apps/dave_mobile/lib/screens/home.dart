@@ -179,7 +179,7 @@ class _OpenTrades extends StatelessWidget {
   Widget build(BuildContext context) {
     final header = d.maxOpenTrades == null ? 'Open trades' : 'Open trades  ${d.positions.length} of ${d.maxOpenTrades}';
     if (d.positions.isEmpty) {
-      return CupertinoListSection.insetGrouped(
+      return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
         header: ListHeader(header),
         children: const [
           CupertinoListTile(
@@ -190,7 +190,7 @@ class _OpenTrades extends StatelessWidget {
         ],
       );
     }
-    return CupertinoListSection.insetGrouped(
+    return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: ListHeader(header),
       footer: const ListFooter('Tap a trade to close it.'),
       children: [for (final p in d.positions) _PositionTile(p: p, onChanged: onChanged)],
@@ -253,7 +253,7 @@ class _PendingOrders extends StatelessWidget {
   final List<PendingOrder> orders;
 
   @override
-  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(
+  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
         header: ListHeader('PENDING ORDERS  ${orders.length}'),
         children: [
           for (final o in orders)

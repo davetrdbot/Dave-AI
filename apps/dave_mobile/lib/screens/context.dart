@@ -325,7 +325,7 @@ class _Sources extends StatelessWidget {
     if (totals.calls == 0) return const SizedBox.shrink();
     final rows = totals.bySource.entries.toList()..sort((a, b) => b.value.tokens.compareTo(a.value.tokens));
     final sum = rows.fold(0, (s, r) => s + r.value.tokens);
-    return CupertinoListSection.insetGrouped(
+    return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Where today\'s tokens went'),
       children: [
         for (final r in rows)
@@ -346,7 +346,7 @@ class _Days extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    return CupertinoListSection.insetGrouped(
+    return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Last 7 days'),
       footer: const ListFooter('Tokens sent to and written by the AI, per day. Kept for 45 days.'),
       children: [

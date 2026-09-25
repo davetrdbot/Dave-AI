@@ -78,7 +78,7 @@ class _TradingSection extends StatelessWidget {
   final Future<void> Function() reload;
 
   @override
-  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(
+  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
         header: const ListHeader('Trading'),
         footer: const ListFooter('Watch-only keeps Dave analysing and managing open trades, but he asks you before opening a new one. Stopping never closes open positions.'),
         children: [
@@ -126,7 +126,7 @@ class _RiskSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final rr = s.riskReward.value;
     final conf = s.confidence.value.round();
-    return CupertinoListSection.insetGrouped(
+    return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Risk'),
       footer: const ListFooter('Dave skips any setup whose reward is smaller than this multiple of its risk. Below the confidence level he asks you first, unless auto-approve is on.'),
       children: [
@@ -258,7 +258,7 @@ class _RiskModePageState extends State<_RiskModePage> {
       _ => 'No ${widget.title.toLowerCase()} rule -- Dave uses his normal judgement and it is not enforced.',
     };
     return CupertinoPageScaffold(
-      backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+      backgroundColor: const Color(0x00000000),
       navigationBar: CupertinoNavigationBar(
         middle: Text(widget.title),
         trailing: CupertinoButton(padding: EdgeInsets.zero, onPressed: _busy ? null : _save, child: _busy ? const CupertinoActivityIndicator() : const Text('Save', style: TextStyle(fontWeight: FontWeight.w600))),
@@ -308,7 +308,7 @@ class _MarketsSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final group = s.pairGroups.where((g) => g.id == s.pairGroup).firstOrNull;
-    return CupertinoListSection.insetGrouped(
+    return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Markets'),
       footer: const ListFooter('Dave only looks for new trades in this session, on the pairs in this group.'),
       children: [
@@ -346,11 +346,11 @@ class _PickerPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => CupertinoPageScaffold(
-        backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+        backgroundColor: const Color(0x00000000),
         navigationBar: CupertinoNavigationBar(middle: Text(title)),
         child: SafeArea(
           child: ListView(children: [
-            CupertinoListSection.insetGrouped(
+            CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
               children: [
                 for (final o in options)
                   CupertinoListTile(
@@ -382,7 +382,7 @@ class _BehaviourSection extends StatelessWidget {
       );
 
   @override
-  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(
+  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
         header: const ListHeader('How Dave works'),
         children: [
           _toggle(context, 'selfPause', CupertinoIcons.pause_circle, 'Self-pause', 'Dave may pause himself in bad conditions', s.selfPause),
@@ -403,7 +403,7 @@ class _AlertsSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final deep = s.deepLossPercent.value.round();
     final on = s.alerts.where((a) => a.on).length;
-    return CupertinoListSection.insetGrouped(
+    return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Trade alerts in Telegram'),
       footer: const ListFooter('Deep-loss is how far a losing trade gets toward its stop before Dave warns you.'),
       children: [
@@ -447,11 +447,11 @@ class _AlertsPageState extends State<_AlertsPage> {
 
   @override
   Widget build(BuildContext context) => CupertinoPageScaffold(
-        backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+        backgroundColor: const Color(0x00000000),
         navigationBar: const CupertinoNavigationBar(middle: Text('Self-aware alerts')),
         child: SafeArea(
           child: ListView(children: [
-            CupertinoListSection.insetGrouped(
+            CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
               footer: const ListFooter('What Dave tells you about an open trade as it develops. These go to Telegram, and Dave uses them himself.'),
               children: [
                 for (final a in _alerts)
@@ -486,7 +486,7 @@ class _AiSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final primary = s.primaryTimeout.value.round();
     final fallback = s.fallbackTimeout.value.round();
-    return CupertinoListSection.insetGrouped(
+    return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('AI'),
       footer: const ListFooter('AI wait is how long Dave waits for an answer before switching to the next key or provider; backup wait is the same for the backup.'),
       children: [
@@ -614,7 +614,7 @@ class _NotificationSection extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(
+  Widget build(BuildContext context) => CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
         header: const ListHeader('Phone notifications'),
         footer: ListFooter(defaultTargetPlatform == TargetPlatform.iOS
             ? 'Alerts come straight from your own server. On iPhone they arrive while Dave is open or recently used: iOS pauses the connection after a while in the background, and Dave catches up on anything missed the next time it runs.'
@@ -649,7 +649,7 @@ class _ConnectionSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scope = AppScope.of(context);
-    return CupertinoListSection.insetGrouped(
+    return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Connection'),
       footer: const ListFooter('To remove this phone\'s access completely, disconnect it from the Phone App tab in the web panel as well.'),
       children: [

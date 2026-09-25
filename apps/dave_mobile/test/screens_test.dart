@@ -16,6 +16,7 @@ import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/app_scope.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
+import 'package:dave_mobile/theme.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -318,7 +319,8 @@ Widget _app(Widget home) => RepaintBoundary(
       key: _frameKey,
       child: CupertinoApp(
         debugShowCheckedModeBanner: false,
-        theme: const CupertinoThemeData(primaryColor: CupertinoColors.systemBlue),
+        theme: const CupertinoThemeData(primaryColor: CupertinoColors.systemBlue, scaffoldBackgroundColor: Color(0x00000000), barBackgroundColor: glassBar),
+        builder: (context, child) => Stack(fit: StackFit.expand, children: [const Aurora(), ?child]),
         home: home,
       ),
     );

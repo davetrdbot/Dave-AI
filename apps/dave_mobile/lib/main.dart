@@ -7,6 +7,7 @@ import 'push/push_service.dart';
 import 'screens/connect.dart';
 import 'screens/shell.dart';
 import 'session.dart';
+import 'theme.dart';
 
 /// Dave -- the app.
 ///
@@ -106,7 +107,9 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
         title: 'Dave',
         debugShowCheckedModeBanner: false,
         // No brightness set: the app follows the system, light by default and dark when chosen.
-        theme: const CupertinoThemeData(primaryColor: CupertinoColors.systemBlue),
+        theme: const CupertinoThemeData(primaryColor: CupertinoColors.systemBlue, scaffoldBackgroundColor: Color(0x00000000), barBackgroundColor: glassBar),
+        // Every screen -- pushed ones too -- sits on the same soft colour field (theme.dart).
+        builder: (context, child) => Stack(fit: StackFit.expand, children: [const Aurora(), ?child]),
         home: home,
       ),
     );

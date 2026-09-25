@@ -11,8 +11,11 @@ import 'package:flutter/cupertino.dart';
 ///     light or dark on its own, so the app never hardcodes a theme.
 ///   - Light is the default. Dark is the system's choice, not ours.
 ///   - ONE accent (systemBlue). Green and red appear only where they mean profit and loss.
-///   - Glass is for CHROME ONLY -- the floating tab bar and the navigation bar. Content never
-///     wears glass, and glass never sits on glass.
+///   - Glass, iOS-26 style: every screen sits on one soft, blurred colour field ([Aurora]), and
+///     content is frosted panels over it ([glassDecoration]) -- translucent white with a bright
+///     hairline edge. The field is already blurred, so the panels read as frosted without a
+///     live blur per card (which would cost battery on every Android phone). Real backdrop blur is
+///     kept for what floats over scrolling content: the tab bar, navigation bar and composer.
 ///   - No emoji anywhere. Iconography is CupertinoIcons, the SF-Symbols-style set.
 
 /// 8pt grid.
@@ -37,6 +40,52 @@ Color pnlColor(BuildContext context, num? pnl) {
   return resolve(context, pnl > 0 ? CupertinoColors.systemGreen : CupertinoColors.systemRed);
 }
 
+/// The colour field every screen sits on: a few large, soft orbs of blue, violet and teal on a
+/// near-white (light) or deep navy (dark) base. Static -- nothing animates behind reading.
+class Aurora extends StatelessWidget {
+  const Aurora({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = CupertinoTheme.brightnessOf(context) == Brightness.dark;
+    final base = dark ? const Color(0xFF070A14) : const Color(0xFFF1F4FB);
+    final orbs = dark
+        ? const [(Alignment(-1.1, -0.95), Color(0xFF1F4FD8), 0.55), (Alignment(1.15, -0.35), Color(0xFF6A2BD9), 0.45), (Alignment(-0.6, 0.85), Color(0xFF0C8C8C), 0.40), (Alignment(1.0, 1.05), Color(0xFF2B3FA8), 0.35)]
+        : const [(Alignment(-1.1, -0.95), Color(0xFF8DB7FF), 0.55), (Alignment(1.15, -0.35), Color(0xFFC9A8FF), 0.50), (Alignment(-0.6, 0.85), Color(0xFF8FE3D6), 0.45), (Alignment(1.0, 1.05), Color(0xFFFFC7DD), 0.40)];
+    return DecoratedBox(
+      decoration: BoxDecoration(color: base),
+      child: Stack(fit: StackFit.expand, children: [
+        for (final (align, color, strength) in orbs)
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(center: align, radius: 0.95, colors: [color.withValues(alpha: strength), color.withValues(alpha: 0)]),
+            ),
+          ),
+      ]),
+    );
+  }
+}
+
+/// A frosted panel over the [Aurora]: translucent fill, a bright hairline edge, a soft shadow.
+BoxDecoration glassDecoration(BuildContext context, {double radius = 18, Color? tint}) {
+  final dark = CupertinoTheme.brightnessOf(context) == Brightness.dark;
+  final fill = tint ?? (dark ? const Color(0x1FFFFFFF) : const Color(0x99FFFFFF));
+  return BoxDecoration(
+    color: fill,
+    borderRadius: BorderRadius.circular(radius),
+    border: Border.all(color: dark ? const Color(0x2EFFFFFF) : const Color(0xCCFFFFFF), width: 0.8),
+    gradient: LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [fill.withValues(alpha: (fill.a + (dark ? 0.06 : 0.12)).clamp(0, 1)), fill],
+    ),
+    // No drop shadow: under a see-through panel it shows through as a grey band.
+  );
+}
+
+/// The navigation bars' glass: see-through enough for the colour field to glow through the blur.
+const glassBar = CupertinoDynamicColor.withBrightness(color: Color(0x9EF4F6FC), darkColor: Color(0x8C0B0F1C));
+
 /// A floating layer that samples and blurs what is behind it.
 ///
 /// Used ONLY for chrome. Under high contrast it becomes an opaque surface: Flutter exposes no
@@ -56,9 +105,9 @@ class Glass extends StatelessWidget {
     final opaque = MediaQuery.highContrastOf(context);
     final fill = opaque
         ? resolve(context, CupertinoColors.secondarySystemGroupedBackground)
-        : (dark ? const Color(0xB81E1E20) : const Color(0xB8FFFFFF));
+        : (dark ? const Color(0x661C2030) : const Color(0x8CFFFFFF));
     // The light top edge is what makes glass read as a physical layer rather than as a tint.
-    final edge = dark ? const Color(0x24FFFFFF) : const Color(0x80FFFFFF);
+    final edge = dark ? const Color(0x33FFFFFF) : const Color(0xE6FFFFFF);
 
     final body = DecoratedBox(
       decoration: BoxDecoration(
@@ -72,7 +121,7 @@ class Glass extends StatelessWidget {
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
-      child: opaque ? body : BackdropFilter(filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24), child: body),
+      child: opaque ? body : BackdropFilter(filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), child: body),
     );
   }
 }

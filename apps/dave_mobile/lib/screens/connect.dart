@@ -74,7 +74,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
   Widget build(BuildContext context) {
     final secondary = resolve(context, CupertinoColors.secondaryLabel);
     return CupertinoPageScaffold(
-      backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+      backgroundColor: const Color(0x00000000),
       child: SafeArea(
         child: ListView(padding: const EdgeInsets.fromLTRB(Space.s5, Space.s6, Space.s5, Space.s6), children: [
           Icon(CupertinoIcons.chart_bar_square_fill, size: 56, color: resolve(context, CupertinoColors.systemBlue)),

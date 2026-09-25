@@ -20,10 +20,7 @@ class ContentCard extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         margin: const EdgeInsets.symmetric(horizontal: Space.s4, vertical: Space.s2),
         padding: padding,
-        decoration: BoxDecoration(
-          color: resolve(context, CupertinoColors.secondarySystemGroupedBackground),
-          borderRadius: BorderRadius.circular(14),
-        ),
+        decoration: glassDecoration(context),
         child: child,
       );
 }
@@ -199,7 +196,7 @@ class _LoadedPageState<T> extends State<LoadedPage<T>> {
   Widget build(BuildContext context) {
     final data = _data;
     return CupertinoPageScaffold(
-      backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+      backgroundColor: const Color(0x00000000),
       child: CustomScrollView(
         physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
         slivers: [
@@ -363,7 +360,7 @@ class _EditorPageState extends State<EditorPage> {
   @override
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
-      backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+      backgroundColor: const Color(0x00000000),
       navigationBar: CupertinoNavigationBar(
         middle: Text(widget.title),
         trailing: CupertinoButton(

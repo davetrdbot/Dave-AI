@@ -107,21 +107,30 @@ class _ChatScreenState extends State<ChatScreen> {
     final api = _api!;
     final stream = api.stream(after: after, feeds: const ['chat', 'background']);
     _stream = stream;
-    _subs.add(stream.events.listen((e) {
-      if (!mounted) return;
-      if (_timeline.apply(e)) {
-        setState(() {});
-        if (e.kind == 'final' || e.kind == 'ask_user') HapticFeedback.lightImpact();
-      }
-    }, onError: (Object err) {
-      if (err is UnpairedException && mounted) AppScope.of(context).onUnpaired(err.message);
-    }));
-    _subs.add(stream.connected.listen((live) {
-      if (mounted) setState(() => _live = live);
-    }));
-    _subs.add(stream.ready.listen((s) {
-      if (mounted) setState(() => _state = s);
-    }));
+    _subs.add(
+      stream.events.listen(
+        (e) {
+          if (!mounted) return;
+          if (_timeline.apply(e)) {
+            setState(() {});
+            if (e.kind == 'final' || e.kind == 'ask_user') HapticFeedback.lightImpact();
+          }
+        },
+        onError: (Object err) {
+          if (err is UnpairedException && mounted) AppScope.of(context).onUnpaired(err.message);
+        },
+      ),
+    );
+    _subs.add(
+      stream.connected.listen((live) {
+        if (mounted) setState(() => _live = live);
+      }),
+    );
+    _subs.add(
+      stream.ready.listen((s) {
+        if (mounted) setState(() => _state = s);
+      }),
+    );
     stream.start();
   }
 
@@ -177,17 +186,17 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<String?> _askWhatToDo(String? task) => showCupertinoModalPopup<String>(
-        context: context,
-        builder: (ctx) => CupertinoActionSheet(
-          title: const Text('Dave is busy'),
-          message: Text(task == null || task.isEmpty ? 'He is in the middle of something else.' : 'He is working on: $task'),
-          actions: [
-            CupertinoActionSheetAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, 'stop'), child: const Text('Stop it and send mine')),
-            CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'queue'), child: const Text('Send when he is free')),
-          ],
-          cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        ),
-      );
+    context: context,
+    builder: (ctx) => CupertinoActionSheet(
+      title: const Text('Dave is busy'),
+      message: Text(task == null || task.isEmpty ? 'He is in the middle of something else.' : 'He is working on: $task'),
+      actions: [
+        CupertinoActionSheetAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, 'stop'), child: const Text('Stop it and send mine')),
+        CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'queue'), child: const Text('Send when he is free')),
+      ],
+      cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+    ),
+  );
 
   Future<void> _stop({bool quiet = false}) async {
     HapticFeedback.mediumImpact();
@@ -251,7 +260,10 @@ class _ChatScreenState extends State<ChatScreen> {
   void _toast(String text) {
     showCupertinoDialog<void>(
       context: context,
-      builder: (ctx) => CupertinoAlertDialog(content: Text(text), actions: [CupertinoDialogAction(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))]),
+      builder: (ctx) => CupertinoAlertDialog(
+        content: Text(text),
+        actions: [CupertinoDialogAction(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
     );
   }
 
@@ -271,34 +283,48 @@ class _ChatScreenState extends State<ChatScreen> {
     final keyboard = MediaQuery.viewInsetsOf(context).bottom > 0;
     final bottomClearance = keyboard ? Space.s2 : 62 + 12 + Space.s2 + MediaQuery.paddingOf(context).bottom;
     return CupertinoPageScaffold(
-      backgroundColor: resolve(context, CupertinoColors.systemGroupedBackground),
+      backgroundColor: const Color(0x00000000),
       navigationBar: CupertinoNavigationBar(
         heroTag: 'nav:Chat',
         transitionBetweenRoutes: false,
-        middle: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Text('Dave'),
-          Text(_status, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w400, color: resolve(context, _live ? CupertinoColors.secondaryLabel : CupertinoColors.systemOrange))),
-        ]),
+        middle: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Dave'),
+            Text(
+              _status,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w400, color: resolve(context, _live ? CupertinoColors.secondaryLabel : CupertinoColors.systemOrange)),
+            ),
+          ],
+        ),
         trailing: _working
-            ? CupertinoButton(padding: EdgeInsets.zero, onPressed: _stop, child: const Text('Stop', style: TextStyle(fontWeight: FontWeight.w600)))
+            ? CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: _stop,
+                child: const Text('Stop', style: TextStyle(fontWeight: FontWeight.w600)),
+              )
             : null,
       ),
       child: SafeArea(
         bottom: false,
-        child: Column(children: [
-          Expanded(child: _body()),
-          _Composer(
-            controller: _input,
-            focus: _focus,
-            pictures: _pictures,
-            working: _working,
-            onSend: () => _send(),
-            onStop: _stop,
-            onAttach: _attach,
-            onRemovePicture: (i) => setState(() => _pictures.removeAt(i)),
-          ),
-          SizedBox(height: bottomClearance),
-        ]),
+        child: Column(
+          children: [
+            Expanded(child: _body()),
+            _Composer(
+              controller: _input,
+              focus: _focus,
+              pictures: _pictures,
+              working: _working,
+              onSend: () => _send(),
+              onStop: _stop,
+              onAttach: _attach,
+              onRemovePicture: (i) => setState(() => _pictures.removeAt(i)),
+            ),
+            SizedBox(height: bottomClearance),
+          ],
+        ),
       ),
     );
   }
@@ -331,7 +357,11 @@ class _ChatScreenState extends State<ChatScreen> {
           final entry = entries[entries.length - 1 - i];
           return switch (entry) {
             HistoryEntry(:final item) => _HistoryBubble(item),
-            TurnEntry() => _TurnView(turn: entry, onOption: (o) => _send(text: o), onCardButton: _tapCardButton),
+            TurnEntry() => _TurnView(
+              turn: entry,
+              onOption: (o) => _send(text: o),
+              onCardButton: _tapCardButton,
+            ),
             CardEntry() => _CardView(card: entry, onButton: _tapCardButton),
           };
         },
@@ -351,24 +381,33 @@ class _Bubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
-    final bg = fromUser ? resolve(context, CupertinoColors.systemBlue) : resolve(context, CupertinoColors.secondarySystemGroupedBackground);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Column(crossAxisAlignment: fromUser ? CrossAxisAlignment.end : CrossAxisAlignment.start, children: [
-        ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: width * (fromUser ? 0.78 : 0.9)),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
-            child: child,
+      child: Column(
+        crossAxisAlignment: fromUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: width * (fromUser ? 0.78 : 0.9)),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: fromUser
+                  ? BoxDecoration(
+                      borderRadius: BorderRadius.circular(22),
+                      gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF3D8BFF), Color(0xFF5B5BF0)]),
+                      border: Border.all(color: const Color(0x55FFFFFF), width: 0.8),
+                      boxShadow: const [BoxShadow(color: Color(0x333D6BFF), blurRadius: 18, offset: Offset(0, 6))],
+                    )
+                  : glassDecoration(context, radius: 22),
+              child: child,
+            ),
           ),
-        ),
-        if (caption != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 2, left: 8, right: 8),
-            child: Text(caption!, style: TextStyle(fontSize: 11, color: resolve(context, CupertinoColors.tertiaryLabel))),
-          ),
-      ]),
+          if (caption != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, left: 8, right: 8),
+              child: Text(caption!, style: TextStyle(fontSize: 11, color: resolve(context, CupertinoColors.tertiaryLabel))),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -380,15 +419,22 @@ class _UserText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final white = CupertinoColors.white;
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-      if (pictures > 0)
-        Row(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(CupertinoIcons.photo, size: 15, color: CupertinoColors.white),
-          const SizedBox(width: 5),
-          Text(pictures == 1 ? 'Picture' : '$pictures pictures', style: const TextStyle(fontSize: 14, color: CupertinoColors.white)),
-        ]),
-      if (text.isNotEmpty) Text(text, style: TextStyle(fontSize: 16, height: 1.35, color: white, letterSpacing: -0.2)),
-    ]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (pictures > 0)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(CupertinoIcons.photo, size: 15, color: CupertinoColors.white),
+              const SizedBox(width: 5),
+              Text(pictures == 1 ? 'Picture' : '$pictures pictures', style: const TextStyle(fontSize: 14, color: CupertinoColors.white)),
+            ],
+          ),
+        if (text.isNotEmpty) Text(text, style: TextStyle(fontSize: 16, height: 1.35, color: white, letterSpacing: -0.2)),
+      ],
+    );
   }
 }
 
@@ -425,39 +471,40 @@ class _TurnView extends StatelessWidget {
   Widget build(BuildContext context) {
     final children = <Widget>[];
     if (turn.userText.isNotEmpty || turn.pictures > 0) {
-      children.add(_Bubble(
-        fromUser: true,
-        caption: turn.pending ? 'Sending…' : (turn.fromTelegram ? 'via Telegram' : null),
-        child: _UserText(turn.userText, turn.pictures),
-      ));
+      children.add(_Bubble(fromUser: true, caption: turn.pending ? 'Sending…' : (turn.fromTelegram ? 'via Telegram' : null), child: _UserText(turn.userText, turn.pictures)));
     }
     if (turn.steps.isNotEmpty || (turn.running && !turn.pending)) children.add(_WorkingCard(turn: turn, onCardButton: onCardButton));
     if (turn.notice != null && turn.running) children.add(_Note(turn.notice!));
     final reply = turn.finalText ?? '';
     if (reply.trim().isNotEmpty) {
-      children.add(_Bubble(
-        fromUser: false,
-        caption: turn.tokens == null ? null : '${_compact(turn.tokens!)} tokens',
-        child: MarkdownText(_looksHtml(reply) ? htmlToMarkdown(reply) : reply),
-      ));
+      children.add(_Bubble(fromUser: false, caption: turn.tokens == null ? null : '${_compact(turn.tokens!)} tokens', child: MarkdownText(_looksHtml(reply) ? htmlToMarkdown(reply) : reply)));
     }
     if (turn.question != null) {
       children.add(_Bubble(fromUser: false, child: MarkdownText(turn.question!)));
       if (turn.options.isNotEmpty) {
-        children.add(Padding(
-          padding: const EdgeInsets.only(top: 2, bottom: 4),
-          child: Wrap(spacing: 6, runSpacing: 6, children: [
-            for (final o in turn.options)
-              CupertinoButton(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                minimumSize: const Size(0, 36),
-                color: resolve(context, CupertinoColors.systemBlue).withValues(alpha: 0.13),
-                borderRadius: BorderRadius.circular(18),
-                onPressed: () => onOption(o),
-                child: Text(o, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: resolve(context, CupertinoColors.systemBlue))),
-              ),
-          ]),
-        ));
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 4),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final o in turn.options)
+                  CupertinoButton(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    minimumSize: const Size(0, 36),
+                    color: resolve(context, CupertinoColors.systemBlue).withValues(alpha: 0.13),
+                    borderRadius: BorderRadius.circular(18),
+                    onPressed: () => onOption(o),
+                    child: Text(
+                      o,
+                      style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: resolve(context, CupertinoColors.systemBlue)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
       }
     }
     if (turn.error != null) children.add(_Note(turn.error!, warning: true));
@@ -473,11 +520,13 @@ class _Note extends StatelessWidget {
   final bool warning;
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-        child: Text(text,
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 13, height: 1.3, color: resolve(context, warning ? CupertinoColors.systemRed : CupertinoColors.secondaryLabel))),
-      );
+    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+    child: Text(
+      text,
+      textAlign: TextAlign.center,
+      style: TextStyle(fontSize: 13, height: 1.3, color: resolve(context, warning ? CupertinoColors.systemRed : CupertinoColors.secondaryLabel)),
+    ),
+  );
 }
 
 /// "Dave is working": each step as it happens. Folds into one line once he has answered.
@@ -520,41 +569,63 @@ class _WorkingCardState extends State<_WorkingCard> {
     final cards = turn.steps.where((s) => s.kind == 'card').toList();
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(
-          decoration: BoxDecoration(color: resolve(context, CupertinoColors.secondarySystemGroupedBackground), borderRadius: BorderRadius.circular(16)),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => setState(() => _open = !open),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                child: Row(children: [
-                  if (turn.running) const CupertinoActivityIndicator(radius: 7) else Icon(turn.stopped != null ? CupertinoIcons.stop_circle : CupertinoIcons.checkmark_circle, size: 16, color: secondary),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text(summary, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: secondary))),
-                  Icon(open ? CupertinoIcons.chevron_up : CupertinoIcons.chevron_down, size: 13, color: secondary),
-                ]),
-              ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            decoration: glassDecoration(context, radius: 18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(() => _open = !open),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                    child: Row(
+                      children: [
+                        if (turn.running)
+                          const CupertinoActivityIndicator(radius: 7)
+                        else
+                          Icon(turn.stopped != null ? CupertinoIcons.stop_circle : CupertinoIcons.checkmark_circle, size: 16, color: secondary),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            summary,
+                            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: secondary),
+                          ),
+                        ),
+                        Icon(open ? CupertinoIcons.chevron_up : CupertinoIcons.chevron_down, size: 13, color: secondary),
+                      ],
+                    ),
+                  ),
+                ),
+                if (open)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final s in turn.steps)
+                          if (s.kind == 'tool')
+                            _ToolRow(step: s)
+                          else if (s.kind == 'thinking')
+                            _ThinkingRow(step: s)
+                          else if (s.kind == 'text')
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: MarkdownText(s.text, fontSize: 14.5, color: secondary),
+                            ),
+                      ],
+                    ),
+                  ),
+              ],
             ),
-            if (open)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  for (final s in turn.steps)
-                    if (s.kind == 'tool')
-                      _ToolRow(step: s)
-                    else if (s.kind == 'thinking')
-                      _ThinkingRow(step: s)
-                    else if (s.kind == 'text')
-                      Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: MarkdownText(s.text, fontSize: 14.5, color: secondary)),
-                ]),
-              ),
-          ]),
-        ),
-        // Messages Dave sent during the turn (tables, cards) stay visible even when folded.
-        for (final c in cards) _CardView(card: c.card!, onButton: widget.onCardButton),
-      ]),
+          ),
+          // Messages Dave sent during the turn (tables, cards) stay visible even when folded.
+          for (final c in cards) _CardView(card: c.card!, onButton: widget.onCardButton),
+        ],
+      ),
     );
   }
 }
@@ -574,37 +645,66 @@ class _ToolRowState extends State<_ToolRow> {
     final secondary = resolve(context, CupertinoColors.secondaryLabel);
     final Widget icon = s.running
         ? const CupertinoActivityIndicator(radius: 6)
-        : Icon(s.isError ? CupertinoIcons.xmark_circle_fill : CupertinoIcons.checkmark_circle_fill,
-            size: 15, color: resolve(context, s.isError ? CupertinoColors.systemRed : CupertinoColors.systemGreen));
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () => setState(() => _open = !_open),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 5),
-          child: Row(children: [
-            SizedBox(width: 18, child: Center(child: icon)),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text.rich(TextSpan(children: [
-                TextSpan(text: _sentence(s.label), style: TextStyle(fontSize: 14.5, color: resolve(context, CupertinoColors.label))),
-                if (s.agent != null) TextSpan(text: '  ${s.agent}', style: TextStyle(fontSize: 12, color: secondary)),
-              ])),
+        : Icon(
+            s.isError ? CupertinoIcons.xmark_circle_fill : CupertinoIcons.checkmark_circle_fill,
+            size: 15,
+            color: resolve(context, s.isError ? CupertinoColors.systemRed : CupertinoColors.systemGreen),
+          );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => setState(() => _open = !_open),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            child: Row(
+              children: [
+                SizedBox(width: 18, child: Center(child: icon)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: _sentence(s.label),
+                          style: TextStyle(fontSize: 14.5, color: resolve(context, CupertinoColors.label)),
+                        ),
+                        if (s.agent != null)
+                          TextSpan(
+                            text: '  ${s.agent}',
+                            style: TextStyle(fontSize: 12, color: secondary),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (s.ms != null)
+                  Text(
+                    _duration(s.ms!),
+                    style: TextStyle(fontSize: 12, color: secondary, fontFeatures: const [FontFeature.tabularFigures()]),
+                  ),
+              ],
             ),
-            if (s.ms != null) Text(_duration(s.ms!), style: TextStyle(fontSize: 12, color: secondary, fontFeatures: const [FontFeature.tabularFigures()])),
-          ]),
+          ),
         ),
-      ),
-      if (_open)
-        Padding(
-          padding: const EdgeInsets.only(left: 26, bottom: 6),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(s.name, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: secondary)),
-            if (s.args != null && s.args is Map && (s.args as Map).isNotEmpty) ...[const SizedBox(height: 4), CodeBox(_pretty(s.args))],
-            if (s.result != null) ...[const SizedBox(height: 4), CodeBox(_pretty(s.result))],
-          ]),
-        ),
-    ]);
+        if (_open)
+          Padding(
+            padding: const EdgeInsets.only(left: 26, bottom: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  s.name,
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: secondary),
+                ),
+                if (s.args != null && s.args is Map && (s.args as Map).isNotEmpty) ...[const SizedBox(height: 4), CodeBox(_pretty(s.args))],
+                if (s.result != null) ...[const SizedBox(height: 4), CodeBox(_pretty(s.result))],
+              ],
+            ),
+          ),
+      ],
+    );
   }
 }
 
@@ -618,7 +718,10 @@ class _ThinkingRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Details(
         title: step.agent == null ? 'Thinking' : 'Thinking · ${step.agent}',
-        child: Text(step.text, style: TextStyle(fontSize: 13.5, height: 1.4, fontStyle: FontStyle.italic, color: secondary)),
+        child: Text(
+          step.text,
+          style: TextStyle(fontSize: 13.5, height: 1.4, fontStyle: FontStyle.italic, color: secondary),
+        ),
       ),
     );
   }
@@ -669,27 +772,35 @@ class _CardView extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Container(
         padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-        decoration: BoxDecoration(
-          color: resolve(context, CupertinoColors.secondarySystemGroupedBackground),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: resolve(context, CupertinoColors.separator), width: 0.5),
+        decoration: glassDecoration(context, radius: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (label != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 13, color: secondary),
+                    const SizedBox(width: 5),
+                    Text(
+                      label.toUpperCase(),
+                      style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.4, color: secondary),
+                    ),
+                    const Spacer(),
+                    Text(formatAgo(e.at), style: TextStyle(fontSize: 11.5, color: resolve(context, CupertinoColors.tertiaryLabel))),
+                  ],
+                ),
+              ),
+            body,
+            if (buttons.isNotEmpty) CardButtons(rows: buttons, used: card.used, onTap: (b) => onButton(card, b)),
+            if (card.result != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(card.result!, style: TextStyle(fontSize: 13, color: secondary)),
+              ),
+          ],
         ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (label != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(children: [
-                Icon(icon, size: 13, color: secondary),
-                const SizedBox(width: 5),
-                Text(label.toUpperCase(), style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.4, color: secondary)),
-                const Spacer(),
-                Text(formatAgo(e.at), style: TextStyle(fontSize: 11.5, color: resolve(context, CupertinoColors.tertiaryLabel))),
-              ]),
-            ),
-          body,
-          if (buttons.isNotEmpty) CardButtons(rows: buttons, used: card.used, onTap: (b) => onButton(card, b)),
-          if (card.result != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text(card.result!, style: TextStyle(fontSize: 13, color: secondary))),
-        ]),
       ),
     );
   }
@@ -720,63 +831,76 @@ class _Composer extends StatelessWidget {
     final blue = resolve(context, CupertinoColors.systemBlue);
     return Padding(
       padding: const EdgeInsets.fromLTRB(Space.s3, Space.s1, Space.s3, 0),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        if (pictures.isNotEmpty)
-          SizedBox(
-            height: 64,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: pictures.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 6),
-              itemBuilder: (context, i) => Stack(children: [
-                ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.memory(Uint8List.fromList(pictures[i].bytes), width: 58, height: 58, fit: BoxFit.cover)),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  child: GestureDetector(
-                    onTap: () => onRemovePicture(i),
-                    child: const Icon(CupertinoIcons.xmark_circle_fill, size: 20, color: CupertinoColors.white),
-                  ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (pictures.isNotEmpty)
+            SizedBox(
+              height: 64,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: pictures.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 6),
+                itemBuilder: (context, i) => Stack(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.memory(Uint8List.fromList(pictures[i].bytes), width: 58, height: 58, fit: BoxFit.cover),
+                    ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      child: GestureDetector(
+                        onTap: () => onRemovePicture(i),
+                        child: const Icon(CupertinoIcons.xmark_circle_fill, size: 20, color: CupertinoColors.white),
+                      ),
+                    ),
+                  ],
                 ),
-              ]),
+              ),
             ),
-          ),
-        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          CupertinoButton(
-            padding: const EdgeInsets.only(right: 6, bottom: 6),
-            minimumSize: const Size(36, 36),
-            onPressed: onAttach,
-            child: Icon(CupertinoIcons.camera, size: 24, color: blue),
-          ),
-          Expanded(
-            child: CupertinoTextField(
-              controller: controller,
-              focusNode: focus,
-              placeholder: 'Message Dave',
-              minLines: 1,
-              maxLines: 6,
-              textCapitalization: TextCapitalization.sentences,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-              decoration: BoxDecoration(
-                color: resolve(context, CupertinoColors.secondarySystemGroupedBackground),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: resolve(context, CupertinoColors.separator), width: 0.5),
+          Glass(
+            radius: 26,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(4, 4, 5, 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  CupertinoButton(
+                    padding: const EdgeInsets.only(left: 6, right: 4, bottom: 6),
+                    minimumSize: const Size(36, 36),
+                    onPressed: onAttach,
+                    child: Icon(CupertinoIcons.camera, size: 24, color: blue),
+                  ),
+                  Expanded(
+                    child: CupertinoTextField(
+                      controller: controller,
+                      focusNode: focus,
+                      placeholder: 'Message Dave',
+                      minLines: 1,
+                      maxLines: 6,
+                      textCapitalization: TextCapitalization.sentences,
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                      decoration: null,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: controller,
+                    builder: (context, value, _) {
+                      final canSend = value.text.trim().isNotEmpty || pictures.isNotEmpty;
+                      if (working && !canSend) {
+                        return _RoundButton(icon: CupertinoIcons.stop_fill, color: resolve(context, CupertinoColors.systemRed), semantic: 'Stop', onTap: onStop);
+                      }
+                      return _RoundButton(icon: CupertinoIcons.arrow_up, color: canSend ? blue : resolve(context, CupertinoColors.systemGrey3), semantic: 'Send', onTap: canSend ? onSend : null);
+                    },
+                  ),
+                ],
               ),
             ),
           ),
-          const SizedBox(width: 6),
-          ValueListenableBuilder<TextEditingValue>(
-            valueListenable: controller,
-            builder: (context, value, _) {
-              final canSend = value.text.trim().isNotEmpty || pictures.isNotEmpty;
-              if (working && !canSend) {
-                return _RoundButton(icon: CupertinoIcons.stop_fill, color: resolve(context, CupertinoColors.systemRed), semantic: 'Stop', onTap: onStop);
-              }
-              return _RoundButton(icon: CupertinoIcons.arrow_up, color: canSend ? blue : resolve(context, CupertinoColors.systemGrey3), semantic: 'Send', onTap: canSend ? onSend : null);
-            },
-          ),
-        ]),
-      ]),
+        ],
+      ),
     );
   }
 }
@@ -789,17 +913,17 @@ class _RoundButton extends StatelessWidget {
   final VoidCallback? onTap;
   @override
   Widget build(BuildContext context) => Semantics(
-        button: true,
-        label: semantic,
-        child: GestureDetector(
-          onTap: onTap,
-          child: Container(
-            width: 36,
-            height: 36,
-            margin: const EdgeInsets.only(bottom: 2),
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-            child: Icon(icon, size: 18, color: CupertinoColors.white),
-          ),
-        ),
-      );
+    button: true,
+    label: semantic,
+    child: GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 36,
+        height: 36,
+        margin: const EdgeInsets.only(bottom: 2),
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        child: Icon(icon, size: 18, color: CupertinoColors.white),
+      ),
+    ),
+  );
 }

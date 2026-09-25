@@ -31,7 +31,7 @@ class Mt5Page extends StatelessWidget {
           final a = v.account;
           return [
             SliverToBoxAdapter(
-              child: CupertinoListSection.insetGrouped(
+              child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 header: const ListHeader('Status'),
                 footer: const ListFooter('MetaTrader 5 runs next to Dave with his EA already on a chart, so you don\'t need a Windows VPS.'),
                 children: [
@@ -46,7 +46,7 @@ class Mt5Page extends StatelessWidget {
             ),
             if (!v.hasAgent)
               SliverToBoxAdapter(
-                child: CupertinoListSection.insetGrouped(
+                child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                   header: const ListHeader('Not set up yet'),
                   footer: const ListFooter('The MT5 service has to be added next to Dave on the server first. After that, all you enter here is your MT5 login, password and server.'),
                   children: const [CupertinoListTile(title: Text('Waiting for the MT5 service'))],
@@ -54,7 +54,7 @@ class Mt5Page extends StatelessWidget {
               )
             else ...[
               SliverToBoxAdapter(
-                child: CupertinoListSection.insetGrouped(
+                child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                   header: const ListHeader('Account'),
                   footer: const ListFooter('Dave compiles his EA, starts MT5 logged in, and puts the EA on a chart. Connecting takes a minute or two.'),
                   children: [
@@ -68,7 +68,7 @@ class Mt5Page extends StatelessWidget {
               ),
               if (v.configured && a != null)
                 SliverToBoxAdapter(
-                  child: CupertinoListSection.insetGrouped(
+                  child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                     header: const ListHeader('Market Watch'),
                     footer: const ListFooter('The pairs MT5 has in Market Watch. Each one gets its own chart. Changing them restarts MT5 on the same account.'),
                     children: [
@@ -96,7 +96,7 @@ class Mt5Page extends StatelessWidget {
                 ),
               if (v.configured && a != null)
                 SliverToBoxAdapter(
-                  child: CupertinoListSection.insetGrouped(
+                  child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                     header: const ListHeader('MT5 phone alerts'),
                     footer: const ListFooter(
                         'Your MetaQuotes ID lets MT5 itself push trade alerts to the MetaTrader 5 app on your phone. Find it in that app under Settings > Messages: 8 letters and digits.'),
@@ -118,7 +118,7 @@ class Mt5Page extends StatelessWidget {
                 ),
               if (v.configured && a != null)
                 SliverToBoxAdapter(
-                  child: CupertinoListSection.insetGrouped(
+                  child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                     header: const ListHeader('EA'),
                     footer: const ListFooter('The chart is only where the EA sits -- it analyses every symbol Dave asks for. Changes restart MT5 on the same account.'),
                     children: [
