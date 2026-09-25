@@ -38,7 +38,7 @@ export async function checkTelegramReachable(timeoutMs = 30_000): Promise<string
   } catch (err) {
     return `NOT reachable: ${err instanceof Error ? err.message : String(err)}`;
   } finally {
-    await client.disconnect().catch(() => undefined);
+    await client.destroy().catch(() => undefined);
   }
 }
 
@@ -55,7 +55,7 @@ interface LoginAttempt {
 const attempts = new Map<string, LoginAttempt>();
 
 export async function nousLoginBegin(userId: string, apiId: number, apiHash: string, phone: string): Promise<void> {
-  await attempts.get(userId)?.client.disconnect().catch(() => undefined);
+  await attempts.get(userId)?.client.destroy().catch(() => undefined);
   attempts.delete(userId);
   const client = newClient("", apiId, apiHash);
   await client.connect();
@@ -100,12 +100,12 @@ async function finishLogin(userId: string, a: LoginAttempt): Promise<LoginStep> 
   const account = [me.firstName, me.lastName].filter(Boolean).join(" ") + (me.username ? ` (@${me.username})` : "");
   saveNousLogin(userId, { apiId: a.apiId, apiHash: a.apiHash, session: String(a.client.session.save()), account });
   attempts.delete(userId);
-  await a.client.disconnect().catch(() => undefined);
+  await a.client.destroy().catch(() => undefined);
   return { done: true, account };
 }
 
 export function cancelNousLogin(userId: string): void {
-  void attempts.get(userId)?.client.disconnect().catch(() => undefined);
+  void attempts.get(userId)?.client.destroy().catch(() => undefined);
   attempts.delete(userId);
 }
 
@@ -125,7 +125,7 @@ async function connected(userId: string): Promise<TelegramClient> {
   const client = newClient(login.session, login.apiId, login.apiHash);
   await client.connect();
   if (!(await client.checkAuthorization())) {
-    await client.disconnect().catch(() => undefined);
+    await client.destroy().catch(() => undefined);
     throw new Error("The Telegram login was signed out (from Settings -> Devices?) -- connect it again from /nous.");
   }
   return client;
@@ -159,7 +159,7 @@ export async function startNousListener(userId: string, onPost: (post: NousPost)
 export async function stopNousListener(userId: string): Promise<void> {
   const l = live.get(userId);
   live.delete(userId);
-  await l?.client.disconnect().catch(() => undefined);
+  await l?.client.destroy().catch(() => undefined);
 }
 
 export function isNousListening(userId: string): boolean {
@@ -176,7 +176,7 @@ export async function listNousDialogs(userId: string, limit = 60): Promise<NousC
       .slice(0, limit)
       .map((d) => ({ id: String(d.id), title: (d.title ?? d.name ?? "untitled").slice(0, 60), kind: d.isGroup ? ("group" as const) : ("channel" as const) }));
   } finally {
-    if (!live.has(userId)) await client.disconnect().catch(() => undefined);
+    if (!live.has(userId)) await client.destroy().catch(() => undefined);
   }
 }
 
@@ -185,7 +185,7 @@ export async function nousLogout(userId: string): Promise<void> {
   try {
     const client = await connected(userId);
     await client.invoke(new Api.auth.LogOut()).catch(() => undefined);
-    await client.disconnect().catch(() => undefined);
+    await client.destroy().catch(() => undefined);
   } catch {
     // Already signed out elsewhere -- clearing our copy is all that's left.
   }
