@@ -4,7 +4,7 @@ import type { ContentBlock } from "@dave/brain";
 import type { TelegramClient } from "@dave/telegram";
 import type { TradeExecutor } from "@dave/trading";
 import { resetConsolidationFailures } from "@dave/memory";
-import { AgentLoop, type AgentEvent, type AgentRunResult } from "./agent-loop.js";
+import { AgentLoop, type AgentRunResult } from "./agent-loop.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import type { ToolRegistry } from "./tool-registry.js";
 import { modelConfigProvider } from "./provider-selection.js";
@@ -16,6 +16,9 @@ import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { friendlyErrorMessage } from "./error-messages.js";
 import { getPrimaryChatId } from "./primary-chat.js";
 import { publishActivity, type ActivityChannel } from "./activity-bus.js";
+import { chatEventPublisher } from "./activity-events.js";
+
+export { toolLabel, chatEventPublisher } from "./activity-events.js";
 
 /**
  * Dave in the phone app (the trader: "build the chatting in the application -- the input and output,
@@ -48,30 +51,7 @@ export function newTurnId(): string {
   return randomBytes(6).toString("hex");
 }
 
-/** Plain-words label for a tool, for the live "Dave is working" card. */
-export function toolLabel(name: string): string {
-  if (name === "run_script") return "Running a script";
-  if (name === "search_tools") return "Looking for the right tool";
-  if (name.startsWith("get_")) return `Checking ${name.slice(4).replace(/_/g, " ")}`;
-  if (name === "find_setup" || name === "hunt_for_setup") return "Hunting for a setup";
-  if (name.startsWith("trade_") || name === "full_close" || name === "partial_close" || name === "modify_sl_tp") return name.replace(/_/g, " ");
-  if (name.startsWith("tg_") || name === "send_telegram") return "Writing a message";
-  if (name === "create_subagent") return "Starting a worker";
-  return name.replace(/_/g, " ");
-}
-
-/** AgentLoop events -> the activity bus, for any channel. */
-export function chatEventPublisher(userId: string, turnId: string, channel: ActivityChannel, agent?: string): (e: AgentEvent) => void {
-  return (e) => {
-    const extra = { turnId, channel, agent };
-    if (e.type === "tool_start") publishActivity(userId, "chat", "tool_start", { id: e.id, name: e.name, label: toolLabel(e.name), args: e.args }, extra);
-    else if (e.type === "tool_end") publishActivity(userId, "chat", "tool_end", { id: e.id, name: e.name, label: toolLabel(e.name), result: e.result, isError: e.isError, ms: e.ms }, extra);
-    else if (e.type === "text") publishActivity(userId, "chat", "text", { text: e.text }, extra);
-    else publishActivity(userId, "chat", "thinking", { text: e.text }, extra);
-  };
-}
-
-type SinkMessage = { chat_id?: unknown; text?: string; rich_message?: { blocks?: unknown[]; html?: string }; parse_mode?: string };
+type SinkMessage = { chat_id?: unknown; text?: string; rich_message?: { blocks?: unknown[]; html?: string; markdown?: string }; parse_mode?: string };
 
 /**
  * A stand-in for the Telegram client, for tools running on behalf of the app: messages they send
@@ -81,12 +61,14 @@ export function createAppSink(userId: string, currentTurn: () => { turnId?: stri
   let nextMessageId = 1;
   const post = (kind: string, data: Record<string, unknown>) => {
     const { turnId, channel } = currentTurn();
-    publishActivity(userId, "chat", kind, data, { turnId, channel });
-    return { message_id: nextMessageId++ };
+    const messageId = nextMessageId++;
+    // A new message carries its id, so a later edit/delete of it can find it in the app.
+    publishActivity(userId, "chat", kind, kind === "message" ? { ...data, id: messageId } : data, { turnId, channel });
+    return { message_id: messageId };
   };
   const handlers: Record<string, (params: SinkMessage & Record<string, unknown>) => unknown> = {
     sendMessage: (p) => post("message", { text: p.text ?? "", format: p.parse_mode === "HTML" ? "html" : "text", buttons: p.reply_markup }),
-    sendRichMessage: (p) => post("message", { blocks: p.rich_message?.blocks, html: p.rich_message?.html, buttons: p.reply_markup }),
+    sendRichMessage: (p) => post("message", { blocks: p.rich_message?.blocks, html: p.rich_message?.html, markdown: p.rich_message?.markdown, buttons: p.reply_markup }),
     sendRichMessageDraft: () => true,
     editMessageText: (p) => post("message_edit", { messageId: p.message_id, text: p.text ?? "" }),
     editMessageReplyMarkup: () => ({ message_id: 0 }),

@@ -82,5 +82,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Take a photo of a chart to show Dave.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Pick a chart screenshot to show Dave.</string>
 </dict>
 </plist>

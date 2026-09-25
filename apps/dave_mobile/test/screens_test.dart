@@ -6,6 +6,7 @@
 // images look like the phone rather than the test font's black boxes:
 //
 //   SCREENSHOTS_DIR=/tmp/shots flutter test test/screens_test.dart
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -218,12 +219,61 @@ http.Client _fakeServer() => MockClient((req) async {
                   ..._skills.firstWhere((s) => s['id'] == id),
                   'content': '# Smart money concepts\n\n## Bias\nRead the 4h structure first. Only trade in its direction.\n\n## Entry\n1. Wait for a sweep of the previous session high or low.\n2. Enter on the first 15m order block after the sweep.\n3. Stop beyond the sweep wick. Target the opposite liquidity pool.\n',
                 };
+        case '/api/app/chat/history':
+          body = {
+            'latestEventId': 40,
+            'items': [
+              {'role': 'user', 'text': 'How is gold looking?'},
+              {
+                'role': 'assistant',
+                'text': '**Gold** is holding above the Asian low.\n\n| Level | Price |\n|---|---|\n| Support | 2,644 |\n| Resistance | 2,670 |\n\nI would wait for a pullback to *2,648* before buying.',
+                'tools': [{'name': 'get_price'}, {'name': 'get_candles'}],
+              },
+            ],
+          };
+        case '/api/app/chat/activity':
+          body = {'events': [], 'latestEventId': 40};
         case '/api/app/bot':
           body = {'running': true, 'executionEnabled': true, 'intervalMinutes': 5, 'intervalBounds': {'min': 1, 'max': 60}};
         default:
           return http.Response('{"error":"not found"}', 404);
       }
       return http.Response(jsonEncode(body), 200, headers: {'content-type': 'application/json'});
+    });
+
+/// The chat's live feed: a few events, then the connection stays open like the real one.
+http.Client _fakeChatStream() => MockClient.streaming((req, _) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      var id = 40;
+      String frame(String kind, Map<String, Object?> data, {String feed = 'chat', String? turnId = 't1', String? agent}) => 'id: ${++id}\nevent: activity\ndata: ${jsonEncode({
+            'id': id,
+            'at': now,
+            'feed': feed,
+            'kind': kind,
+            'turnId': ?turnId,
+            'channel': 'app',
+            'agent': ?agent,
+            'data': data,
+          })}\n\n';
+      final controller = StreamController<List<int>>();
+      controller.add(utf8.encode([
+        'event: ready\ndata: {"latestEventId":40,"busy":true,"task":"(app) buy gold?","appTurn":true}\n\n',
+        frame('user_message', {'text': 'Should I buy gold now?', 'images': 1}),
+        frame('turn_start', {}),
+        frame('thinking', {'text': 'The trader wants an entry. Check price and structure first.'}),
+        frame('tool_start', {'id': 'a', 'name': 'get_price', 'label': 'Checking price', 'args': {'symbol': 'XAUUSD'}}),
+        frame('tool_end', {'id': 'a', 'name': 'get_price', 'label': 'Checking price', 'result': {'bid': 2651.2}, 'ms': 420}),
+        frame('text', {'text': 'Price is 2,651. Looking for structure.'}),
+        frame('tool_start', {'id': 'b', 'name': 'find_setup', 'label': 'Hunting for a setup', 'args': {}}),
+        frame('nous_card', {
+          'blocks': [
+            {'type': 'heading', 'text': 'XAUUSD BUY from Gold Signals'},
+            {'type': 'table', 'cells': [['Entry', '2,650'], ['SL', '2,640'], ['TP1', '2,665']]},
+          ],
+          'buttons': {'inline_keyboard': [[{'text': 'Place trade', 'callback_data': 'nous:y:s1', 'style': 'success'}, {'text': 'Skip', 'callback_data': 'nous:n:s1', 'style': 'danger'}]]},
+        }, feed: 'background', turnId: null, agent: 'nous'),
+      ].join()));
+      return http.StreamedResponse(controller.stream, 200, headers: {'content-type': 'text/event-stream'});
     });
 
 Future<void> _loadFonts() async {
@@ -295,10 +345,27 @@ void main() {
       addTearDown(tester.view.reset);
       addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
 
-      final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer());
+      final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer(), streamClient: _fakeChatStream);
       await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const Shell())));
       await _advance(tester);
 
+      // Chat opens first: the stored conversation, then the live turn with its steps.
+      await _shot(tester, 'chat_$mode');
+      expect(find.text('Should I buy gold now?'), findsOneWidget);
+      expect(find.text('Checking price'), findsOneWidget);
+      expect(find.text('Hunting for a setup'), findsOneWidget);
+      expect(find.text('Stop'), findsOneWidget, reason: 'a turn is running');
+      expect(find.text('Place trade'), findsOneWidget, reason: "Nous's card, with its buttons");
+      expect(find.text('Resistance'), findsOneWidget, reason: 'the markdown table in the stored reply');
+      await tester.tap(find.text('Checking price'));
+      await _advance(tester);
+      expect(find.textContaining('2651.2'), findsOneWidget, reason: 'a tool row opens to its result');
+      await tester.drag(find.byType(ListView).first, const Offset(0, 500));
+      await _advance(tester);
+      await _shot(tester, 'chat_history_$mode');
+
+      await tester.tap(find.byIcon(CupertinoIcons.chart_bar_square).last);
+      await _advance(tester);
       await _shot(tester, 'home_$mode');
       expect(find.text('Dave'), findsWidgets);
       expect(find.textContaining('Volatility 75 Index'), findsOneWidget);

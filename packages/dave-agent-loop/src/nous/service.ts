@@ -13,6 +13,7 @@ import { buildImageContentBlock } from "@dave/vision";
 import { planPlacement, rewardToRisk, type Placement } from "./plan.js";
 import { advanceNousTrade } from "./manager.js";
 import { checkTelegramReachable, startNousListener, type NousPost } from "./userbot.js";
+import { publishActivity } from "../activity-bus.js";
 import {
   getNousConfig,
   getNousLogin,
@@ -595,6 +596,8 @@ function signalCard(signal: NousSignal, price: number, userId: string, plan: Pla
 
 /** Sends a rich message to the trader; falls back to plain text if rich messages are refused. */
 async function send(deps: NousDeps, blocks: RichBlock[], silent = false, replyMarkup?: ReturnType<typeof keyboard>): Promise<number | undefined> {
+  // The app shows the same card, with the same buttons (tapped via /api/app/chat/action).
+  publishActivity(deps.userId, "background", "nous_card", { blocks, buttons: replyMarkup, silent }, { agent: "nous" });
   const chatId = chatOf(deps);
   if (chatId === undefined) return undefined;
   try {
@@ -607,6 +610,7 @@ async function send(deps: NousDeps, blocks: RichBlock[], silent = false, replyMa
 }
 
 async function reply(deps: NousDeps, text: string): Promise<string> {
+  publishActivity(deps.userId, "background", "nous_note", { text }, { agent: "nous" });
   const chatId = chatOf(deps);
   if (chatId !== undefined) await deps.client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
   return text;

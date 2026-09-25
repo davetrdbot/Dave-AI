@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../theme.dart';
 import 'brain.dart';
+import 'chat.dart';
 import 'home.dart';
 import 'settings.dart';
 import 'skills.dart';
@@ -15,13 +16,14 @@ class _Tab {
 }
 
 const _tabs = [
+  _Tab('Chat', CupertinoIcons.chat_bubble_2, CupertinoIcons.chat_bubble_2_fill),
   _Tab('Home', CupertinoIcons.chart_bar_square, CupertinoIcons.chart_bar_square_fill),
   _Tab('Brain', CupertinoIcons.lightbulb, CupertinoIcons.lightbulb_fill),
   _Tab('Skills', CupertinoIcons.square_stack_3d_up, CupertinoIcons.square_stack_3d_up_fill),
   _Tab('Settings', CupertinoIcons.gear_alt, CupertinoIcons.gear_alt_fill),
 ];
 
-/// The app frame: four screens and the floating tab bar.
+/// The app frame: the screens and the floating tab bar.
 ///
 /// The tab bar is the iOS 26 pattern -- a floating glass capsule inset from the screen edges,
 /// anchored at the bottom where the thumb already is, rather than a flat full-width bar. It is the
@@ -39,7 +41,7 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   int _index = 0;
 
-  static const _pages = [HomeScreen(), BrainScreen(), SkillsScreen(), SettingsScreen()];
+  static const _pages = [ChatScreen(), HomeScreen(), BrainScreen(), SkillsScreen(), SettingsScreen()];
 
   @override
   Widget build(BuildContext context) {

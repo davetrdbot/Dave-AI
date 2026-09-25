@@ -65,6 +65,7 @@ import { runSequentialThinking } from "./sequential-thinking.js";
 import { buildClockLine } from "./live-context.js";
 import { loadFrozenSnapshot } from "@dave/memory";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
+import { publishActivity } from "./activity-bus.js";
 
 /** Bounded so a growing knowledge store can never crowd out the analysis suite in the tick's
  *  prompt. Entries past the budget are listed by title only -- truncated, never silently dropped. */
@@ -678,6 +679,7 @@ export interface RunTickDeps {
  *  gets logged too, right where it's decided. */
 function logTick(userId: string, line: string): void {
   console.log(`[autonomous-tick] ${userId}: ${line}`);
+  publishActivity(userId, "loop", "log", { text: line });
 }
 
 export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome> {
@@ -1025,7 +1027,10 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       provider,
       systemPrompt: buildSystemPrompt(),
       contextLines,
-      onProgress: onSequentialThinkingProgress,
+      onProgress: (text: string) => {
+        publishActivity(userId, "loop", "thought", { symbol, text }, { agent: "thinking" });
+        onSequentialThinkingProgress?.(text);
+      },
     });
     if (summary) {
       logTick(userId, `${symbol}: sequential thinking produced ${thoughts.length} real thought(s)`);
@@ -1068,6 +1073,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       `Dave is considering a setup on ${symbol} and wants your honest opinion before committing. His own reasoning so far: ${decision.reason ?? "none given"}`,
       contextLines
     );
+    publishActivity(userId, "loop", "journal", { symbol, opinion: journalResult.opinion }, { agent: "journal" });
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "CONSULT_JOURNAL", reason: decision.reason ?? "" });
     let decisionAfterConsult: TickDecision | null;
     try {
@@ -1545,6 +1551,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   if (getTwoStepTradingEnabled(userId) && !stoppedMidFlight) {
     logTick(userId, `${symbol}: two-step trading is on -- consulting Flo before ${action} can fire`);
     const verdict = await consultFlo({ userId, provider }, decision, contextLines);
+    publishActivity(userId, "loop", "flo", { symbol, action, approved: verdict.approved, reason: verdict.reason }, { agent: "flo" });
     if (!verdict.approved) {
       logTick(userId, `${symbol}: Flo declined -- ${verdict.reason}`);
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `Flo declined: ${verdict.reason}` });

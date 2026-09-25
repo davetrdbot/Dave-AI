@@ -479,6 +479,8 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
 function logCycle(userId: string, reason: string): void {
   console.log(`[autonomous-tick] ${userId}: ${reason}`);
   recordCycleOutcome(userId, reason);
+  if (reason.startsWith("skipped")) publishActivity(userId, "loop", "cycle_skip", { reason: reason.replace(/^skipped -- /, "") });
+  else if (!reason.startsWith("decision:")) publishActivity(userId, "loop", "log", { text: reason });
 }
 
 /** See the real bug this fixes at its one call site below (getPendingQuestion gate). */
@@ -606,6 +608,8 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
   // see below) then genuinely cancels this controller's signal, which autonomous-tick.ts threads
   // into its own provider.generate() call.
   const tickAbortController = beginTurn(deps.ownerUserId);
+  const cycleStarted = Date.now();
+  publishActivity(deps.ownerUserId, "loop", "cycle_start", {});
   try {
     const outcome = await runAutonomousTick({
       userId: deps.ownerUserId,
@@ -634,10 +638,19 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
     // outcome now carries the real keyboard (autonomous-tick.ts's TickOutcome.replyMarkup) and it
     // is attached to the LAST chunk -- the same placement full-registry.ts's trade_execute
     // wrapper already uses, so the buttons sit under the end of the reasoning, not mid-message.
+    publishActivity(deps.ownerUserId, "loop", "cycle_end", {
+      action: outcome.action,
+      symbol: outcome.symbol,
+      notable: outcome.notable,
+      message: outcome.message,
+      buttons: outcome.replyMarkup,
+      ms: Date.now() - cycleStarted,
+    });
     if (outcome.message) await sendTickOutcome(client, chatId, outcome);
   } catch (err) {
     console.error(`[trading-loop] autonomous cycle failed for ${deps.ownerUserId}:`, err);
     recordCycleOutcome(deps.ownerUserId, `cycle threw: ${err instanceof Error ? err.message : String(err)}`);
+    publishActivity(deps.ownerUserId, "loop", "cycle_end", { error: friendlyErrorMessage(err), ms: Date.now() - cycleStarted });
     // Real bug fixed, caught LIVE within minutes of shipping the outer alert wrapper: this inner
     // catch already existed and swallowed the error here, so it never reached that wrapper and no
     // alert was ever sent. Proved by a real failed trade -- Dave found a genuine BOOM_100 setup at
@@ -1203,6 +1216,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       userId: deps.ownerUserId,
       executor: deps.executor,
       notify: async (text) => {
+        publishActivity(deps.ownerUserId, "background", "scalp", { text });
         const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
         if (chatId !== undefined) await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
       },

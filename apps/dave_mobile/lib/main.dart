@@ -8,10 +8,11 @@ import 'screens/connect.dart';
 import 'screens/shell.dart';
 import 'session.dart';
 
-/// Dave -- the admin app.
+/// Dave -- the app.
 ///
-/// What it is: a live window onto the trading bot plus its controls. What it deliberately is NOT:
-/// a chat client. Talking to Dave stays in Telegram; this app has no conversation surface at all.
+/// A live window onto the trading bot, its controls, and Dave himself: the Chat tab is the same
+/// conversation as Telegram (every tool call and thought shown as it happens), and the Live tab
+/// is the autonomous loop in real time.
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   PushService.initPort();
@@ -25,7 +26,7 @@ class DaveApp extends StatefulWidget {
   State<DaveApp> createState() => _DaveAppState();
 }
 
-class _DaveAppState extends State<DaveApp> {
+class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
   bool _loading = true;
   DaveApi? _api;
   String? _notice;
@@ -33,8 +34,19 @@ class _DaveAppState extends State<DaveApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _restore();
   }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// The notification service skips "Dave replied" while the app is on screen.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) => PushService.setAppVisible(state == AppLifecycleState.resumed);
 
   /// A paired phone opens straight onto its dashboard -- the endpoint and token persist, so the
   /// "power up" happens once, not on every launch.
@@ -56,6 +68,7 @@ class _DaveAppState extends State<DaveApp> {
     if (!await Session.notificationsEnabled()) return;
     if (!await PushService.requestNotificationPermission()) return;
     await PushService.start();
+    PushService.setAppVisible(true);
   }
 
   void _connected(Uri endpoint, String token) {

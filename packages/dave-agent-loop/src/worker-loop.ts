@@ -8,6 +8,8 @@ import { ToolRegistry, adaptTools, type AgentTool } from "./tool-registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { modelConfigProvider } from "./provider-selection.js";
 import { beginTurn, endTurn } from "./turn-abort.js";
+import { publishActivity } from "./activity-bus.js";
+import { chatEventPublisher } from "./activity-events.js";
 
 /**
  * The real worker execution engine (user: "build a real worker execution loop"). Before this, a
@@ -55,6 +57,8 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
   if (activeRuns.has(worker.id)) return;
   activeRuns.add(worker.id);
   const tag = `#${worker.name.toLowerCase()}`;
+  const agent = `worker:${worker.name}`;
+  publishActivity(ownerUserId, "background", "worker_start", { name: worker.name, task }, { agent });
 
   try {
     const tradingCtx = { userId: ownerUserId, analysis, executor };
@@ -80,6 +84,7 @@ export async function runWorkerTask(params: RunWorkerTaskParams): Promise<void> 
       execute: async (args) => {
         const content = args.content as string;
         await reportToUser(worker, content, publicBaseUrl);
+        publishActivity(ownerUserId, "background", "worker_report", { name: worker.name, text: content }, { agent });
         // Real gap fixed (item 2, same class as the "<b>" bug): worker reports never routed
         // through the real markdown/HTML converter at all -- a worker's own markdown or literal
         // HTML tags would have leaked to the user completely raw, unconverted.
@@ -140,7 +145,7 @@ Use report_to_user whenever you have something genuinely worth telling the user.
         // out of steps mid-task and died with MaxStepsExceededError rather than finishing. The
         // real ceiling is the overall wall-clock deadline plus /stop, both still in force below --
         // step count was never the thing protecting anything.
-        { onStep, signal: abortController.signal }
+        { onStep, signal: abortController.signal, onEvent: chatEventPublisher(ownerUserId, undefined, undefined, agent, "background") }
       );
       if (result.status === "aborted") {
         console.log(`[turn-abort] ${ownerUserId}: worker "${worker.name}" (${worker.id}) genuinely stopped (reason=${result.reason})`);
@@ -154,6 +159,7 @@ Use report_to_user whenever you have something genuinely worth telling the user.
       endTurn(ownerUserId, abortController);
     }
 
+    publishActivity(ownerUserId, "background", "worker_done", { name: worker.name, text: resultText }, { agent });
     if (resultText.trim().length > 0) {
       await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(`${tag}: ${resultText}`), parse_mode: "HTML" });
     }

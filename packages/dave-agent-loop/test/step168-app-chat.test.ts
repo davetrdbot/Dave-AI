@@ -149,5 +149,27 @@ server.close();
 assert.ok(existsSync(statePath));
 console.log("   ✓\n");
 
+console.log("[8] The autonomous loop, sub-agents and card buttons all reach the feed");
+const { recordTickDecision } = await import("../src/autonomous-tick-state.js");
+const { chatEventPublisher } = await import("../src/activity-events.js");
+const { runCardAction } = await import("../src/app-chat-routes.js");
+const mark = bus.latestActivityId(userId);
+recordTickDecision(userId, { ts: Date.now(), symbol: "XAUUSD", action: "SKIP", reason: "no structure" });
+const decision = bus.activityAfter(userId, mark, ["loop"]).at(-1)!;
+assert.equal(decision.kind, "decision");
+assert.deepEqual(decision.data, { symbol: "XAUUSD", action: "SKIP", reason: "no structure" });
+chatEventPublisher(userId, undefined, undefined, "worker:Scout", "background")({ type: "tool_start", id: "w1", name: "run_script", args: {} });
+const workerStep = bus.activityAfter(userId, mark, ["background"]).at(-1)!;
+assert.equal(workerStep.agent, "worker:Scout");
+assert.equal(workerStep.data.label, "Running a script");
+const beforeTap = bus.latestActivityId(userId);
+const { getConfidenceSettings } = await import("@dave/trading");
+const autoBefore = getConfidenceSettings(userId).autoApproveBelowThreshold;
+assert.equal(await runCardAction(deps, "confidence:toggleauto"), "Done.");
+assert.equal(getConfidenceSettings(userId).autoApproveBelowThreshold, !autoBefore, "the same handler Telegram's button runs");
+assert.ok(bus.activityAfter(userId, beforeTap).some((e) => e.kind === "message" && String(e.data.text).includes("Auto-approve")), "its reply shows in the app");
+assert.equal(await runCardAction(deps, ""), "Unknown button.");
+console.log("   ✓\n");
+
 console.log("=== ALL ASSERTIONS PASSED ===");
 process.exit(0);

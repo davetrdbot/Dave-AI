@@ -24,6 +24,7 @@ class Session {
   static const _kEndpoint = 'dave.endpoint';
   static const _kToken = 'dave.token';
   static const _kLastEventId = 'dave.lastEventId';
+  static const _kChatEventId = 'dave.chatEventId';
   static const _kNotifications = 'dave.notifications';
   static const _kUnpairedNotice = 'dave.unpairedNotice';
 
@@ -49,6 +50,7 @@ class Session {
   static Future<void> clear({String? reason}) async {
     await _secure.delete(key: _kToken);
     await _prefs.remove(_kLastEventId);
+    await _prefs.remove(_kChatEventId);
     if (reason != null) await _prefs.setString(_kUnpairedNotice, reason);
   }
 
@@ -63,6 +65,10 @@ class Session {
 
   static Future<int?> lastEventId() => _prefs.getInt(_kLastEventId);
   static Future<void> setLastEventId(int id) => _prefs.setInt(_kLastEventId, id);
+
+  /// How far through the chat feed the notification service has read (a separate log from trades).
+  static Future<int?> chatEventId() => _prefs.getInt(_kChatEventId);
+  static Future<void> setChatEventId(int id) => _prefs.setInt(_kChatEventId, id);
 
   /// Whether the trader wants trade notifications. Defaults ON once paired.
   static Future<bool> notificationsEnabled() async => await _prefs.getBool(_kNotifications) ?? true;

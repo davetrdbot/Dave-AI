@@ -16,6 +16,7 @@ import { createMarketWatchSync } from "./market-watch-sync.js";
 import { APP_CHAT_PREFIX, createAppChatHandler } from "./app-chat-routes.js";
 import { logClosedTrade } from "@dave/feedback";
 import { loadSystemPrompt } from "./system-prompt.js";
+import { publishActivity } from "./activity-bus.js";
 
 export { loadSystemPrompt };
 
@@ -246,6 +247,7 @@ export async function main(): Promise<void> {
   // lands before Telegram is paired is silently skipped rather than crashing.
   let telegramClient: TelegramClient | undefined;
   const alertOwner = (text: string): void => {
+    publishActivity(ownerUserId, "background", "alert", { text });
     const chatId = telegramClient && getPrimaryChatId(db, ownerUserId);
     if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
   };
@@ -313,7 +315,9 @@ export async function main(): Promise<void> {
     },
     onManualModify: (userId, modification) => {
       const chatId = telegramClient && getPrimaryChatId(db, userId);
-      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualModifyMessage(modification) }).catch(() => undefined);
+      const text = buildManualModifyMessage(modification);
+      publishActivity(userId, "background", "trade_modified", { text });
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
     },
     onClosedPosition: (userId, closed) => {
       // Real gap fixed (user: "implement journal of the day that's win rate and others"): the
@@ -321,11 +325,15 @@ export async function main(): Promise<void> {
       // persisted for real win-rate aggregation -- never a second, possibly-drifting source of truth.
       logClosedTrade(db, userId, closed);
       const chatId = telegramClient && getPrimaryChatId(db, userId);
-      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildClosedTradeMessage(closed) }).catch(() => undefined);
+      const text = buildClosedTradeMessage(closed);
+      publishActivity(userId, "background", "trade_closed", { text, symbol: closed.symbol, ticket: closed.ticket, pnl: closed.pnl, reason: closed.reason });
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
     },
     onManualClose: (userId, position) => {
       const chatId = telegramClient && getPrimaryChatId(db, userId);
-      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text: buildManualCloseMessage(position) }).catch(() => undefined);
+      const text = buildManualCloseMessage(position);
+      publishActivity(userId, "background", "trade_closed", { text, manual: true });
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
     },
   });
 

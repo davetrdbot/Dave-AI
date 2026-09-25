@@ -34,6 +34,7 @@ import '../theme.dart';
 
 const _tradeChannelId = 'dave_trades';
 const _reminderChannelId = 'dave_reminders';
+const _chatChannelId = 'dave_chat';
 const _serviceChannelId = 'dave_connection';
 const _serviceId = 7300;
 
@@ -82,6 +83,29 @@ void startCallback() {
     _ => 'Position closed',
   };
   return (title: '${e.symbol} closed$result', body: why);
+}
+
+/// "Dave replied" -- for a reply to a message sent from the app while the app isn't on screen.
+/// Only replies to the app: Telegram already rings for its own. Null when there's nothing to say.
+({String title, String body})? describeChatEvent(Map<String, dynamic> e) {
+  if (e['feed'] != 'chat' || e['channel'] != 'app') return null;
+  final data = e['data'] is Map ? Map<String, dynamic>.from(e['data'] as Map) : const <String, dynamic>{};
+  String plain(Object? v) => '${v ?? ''}'
+      .replaceAll(RegExp(r'<[^>]+>'), '')
+      .replaceAll(RegExp(r'[*_`#>|]+'), '')
+      .replaceAll(RegExp(r'\n{2,}'), '\n')
+      .trim();
+  switch (e['kind']) {
+    case 'final':
+      if (data['stopped'] != null) return null;
+      final text = plain(data['text']);
+      return (title: 'Dave replied', body: text.isEmpty ? 'Your answer is ready.' : text);
+    case 'ask_user':
+      return (title: 'Dave has a question', body: plain(data['question']));
+    case 'error':
+      return (title: 'Dave could not finish', body: plain(data['message']));
+  }
+  return null;
 }
 
 String _lots(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
@@ -150,6 +174,17 @@ class TradeStreamHandler extends TaskHandler {
   bool _stopped = false;
   bool _connected = false;
   DateTime _lastByte = DateTime.now();
+  http.Client? _chatClient;
+  DateTime _chatLastByte = DateTime.now();
+
+  /// Told by the app (PushService.setAppVisible). A reply the trader is already looking at
+  /// needs no notification.
+  bool _appVisible = false;
+
+  @override
+  void onReceiveData(Object data) {
+    if (data is Map && data['visible'] is bool) _appVisible = data['visible'] as bool;
+  }
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -176,12 +211,22 @@ class TradeStreamHandler extends TaskHandler {
           description: 'A reminder Dave set for himself.',
           importance: Importance.high,
         ));
+    await _notifications
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(const AndroidNotificationChannel(
+          _chatChannelId,
+          'Chat replies',
+          description: 'Dave answered a message you sent from the app.',
+          importance: Importance.high,
+        ));
     unawaited(_run());
+    unawaited(_chatRun());
   }
 
   /// Runs every 30s (see ForegroundTaskOptions). Only job: notice a silently dead socket.
   @override
   void onRepeatEvent(DateTime timestamp) {
+    if (_chatClient != null && DateTime.now().difference(_chatLastByte) > _silenceLimit) _chatClient?.close();
     if (_connected && DateTime.now().difference(_lastByte) > _silenceLimit) {
       // Closing the client makes the in-flight read throw, which the run loop treats as a drop
       // and reconnects -- with Last-Event-ID, so nothing sent in the meantime is lost.
@@ -193,7 +238,83 @@ class TradeStreamHandler extends TaskHandler {
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
     _stopped = true;
     _client?.close();
+    _chatClient?.close();
   }
+
+  /// The chat feed, for "Dave replied". Its own connection to the bot's /api/app/chat/stream (the
+  /// trade stream above is served by the admin panel), resumed from the last id it read.
+  Future<void> _chatRun() async {
+    var backoff = const Duration(seconds: 5);
+    while (!_stopped) {
+      final session = await Session.load();
+      if (session == null) return;
+      final client = http.Client();
+      _chatClient = client;
+      try {
+        final last = await Session.chatEventId();
+        final req = http.Request('GET', session.endpoint.replace(path: '/api/app/chat/stream', queryParameters: {'feeds': 'chat', if (last != null) 'after': '$last'}))
+          ..headers.addAll({'authorization': 'Bearer ${session.token}', 'accept': 'text/event-stream', 'cache-control': 'no-cache'});
+        final res = await client.send(req).timeout(const Duration(seconds: 20));
+        // 401 is the trade stream's to handle; 404 is a server without chat yet -- try again later.
+        if (res.statusCode != 200) throw ApiException('Chat stream refused (${res.statusCode}).', statusCode: res.statusCode);
+        _chatLastByte = DateTime.now();
+        backoff = const Duration(seconds: 5);
+        final parser = SseParser();
+        await for (final line in res.stream.transform(utf8.decoder).transform(const LineSplitter())) {
+          _chatLastByte = DateTime.now();
+          final frame = parser.addLine(line);
+          if (frame != null) await _dispatchChat(frame);
+          if (_stopped) break;
+        }
+      } catch (e) {
+        debugPrint('[dave-push] chat stream: $e');
+      } finally {
+        client.close();
+        _chatClient = null;
+      }
+      if (_stopped) return;
+      await Future<void>.delayed(backoff);
+      backoff = Duration(seconds: math.min(backoff.inSeconds * 2, 300));
+    }
+  }
+
+  Future<void> _dispatchChat(SseFrame frame) async {
+    Map<String, dynamic> data;
+    try {
+      final v = jsonDecode(frame.data);
+      if (v is! Map) return;
+      data = Map<String, dynamic>.from(v);
+    } catch (_) {
+      return;
+    }
+    if (frame.event == 'ready') {
+      if (await Session.chatEventId() == null && data['latestEventId'] is num) await Session.setChatEventId((data['latestEventId'] as num).toInt());
+      return;
+    }
+    if (frame.event != 'activity' || data['id'] is! num) return;
+    final id = (data['id'] as num).toInt();
+    final said = describeChatEvent(data);
+    if (said != null && !_appVisible) await _showChat(id, said.title, said.body);
+    await Session.setChatEventId(id);
+  }
+
+  Future<void> _showChat(int id, String title, String body) => _notifications.show(
+        id: (id + 0x40000000) & 0x7fffffff,
+        title: title,
+        body: body.length > 400 ? '${body.substring(0, 400)}…' : body,
+        notificationDetails: NotificationDetails(
+          android: AndroidNotificationDetails(
+            _chatChannelId,
+            'Chat replies',
+            channelDescription: 'Dave answered a message you sent from the app.',
+            importance: Importance.high,
+            priority: Priority.high,
+            category: AndroidNotificationCategory.message,
+            styleInformation: BigTextStyleInformation(body),
+          ),
+          iOS: const DarwinNotificationDetails(threadIdentifier: _chatChannelId),
+        ),
+      );
 
   Future<void> _run() async {
     var backoff = const Duration(seconds: 5);
@@ -393,6 +514,15 @@ class PushService {
       );
     }
     return result is ServiceRequestSuccess;
+  }
+
+  /// Tells the service whether the app is on screen (no "Dave replied" for a reply being read).
+  static void setAppVisible(bool visible) {
+    try {
+      FlutterForegroundTask.sendDataToTask({'visible': visible});
+    } catch (_) {
+      // service not running -- nothing to tell
+    }
   }
 
   static Future<void> stop() async {

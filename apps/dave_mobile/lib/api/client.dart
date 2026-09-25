@@ -67,11 +67,18 @@ class PairResult {
 
 /// The phone's side of the /api/app/* API.
 class DaveApi {
-  DaveApi({required this.base, required this.token, http.Client? client}) : _http = client ?? http.Client();
+  DaveApi({required this.base, required this.token, http.Client? client, this.streamClient}) : _http = client ?? http.Client();
 
   final Uri base;
   final String token;
   final http.Client _http;
+
+  /// The client for ordinary requests -- shared with the chat's calls.
+  http.Client get httpClient => _http;
+
+  /// Makes the client a long-lived stream (the chat's live feed) holds and closes on its own.
+  /// Overridable for tests; a fresh real client otherwise.
+  final http.Client Function()? streamClient;
 
   static const _timeout = Duration(seconds: 20);
 

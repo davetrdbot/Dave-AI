@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { publishActivity } from "./activity-bus.js";
 
 /**
  * Real, small, bounded continuity for the autonomous tick -- modeled directly on the user's own
@@ -63,6 +64,7 @@ export function recordTickDecision(userId: string, record: TickDecisionRecord): 
   const state = getTickState(userId);
   state.recentDecisions = [...state.recentDecisions, record].slice(-MAX_RECENT);
   saveTickState(userId, state);
+  publishActivity(userId, "loop", "decision", { symbol: record.symbol, action: record.action, reason: record.reason });
 }
 
 /** Formats the real rolling decisions as short context text for the next tick's prompt --

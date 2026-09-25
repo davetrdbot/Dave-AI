@@ -3,7 +3,8 @@ import { verifyDeviceToken } from "@dave/db";
 import type { CompletionMessage, ContentBlock } from "@dave/brain";
 import { buildImageContentBlock } from "@dave/vision";
 import { activityAfter, latestActivityId, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
-import { runAppChatTurn, sharedHistoryKey, newTurnId, type AppChatDeps } from "./app-chat.js";
+import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, type AppChatDeps } from "./app-chat.js";
+import { dispatchCallback } from "./command-router.js";
 import { loadConversationHistory } from "./conversation-store.js";
 import { getBusyState, getAutonomousBusyState } from "./busy-state.js";
 import { abortTurn, isTurnRunning } from "./turn-abort.js";
@@ -21,7 +22,7 @@ import { nousDepsFor, placeNousSignal, skipNousSignal, applyNousUpdate, skipNous
  *   GET  activity           the same events as JSON (catch-up, background notifications)
  *   GET  state              is Dave busy, and with what
  *   POST stop               stop whatever Dave is doing right now
- *   POST action             {callback} -- a card button from the app (Nous Place/Skip, ...)
+ *   POST action             {callback, messageId?} -- a card button from the app (Nous, trade approvals, ...)
  */
 
 export const APP_CHAT_PREFIX = "/api/app/chat/";
@@ -168,7 +169,7 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
     }
     if (method === "POST" && path === "action") {
       const body = await readJson(req);
-      send(res, 200, { result: await runCardAction(userId, String(body.callback ?? "")) });
+      send(res, 200, { result: await runCardAction(deps, String(body.callback ?? ""), Number(body.messageId) || undefined) });
       return;
     }
     send(res, 404, { error: "not found" });
@@ -202,10 +203,27 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
   }
 }
 
-/** The same buttons Telegram shows on Nous's cards, tapped in the app. */
-export async function runCardAction(userId: string, callback: string): Promise<string> {
+/** Not a real chat: the app's stand-in chat id for button presses (must be truthy for the router). */
+const APP_CARD_CHAT_ID = 1;
+
+/**
+ * A card's button tapped in the app -- Nous's Place/Skip, a trade approval, any other button
+ * Dave's cards carry. Nous answers directly; everything else runs through the very same handler
+ * Telegram's button presses do, with its replies landing in the app's chat.
+ */
+export async function runCardAction(deps: AppChatDeps, callback: string, messageId?: number): Promise<string> {
+  const userId = deps.userId;
   const [prefix, action, arg] = callback.split(":");
-  if (prefix !== "nous" || !arg) return "Unknown button.";
+  if (!callback || callback.length > 128) return "Unknown button.";
+  if (prefix !== "nous") {
+    const client = createAppSink(userId, () => ({ channel: "app" }));
+    await dispatchCallback(
+      { db: deps.db, client, userId, executor: deps.executor, publicBaseUrl: deps.publicBaseUrl },
+      { id: `app-${Date.now()}`, from: { id: 0 }, data: callback, message: { message_id: messageId ?? 0, chat: { id: APP_CARD_CHAT_ID, type: "private" }, date: Math.floor(Date.now() / 1000) } as never },
+    );
+    return "Done.";
+  }
+  if (!arg) return "Unknown button.";
   const nous = nousDepsFor(userId);
   if (!nous) return "Nous isn't running on this server.";
   switch (action) {
