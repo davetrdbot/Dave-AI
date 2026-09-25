@@ -29,7 +29,7 @@ console.log("this client genuinely talks to api.telegram.org, not a stub.\n");
 console.log("[1] Exactly the required commands, nothing else...");
 const names = DAVE_COMMANDS.map((c) => c.command).sort();
 console.log(`    ${names.join(", ")}`);
-assert.deepEqual(names, ["account", "connection", "ea", "help", "last_analysis", "menu", "models", "mt5", "panic", "providers", "reset", "settings", "start_trading", "status", "stop_trading", "trades"].sort());
+assert.deepEqual(names, ["account", "connection", "ea", "help", "last_analysis", "menu", "models", "mt5", "nous", "panic", "providers", "reset", "settings", "start_trading", "status", "stop_trading", "trades"].sort());
 assert.equal(isDaveCommand("/status"), true);
 assert.equal(isDaveCommand("/notacommand"), false);
 assert.equal(isDaveCommand("just chatting"), false);
