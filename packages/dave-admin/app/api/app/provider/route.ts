@@ -3,6 +3,7 @@ import { DaveDatabase } from "@dave/db";
 import {
   PROVIDER_CATALOG,
   addProviderKey,
+  keyLineConfig,
   checkProviderKeyHealth,
   editProviderKey,
   fetchAvailableModels,
@@ -101,7 +102,12 @@ export const POST = withDevice(async ({ userId, req }) => {
       case "add-key": {
         const apiKey = body.apiKey?.trim();
         if (!apiKey) return NextResponse.json({ error: `Paste a ${entry.displayName} API key.` }, { status: 400 });
-        const config: ProviderKeyConfig = { apiKey };
+        // A key line may carry more than the key (Bedrock: "KEY eu-west-1").
+        const config: ProviderKeyConfig = keyLineConfig(provider, apiKey);
+        if (provider === "bedrock") {
+          if (body.region?.trim()) config.region = body.region.trim();
+          if (body.secretAccessKey?.trim()) config.secretAccessKey = body.secretAccessKey.trim();
+        }
         // Every key of a provider shares one model: rotation must not silently switch models.
         const model = body.model?.trim() || listProviderKeys(db, userId, provider)[0]?.config.model;
         if (model) config.model = model;

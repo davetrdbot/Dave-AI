@@ -804,18 +804,20 @@ function hmac(key: Buffer | string, data: string): Buffer {
 }
 
 /**
- * Update 3: AWS Bedrock's Converse API. Confirmed via research: SigV4
- * request signing is mandatory here -- there is no Bearer/API-key path
- * for the native API. This computes a real SigV4 signature (canonical
- * request -> string to sign -> derived signing key -> HMAC), not a
- * placeholder header.
+ * AWS Bedrock's Converse API -- one request shape for every Bedrock model, tool calls included.
+ *
+ * Two ways in:
+ *   - an Amazon Bedrock API key (the "long-term API key" from the Bedrock console): sent as
+ *     `Authorization: Bearer <key>` -- AWS's documented path for Bedrock and Bedrock Runtime;
+ *   - classic IAM access keys (access key id + secret): a real SigV4 signature.
+ * `secretAccessKey` present -> SigV4; absent -> the key is a Bedrock API key.
  */
 export class BedrockProvider implements Provider {
   readonly name = "bedrock" as const;
 
   constructor(
-    private readonly accessKeyId: string,
-    private readonly secretAccessKey: string,
+    private readonly apiKeyOrAccessKeyId: string,
+    private readonly secretAccessKey: string | undefined,
     private readonly region: string,
     private readonly model: string,
     private readonly baseUrl = `https://bedrock-runtime.${region}.amazonaws.com`
@@ -838,64 +840,25 @@ export class BedrockProvider implements Provider {
     const kSigning = hmac(kService, "aws4_request");
     const signature = hmac(kSigning, stringToSign).toString("hex");
 
-    const authorization = `AWS4-HMAC-SHA256 Credential=${this.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+    const authorization = `AWS4-HMAC-SHA256 Credential=${this.apiKeyOrAccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
     return { authorization, "x-amz-date": amzDate, "x-amz-content-sha256": payloadHash };
   }
 
   async generate(req: CompletionRequest, timeoutMs: number, signal?: AbortSignal): Promise<CompletionResult> {
     const start = Date.now();
+    // SigV4 signs the path exactly as sent; the model id (which may contain ':' in a version
+    // suffix) is percent-encoded once, which is what Bedrock expects for both auth styles.
     const path = `/model/${encodeURIComponent(this.model)}/converse`;
-    // Real bug fixed (provider audit -- user: "check the providers... check if prompt caching is
-    // implemented for all providers"): system messages were silently DROPPED entirely (`.filter
-    // ((m) => m.role !== "system")` with nowhere else sending them) -- Bedrock never actually saw
-    // Dave's system prompt at all. Real Converse API shape: system is its own top-level array of
-    // content blocks, not a "system"-roled message. Also real prompt caching added here for the
-    // first time: `cachePoint` blocks (AWS's real, documented Converse API mechanism, confirmed
-    // working for Claude/Nova on Bedrock) on the system block and the last conversational message,
-    // same "cache the stable prefix" pattern ClaudeProvider already uses directly against Anthropic.
-    const systemMessages = req.messages.filter((m) => m.role === "system");
-    const conversational = req.messages.filter((m) => m.role !== "system");
-    const system = systemMessages.length > 0 ? [{ text: systemMessages.map((m) => (typeof m.content === "string" ? m.content : "")).join("\n\n") }, { cachePoint: { type: "default" } }] : undefined;
-    // Real bug fixed (provider audit, same class of bug as the DeepSeek one -- user: "I can use
-    // any provider, nothing works"): Bedrock never sent `toolConfig` at all, and every message was
-    // sent with its RAW `m.role` -- for a real "tool" role message, `"tool"` is not a valid
-    // Converse API role (only `user`/`assistant` are) and would genuinely be rejected by the real
-    // API, and an assistant's real `toolCalls` were silently dropped entirely (only `.text` was
-    // ever read). Real, confirmed Converse API shapes (AWS's own docs/samples): a tool result goes
-    // on a `user` turn as a `toolResult` content block (`toolUseId`/`content`/`status`); an
-    // assistant's tool call is a `toolUse` content block (`toolUseId`/`name`/`input`) on an
-    // `assistant` turn; tools are declared via `toolConfig: {tools: [{toolSpec: {name,
-    // description, inputSchema: {json}}}]}`.
-    const messages = conversational.map((m, i) => {
-      const isLast = i === conversational.length - 1;
-      const cachePoint = isLast ? [{ cachePoint: { type: "default" } }] : [];
-      if (m.role === "tool") {
-        return { role: "user", content: [{ toolResult: { toolUseId: m.toolCallId, content: [{ text: typeof m.content === "string" ? m.content : "" }], status: "success" } }, ...cachePoint] };
-      }
-      if (m.role === "assistant" && m.toolCalls?.length) {
-        const textBlock = typeof m.content === "string" && m.content.length > 0 ? [{ text: m.content }] : [];
-        const toolUseBlocks = m.toolCalls.map((c) => ({ toolUse: { toolUseId: c.id, name: c.name, input: c.arguments } }));
-        return { role: "assistant", content: [...textBlock, ...toolUseBlocks, ...cachePoint] };
-      }
-      return { role: m.role, content: [{ text: typeof m.content === "string" ? m.content : "" }, ...cachePoint] };
-    });
-    const toolConfig =
-      req.tools && req.tools.length > 0
-        ? {
-            tools: req.tools.map((t) => ({ toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.parameters } } })),
-            ...(req.toolChoice ? { toolChoice: { tool: { name: req.toolChoice.name } } } : {}),
-          }
-        : undefined;
-    const body = JSON.stringify({
-      ...(system ? { system } : {}),
-      messages,
-      ...(toolConfig ? { toolConfig } : {}),
-      inferenceConfig: { maxTokens: req.maxTokens },
-    });
-    const now = new Date();
-    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
-    const dateStamp = amzDate.slice(0, 8);
-    const signedHeaders = this.sign("POST", path, body, amzDate, dateStamp);
+    const body = JSON.stringify(buildConverseBody(req, this.model));
+    let authHeaders: Record<string, string>;
+    if (this.secretAccessKey) {
+      const now = new Date();
+      const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+      authHeaders = this.sign("POST", path, body, amzDate, amzDate.slice(0, 8));
+    } else {
+      authHeaders = { authorization: `Bearer ${this.apiKeyOrAccessKeyId}` };
+    }
+    const signedHeaders = authHeaders;
 
     let res: Response;
     try {
@@ -913,9 +876,9 @@ export class BedrockProvider implements Provider {
     }
     const json = (await res.json()) as {
       output: { message: { content: { text?: string; toolUse?: { toolUseId: string; name: string; input: Record<string, unknown> } }[] } };
-      usage?: { cacheReadInputTokens?: number; cacheWriteInputTokens?: number };
+      usage?: { cacheReadInputTokens?: number; cacheWriteInputTokens?: number; inputTokens?: number; outputTokens?: number; totalTokens?: number };
     };
-    const blocks = json.output.message.content;
+    const blocks = json.output?.message?.content ?? [];
     const text = blocks.filter((b) => b.text).map((b) => b.text).join("");
     const toolCalls = blocks
       .filter((b) => b.toolUse)
@@ -923,6 +886,82 @@ export class BedrockProvider implements Provider {
     const cacheUsage = json.usage && (json.usage.cacheReadInputTokens !== undefined || json.usage.cacheWriteInputTokens !== undefined)
       ? { cacheCreationInputTokens: json.usage.cacheWriteInputTokens ?? 0, cacheReadInputTokens: json.usage.cacheReadInputTokens ?? 0 }
       : undefined;
-    return { text, provider: "bedrock", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, cacheUsage };
+    const tokenUsage =
+      json.usage?.inputTokens !== undefined && json.usage?.outputTokens !== undefined
+        ? { promptTokens: json.usage.inputTokens, completionTokens: json.usage.outputTokens, totalTokens: json.usage.totalTokens ?? json.usage.inputTokens + json.usage.outputTokens }
+        : undefined;
+    return { text, provider: "bedrock", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, cacheUsage, tokenUsage };
   }
+}
+
+/** Only these Bedrock model families accept Converse `cachePoint` blocks; others reject them. */
+export function bedrockSupportsCaching(model: string): boolean {
+  return /anthropic\.claude|amazon\.nova/i.test(model);
+}
+
+type ConverseBlock = Record<string, unknown>;
+
+function converseContent(content: CompletionMessage["content"]): ConverseBlock[] {
+  if (typeof content === "string") return content.trim() ? [{ text: content }] : [];
+  const out: ConverseBlock[] = [];
+  for (const b of content) {
+    if (b.type === "text") {
+      if (b.text.trim()) out.push({ text: b.text });
+    } else if (b.type === "image") {
+      // Converse takes raw bytes (base64 over JSON) and the bare format name.
+      out.push({ image: { format: b.source.media_type.split("/")[1] === "jpg" ? "jpeg" : b.source.media_type.split("/")[1], source: { bytes: b.source.data } } });
+    }
+  }
+  return out;
+}
+
+/**
+ * The Converse request for a CompletionRequest. Converse is stricter than the chat APIs: turns
+ * must alternate user/assistant and start with the user, a tool result is a `toolResult` block on
+ * a USER turn (several results in a row share one turn), and blank text blocks are rejected.
+ */
+export function buildConverseBody(req: CompletionRequest, model: string): Record<string, unknown> {
+  const caching = bedrockSupportsCaching(model);
+  const systemText = req.messages
+    .filter((m) => m.role === "system")
+    .map((m) => (typeof m.content === "string" ? m.content : m.content.map((b) => (b.type === "text" ? b.text : "")).join("")))
+    .filter((t) => t.trim())
+    .join("\n\n");
+  const system = systemText ? [{ text: systemText }, ...(caching ? [{ cachePoint: { type: "default" } }] : [])] : undefined;
+
+  const turns: { role: "user" | "assistant"; content: ConverseBlock[] }[] = [];
+  const push = (role: "user" | "assistant", content: ConverseBlock[]) => {
+    if (!content.length) return;
+    const last = turns[turns.length - 1];
+    if (last && last.role === role) last.content.push(...content);
+    else turns.push({ role, content: [...content] });
+  };
+  for (const m of req.messages) {
+    if (m.role === "system") continue;
+    if (m.role === "tool") {
+      const text = typeof m.content === "string" ? m.content : m.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+      push("user", [{ toolResult: { toolUseId: m.toolCallId, content: [{ text: text.trim() ? text : "(empty)" }], status: "success" } }]);
+    } else if (m.role === "assistant") {
+      const toolUse = (m.toolCalls ?? []).map((c) => ({ toolUse: { toolUseId: c.id, name: c.name, input: c.arguments ?? {} } }));
+      push("assistant", [...converseContent(m.content), ...toolUse]);
+    } else {
+      push("user", converseContent(m.content));
+    }
+  }
+  if (turns[0]?.role !== "user") turns.unshift({ role: "user", content: [{ text: "(continue)" }] });
+  if (caching && turns.length) turns[turns.length - 1].content.push({ cachePoint: { type: "default" } });
+
+  const toolConfig =
+    req.tools && req.tools.length > 0
+      ? {
+          tools: req.tools.map((t) => ({ toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.parameters } } })),
+          ...(req.toolChoice ? { toolChoice: { tool: { name: req.toolChoice.name } } } : {}),
+        }
+      : undefined;
+  return {
+    ...(system ? { system } : {}),
+    messages: turns,
+    ...(toolConfig ? { toolConfig } : {}),
+    ...(req.maxTokens ? { inferenceConfig: { maxTokens: req.maxTokens } } : {}),
+  };
 }

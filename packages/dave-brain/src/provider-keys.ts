@@ -144,6 +144,18 @@ export function maskBulkAddResults(results: BulkAddResult[]): BulkAddResult[] {
  * cap already reached partway through the paste) never blocking the
  * rest.
  */
+/**
+ * One pasted key line -> its stored config. Bedrock accepts "KEY" (an Amazon Bedrock API key, region
+ * eu-north-1) or "KEY region" (e.g. "ABSK... eu-west-1"). Everything else is the key as typed.
+ */
+export function keyLineConfig(provider: ProviderName, line: string): ProviderKeyConfig {
+  if (provider === "bedrock") {
+    const [key, region] = line.split(/\s+/);
+    return region && /^[a-z]{2}(-[a-z]+)+-\d$/.test(region) ? { apiKey: key, region } : { apiKey: key };
+  }
+  return { apiKey: line };
+}
+
 export function addProviderKeysBulk(db: DaveDatabase, userId: string, provider: ProviderName, labelPrefix: string, rawKeys: string): BulkAddResult[] {
   const lines = rawKeys
     .split("\n")
@@ -153,7 +165,7 @@ export function addProviderKeysBulk(db: DaveDatabase, userId: string, provider: 
   for (let i = 0; i < lines.length; i++) {
     const apiKey = lines[i];
     try {
-      const key = addProviderKey(db, userId, provider, `${labelPrefix} ${i + 1}`, { apiKey });
+      const key = addProviderKey(db, userId, provider, `${labelPrefix} ${i + 1}`, keyLineConfig(provider, apiKey));
       results.push({ line: apiKey, ok: true, key });
     } catch (err) {
       results.push({ line: apiKey, ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -305,6 +317,9 @@ export function isModelUnavailableError(reason: string): boolean {
   // NVIDIA's /v1/models returns are NOT actually servable on a given account, so without this an
   // ordinary model pick marks a perfectly good key as invalid.
   if (/not found for account/i.test(reason)) return true;
+  // Bedrock: a model id that doesn't exist here, or one that can only be called through its
+  // cross-region inference profile ("eu.<model>") in this region.
+  if (/model identifier is invalid|on-demand throughput isn.t supported|retry your request with the id or arn of an inference profile/i.test(reason)) return true;
 
   const modelish = /\bmodel\b|\bmodels\b/i.test(reason);
   const goneish =
@@ -365,17 +380,22 @@ export function pickReplacementModel(deadModel: string, available: string[]): st
     while (i < a.length && i < b.length && a[i] === b[i]) i++;
     return i;
   };
+  // Bedrock names the same model with a geography prefix ("eu.anthropic...", "global.anthropic...")
+  // -- compare without it, and prefer the prefixed profile, which is what's callable on demand.
+  const GEO = /^(global|us|eu|apac|jp|au|ca|us-gov)\./;
+  const bare = (m: string) => m.toLowerCase().replace(GEO, "");
   let best: string | undefined;
   let bestScore = 0;
   for (const candidate of candidates) {
-    const score = sharedPrefix(dead, candidate.toLowerCase());
-    if (score > bestScore) {
+    const shared = sharedPrefix(bare(dead), bare(candidate));
+    const score = shared * 10 + (GEO.test(candidate.toLowerCase()) ? 1 : 0);
+    if (shared >= 4 && score > bestScore) {
       bestScore = score;
       best = candidate;
     }
   }
   // Require a real family match, not one coincidental letter.
-  return bestScore >= 4 ? best : undefined;
+  return best;
 }
 
 export interface KeyFailoverNotifier {

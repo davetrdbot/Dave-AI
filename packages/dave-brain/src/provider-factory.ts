@@ -1,4 +1,4 @@
-import { PROVIDER_CATALOG, resolveProviderAlias, type ProviderKeyConfig } from "./provider-catalog.js";
+import { BEDROCK_DEFAULT_REGION, PROVIDER_CATALOG, resolveProviderAlias, type ProviderKeyConfig } from "./provider-catalog.js";
 import {
   BedrockProvider,
   ClaudeProvider,
@@ -31,10 +31,8 @@ export function buildProvider(name: ProviderName, config: ProviderKeyConfig): Pr
     case "replicate":
       return new ReplicateProvider(config.apiKey, config.model ?? entry.defaultModel, config.baseUrlOverride ?? (entry.baseUrl as string));
     case "bedrock":
-      if (!config.secretAccessKey || !config.region) {
-        throw new Error("bedrock requires both region and secretAccessKey in the stored key's config");
-      }
-      return new BedrockProvider(config.apiKey, config.secretAccessKey, config.region, config.model ?? entry.defaultModel);
+      // A Bedrock API key on its own (Bearer), or IAM access keys when a secret is stored (SigV4).
+      return new BedrockProvider(config.apiKey, config.secretAccessKey || undefined, config.region || BEDROCK_DEFAULT_REGION, config.model ?? entry.defaultModel);
     case "azure": {
       // Real fix: Azure OpenAI genuinely needs a different auth mechanism (a real `api-key`
       // header, not Authorization: Bearer -- confirmed against Microsoft's own docs) and its
