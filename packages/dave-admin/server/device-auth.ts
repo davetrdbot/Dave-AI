@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 /**
  * Device pairing for the mobile app.
@@ -84,12 +84,6 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-/** Constant-time compare on equal-length hex digests, so a token cannot be recovered by timing
- *  the comparison one character at a time. */
-function hashesEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
-}
 
 /** Mints a fresh pairing code, replacing any previous unused one -- only one can ever be live. */
 export function createPairingCode(userId: string): { code: string; expiresAt: number } {
@@ -140,21 +134,9 @@ export function redeemPairingCode(userId: string, code: string, label: string): 
 }
 
 /** True when this token belongs to a paired device. Records the sighting for the devices list. */
-export function verifyDeviceToken(userId: string, token: string): boolean {
-  if (!token) return false;
-  const state = read(userId);
-  const candidate = hashToken(token);
-  const device = state.devices.find((d) => hashesEqual(d.tokenHash, candidate));
-  if (!device) return false;
-  // Best-effort last-seen. A failed write must never turn a valid token into a rejected one.
-  try {
-    device.lastSeenAt = Date.now();
-    write(userId, state);
-  } catch {
-    /* ignore */
-  }
-  return true;
-}
+/** The token check itself lives in @dave/db so the bot (which serves the app's chat) runs exactly
+ *  the same code against the same state file. */
+export { verifyDeviceToken } from "@dave/db";
 
 export function listDevices(userId: string): Omit<PairedDevice, "tokenHash">[] {
   return read(userId).devices.map(({ tokenHash: _tokenHash, ...rest }) => rest);

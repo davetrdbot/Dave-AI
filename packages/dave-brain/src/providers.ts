@@ -74,6 +74,9 @@ export interface CompletionRequest {
 
 export interface CompletionResult {
   text: string;
+  /** The model's own reasoning, when the provider returns it separately from the answer (OpenAI-
+   *  compatible `reasoning_content`/`reasoning`, Bedrock `reasoningContent`). Shown live in the app. */
+  reasoning?: string;
   provider: ProviderName;
   latencyMs: number;
   toolCalls?: ToolCall[];
@@ -414,7 +417,7 @@ export class DeepSeekProvider implements Provider {
       throw await providerErrorFromResponse("deepseek", res);
     }
     const json = (await res.json()) as {
-      choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
+      choices: { message: { content: string | null; reasoning_content?: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
       usage?: { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number };
     };
     const message = json.choices[0].message;
@@ -434,7 +437,7 @@ export class DeepSeekProvider implements Provider {
     // count the way Anthropic does (caching there is automatic/implicit), so
     // that field is honestly 0 rather than guessed.
     const cacheUsage = json.usage ? { cacheCreationInputTokens: 0, cacheReadInputTokens: json.usage.prompt_cache_hit_tokens ?? 0 } : undefined;
-    return { text, provider: "deepseek", latencyMs: Date.now() - start, toolCalls, cacheUsage };
+    return { text, reasoning: message.reasoning_content?.trim() || undefined, provider: "deepseek", latencyMs: Date.now() - start, toolCalls, cacheUsage };
   }
 }
 
@@ -639,6 +642,7 @@ export class OpenAICompatibleProvider implements Provider {
     // inline in `content` instead. Only consulted when the structured field came back genuinely
     // empty, so a provider that's doing this correctly is never touched.
     let text = message.content ?? "";
+    const reasoningText = (message.reasoning_content ?? message.reasoning ?? "").trim();
     // Real bug fixed (the trader, live: "nscale provider it just says ✅ Done."). "✅ Done." is
     // telegram-bot-server's fallback for an EMPTY final text -- and this class only ever read
     // `content`. A reasoning model (nscale's own default is DeepSeek-R1-Distill-Qwen-32B) routinely
@@ -672,7 +676,9 @@ export class OpenAICompatibleProvider implements Provider {
       json.usage?.prompt_tokens !== undefined && json.usage?.completion_tokens !== undefined
         ? { promptTokens: json.usage.prompt_tokens, completionTokens: json.usage.completion_tokens, totalTokens: json.usage.total_tokens ?? json.usage.prompt_tokens + json.usage.completion_tokens }
         : undefined;
-    return { text, provider: this.name, latencyMs: Date.now() - start, toolCalls, cacheUsage, tokenUsage };
+    // Reasoning is shown separately only when it isn't already standing in for the answer above.
+    const reasoning = reasoningText && reasoningText !== text.trim() ? reasoningText : undefined;
+    return { text, reasoning, provider: this.name, latencyMs: Date.now() - start, toolCalls, cacheUsage, tokenUsage };
   }
 }
 
@@ -875,7 +881,7 @@ export class BedrockProvider implements Provider {
       throw await providerErrorFromResponse("bedrock", res);
     }
     const json = (await res.json()) as {
-      output: { message: { content: { text?: string; toolUse?: { toolUseId: string; name: string; input: Record<string, unknown> } }[] } };
+      output: { message: { content: { text?: string; reasoningContent?: { reasoningText?: { text?: string } }; toolUse?: { toolUseId: string; name: string; input: Record<string, unknown> } }[] } };
       usage?: { cacheReadInputTokens?: number; cacheWriteInputTokens?: number; inputTokens?: number; outputTokens?: number; totalTokens?: number };
     };
     const blocks = json.output?.message?.content ?? [];
@@ -890,7 +896,8 @@ export class BedrockProvider implements Provider {
       json.usage?.inputTokens !== undefined && json.usage?.outputTokens !== undefined
         ? { promptTokens: json.usage.inputTokens, completionTokens: json.usage.outputTokens, totalTokens: json.usage.totalTokens ?? json.usage.inputTokens + json.usage.outputTokens }
         : undefined;
-    return { text, provider: "bedrock", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, cacheUsage, tokenUsage };
+    const reasoning = blocks.map((b) => b.reasoningContent?.reasoningText?.text ?? "").join("").trim() || undefined;
+    return { text, reasoning, provider: "bedrock", latencyMs: Date.now() - start, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, cacheUsage, tokenUsage };
   }
 }
 

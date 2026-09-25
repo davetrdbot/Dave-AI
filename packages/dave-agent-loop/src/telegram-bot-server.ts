@@ -13,7 +13,7 @@ import { type ToolRegistry } from "./tool-registry.js";
 import { buildFullToolRegistry } from "./full-registry.js";
 import { AgentLoop, type AgentRunResult, type AgentStep } from "./agent-loop.js";
 import { runAutonomousTick, type TickOutcome } from "./autonomous-tick.js";
-import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME } from "./ask-user.js";
+import { getPendingQuestion, clearPendingQuestion, ASK_USER_TOOL_NAME, findPendingAskUserToolCallId } from "./ask-user.js";
 import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic, isTradingHalted, assertNotTripped, CircuitBreakerTrippedError } from "@dave/safety";
 import { getEaConnectionStatus, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -34,6 +34,8 @@ import { takeControlNotices, describeControlNotice } from "./control-notices.js"
 import { deliverDueReminders } from "./reminder-delivery.js";
 import { setupGaps } from "./setup-gaps.js";
 import { tryHandleMt5Entry } from "./mt5-cloud-flow.js";
+import { publishActivity } from "./activity-bus.js";
+import { chatEventPublisher, newTurnId, publishFinal } from "./app-chat.js";
 import { tryHandleNousEntry } from "./nous/flow.js";
 import { startNous } from "./nous/service.js";
 import { startScalpCycleSweep } from "./scalp-cycle-sweep.js";
@@ -208,7 +210,12 @@ async function runAgentTurn(
   // The consolidation-failure cap counts failures WITHIN a turn, so it resets here with the turn.
   // Without this a few bad batches early in the day would permanently lock memory writes.
   resetConsolidationFailures(deps.ownerUserId);
-  const abortController = beginTurn(deps.ownerUserId);
+  const abortController = beginTurn(deps.ownerUserId, "telegram");
+  // The same turn, live in the app (shared conversation): what was asked, each step, the reply.
+  const turnId = newTurnId();
+  publishActivity(deps.ownerUserId, "chat", "user_message", { text: messageText ?? (typeof userContent === "string" ? userContent : "(attachment)") }, { turnId, channel: "telegram" });
+  publishActivity(deps.ownerUserId, "chat", "turn_start", {}, { turnId, channel: "telegram" });
+  const onEvent = chatEventPublisher(deps.ownerUserId, turnId, "telegram");
   try {
     // Third reversal (see describeStep's comment above): the live progress indicator is now
     // ALWAYS shown for the duration of the real turn -- zero AI decision in whether it appears,
@@ -229,13 +236,14 @@ async function runAgentTurn(
         result = await loop.resume(
           { status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] },
           messageText as string,
-          { signal: abortController.signal, onStep }
+          { signal: abortController.signal, onStep, onEvent }
         );
       } else {
         history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent, replyToMessageId) });
-        result = await loop.run(history, { signal: abortController.signal, onStep });
+        result = await loop.run(history, { signal: abortController.signal, onStep, onEvent });
       }
       saveConversationHistory(deps.db, historyKey, result.history);
+      publishFinal(deps.ownerUserId, turnId, "telegram", result);
 
       // Both forms of the same answer -- see FinalMessage in thinking-indicator.ts. The rich
       // markdown transport needs the model's ORIGINAL text; the HTML one needs the converted
@@ -293,6 +301,7 @@ async function runAgentTurn(
     // must never survive an error path, and now it can't, whether or not this specific run ever
     // called a tool at all.
     clearActiveIndicator(chatId);
+    publishActivity(deps.ownerUserId, "chat", "error", { message: friendlyErrorMessage(err) }, { turnId, channel: "telegram" });
     await client.sendMessage({ chat_id: chatId, text: friendlyErrorMessage(err) }).catch(() => {});
   } finally {
     endTurn(deps.ownerUserId, abortController);
@@ -643,13 +652,6 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
   }
 }
 
-/** Real fix companion: a paused run's saved history ends with an assistant message whose
- * ask_user tool call has no matching tool_result yet -- this finds that call's real id so
- * resume() can supply the answer against the exact right toolCallId, not a fresh turn. */
-function findPendingAskUserToolCallId(history: CompletionMessage[]): string | undefined {
-  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant" && m.toolCalls?.length);
-  return lastAssistant?.toolCalls?.find((c) => c.name === ASK_USER_TOOL_NAME)?.id;
-}
 
 /** Single definition, shared with the executor that reads these files back out (dave-e2b's
  *  userUploadDir) -- previously this path was written here and hardcoded nowhere else, so nothing
@@ -952,7 +954,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // abortTurn() here first, then beginTurn() for the new turn right after, is safe: they touch
       // the same per-user Set but at different times, with nothing concurrent between them, so
       // there is no race between "cancel what was running" and "start what's new."
-      abortTurn(deps.ownerUserId);
+      // ...except a reply Dave is writing in the app right now (shared conversation, other channel).
+      abortTurn(deps.ownerUserId, { except: "app" });
       const chatId = message.chat.id;
       // Real fix (F5): the morning brief (and any other schedule-driven
       // push) has no incoming update to read a chatId off of -- this is

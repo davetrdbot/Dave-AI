@@ -44,6 +44,26 @@ export interface RunTokenUsage {
   cacheReadInputTokens?: number;
 }
 
+/**
+ * Live progress for anything watching a run as it happens (the app's chat screen): a tool starting
+ * and finishing, text the model writes alongside its tool calls, and the model's own reasoning when
+ * the provider returns it. `onStep` (after each tool) stays for existing callers.
+ */
+export type AgentEvent =
+  | { type: "tool_start"; id: string; name: string; args: Record<string, unknown> }
+  | { type: "tool_end"; id: string; name: string; result: unknown; isError: boolean; ms: number }
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string };
+
+type RunOpts = {
+  maxSteps?: number;
+  timeoutMs?: number;
+  overallTimeoutMs?: number;
+  signal?: AbortSignal;
+  onStep?: (step: AgentStep) => void;
+  onEvent?: (event: AgentEvent) => void;
+};
+
 export type AgentRunResult =
   | { status: "done"; text: string; history: CompletionMessage[]; steps: AgentStep[]; tokenUsage?: RunTokenUsage }
   | { status: "awaiting_user"; question: PendingQuestion; toolCallId: string; history: CompletionMessage[]; steps: AgentStep[]; tokenUsage?: RunTokenUsage }
@@ -142,8 +162,16 @@ export class AgentLoop {
 
   async run(
     messages: CompletionMessage[],
-    opts: { maxSteps?: number; timeoutMs?: number; overallTimeoutMs?: number; signal?: AbortSignal; onStep?: (step: AgentStep) => void } = {}
+    opts: RunOpts = {}
   ): Promise<AgentRunResult> {
+    // A watcher's bug must never break the run it watches.
+    const emit = (event: AgentEvent): void => {
+      try {
+        opts.onEvent?.(event);
+      } catch {
+        /* ignore */
+      }
+    };
     // Real bug fixed (user: "maxSteps: 8, remove that, no max step, unlimited max step"): a real
     // trade decision (hunt -> analyze -> execute -> report, sometimes with a search_tools detour
     // or a retry) can genuinely need more than 8 provider round trips, and a hard cap here meant
@@ -218,12 +246,14 @@ export class AgentLoop {
           throw err;
         }
         accumulateUsage(result.tokenUsage, result.cacheUsage);
+        if (result.reasoning?.trim()) emit({ type: "thinking", text: result.reasoning.trim() });
 
         if (!result.toolCalls || result.toolCalls.length === 0) {
           return { status: "done", text: result.text, history, steps, tokenUsage };
         }
 
         history.push({ role: "assistant", content: result.text, toolCalls: result.toolCalls });
+        if (result.text?.trim()) emit({ type: "text", text: result.text.trim() });
 
         for (const call of result.toolCalls) {
           if (call.name === ASK_USER_TOOL_NAME) {
@@ -253,8 +283,11 @@ export class AgentLoop {
           // cancel the tool's own underlying operation (most tools have no cancellation hook at
           // all), but it genuinely stops THIS LOOP from waiting on it past the same deadline/
           // cancel that already bounds model calls.
+          emit({ type: "tool_start", id: call.id, name: call.name, args: call.arguments });
+          const startedAt = Date.now();
           const outcome = await raceExecution(this.registry.execute(call.name, call.arguments), combinedSignal);
           if (outcome.kind === "aborted") {
+            emit({ type: "tool_end", id: call.id, name: call.name, result: { error: "stopped" }, isError: true, ms: Date.now() - startedAt });
             return { status: "aborted", reason: opts.signal?.aborted ? "cancelled" : "deadline", history, steps, tokenUsage };
           }
           let output: unknown;
@@ -268,6 +301,7 @@ export class AgentLoop {
           const step: AgentStep = { toolName: call.name, arguments: call.arguments, result: output, isError };
           steps.push(step);
           opts.onStep?.(step);
+          emit({ type: "tool_end", id: call.id, name: call.name, result: output, isError, ms: Date.now() - startedAt });
           history.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(output) });
 
           // Real dynamic tool loading: whatever search_tools genuinely found becomes callable on
@@ -294,7 +328,7 @@ export class AgentLoop {
   async resume(
     paused: Extract<AgentRunResult, { status: "awaiting_user" }>,
     userAnswer: string,
-    opts: { maxSteps?: number; timeoutMs?: number; overallTimeoutMs?: number; signal?: AbortSignal; onStep?: (step: AgentStep) => void } = {}
+    opts: RunOpts = {}
   ): Promise<AgentRunResult> {
     const history: CompletionMessage[] = [...paused.history, { role: "tool", toolCallId: paused.toolCallId, content: userAnswer }];
     return this.run(history, opts);

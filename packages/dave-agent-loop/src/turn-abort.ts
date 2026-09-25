@@ -17,14 +17,21 @@
  * any other controller already tracked for that user, and abortTurn() (e.g. `/stop`) aborts
  * EVERYTHING running for that user, which is also the more correct behavior for a panic-stop.
  */
+/** Where a turn came from. A new message on one chat channel cancels background work and that
+ *  channel's own turn, but never the OTHER channel's reply mid-way (the app and Telegram share one
+ *  conversation, and one shouldn't silently kill the other). `/stop` still stops everything. */
+export type TurnChannel = "telegram" | "app" | "background";
+
 const controllers = new Map<string, Set<AbortController>>();
+const channelOf = new WeakMap<AbortController, TurnChannel>();
 
 /** Starts tracking a new in-flight turn for this user. Creates a brand-new controller and adds it
  *  to this user's set of in-flight turns -- never touches any other controller already tracked
  *  for this user, so a genuinely concurrent turn (worker task, autonomous tick, ...) is left
  *  running untouched. */
-export function beginTurn(userId: string): AbortController {
+export function beginTurn(userId: string, channel: TurnChannel = "background"): AbortController {
   const controller = new AbortController();
+  channelOf.set(controller, channel);
   let set = controllers.get(userId);
   if (!set) {
     set = new Set();
@@ -49,9 +56,20 @@ export function endTurn(userId: string, controller: AbortController): void {
  *  genuine `/stop`/`/panic`. Returns whether there was at least one controller to cancel --
  *  callers use this to tell the user whether anything was actually stopped, rather than always
  *  claiming success. */
-export function abortTurn(userId: string): boolean {
+export function abortTurn(userId: string, opts: { except?: TurnChannel } = {}): boolean {
   const set = controllers.get(userId);
   if (!set || set.size === 0) return false;
-  for (const controller of set) controller.abort();
-  return true;
+  let any = false;
+  for (const controller of set) {
+    if (opts.except && channelOf.get(controller) === opts.except) continue;
+    controller.abort();
+    any = true;
+  }
+  return any;
+}
+
+/** Whether a turn from this channel is running right now. */
+export function isTurnRunning(userId: string, channel: TurnChannel): boolean {
+  for (const c of controllers.get(userId) ?? []) if (channelOf.get(c) === channel && !c.signal.aborted) return true;
+  return false;
 }

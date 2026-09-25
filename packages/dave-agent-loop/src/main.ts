@@ -13,6 +13,7 @@ import { getPrimaryChatId } from "./primary-chat.js";
 import { buildClosedTradeMessage, buildManualCloseMessage, buildManualModifyMessage, buildWatchdogAlertMessage } from "./trade-notifications.js";
 import { eaConnectionAlert, cycleErrorAlert } from "./health-alerts.js";
 import { createMarketWatchSync } from "./market-watch-sync.js";
+import { APP_CHAT_PREFIX, createAppChatHandler } from "./app-chat-routes.js";
 import { logClosedTrade } from "@dave/feedback";
 import { loadSystemPrompt } from "./system-prompt.js";
 
@@ -359,6 +360,11 @@ export async function main(): Promise<void> {
     ["/hooks/user/", subServerHandler(userHookServer)],
     ["/hooks/worker/", subServerHandler(userHookServer)],
   ];
+  // One executor for every channel -- Telegram and the app's chat place trades the same way.
+  const sharedExecutor = new DynamicTradeExecutor(ownerUserId, eaBridge.getExecutor(ownerUserId));
+  // The app's chat is served here, where Dave runs (live steps, real Stop) -- ahead of the admin
+  // proxy, which serves every other /api/app route.
+  routes.push([APP_CHAT_PREFIX, createAppChatHandler({ userId: ownerUserId, db, executor: sharedExecutor, systemPrompt: loadSystemPrompt(), publicBaseUrl })]);
 
   /**
    * Real gap fixed: the admin panel's real Telegram OTP pairing flow
@@ -398,7 +404,7 @@ export async function main(): Promise<void> {
         // for the placing of trade"): routes every real trade call through whichever backend
         // (the MT5 EA, or a real configured MCP trading server) the user has actually chosen
         // via /ea -- re-checked live on every call, no restart needed to switch.
-        executor: new DynamicTradeExecutor(ownerUserId, eaBridge.getExecutor(ownerUserId)),
+        executor: sharedExecutor,
         botToken: telegramBotToken,
         publicBaseUrl,
         systemPrompt: loadSystemPrompt(),

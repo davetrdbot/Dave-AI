@@ -1,3 +1,4 @@
+import type { CompletionMessage } from "@dave/brain";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -69,4 +70,12 @@ export function createAskUserTool(ownerUserId: string): AgentTool {
       return question;
     },
   };
+}
+
+/** Real fix companion: a paused run's saved history ends with an assistant message whose
+ * ask_user tool call has no matching tool_result yet -- this finds that call's real id so
+ * resume() can supply the answer against the exact right toolCallId, not a fresh turn. */
+export function findPendingAskUserToolCallId(history: CompletionMessage[]): string | undefined {
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant" && m.toolCalls?.length);
+  return lastAssistant?.toolCalls?.find((c) => c.name === ASK_USER_TOOL_NAME)?.id;
 }
