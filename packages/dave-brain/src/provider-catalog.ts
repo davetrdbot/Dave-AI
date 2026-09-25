@@ -216,7 +216,7 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
     defaultModel: "anthropic.claude-sonnet-5",
     openAICompatible: false,
     notes:
-      "Amazon Bedrock API key (the console's long-term API key) as Authorization: Bearer -- AWS's documented path for Bedrock and Bedrock Runtime, confirmed against the Bedrock user guide 2026-09. Classic IAM keys still work: set secretAccessKey and the apiKey field carries the access key id (SigV4). Region defaults to eu-north-1; a key line may add a region after the key ('KEY eu-west-1'). Models: ListFoundationModels + ListInferenceProfiles on the control plane (bedrock.<region>.amazonaws.com).",
+      "Amazon Bedrock API key (the console's long-term API key) as Authorization: Bearer -- AWS's documented path for Bedrock and Bedrock Runtime, confirmed against the Bedrock user guide 2026-09. Classic IAM keys still work: set secretAccessKey and the apiKey field carries the access key id (SigV4). Region defaults to eu-north-1; a key line may add a region after the key ('KEY eu-west-1'). Models: ListFoundationModels + ListInferenceProfiles on the control plane (bedrock.REGION.amazonaws.com).",
   },
   // Real bug fixed: "gemini-3.1-pro" (bare, no suffix) returned a real 404 "not found... Call
   // ModelService.ListModels" -- confirmed live it genuinely doesn't exist under that bare name
