@@ -28,6 +28,20 @@ function newClient(session: string, apiId: number, apiHash: string): TelegramCli
   return client;
 }
 
+/** Boot-time check that this server can reach Telegram's login servers at all (the handshake
+ *  needs no account). Logged, so a deploy shows whether /nous can work before anyone tries. */
+export async function checkTelegramReachable(timeoutMs = 30_000): Promise<string> {
+  const client = newClient("", 1, "00000000000000000000000000000000");
+  try {
+    await Promise.race([client.connect(), new Promise((_, rej) => setTimeout(() => rej(new Error(`no answer in ${timeoutMs / 1000}s`)), timeoutMs).unref())]);
+    return "reachable";
+  } catch (err) {
+    return `NOT reachable: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    await client.disconnect().catch(() => undefined);
+  }
+}
+
 // ---- Login (one pending attempt per user, process memory only) ----
 
 interface LoginAttempt {

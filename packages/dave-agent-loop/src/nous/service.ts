@@ -11,7 +11,7 @@ import { consultJournal } from "../journal-agent.js";
 import { parseSignal } from "./parse.js";
 import { planPlacement, rewardToRisk, type Placement } from "./plan.js";
 import { advanceNousTrade } from "./manager.js";
-import { startNousListener, type NousPost } from "./userbot.js";
+import { checkTelegramReachable, startNousListener, type NousPost } from "./userbot.js";
 import {
   getNousConfig,
   getNousLogin,
@@ -64,6 +64,7 @@ export async function startNous(deps: NousDeps): Promise<void> {
   running.set(deps.userId, deps);
   const timer = setInterval(() => void manageNousTrades(deps).catch((err) => console.error(`[nous] ${deps.userId}: manage failed:`, err)), MANAGE_EVERY_MS);
   timer.unref?.();
+  void checkTelegramReachable().then((r) => console.log(`[nous] Telegram login servers: ${r}`));
   await ensureNousListening(deps.userId).catch((err) => console.error(`[nous] ${deps.userId}: not listening: ${err instanceof Error ? err.message : String(err)}`));
 }
 
