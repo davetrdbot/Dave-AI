@@ -759,3 +759,102 @@ class Mt5View {
     );
   }
 }
+
+/// A channel or group Nous can read.
+class NousChat {
+  NousChat({required this.id, required this.title, required this.isChannel, this.picked = false});
+  final String id;
+  final String title;
+  final bool isChannel;
+  bool picked;
+
+  factory NousChat.fromJson(Map<String, dynamic> j) => NousChat(id: _str(j['id']), title: _str(j['title'], 'untitled'), isChannel: j['kind'] != 'group', picked: j['picked'] == true);
+}
+
+class NousTradeView {
+  NousTradeView({required this.ticket, required this.symbol, required this.isBuy, required this.lots, required this.entry, required this.sl, required this.tp1, this.tp2, required this.from});
+  final String ticket;
+  final String symbol;
+  final bool isBuy;
+  final double lots;
+  final double entry;
+  final double sl;
+  final double tp1;
+  final double? tp2;
+  final String from;
+
+  factory NousTradeView.fromJson(Map<String, dynamic> j) => NousTradeView(
+        ticket: _str(j['ticket']),
+        symbol: _str(j['symbol'], '?'),
+        isBuy: j['side'] == 'buy',
+        lots: _num(j['lots']) ?? 0,
+        entry: _num(j['entry']) ?? 0,
+        sl: _num(j['sl']) ?? 0,
+        tp1: _num(j['tp1']) ?? 0,
+        tp2: _num(j['tp2']),
+        from: _str(j['from']),
+      );
+}
+
+class NousSignalView {
+  NousSignalView({required this.symbol, required this.isBuy, required this.from, required this.status, this.postedAt});
+  final String symbol;
+  final bool isBuy;
+  final String from;
+
+  /// awaiting, placed, skipped, expired, failed.
+  final String status;
+  final DateTime? postedAt;
+
+  factory NousSignalView.fromJson(Map<String, dynamic> j) =>
+      NousSignalView(symbol: _str(j['symbol'], '?'), isBuy: j['side'] == 'buy', from: _str(j['from']), status: _str(j['status']), postedAt: _ms(j['postedAt']));
+}
+
+/// Nous: copy trading from the trader's Telegram signal channels.
+class NousState {
+  NousState({
+    required this.loggedIn,
+    this.account,
+    required this.listening,
+    required this.running,
+    required this.chats,
+    required this.autoApprove,
+    required this.lots,
+    required this.lotsAuto,
+    required this.maxAgeMinutes,
+    required this.trades,
+    required this.signals,
+    this.warning,
+  });
+  final bool loggedIn;
+  final String? account;
+  final bool listening;
+
+  /// Whether this server runs Nous at all (it always does once deployed).
+  final bool running;
+  final List<NousChat> chats;
+  final bool autoApprove;
+  final double lots;
+  final bool lotsAuto;
+  final int maxAgeMinutes;
+  final List<NousTradeView> trades;
+  final List<NousSignalView> signals;
+
+  /// Set when saving the channels worked but listening could not start.
+  final String? warning;
+
+  factory NousState.fromJson(Map<String, dynamic> j) => NousState(
+        loggedIn: j['loggedIn'] == true,
+        account: j['account'] as String?,
+        listening: j['listening'] == true,
+        running: j['running'] != false,
+        chats: _list(j['chats']).map(NousChat.fromJson).toList(),
+        autoApprove: j['autoApprove'] == true,
+        lots: _num(j['lots']) ?? 0.01,
+        lotsAuto: j['lotsAuto'] == true,
+        maxAgeMinutes: _int(j['maxAgeMinutes']) ?? 5,
+        trades: _list(j['trades']).map(NousTradeView.fromJson).toList(),
+        signals: _list(j['signals']).map(NousSignalView.fromJson).toList(),
+        warning: j['warning'] as String?,
+      );
+}

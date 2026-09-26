@@ -14,6 +14,7 @@ import { buildClosedTradeMessage, buildManualCloseMessage, buildManualModifyMess
 import { eaConnectionAlert, cycleErrorAlert } from "./health-alerts.js";
 import { createMarketWatchSync } from "./market-watch-sync.js";
 import { APP_CHAT_PREFIX, createAppChatHandler } from "./app-chat-routes.js";
+import { APP_NOUS_PREFIX, createAppNousHandler } from "./nous/app-routes.js";
 import { logClosedTrade } from "@dave/feedback";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { publishActivity } from "./activity-bus.js";
@@ -373,6 +374,7 @@ export async function main(): Promise<void> {
   // The app's chat is served here, where Dave runs (live steps, real Stop) -- ahead of the admin
   // proxy, which serves every other /api/app route.
   routes.push([APP_CHAT_PREFIX, createAppChatHandler({ userId: ownerUserId, db, executor: sharedExecutor, systemPrompt: loadSystemPrompt(), publicBaseUrl })]);
+  routes.push([APP_NOUS_PREFIX, createAppNousHandler({ userId: ownerUserId })]);
 
   /**
    * Real gap fixed: the admin panel's real Telegram OTP pairing flow

@@ -246,5 +246,24 @@ class DaveApi {
   /// Queues a close with the EA. It is confirmed by the EA's next report, not by this call.
   Future<void> closeTrade(String ticket) => _post('/api/app/trades', {'action': 'close', 'ticket': ticket});
 
+  // --- Nous copy trading (served by the bot process, where the Telegram login runs) -------------
+
+  Future<NousState> nous() async => NousState.fromJson(await _send(() => _http.get(_url('/api/app/nous/state'), headers: _headers)));
+
+  /// One Nous step: login/begin, login/code, login/password, login/cancel, settings, logout, close.
+  Future<Map<String, dynamic>> nousAction(String path, [Map<String, Object?> body = const {}]) => _send(
+        () => _http.post(_url('/api/app/nous/$path'), headers: {..._headers, 'content-type': 'application/json'}, body: jsonEncode(body)),
+        timeout: const Duration(seconds: 60),
+      );
+
+  /// The account's channels and groups -- Telegram can take a while to list them.
+  Future<List<NousChat>> nousChats() async {
+    final body = await _send(() => _http.get(_url('/api/app/nous/chats'), headers: _headers), timeout: const Duration(seconds: 60));
+    final list = body['chats'];
+    return list is List ? list.whereType<Map>().map((m) => NousChat.fromJson(Map<String, dynamic>.from(m))).toList() : <NousChat>[];
+  }
+
+  Future<NousState> saveNousChats(List<String> ids) async => NousState.fromJson(await nousAction('chats', {'ids': ids}));
+
   void close() => _http.close();
 }

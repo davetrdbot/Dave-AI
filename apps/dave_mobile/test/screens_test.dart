@@ -234,6 +234,36 @@ http.Client _fakeServer() => MockClient((req) async {
           };
         case '/api/app/chat/activity':
           body = {'events': [], 'latestEventId': 40};
+        case '/api/app/nous/state':
+          body = {
+            'loggedIn': true,
+            'account': 'Dave Trader (@davetrader)',
+            'listening': true,
+            'running': true,
+            'chats': [
+              {'id': '-1001', 'title': 'Gold Signals VIP', 'kind': 'channel'},
+              {'id': '-1002', 'title': 'FX Room', 'kind': 'group'},
+            ],
+            'autoApprove': false,
+            'lots': 0.05,
+            'lotsAuto': false,
+            'maxAgeMinutes': 5,
+            'trades': [
+              {'ticket': '881', 'symbol': 'XAUUSD', 'side': 'buy', 'lots': 0.05, 'entry': 2650, 'sl': 2640, 'tp1': 2665, 'tp2': 2680, 'from': 'Gold Signals VIP'},
+            ],
+            'signals': [
+              {'id': 's1', 'symbol': 'XAUUSD', 'side': 'buy', 'from': 'Gold Signals VIP', 'postedAt': DateTime.now().millisecondsSinceEpoch - 600000, 'status': 'placed'},
+              {'id': 's2', 'symbol': 'GBPJPY', 'side': 'sell', 'from': 'FX Room', 'postedAt': DateTime.now().millisecondsSinceEpoch - 3600000, 'status': 'expired'},
+            ],
+          };
+        case '/api/app/nous/chats':
+          body = {
+            'chats': [
+              {'id': '-1001', 'title': 'Gold Signals VIP', 'kind': 'channel', 'picked': true},
+              {'id': '-1002', 'title': 'FX Room', 'kind': 'group', 'picked': true},
+              {'id': '-1003', 'title': 'Crypto Calls', 'kind': 'channel', 'picked': false},
+            ],
+          };
         case '/api/app/bot':
           body = {'running': true, 'executionEnabled': true, 'intervalMinutes': 5, 'intervalBounds': {'min': 1, 'max': 60}};
         default:
@@ -464,6 +494,31 @@ void main() {
       expect(find.text('VOL_80'), findsOneWidget);
       expect(find.text('8s'), findsOneWidget);
       expect(find.text('Change account'), findsOneWidget);
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
+
+      await tester.tap(find.text('Nous copy trading'));
+      await _advance(tester);
+      await _shot(tester, 'nous_$mode');
+      expect(find.text('Dave Trader (@davetrader)'), findsOneWidget);
+      expect(find.text('Live'), findsOneWidget);
+      expect(find.text('0.05'), findsOneWidget);
+      await tester.tap(find.text('Channels & groups'));
+      await _advance(tester);
+      await _shot(tester, 'nous_channels_$mode');
+      expect(find.text('Crypto Calls'), findsOneWidget);
+      expect(find.text('2 PICKED'), findsOneWidget);
+      await tester.tap(find.text('Crypto Calls'));
+      await _advance(tester);
+      expect(find.text('3 PICKED'), findsOneWidget);
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
+      await tester.tap(find.text('Reconnect Telegram'));
+      await _advance(tester);
+      await _shot(tester, 'nous_connect_$mode');
+      expect(find.text('Send me the code'), findsOneWidget);
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
       await tester.tap(find.byType(CupertinoNavigationBarBackButton));
       await _advance(tester);
 

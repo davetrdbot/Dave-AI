@@ -11,6 +11,7 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import 'context.dart';
 import 'mt5.dart';
+import 'nous.dart';
 import 'providers.dart';
 
 class _SettingsData {
@@ -513,6 +514,13 @@ class _AiSection extends StatelessWidget {
           subtitle: const Text('Run MT5 in Dave\'s container -- no VPS'),
           trailing: const CupertinoListTileChevron(),
           onTap: () => pushScoped<void>(context, const Mt5Page()),
+        ),
+        CupertinoListTile(
+          leading: const Icon(CupertinoIcons.antenna_radiowaves_left_right),
+          title: const Text('Nous copy trading'),
+          subtitle: const Text('Copy signals from your Telegram channels'),
+          trailing: const CupertinoListTileChevron(),
+          onTap: () => pushScoped<void>(context, const NousPage()),
         ),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.gauge),
