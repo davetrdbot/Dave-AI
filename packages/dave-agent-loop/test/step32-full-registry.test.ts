@@ -230,7 +230,8 @@ try {
   assert.ok(!registryWithPush.has("tg_thinking_update"), "tg_thinking_update must NOT be registered");
   assert.ok(!registryWithPush.has("tg_finalize"), "tg_finalize must NOT be registered");
   assert.ok(registryWithPush.has("send_trade_opened_notification"), "NOTIFICATION_TOOLS must also register");
-  assert.equal(registryWithPush.list().length, registry.list().length + PUSH_TOOLS.length + TELEGRAM_TOOLS.length + NOTIFICATION_TOOLS.length);
+  assert.ok(registryWithPush.has("draw_setup"), "the drawing board needs somewhere to send the picture, so it comes with the chat");
+  assert.equal(registryWithPush.list().length, registry.list().length + 1 /* draw_setup */ + PUSH_TOOLS.length + TELEGRAM_TOOLS.length + NOTIFICATION_TOOLS.length);
   await new Promise<void>((resolve) => tgServer.close(() => resolve()));
   console.log(`    real push reached the real Telegram-shaped server: chat_id=${capturedPush.chat_id}, text="${capturedPush.text}"`);
 

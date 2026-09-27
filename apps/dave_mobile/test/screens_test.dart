@@ -514,9 +514,22 @@ void main() {
       await _advance(tester);
       await tester.tap(find.textContaining('XAUUSD  Buy'));
       await _advance(tester);
+      // Tapping a trade opens its card: SL and TP edited in place, breakeven, close.
+      await _shot(tester, 'trade_sheet_$mode');
+      expect(find.text('Stop loss'), findsOneWidget);
+      expect(find.text('Take profit'), findsOneWidget);
+      expect(find.text('Save SL / TP'), findsOneWidget);
+      await tester.tap(find.text('Breakeven'));
+      await _advance(tester);
+      await _shot(tester, 'trade_sheet_breakeven_$mode');
+      // Closing still asks first, and names the trade.
+      await tester.tap(find.text('Close trade'));
+      await _advance(tester);
       await _shot(tester, 'close_confirm_$mode');
-      expect(find.text('Close trade'), findsOneWidget);
+      expect(find.text('Close trade'), findsWidgets);
       await tester.tap(find.text('Cancel'));
+      await _advance(tester);
+      await tester.tapAt(const Offset(20, 40)); // dismiss the card
       await _advance(tester);
 
       await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -700));

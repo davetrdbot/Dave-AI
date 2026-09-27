@@ -8,6 +8,7 @@ import '../look.dart';
 import '../theme.dart';
 import '../widgets/performance.dart';
 import '../widgets/common.dart';
+import '../widgets/trade_sheet.dart';
 import 'mt5_screen.dart';
 import 'nous.dart';
 import 'shell.dart';
@@ -442,7 +443,7 @@ class _OpenTrades extends StatelessWidget {
     }
     return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: ListHeader(header),
-      footer: const ListFooter('Tap a trade to close it.'),
+      footer: const ListFooter('Tap a trade to change its SL / TP or close it.'),
       children: [for (final p in d.positions) _PositionTile(p: p, onChanged: onChanged)],
     );
   }
@@ -455,7 +456,7 @@ class _PositionTile extends StatelessWidget {
 
   /// Closing is irreversible and moves real money, so it is always confirmed, and the sheet says
   /// exactly which trade and at roughly what result.
-  Future<void> _close(BuildContext context) async {
+  Future<bool> _close(BuildContext context) async {
     final result = p.pnl == null ? '' : ' at about ${formatMoney(p.pnl!, signed: true)}';
     final ok = await confirmDestructive(
       context,
@@ -463,10 +464,10 @@ class _PositionTile extends StatelessWidget {
       message: 'Closes ${p.lots} lots at the market price$result. This cannot be undone.',
       action: 'Close trade',
     );
-    if (!ok || !context.mounted) return;
+    if (!ok || !context.mounted) return false;
     HapticFeedback.mediumImpact();
     final sent = await runAction(context, (api) => api.closeTrade(p.ticket));
-    if (!sent || !context.mounted) return;
+    if (!sent || !context.mounted) return false;
     await showCupertinoDialog<void>(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
@@ -476,6 +477,7 @@ class _PositionTile extends StatelessWidget {
       ),
     );
     await onChanged();
+    return true;
   }
 
   @override
@@ -486,7 +488,11 @@ class _PositionTile extends StatelessWidget {
       if (p.tp != null) 'TP ${formatPrice(p.tp!)}',
     ].join('  ·  ');
     return CupertinoListTile(
-      onTap: () => _close(context),
+      onTap: () async {
+        final changed = await showTradeSheet(context,
+            ticket: p.ticket, symbol: p.symbol, kind: 'position', isBuy: p.isBuy, lots: p.lots, entry: p.openPrice, current: p.currentPrice, sl: p.sl, tp: p.tp, pnl: p.pnl, onClose: () => _close(context));
+        if (changed) await onChanged();
+      },
       leading: Icon(p.isBuy ? CupertinoIcons.arrow_up_right : CupertinoIcons.arrow_down_right, color: resolve(context, CupertinoColors.secondaryLabel)),
       title: Text('${p.symbol}  ${p.isBuy ? 'Buy' : 'Sell'}'),
       subtitle: Text(levels),
@@ -513,37 +519,11 @@ class _PendingOrders extends StatelessWidget {
               subtitle: Text('${o.lots} lots at ${formatPrice(o.price)}\n'
                   'SL ${o.sl == null ? 'none' : formatPrice(o.sl!)}  ·  TP ${o.tp == null ? 'none' : formatPrice(o.tp!)}'),
               trailing: const CupertinoListTileChevron(),
-              onTap: () => _editStops(context, o),
+              onTap: () => showTradeSheet(context,
+                  ticket: o.ticket, symbol: o.symbol, kind: o.label, isBuy: o.type.toLowerCase().startsWith('buy'), lots: o.lots, entry: o.price, sl: o.sl, tp: o.tp),
             ),
         ],
       );
-}
-
-/// SL and TP on a pending order, from the phone. Empty removes it.
-Future<void> _editStops(BuildContext context, PendingOrder o) async {
-  final sl = await promptText(context,
-      title: 'Stop loss', message: '${o.symbol} ${o.label} at ${formatPrice(o.price)}. Leave empty for no SL.', initial: o.sl == null ? '' : formatPrice(o.sl!).replaceAll(',', ''),
-      keyboardType: const TextInputType.numberWithOptions(decimal: true), action: 'Next');
-  if (sl == null || !context.mounted) return;
-  final tp = await promptText(context,
-      title: 'Take profit', message: 'Leave empty for no TP.', initial: o.tp == null ? '' : formatPrice(o.tp!).replaceAll(',', ''),
-      keyboardType: const TextInputType.numberWithOptions(decimal: true), action: 'Set');
-  if (tp == null || !context.mounted) return;
-  double? parse(String s) => s.trim().isEmpty ? null : double.tryParse(s.replaceAll(',', '').trim());
-  if ((sl.trim().isNotEmpty && parse(sl) == null) || (tp.trim().isNotEmpty && parse(tp) == null)) {
-    await showError(context, 'Enter prices as numbers, e.g. 2645.5');
-    return;
-  }
-  if (await runAction(context, (api) => api.setStops(o.ticket, sl: parse(sl), tp: parse(tp))) && context.mounted) {
-    showCupertinoDialog<void>(
-      context: context,
-      builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Sent to MT5'),
-        content: const Text('The new SL / TP shows here on the EA\'s next report, in a few seconds.'),
-        actions: [CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
-      ),
-    );
-  }
 }
 
 class _Results extends StatelessWidget {
