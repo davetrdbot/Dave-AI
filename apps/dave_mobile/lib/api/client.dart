@@ -66,6 +66,8 @@ class PairResult {
 }
 
 /// The phone's side of the /api/app/* API.
+const _keep = Object();
+
 class DaveApi {
   DaveApi({required this.base, required this.token, http.Client? client, this.streamClient}) : _http = client ?? http.Client();
 
@@ -245,6 +247,15 @@ class DaveApi {
 
   /// Queues a close with the EA. It is confirmed by the EA's next report, not by this call.
   Future<void> closeTrade(String ticket) => _post('/api/app/trades', {'action': 'close', 'ticket': ticket});
+
+  /// Sets SL and/or TP on an open trade or a pending order. A price sets it, null removes it,
+  /// leaving a side out keeps it. Queued with the EA like a close.
+  Future<void> setStops(String ticket, {Object? sl = _keep, Object? tp = _keep}) => _post('/api/app/trades', {
+        'action': 'modify',
+        'ticket': ticket,
+        if (!identical(sl, _keep)) 'sl': sl,
+        if (!identical(tp, _keep)) 'tp': tp,
+      });
 
   // --- Nous copy trading (served by the bot process, where the Telegram login runs) -------------
 

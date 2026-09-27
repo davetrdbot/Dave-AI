@@ -1,6 +1,7 @@
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 
 /// Design tokens for the Dave app, following .claude/skills/apple-design.
 ///
@@ -48,9 +49,9 @@ class Aurora extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = CupertinoTheme.brightnessOf(context) == Brightness.dark;
-    final base = dark ? const Color(0xFF070A14) : const Color(0xFFF1F4FB);
+    final base = dark ? const Color(0xFF07080D) : const Color(0xFFF1F4FB);
     final orbs = dark
-        ? const [(Alignment(-1.1, -0.95), Color(0xFF1F4FD8), 0.55), (Alignment(1.15, -0.35), Color(0xFF6A2BD9), 0.45), (Alignment(-0.6, 0.85), Color(0xFF0C8C8C), 0.40), (Alignment(1.0, 1.05), Color(0xFF2B3FA8), 0.35)]
+        ? const [(Alignment(-1.1, -1.0), Color(0xFF6D5BFF), 0.55), (Alignment(1.15, -0.55), Color(0xFF9B4DFF), 0.40), (Alignment(-0.8, 0.9), Color(0xFF3F8F2A), 0.32), (Alignment(1.0, 1.1), Color(0xFF1F6F5A), 0.30)]
         : const [(Alignment(-1.1, -0.95), Color(0xFF8DB7FF), 0.55), (Alignment(1.15, -0.35), Color(0xFFC9A8FF), 0.50), (Alignment(-0.6, 0.85), Color(0xFF8FE3D6), 0.45), (Alignment(1.0, 1.05), Color(0xFFFFC7DD), 0.40)];
     return DecoratedBox(
       decoration: BoxDecoration(color: base),
@@ -103,9 +104,16 @@ class Glass extends StatelessWidget {
     final brightness = CupertinoTheme.brightnessOf(context);
     final dark = brightness == Brightness.dark;
     final opaque = MediaQuery.highContrastOf(context);
+    // A live blur re-samples whatever scrolls behind it on every frame -- smooth on an iPhone,
+    // a stutter on most Android phones. There the glass is a translucent tint over the colour
+    // field instead, which reads almost the same.
+    final blur = defaultTargetPlatform == TargetPlatform.iOS;
     final fill = opaque
         ? resolve(context, CupertinoColors.secondarySystemGroupedBackground)
-        : (dark ? const Color(0x661C2030) : const Color(0x8CFFFFFF));
+        : blur
+            ? (dark ? const Color(0x661C2030) : const Color(0x8CFFFFFF))
+            // No blur: denser, so text scrolling underneath doesn't show through.
+            : (dark ? const Color(0xE8141826) : const Color(0xEBF7F8FC));
     // The light top edge is what makes glass read as a physical layer rather than as a tint.
     final edge = dark ? const Color(0x33FFFFFF) : const Color(0xE6FFFFFF);
 
@@ -121,7 +129,7 @@ class Glass extends StatelessWidget {
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
-      child: opaque ? body : BackdropFilter(filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), child: body),
+      child: opaque || !blur ? body : BackdropFilter(filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), child: body),
     );
   }
 }

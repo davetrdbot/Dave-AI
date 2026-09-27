@@ -107,7 +107,8 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
         title: 'Dave',
         debugShowCheckedModeBanner: false,
         // No brightness set: the app follows the system, light by default and dark when chosen.
-        theme: const CupertinoThemeData(primaryColor: CupertinoColors.systemBlue, scaffoldBackgroundColor: Color(0x00000000), barBackgroundColor: glassBar),
+        // Dark, on every phone: Dave's own look (purple and lime on deep glass), not the system's.
+        theme: const CupertinoThemeData(brightness: Brightness.dark, primaryColor: Color(0xFF8E7BFF), scaffoldBackgroundColor: Color(0x00000000), barBackgroundColor: glassBar),
         // Every screen -- pushed ones too -- sits on the same soft colour field (theme.dart).
         builder: (context, child) => Stack(fit: StackFit.expand, children: [const Aurora(), ?child]),
         home: home,

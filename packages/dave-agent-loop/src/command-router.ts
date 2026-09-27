@@ -309,7 +309,7 @@ function tradesScreen(deps: CommandRouterDeps, liveSeconds?: number): { text: st
 
   if (pendingOrders.length > 0) {
     lines.push("", "<b>Pending orders</b>");
-    lines.push(...pendingOrders.map((o) => `🕒 ${o.symbol} ${o.type.toUpperCase()} ${o.lots} @ ${o.price} — #${o.ticket}`));
+    lines.push(...pendingOrders.map((o) => `🕒 ${o.symbol} ${o.type.toUpperCase()} ${o.lots} @ ${o.price}${o.sl ? ` · SL ${o.sl}` : ""}${o.tp ? ` · TP ${o.tp}` : ""} — #${o.ticket}`));
     rows.push(...pendingOrders.map((o) => [coloredButton(`🗑 Delete ${o.symbol} ${o.type.toUpperCase()} @ ${o.price}`, "red", `trades:delpending:${o.ticket}`)]));
     if (pendingOrders.length > 1) rows.push([coloredButton(`🗑 Delete ALL pending (${pendingOrders.length})`, "red", "trades:delpendingall")]);
   }

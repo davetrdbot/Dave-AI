@@ -459,7 +459,9 @@ string BuildReportJson()
                         "\"symbol\":\"" + OrderGetString(ORDER_SYMBOL) + "\"," +
                         "\"type\":\"" + typeStr + "\"," +
                         "\"lots\":" + DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT), 2) + "," +
-                        "\"price\":" + DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN), 5) + "}";
+                        "\"price\":" + DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN), 5) + "," +
+                        "\"sl\":" + DoubleToString(OrderGetDouble(ORDER_SL), 5) + "," +
+                        "\"tp\":" + DoubleToString(OrderGetDouble(ORDER_TP), 5) + "}";
      }
 
    string results = LastResultsJson();
@@ -762,7 +764,19 @@ void ExecuteOneCommand(string obj)
      {
       string ticketStr = JsonGetString(obj, "ticket");
       ulong ticket = (ulong)StringToInteger(ticketStr);
-      if(!PositionSelectByTicket(ticket))
+      if(!PositionSelectByTicket(ticket) && OrderSelect(ticket))
+        {
+         // A PENDING order's SL/TP: same absent/null/number rules, the entry price and
+         // expiry stay exactly as they are.
+         double curSL = OrderGetDouble(ORDER_SL);
+         double curTP = OrderGetDouble(ORDER_TP);
+         double newSL = !JsonHasKey(obj, "sl") ? curSL : (JsonIsNull(obj, "sl") ? 0 : JsonGetNumber(obj, "sl", curSL));
+         double newTP = !JsonHasKey(obj, "tp") ? curTP : (JsonIsNull(obj, "tp") ? 0 : JsonGetNumber(obj, "tp", curTP));
+         bool ok = trade.OrderModify(ticket, OrderGetDouble(ORDER_PRICE_OPEN), newSL, newTP,
+                                     (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME), (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION));
+         AppendResult(id, ok, ok ? "modified" : ("failed: " + trade.ResultRetcodeDescription()), "");
+        }
+      else if(!PositionSelectByTicket(ticket))
         {
          AppendResult(id, false, "ticket not found", "");
         }

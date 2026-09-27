@@ -62,6 +62,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _close() {
+    _rebuild?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -102,6 +103,16 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// A busy turn sends many events a second; the screen redraws at most every 80 ms for them
+  /// instead of once per event -- the difference between smooth and stuttering on a phone.
+  Timer? _rebuild;
+  void _rebuildSoon() {
+    if (_rebuild?.isActive ?? false) return;
+    _rebuild = Timer(const Duration(milliseconds: 80), () {
+      if (mounted) setState(() {});
+    });
+  }
+
   void _listen(int after) {
     _close();
     final api = _api!;
@@ -112,7 +123,7 @@ class _ChatScreenState extends State<ChatScreen> {
         (e) {
           if (!mounted) return;
           if (_timeline.apply(e)) {
-            setState(() {});
+            _rebuildSoon();
             if (e.kind == 'final' || e.kind == 'ask_user') HapticFeedback.lightImpact();
           }
         },
@@ -353,9 +364,14 @@ class _ChatScreenState extends State<ChatScreen> {
         reverse: true,
         padding: const EdgeInsets.fromLTRB(Space.s3, Space.s3, Space.s3, Space.s2),
         itemCount: entries.length,
+        // Keyed, so a new message doesn't shift and rebuild every one already on screen.
+        findChildIndexCallback: (key) {
+          final i = entries.indexWhere((e) => ObjectKey(e) == key);
+          return i < 0 ? null : entries.length - 1 - i;
+        },
         itemBuilder: (context, i) {
           final entry = entries[entries.length - 1 - i];
-          return switch (entry) {
+          return KeyedSubtree(key: ObjectKey(entry), child: switch (entry) {
             HistoryEntry(:final item) => _HistoryBubble(item),
             TurnEntry() => _TurnView(
               turn: entry,
@@ -363,7 +379,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onCardButton: _tapCardButton,
             ),
             CardEntry() => _CardView(card: entry, onButton: _tapCardButton),
-          };
+          });
         },
       ),
     );

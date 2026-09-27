@@ -41,13 +41,17 @@ class Position {
 }
 
 class PendingOrder {
-  PendingOrder({required this.ticket, required this.symbol, required this.type, required this.lots, required this.price});
+  PendingOrder({required this.ticket, required this.symbol, required this.type, required this.lots, required this.price, this.sl, this.tp});
 
   final String ticket;
   final String symbol;
   final String type;
   final double lots;
   final double price;
+
+  /// Null when the order has none (MT5 reports 0).
+  final double? sl;
+  final double? tp;
 
   /// "buy_limit" -> "Buy limit".
   String get label {
@@ -61,6 +65,8 @@ class PendingOrder {
         type: _str(j['type']),
         lots: _num(j['lots']) ?? 0,
         price: _num(j['price']) ?? 0,
+        sl: (_num(j['sl']) ?? 0) > 0 ? _num(j['sl']) : null,
+        tp: (_num(j['tp']) ?? 0) > 0 ? _num(j['tp']) : null,
       );
 }
 

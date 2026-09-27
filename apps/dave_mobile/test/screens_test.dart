@@ -296,6 +296,8 @@ http.Client _fakeChatStream() => MockClient.streaming((req, _) async {
         frame('tool_end', {'id': 'a', 'name': 'get_price', 'label': 'Checking price', 'result': {'bid': 2651.2}, 'ms': 420}),
         frame('text', {'text': 'Price is 2,651. Looking for structure.'}),
         frame('tool_start', {'id': 'b', 'name': 'find_setup', 'label': 'Hunting for a setup', 'args': {}}),
+        frame('decision', {'symbol': 'XAUUSD', 'action': 'BUY_LIMIT', 'reason': 'Sweep of the Asian low, limit on the order block at 2,648'}, feed: 'loop', turnId: null),
+        frame('analysis', {'symbol': 'XAUUSD', 'timeframes': ['M1', 'M5', 'H1'], 'stage': 'reading'}, feed: 'loop', turnId: null),
         frame('nous_card', {
           'blocks': [
             {'type': 'heading', 'text': 'XAUUSD BUY from Gold Signals'},
@@ -381,7 +383,21 @@ void main() {
       await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const Shell())));
       await _advance(tester);
 
-      // Chat opens first: the stored conversation, then the live turn with its steps.
+      // Home opens first: the purple balance hero with its round buttons.
+      await _shot(tester, 'home_$mode');
+      expect(find.text('MT5 screen'), findsOneWidget);
+      expect(find.text('MT5 live'), findsOneWidget);
+
+      // Live: what Dave is analysing right now.
+      await tester.tap(find.byIcon(CupertinoIcons.waveform_path_ecg).last);
+      await _advance(tester);
+      await _shot(tester, 'live_$mode');
+      expect(find.text('Analysing XAUUSD'), findsWidgets);
+      expect(find.text('BUY LIMIT XAUUSD'), findsOneWidget);
+
+      await tester.tap(find.byIcon(CupertinoIcons.chat_bubble_2).last);
+      await _advance(tester);
+      // Chat: the stored conversation, then the live turn with its steps.
       await _shot(tester, 'chat_$mode');
       expect(find.text('Should I buy gold now?'), findsOneWidget);
       expect(find.text('Checking price'), findsOneWidget);
@@ -396,9 +412,8 @@ void main() {
       await _advance(tester);
       await _shot(tester, 'chat_history_$mode');
 
-      await tester.tap(find.byIcon(CupertinoIcons.chart_bar_square).last);
+      await tester.tap(find.byIcon(CupertinoIcons.house).last);
       await _advance(tester);
-      await _shot(tester, 'home_$mode');
       expect(find.text('Dave'), findsWidgets);
       expect(find.textContaining('Volatility 75 Index'), findsOneWidget);
 

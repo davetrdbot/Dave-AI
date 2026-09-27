@@ -15,6 +15,7 @@ import { eaConnectionAlert, cycleErrorAlert } from "./health-alerts.js";
 import { createMarketWatchSync } from "./market-watch-sync.js";
 import { APP_CHAT_PREFIX, createAppChatHandler } from "./app-chat-routes.js";
 import { APP_NOUS_PREFIX, createAppNousHandler } from "./nous/app-routes.js";
+import { MT5_SCREEN_PREFIX, createMt5ScreenProxy } from "./mt5-screen.js";
 import { logClosedTrade } from "@dave/feedback";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { publishActivity } from "./activity-bus.js";
@@ -375,6 +376,9 @@ export async function main(): Promise<void> {
   // proxy, which serves every other /api/app route.
   routes.push([APP_CHAT_PREFIX, createAppChatHandler({ userId: ownerUserId, db, executor: sharedExecutor, systemPrompt: loadSystemPrompt(), publicBaseUrl })]);
   routes.push([APP_NOUS_PREFIX, createAppNousHandler({ userId: ownerUserId })]);
+  // The MT5 container's screen, live with mouse and keyboard (noVNC), for the app.
+  const mt5Screen = createMt5ScreenProxy(ownerUserId);
+  routes.push([MT5_SCREEN_PREFIX, mt5Screen.handle]);
 
   /**
    * Real gap fixed: the admin panel's real Telegram OTP pairing flow
@@ -476,6 +480,12 @@ export async function main(): Promise<void> {
     }
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  // The MT5 screen's live connection is a WebSocket; everything else here is plain HTTP.
+  root.on("upgrade", (req, socket, head) => {
+    if ((req.url ?? "").startsWith(MT5_SCREEN_PREFIX)) mt5Screen.upgrade(req, socket, head);
+    else socket.destroy();
   });
 
   await new Promise<void>((resolve) => root.listen(port, resolve));

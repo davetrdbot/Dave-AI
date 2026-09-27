@@ -1,0 +1,468 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
+
+import '../api/chat.dart';
+import '../api/client.dart';
+import '../api/models.dart';
+import '../app_scope.dart';
+import '../theme.dart';
+import '../widgets/common.dart';
+
+/// The autonomous loop ("mode 2") in real time: what Dave is analysing right now and at which
+/// stage, every decision with its reason, Flo's and Journal's verdicts, his thoughts, workers and
+/// Nous -- and the switch to start or stop him.
+class LiveScreen extends StatefulWidget {
+  const LiveScreen({super.key});
+
+  @override
+  State<LiveScreen> createState() => _LiveScreenState();
+}
+
+enum _Filter { all, decisions, agents }
+
+class _LiveScreenState extends State<LiveScreen> {
+  final _events = <ActivityEvent>[];
+  ChatApi? _api;
+  ActivityStream? _stream;
+  final _subs = <StreamSubscription<Object?>>[];
+  BotState? _bot;
+  bool _live = false;
+  String? _error;
+  _Filter _filter = _Filter.all;
+  Timer? _rebuild;
+  Timer? _clock;
+
+  static const _keep = 300;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final api = AppScope.of(context).api;
+    if (_api?.base != api.base || _api?.token != api.token) {
+      _api = ChatApi.of(api);
+      unawaited(_load());
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // "12s ago" and the analysing timer tick on their own.
+    _clock = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _close();
+    _clock?.cancel();
+    super.dispose();
+  }
+
+  void _close() {
+    _rebuild?.cancel();
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _subs.clear();
+    _stream?.close();
+    _stream = null;
+  }
+
+  Future<void> _load() async {
+    final api = _api!;
+    final scope = AppScope.of(context);
+    try {
+      final bot = await scope.api.bot();
+      final latest = (await api.activity(after: 1 << 30, feeds: const ['loop'])).latestEventId;
+      final recent = await api.activity(after: math.max(0, latest - _keep), feeds: const ['loop', 'background']);
+      if (!mounted) return;
+      setState(() {
+        _bot = bot;
+        _events
+          ..clear()
+          ..addAll(recent.events);
+        _error = null;
+      });
+      _listen(recent.latestEventId);
+    } on UnpairedException catch (e) {
+      scope.onUnpaired(e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  void _listen(int after) {
+    _close();
+    final stream = _api!.stream(after: after, feeds: const ['loop', 'background']);
+    _stream = stream;
+    _subs.add(stream.events.listen((e) {
+      if (e.feed == 'chat') return;
+      _events.add(e);
+      if (_events.length > _keep) _events.removeRange(0, _events.length - _keep);
+      if (e.kind == 'cycle_end' && e.data['notable'] == true) HapticFeedback.lightImpact();
+      if (_rebuild?.isActive ?? false) return;
+      _rebuild = Timer(const Duration(milliseconds: 120), () {
+        if (mounted) setState(() {});
+      });
+    }, onError: (Object err) {
+      if (err is UnpairedException && mounted) AppScope.of(context).onUnpaired(err.message);
+    }));
+    _subs.add(stream.connected.listen((live) {
+      if (mounted) setState(() => _live = live);
+    }));
+    stream.start();
+  }
+
+  Future<void> _setRunning(bool running) async {
+    if (!running) {
+      final ok = await confirmDestructive(context,
+          title: 'Stop autonomous trading?', message: 'Dave stops looking for new trades. Open positions stay open.', action: 'Stop trading');
+      if (!ok || !mounted) return;
+    }
+    final scope = AppScope.of(context);
+    try {
+      final bot = await scope.api.updateBot(running: running);
+      if (mounted) setState(() => _bot = bot);
+      HapticFeedback.mediumImpact();
+    } catch (e) {
+      if (mounted) await showError(context, e);
+    }
+  }
+
+  /// What Dave is doing right now, read from the newest loop events.
+  _Now _now() {
+    for (final e in _events.reversed) {
+      if (e.feed != 'loop') continue;
+      switch (e.kind) {
+        case 'analysis':
+          final tfs = e.data['timeframes'] is List ? (e.data['timeframes'] as List).join(' · ') : null;
+          return _Now(
+            busy: true,
+            title: 'Analysing ${e.text('symbol')}',
+            detail: e.text('stage') == 'deciding' ? 'Deciding: buy, sell, limit or wait' : 'Reading the charts${tfs == null ? '' : ' · $tfs'}',
+            since: e.at,
+          );
+        case 'thought':
+          return _Now(busy: true, title: 'Thinking it through', detail: e.text('text'), since: e.at);
+        case 'flo':
+          return _Now(busy: true, title: 'Flo is reviewing', detail: '${e.text('symbol')} ${e.text('action')}', since: e.at);
+        case 'journal':
+          return _Now(busy: true, title: 'Asked Journal', detail: e.text('opinion'), since: e.at);
+        case 'cycle_start':
+          return _Now(busy: true, title: 'Starting a scan', detail: 'Picking the next pair', since: e.at);
+        case 'cycle_end':
+          final action = e.text('action');
+          final symbol = e.text('symbol');
+          return _Now(
+            busy: false,
+            title: e.data['error'] != null ? 'Last scan failed' : (action == 'NONE' || action.isEmpty ? 'No trade last scan' : '$action $symbol'),
+            detail: e.data['error'] != null ? e.text('error') : 'Waiting for the next scan',
+            since: e.at,
+          );
+        case 'cycle_skip':
+          return _Now(busy: false, title: 'Scan skipped', detail: e.text('reason'), since: e.at);
+      }
+    }
+    return _Now(busy: false, title: _bot?.running == true ? 'Waiting for the next scan' : 'Autonomous trading is off', detail: null, since: null);
+  }
+
+  bool _shown(ActivityEvent e) => switch (_filter) {
+        _Filter.all => e.kind != 'log',
+        _Filter.decisions => const {'decision', 'cycle_end', 'flo', 'journal', 'nous_card', 'trade_closed'}.contains(e.kind),
+        _Filter.agents => e.agent != null,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = 110 + MediaQuery.paddingOf(context).bottom;
+    final shown = _events.reversed.where(_shown).take(150).toList();
+    final now = _now();
+    return CupertinoPageScaffold(
+      backgroundColor: const Color(0x00000000),
+      child: CustomScrollView(
+        physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+        slivers: [
+          const CupertinoSliverNavigationBar(largeTitle: Text('Live'), heroTag: 'nav:Live'),
+          CupertinoSliverRefreshControl(onRefresh: _load),
+          SliverToBoxAdapter(child: _NowCard(now: now, live: _live, bot: _bot, onRunning: _setRunning)),
+          if (_error != null)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(Space.s4),
+                child: Text(_error!, style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+              ),
+            ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(Space.s4, Space.s4, Space.s4, Space.s2),
+              child: Row(children: [
+                for (final f in _Filter.values) ...[
+                  _Chip(
+                    text: switch (f) {
+                      _Filter.all => 'Everything',
+                      _Filter.decisions => 'Decisions',
+                      _Filter.agents => 'Flo · Journal · Workers',
+                    },
+                    selected: _filter == f,
+                    onTap: () => setState(() => _filter = f),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+              ]),
+            ),
+          ),
+          if (shown.isEmpty)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.only(top: Space.s6),
+                child: EmptyState(icon: CupertinoIcons.waveform_path_ecg, title: 'Nothing yet', message: 'When Dave scans the market, every step shows up here as it happens.'),
+              ),
+            )
+          else
+            SliverList.builder(itemCount: shown.length, itemBuilder: (context, i) => _EventRow(e: shown[i])),
+          SliverToBoxAdapter(child: SizedBox(height: bottom)),
+        ],
+      ),
+    );
+  }
+}
+
+class _Now {
+  _Now({required this.busy, required this.title, required this.detail, required this.since});
+  final bool busy;
+  final String title;
+  final String? detail;
+  final DateTime? since;
+}
+
+/// The hero: what Dave is doing this second, with the on/off switch.
+class _NowCard extends StatelessWidget {
+  const _NowCard({required this.now, required this.live, required this.bot, required this.onRunning});
+  final _Now now;
+  final bool live;
+  final BotState? bot;
+  final void Function(bool) onRunning;
+
+  @override
+  Widget build(BuildContext context) {
+    final running = bot?.running == true;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(Space.s4, Space.s2, Space.s4, 0),
+      padding: const EdgeInsets.all(Space.s4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(26),
+        gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF6D5BFF), Color(0xFF9B6BFF), Color(0xFF3B2A8C)]),
+        border: Border.all(color: const Color(0x40FFFFFF), width: 0.8),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          _Pulse(active: now.busy && running),
+          const SizedBox(width: 8),
+          Text(
+            !live ? 'CONNECTING…' : (running ? (now.busy ? 'WORKING' : 'ON') : 'OFF'),
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1.2, color: Color(0xCCFFFFFF)),
+          ),
+          const Spacer(),
+          if (bot != null)
+            Text('every ${bot!.intervalMinutes} min', style: const TextStyle(fontSize: 12.5, color: Color(0xB3FFFFFF))),
+        ]),
+        const SizedBox(height: Space.s3),
+        Text(now.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700, letterSpacing: -0.6, color: CupertinoColors.white)),
+        if (now.detail != null && now.detail!.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(now.detail!, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14.5, height: 1.35, color: Color(0xE6FFFFFF))),
+        ],
+        if (now.since != null) ...[
+          const SizedBox(height: 6),
+          Text(formatAgo(now.since!), style: const TextStyle(fontSize: 12, color: Color(0x99FFFFFF))),
+        ],
+        const SizedBox(height: Space.s4),
+        GestureDetector(
+          onTap: bot == null ? null : () => onRunning(!running),
+          child: Container(
+            height: 48,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: running ? const Color(0x33000000) : CupertinoColors.white, borderRadius: BorderRadius.circular(24)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(running ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill, size: 18, color: running ? CupertinoColors.white : const Color(0xFF3B2A8C)),
+              const SizedBox(width: 8),
+              Text(running ? 'Stop trading' : 'Start trading',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: running ? CupertinoColors.white : const Color(0xFF3B2A8C))),
+            ]),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+class _Pulse extends StatefulWidget {
+  const _Pulse({required this.active});
+  final bool active;
+  @override
+  State<_Pulse> createState() => _PulseState();
+}
+
+class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
+  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
+
+  @override
+  void initState() {
+    super.initState();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(_Pulse old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    if (widget.active && !_c.isAnimating) {
+      _c.repeat(reverse: true);
+    } else if (!widget.active) {
+      _c
+        ..stop()
+        ..value = 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => FadeTransition(
+        opacity: Tween(begin: 0.3, end: 1.0).animate(_c),
+        child: Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: widget.active ? const Color(0xFFB8F36A) : const Color(0xB3FFFFFF),
+            shape: BoxShape.circle,
+            boxShadow: widget.active ? const [BoxShadow(color: Color(0xAAB8F36A), blurRadius: 10)] : null,
+          ),
+        ),
+      );
+}
+
+class _Chip extends StatelessWidget {
+  const _Chip({required this.text, required this.selected, required this.onTap});
+  final String text;
+  final bool selected;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) => Flexible(
+        child: GestureDetector(
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: selected
+                ? BoxDecoration(color: resolve(context, CupertinoColors.label), borderRadius: BorderRadius.circular(18))
+                : glassDecoration(context, radius: 18),
+            child: Text(text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: selected ? resolve(context, CupertinoColors.systemBackground) : resolve(context, CupertinoColors.label))),
+          ),
+        ),
+      );
+}
+
+/// One step of the loop, in words.
+class _EventRow extends StatelessWidget {
+  const _EventRow({required this.e});
+  final ActivityEvent e;
+
+  @override
+  Widget build(BuildContext context) {
+    final green = resolve(context, CupertinoColors.systemGreen);
+    final red = resolve(context, CupertinoColors.systemRed);
+    final blue = resolve(context, CupertinoColors.systemBlue);
+    final purple = resolve(context, CupertinoColors.systemPurple);
+    final grey = resolve(context, CupertinoColors.secondaryLabel);
+    final (IconData icon, Color color, String title, String? body) = switch (e.kind) {
+      'analysis' => (CupertinoIcons.graph_square, blue, 'Analysing ${e.text('symbol')}', e.text('stage') == 'deciding' ? 'Deciding' : 'Reading the charts'),
+      'decision' => _decision(e, green, red, grey),
+      'thought' => (CupertinoIcons.lightbulb, purple, 'Thought', e.text('text')),
+      'flo' => (e.data['approved'] == true ? CupertinoIcons.checkmark_shield_fill : CupertinoIcons.xmark_shield_fill, e.data['approved'] == true ? green : red,
+          'Flo ${e.data['approved'] == true ? 'approved' : 'declined'} ${e.text('symbol')} ${e.text('action')}', e.text('reason')),
+      'journal' => (CupertinoIcons.book_fill, purple, 'Journal on ${e.text('symbol')}', e.text('opinion')),
+      'cycle_start' => (CupertinoIcons.arrow_2_circlepath, grey, 'Scan started', null),
+      'cycle_skip' => (CupertinoIcons.pause_circle, grey, 'Scan skipped', e.text('reason')),
+      'cycle_end' => e.data['error'] != null
+          ? (CupertinoIcons.exclamationmark_triangle_fill, red, 'Scan failed', e.text('error'))
+          : (CupertinoIcons.flag_fill, e.text('action') == 'NONE' ? grey : green, e.text('action') == 'NONE' ? 'Scan done · no trade' : 'Scan done · ${e.text('action')} ${e.text('symbol')}',
+              e.text('message').isEmpty ? null : e.text('message')),
+      'nous_card' => (CupertinoIcons.antenna_radiowaves_left_right, blue, 'Nous signal', _blocksText(e)),
+      'nous_note' => (CupertinoIcons.antenna_radiowaves_left_right, grey, 'Nous', e.text('text')),
+      'worker_start' => (CupertinoIcons.person_2_fill, purple, '${e.text('name')} started', e.text('task')),
+      'worker_report' || 'worker_done' => (CupertinoIcons.person_2_fill, purple, e.text('name'), e.text('text')),
+      'tool_start' || 'tool_end' => (CupertinoIcons.wrench_fill, grey, '${e.agent ?? ''}: ${e.text('label')}${e.kind == 'tool_end' ? ' ✓' : '…'}', null),
+      'alert' => (CupertinoIcons.bell_fill, red, 'Alert', e.text('text')),
+      'scalp' => (CupertinoIcons.arrow_2_squarepath, green, 'Scalp', e.text('text')),
+      'trade_closed' => (CupertinoIcons.chart_bar_alt_fill, (e.data['pnl'] as num? ?? 0) >= 0 ? green : red, 'Trade closed', e.text('text')),
+      'trade_modified' => (CupertinoIcons.slider_horizontal_3, grey, 'Trade changed', e.text('text')),
+      _ => (CupertinoIcons.circle, grey, e.kind.replaceAll('_', ' '), e.text('text').isEmpty ? null : e.text('text')),
+    };
+    return Container(
+      margin: const EdgeInsets.fromLTRB(Space.s4, 4, Space.s4, 4),
+      padding: const EdgeInsets.all(Space.s3),
+      decoration: glassDecoration(context, radius: 18),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(color: color.withValues(alpha: 0.16), shape: BoxShape.circle),
+          child: Icon(icon, size: 18, color: color),
+        ),
+        const SizedBox(width: Space.s3),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(child: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600))),
+              Text(_clock(e.at), style: TextStyle(fontSize: 12, color: grey, fontFeatures: const [FontFeature.tabularFigures()])),
+            ]),
+            if (body != null && body.trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(body.trim(), maxLines: 6, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13.5, height: 1.35, color: grey)),
+              ),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  static (IconData, Color, String, String?) _decision(ActivityEvent e, Color green, Color red, Color grey) {
+    final action = e.text('action');
+    final buy = action.startsWith('BUY');
+    final sell = action.startsWith('SELL');
+    return (
+      buy ? CupertinoIcons.arrow_up_right : (sell ? CupertinoIcons.arrow_down_right : CupertinoIcons.minus_circle),
+      buy ? green : (sell ? red : grey),
+      '${action.replaceAll('_', ' ')} ${e.text('symbol')}',
+      e.text('reason'),
+    );
+  }
+
+  static String? _blocksText(ActivityEvent e) {
+    final blocks = e.data['blocks'];
+    if (blocks is! List) return null;
+    for (final b in blocks) {
+      if (b is Map && b['type'] == 'heading') return '${b['text']}';
+    }
+    return null;
+  }
+
+  static String _clock(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+}

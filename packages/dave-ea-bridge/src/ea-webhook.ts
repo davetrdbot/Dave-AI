@@ -46,6 +46,9 @@ export interface EaPendingOrder {
   type: "buy_limit" | "sell_limit" | "buy_stop" | "sell_stop";
   lots: number;
   price: number;
+  /** 0 = none. Older EAs don't send these. */
+  sl?: number;
+  tp?: number;
 }
 
 export interface EaCommandResult {

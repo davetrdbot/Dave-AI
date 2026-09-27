@@ -641,6 +641,34 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
 
+UPDATE_LINE = re.compile(r"liveupdate.*(restart|ready|downloaded|will be installed|new version)", re.I)
+last_update_restart = 0.0
+
+
+def update_waiting():
+    """MetaTrader updates itself: LiveUpdate downloads the new build, writes it to the journal, and
+    then waits for a restart (a window asks, and nobody is there to click it). True when that has
+    happened since this terminal started -- from the journal, or from an update window on screen."""
+    if time.time() - last_update_restart < 600:
+        return False  # just restarted for an update; give it time to apply
+    for line in latest_log(os.path.join(MT5_DIR, "logs")).splitlines()[-400:]:
+        if UPDATE_LINE.search(line):
+            m = re.search(r"(\d{2}):(\d{2}):(\d{2})", line)
+            if not m:
+                return True
+            t = time.localtime()
+            at = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, int(m[1]), int(m[2]), int(m[3]), 0, 0, -1))
+            if at >= terminal_started_at - 5:
+                return True
+    if shutil.which("xdotool"):
+        try:
+            if _x("search", "--name", "(?i)liveupdate|update.*(restart|available)|restart.*update", timeout=5):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def supervise():
     """Keeps a configured terminal running -- MT5 under Wine occasionally exits, and a trader
     without a VPS has nobody to notice."""
@@ -648,6 +676,14 @@ def supervise():
         time.sleep(30)
         try:
             state = load_state()
+            if state.get("login") and terminal_running() and update_waiting():
+                global last_update_restart
+                last_update_restart = time.time()
+                log("MetaTrader downloaded an update and wants a restart -- restarting it now")
+                stop_terminal()
+                time.sleep(3)
+                start_terminal(state)
+                continue
             if state.get("login") and installed() and os.path.exists(ex5_path()) and not terminal_running():
                 log("terminal not running -- starting it again")
                 start_terminal(state)

@@ -561,6 +561,8 @@ You receive one symbol's full real multi-timeframe analysis below, plus this acc
 
 BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set. PREFER LIMIT ORDERS: put a BUY_LIMIT/SELL_LIMIT at the level where the spike starts (the sweep, the order block, the zone) with its stop and target, and let price come to you -- that is how you avoid a wrong entry. Use BUY/SELL only when price is at the ignition point right now. OPTIONAL with a BUY_LIMIT/SELL_LIMIT: a PULLBACK SCALP at market riding price into the limit (a BUY under a SELL_LIMIT, a SELL over a BUY_LIMIT): TP1 = the limit entry exactly (automatic), TP2 past the limit (the overshoot) but short of the limit's own SL, and an SL where the pullback idea is wrong -- include pullbackScalp {sl, tp2} only when there is a real pullback to ride. It is never compulsory: leave it out when many trades are already open or two more positions would pass max open trades, when free margin/leverage is already stretched, or when TP1 can't pay the risk:reward floor. A clean limit alone is fine.
 
+THE SPIKE RULE (the trader's own, above everything else here): never take a random entry. Every entry -- market or limit -- sits exactly on a spike level: the price a spike launches from (the swept high/low, the order-block edge, the range boundary after compression, the level BOOM/CRASH keep firing from), and you must be certain of it; a doubtful level is not an entry. With no sniper setup, scalp aggressively but carefully: small, fast profits off the spikes, stop tight right behind the spike level, never widened. Be aggressive and decisive in execution, ruthless in selection.
+
 You are never idle. A SKIP is never empty: if there is no trade here right now, stage the next one -- a limit at the level your analysis supports, or a setReminder (with the idea as the reason) for the candle close or session the setup is waiting on. Say in your reason what you staged. A bare SKIP is only for a symbol with genuinely nothing forming.
 
 You may ASK a single genuine question only for real, specific ambiguity you cannot resolve yourself. Prefer deciding over asking.
@@ -753,6 +755,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   const { symbol } = picked;
   const activeTimeframes = analysisConfig.mode === "custom" && analysisConfig.timeframes.length > 0 ? analysisConfig.timeframes : ANALYSIS_TIMEFRAMES;
   logTick(userId, `picked ${symbol}${picked.usingFallback ? " (fallback group)" : ""} -- requesting full analysis across ${activeTimeframes.join("/")}...`);
+  publishActivity(userId, "loop", "analysis", { symbol, timeframes: activeTimeframes, stage: "reading" });
 
   // Real gap fixed (user, live: doubted "all timeframes" was genuinely happening -- it wasn't.
   // The EA's own "all" endpoint (DaveEA.mq5's RunAnalysis/A_All) computes every sub-indicator
@@ -986,6 +989,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   async function requestDecision(lines: string[]): Promise<TickDecision | null> {
     let genResult;
     try {
+      publishActivity(userId, "loop", "analysis", { symbol, stage: "deciding" });
       genResult = await provider.generate(
         { messages: [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: lines.join("\n") }], tools: [tool], toolChoice: { name: DECISION_TOOL_NAME } },
         60_000,

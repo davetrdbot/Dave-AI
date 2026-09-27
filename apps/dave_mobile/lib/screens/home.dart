@@ -7,6 +7,9 @@ import '../app_scope.dart';
 import '../theme.dart';
 import '../widgets/performance.dart';
 import '../widgets/common.dart';
+import 'mt5_screen.dart';
+import 'nous.dart';
+import 'shell.dart';
 
 class _HomeData {
   _HomeData(this.dashboard, this.bot);
@@ -45,55 +48,100 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
+/// The hero: the balance on a purple gradient, with round buttons to what the trader reaches for
+/// most -- Dave's chat, the live loop, the MT5 screen, Nous.
 class _BalanceCard extends StatelessWidget {
   const _BalanceCard({required this.d});
   final Dashboard d;
 
   @override
   Widget build(BuildContext context) {
-    final secondary = resolve(context, CupertinoColors.secondaryLabel);
-    if (d.balance == null) {
-      return ContentCard(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const SectionLabel('Balance'),
-          const SizedBox(height: Space.s2),
-          Text('Waiting for MT5', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: resolve(context, CupertinoColors.tertiaryLabel))),
-          const SizedBox(height: Space.s2),
-          Text(d.emptyReason ?? 'Connect the MT5 terminal to see a real balance.', style: TextStyle(fontSize: 14, color: secondary)),
-        ]),
-      );
-    }
+    const white = CupertinoColors.white;
+    const soft = Color(0xCCFFFFFF);
     final updated = d.accountUpdatedAt;
-    return ContentCard(
-      padding: const EdgeInsets.fromLTRB(Space.s4, Space.s4, Space.s4, Space.s4),
+    final shell = ShellScope.of(context);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(Space.s4, Space.s2, Space.s4, Space.s2),
+      padding: const EdgeInsets.fromLTRB(Space.s5, Space.s5, Space.s5, Space.s4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(30),
+        gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF6D5BFF), Color(0xFFA27BFF), Color(0xFF4A35C9)]),
+        border: Border.all(color: const Color(0x40FFFFFF), width: 0.8),
+      ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const SectionLabel('Balance'),
-        const SizedBox(height: Space.s1),
-        // The number is the hero, so it gets the type weight rather than a box around it.
+        Row(children: [
+          const Text('Main account', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: soft)),
+          const Spacer(),
+          if (d.balance != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(color: const Color(0x26FFFFFF), borderRadius: BorderRadius.circular(20)),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Container(width: 7, height: 7, decoration: BoxDecoration(color: d.eaConnected ? const Color(0xFFB8F36A) : const Color(0xFFFF8A8A), shape: BoxShape.circle)),
+                const SizedBox(width: 6),
+                Text(d.eaConnected ? 'MT5 live' : 'MT5 offline', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: white)),
+              ]),
+            ),
+        ]),
+        const SizedBox(height: Space.s2),
         FittedBox(
           fit: BoxFit.scaleDown,
           alignment: Alignment.centerLeft,
           child: Text(
-            formatMoney(d.balance!),
-            style: const TextStyle(fontSize: 40, fontWeight: FontWeight.w700, letterSpacing: -1.2, fontFeatures: [FontFeature.tabularFigures()]),
+            d.balance == null ? 'Waiting for MT5' : formatMoney(d.balance!),
+            style: const TextStyle(fontSize: 42, fontWeight: FontWeight.w700, letterSpacing: -1.4, color: white, fontFeatures: [FontFeature.tabularFigures()]),
           ),
         ),
-        if (updated != null) Text('Updated ${formatAgo(updated)}', style: TextStyle(fontSize: 13, color: secondary)),
-        const SizedBox(height: Space.s4),
-        Row(children: [
-          Expanded(child: StatTile(value: d.equity == null ? '--' : formatMoney(d.equity!), label: 'Equity')),
-          Expanded(child: StatTile(value: d.freeMargin == null ? '--' : formatMoney(d.freeMargin!), label: 'Free margin')),
-          Expanded(
-            child: StatTile(
-              value: d.positions.isEmpty ? '--' : formatMoney(d.openPnl, signed: true),
-              label: 'Open P&L',
-              color: d.positions.isEmpty ? null : pnlColor(context, d.openPnl),
-            ),
-          ),
+        Text(
+          d.balance == null
+              ? (d.emptyReason ?? 'Connect the MT5 terminal to see a real balance.')
+              : [
+                  if (d.equity != null) 'Equity ${formatMoney(d.equity!)}',
+                  if (d.positions.isNotEmpty) 'Open ${formatMoney(d.openPnl, signed: true)}',
+                  if (updated != null) formatAgo(updated),
+                ].join('  ·  '),
+          style: const TextStyle(fontSize: 13.5, color: soft),
+        ),
+        const SizedBox(height: Space.s5),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          _RoundAction(icon: CupertinoIcons.chat_bubble_2_fill, label: 'Chat', onTap: () => shell?.goTo(ShellScope.chat)),
+          _RoundAction(icon: CupertinoIcons.waveform_path_ecg, label: 'Live', onTap: () => shell?.goTo(ShellScope.live)),
+          _RoundAction(icon: CupertinoIcons.desktopcomputer, label: 'MT5 screen', onTap: () => pushScoped<void>(context, const Mt5ScreenPage())),
+          _RoundAction(icon: CupertinoIcons.antenna_radiowaves_left_right, label: 'Nous', onTap: () => pushScoped<void>(context, const NousPage())),
         ]),
       ]),
     );
   }
+}
+
+class _RoundAction extends StatelessWidget {
+  const _RoundAction({required this.icon, required this.label, required this.onTap});
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: label,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            HapticFeedback.selectionClick();
+            onTap();
+          },
+          child: Column(children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(color: const Color(0x2EFFFFFF), shape: BoxShape.circle, border: Border.all(color: const Color(0x40FFFFFF), width: 0.8)),
+              child: Icon(icon, size: 24, color: CupertinoColors.white),
+            ),
+            const SizedBox(height: 6),
+            Text(label, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: CupertinoColors.white)),
+          ]),
+        ),
+      );
 }
 
 /// Start / stop, right on the home screen: the most important control in the app should not be
@@ -260,10 +308,40 @@ class _PendingOrders extends StatelessWidget {
             CupertinoListTile(
               leading: Icon(CupertinoIcons.clock, color: resolve(context, CupertinoColors.secondaryLabel)),
               title: Text('${o.symbol}  ${o.label}'),
-              subtitle: Text('${o.lots} lots at ${formatPrice(o.price)}'),
+              subtitle: Text('${o.lots} lots at ${formatPrice(o.price)}\n'
+                  'SL ${o.sl == null ? 'none' : formatPrice(o.sl!)}  ·  TP ${o.tp == null ? 'none' : formatPrice(o.tp!)}'),
+              trailing: const CupertinoListTileChevron(),
+              onTap: () => _editStops(context, o),
             ),
         ],
       );
+}
+
+/// SL and TP on a pending order, from the phone. Empty removes it.
+Future<void> _editStops(BuildContext context, PendingOrder o) async {
+  final sl = await promptText(context,
+      title: 'Stop loss', message: '${o.symbol} ${o.label} at ${formatPrice(o.price)}. Leave empty for no SL.', initial: o.sl == null ? '' : formatPrice(o.sl!).replaceAll(',', ''),
+      keyboardType: const TextInputType.numberWithOptions(decimal: true), action: 'Next');
+  if (sl == null || !context.mounted) return;
+  final tp = await promptText(context,
+      title: 'Take profit', message: 'Leave empty for no TP.', initial: o.tp == null ? '' : formatPrice(o.tp!).replaceAll(',', ''),
+      keyboardType: const TextInputType.numberWithOptions(decimal: true), action: 'Set');
+  if (tp == null || !context.mounted) return;
+  double? parse(String s) => s.trim().isEmpty ? null : double.tryParse(s.replaceAll(',', '').trim());
+  if ((sl.trim().isNotEmpty && parse(sl) == null) || (tp.trim().isNotEmpty && parse(tp) == null)) {
+    await showError(context, 'Enter prices as numbers, e.g. 2645.5');
+    return;
+  }
+  if (await runAction(context, (api) => api.setStops(o.ticket, sl: parse(sl), tp: parse(tp))) && context.mounted) {
+    showCupertinoDialog<void>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Sent to MT5'),
+        content: const Text('The new SL / TP shows here on the EA\'s next report, in a few seconds.'),
+        actions: [CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
+  }
 }
 
 class _Results extends StatelessWidget {

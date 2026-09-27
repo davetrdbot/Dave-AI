@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import '../api/models.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import 'mt5_screen.dart';
 
 /// MetaTrader 5 in Dave's own container: the account it's logged into, the EA's chart, how often
 /// the EA reports, and a restart. The same controls as /mt5 in Telegram.
@@ -58,6 +59,14 @@ class Mt5Page extends StatelessWidget {
                   header: const ListHeader('Account'),
                   footer: const ListFooter('Dave compiles his EA, starts MT5 logged in, and puts the EA on a chart. Connecting takes a minute or two.'),
                   children: [
+                    if (v.configured)
+                      CupertinoListTile(
+                        leading: Icon(CupertinoIcons.desktopcomputer, color: resolve(context, CupertinoColors.systemBlue)),
+                        title: Text('Open the MT5 screen', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
+                        subtitle: const Text('Live, with touch as the mouse -- like a VPS'),
+                        trailing: const CupertinoListTileChevron(),
+                        onTap: () => pushScoped<void>(context, const Mt5ScreenPage()),
+                      ),
                     CupertinoListTile(
                       leading: Icon(CupertinoIcons.person_crop_circle_badge_plus, color: resolve(context, CupertinoColors.systemBlue)),
                       title: Text(v.configured ? 'Change account' : 'Connect account', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
