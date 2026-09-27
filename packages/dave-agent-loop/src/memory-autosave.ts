@@ -79,6 +79,8 @@ export async function autoSaveMemory(
   exchange: { userText: string; replyText: string; steps?: AgentStep[] },
 ): Promise<string[]> {
   try {
+    // Off switch (DAVE_MEMORY_AUTOSAVE=off) -- also used by tests that count the chat turn's own model calls.
+    if (process.env.DAVE_MEMORY_AUTOSAVE === "off") return [];
     const userText = exchange.userText.trim();
     if (userText.length < 8 || isSmallTalk(userText)) return [];
     // Dave already saved something this turn -- don't second-guess it with a duplicate.

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+// These count the chat turn's own provider calls; the after-turn memory review makes one more.
+process.env.DAVE_MEMORY_AUTOSAVE = "off";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
