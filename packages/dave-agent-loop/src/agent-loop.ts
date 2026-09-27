@@ -225,12 +225,19 @@ export class AgentLoop {
       tokenUsage = next;
     };
 
+    // A stopped turn still answers what was asked, in one line -- otherwise the trader's message sits
+    // in the stored conversation unanswered and gets picked up again on the next one.
+    const stopped = (reason: "deadline" | "cancelled"): AgentRunResult => {
+      if (history.at(-1)?.role === "user") history.push({ role: "assistant", content: reason === "deadline" ? "(I ran out of time on this one before answering.)" : "(Stopped before I answered this.)" });
+      return { status: "aborted", reason, history, steps, tokenUsage };
+    };
+
     try {
       for (let i = 0; i < maxSteps; i++) {
         // Real cancel/deadline check -- BEFORE starting a new provider call, so a turn that's
         // already been told to stop never fires one more round trip it doesn't need to.
-        if (opts.signal?.aborted) return { status: "aborted", reason: "cancelled", history, steps, tokenUsage };
-        if (deadlineController.signal.aborted) return { status: "aborted", reason: "deadline", history, steps, tokenUsage };
+        if (opts.signal?.aborted) return stopped("cancelled");
+        if (deadlineController.signal.aborted) return stopped("deadline");
 
         const tools = this.registry.toSpecsFor(activeNames).slice(0, MAX_TOOLS_PER_REQUEST);
         let result;
@@ -241,14 +248,17 @@ export class AgentLoop {
           // underlying fetch rejecting -- report it as a clean "aborted" result, with the real
           // reason, rather than an unhandled provider error. History never ends up with a
           // half-completed step: nothing is pushed until a call fully resolves.
-          if (opts.signal?.aborted) return { status: "aborted", reason: "cancelled", history, steps, tokenUsage };
-          if (deadlineController.signal.aborted) return { status: "aborted", reason: "deadline", history, steps, tokenUsage };
+          if (opts.signal?.aborted) return stopped("cancelled");
+          if (deadlineController.signal.aborted) return stopped("deadline");
           throw err;
         }
         accumulateUsage(result.tokenUsage, result.cacheUsage);
         if (result.reasoning?.trim()) emit({ type: "thinking", text: result.reasoning.trim() });
 
         if (!result.toolCalls || result.toolCalls.length === 0) {
+          // The reply itself belongs in the conversation. Leaving it out (as this did) meant every
+          // stored exchange looked unanswered, so each new message got the old ones answered again.
+          if (result.text?.trim()) history.push({ role: "assistant", content: result.text });
           return { status: "done", text: result.text, history, steps, tokenUsage };
         }
 
@@ -263,7 +273,7 @@ export class AgentLoop {
             // exception to the fix below) can no longer wedge the whole turn forever.
             const outcome = await raceExecution(this.registry.execute(call.name, call.arguments), combinedSignal);
             if (outcome.kind === "aborted") {
-              return { status: "aborted", reason: opts.signal?.aborted ? "cancelled" : "deadline", history, steps, tokenUsage };
+              return stopped(opts.signal?.aborted ? "cancelled" : "deadline");
             }
             if (outcome.kind === "error") throw outcome.error;
             const question = outcome.value as PendingQuestion;
@@ -288,7 +298,7 @@ export class AgentLoop {
           const outcome = await raceExecution(this.registry.execute(call.name, call.arguments), combinedSignal);
           if (outcome.kind === "aborted") {
             emit({ type: "tool_end", id: call.id, name: call.name, result: { error: "stopped" }, isError: true, ms: Date.now() - startedAt });
-            return { status: "aborted", reason: opts.signal?.aborted ? "cancelled" : "deadline", history, steps, tokenUsage };
+            return stopped(opts.signal?.aborted ? "cancelled" : "deadline");
           }
           let output: unknown;
           let isError = false;

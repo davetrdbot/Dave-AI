@@ -62,12 +62,30 @@ export function loadConversationHistory(db: DaveDatabase, userId: string): Compl
   // Compacted on the way out too, so a history the deployed bot already bloated (written before
   // this fix, with no sentinels) genuinely heals on the very next message instead of costing the
   // owner a /reset -- see live-context.ts's LEGACY_BLOCK_TERMINATORS.
-  return compactForStorage(JSON.parse(rows[0].messages_json as string));
+  return trimHistory(closeUnanswered(compactForStorage(JSON.parse(rows[0].messages_json as string))));
+}
+
+/**
+ * Conversations saved before agent-loop.ts kept Dave's final reply have every past message looking
+ * unanswered -- the trader's "it keeps repeating messages I sent earlier". Each such gap (a user
+ * message followed by another user message, or by the end of its tool work with no reply) is
+ * closed with a one-line stand-in so the model treats it as handled and answers only the new one.
+ */
+export const ANSWERED_EARLIER = "(Answered at the time -- this is a past message, not a new request.)";
+
+export function closeUnanswered(history: CompletionMessage[]): CompletionMessage[] {
+  const out: CompletionMessage[] = [];
+  for (const msg of history) {
+    const prev = out.at(-1);
+    if (msg.role === "user" && prev && (prev.role === "user" || prev.role === "tool")) out.push({ role: "assistant", content: ANSWERED_EARLIER });
+    out.push(msg);
+  }
+  return out;
 }
 
 export function saveConversationHistory(db: DaveDatabase, userId: string, history: CompletionMessage[]): void {
   db.createTable(TABLE, [{ name: "messages_json", type: "TEXT" }]);
-  const trimmed = compactForStorage(trimHistory(history));
+  const trimmed = compactForStorage(trimHistory(closeUnanswered(history)));
   const rows = db.query(TABLE, userId, {});
   const payload = { messages_json: JSON.stringify(trimmed) };
   if (rows.length > 0) db.update(TABLE, userId, rows[0].id as string, payload);

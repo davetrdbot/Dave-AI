@@ -18,6 +18,7 @@ import { getPrimaryChatId } from "./primary-chat.js";
 import { publishActivity, type ActivityChannel } from "./activity-bus.js";
 import { chatEventPublisher } from "./activity-events.js";
 import { loadSystemPrompt } from "./system-prompt.js";
+import { autoSaveMemory } from "./memory-autosave.js";
 
 export { toolLabel, chatEventPublisher } from "./activity-events.js";
 
@@ -146,6 +147,12 @@ export async function runAppChatTurn(deps: AppChatDeps, input: AppChatInput, tur
     }
     saveConversationHistory(db, historyKey, result.history);
     publishFinal(userId, turnId, "app", result);
+    if (result.status === "done") {
+      // Off the reply's path: save anything lasting the trader just said (memory-autosave.ts).
+      void autoSaveMemory(modelConfigProvider(db, userId, () => undefined, "background"), userId, { userText: input.text, replyText: result.text, steps: result.steps }).then((saved) => {
+        if (saved.length) publishActivity(userId, "background", "memory", { text: `🧠 Saved to memory: ${saved.join(" · ")}` });
+      });
+    }
     return result;
   } catch (err) {
     publishActivity(userId, "chat", "error", { message: friendlyErrorMessage(err) }, extra);

@@ -5,7 +5,7 @@ import { buildImageContentBlock } from "@dave/vision";
 import { activityAfter, latestActivityId, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
 import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, type AppChatDeps } from "./app-chat.js";
 import { dispatchCallback } from "./command-router.js";
-import { loadConversationHistory } from "./conversation-store.js";
+import { ANSWERED_EARLIER, loadConversationHistory } from "./conversation-store.js";
 import { getBusyState, getAutonomousBusyState } from "./busy-state.js";
 import { abortTurn, isTurnRunning } from "./turn-abort.js";
 import { nousDepsFor, placeNousSignal, skipNousSignal, applyNousUpdate, skipNousUpdate, closeNousTrade } from "./nous/service.js";
@@ -74,7 +74,7 @@ export function historyForDisplay(history: CompletionMessage[], limit = 60): Cha
       const pictures = typeof m.content === "string" ? 0 : m.content.filter((b) => b.type === "image").length;
       items.push({ role: "user", text: text.trim(), ...(pictures ? { pictures } : {}) });
     } else if (m.role === "assistant") {
-      const text = typeof m.content === "string" ? m.content : "";
+      const text = typeof m.content === "string" && m.content !== ANSWERED_EARLIER ? m.content : "";
       const last = items.at(-1);
       const tools = (m.toolCalls ?? []).map((c) => ({ name: c.name }));
       // A run of tool-calling steps and the final answer read as ONE Dave message.

@@ -40,6 +40,7 @@ import { tryHandleNousEntry } from "./nous/flow.js";
 import { startNous } from "./nous/service.js";
 import { startScalpCycleSweep } from "./scalp-cycle-sweep.js";
 import { startSetupSweep } from "./setup-sweep.js";
+import { autoSaveMemory } from "./memory-autosave.js";
 import { seedStructureTargetsSkill } from "@dave/skills";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
@@ -249,6 +250,13 @@ async function runAgentTurn(
       }
       saveConversationHistory(deps.db, historyKey, result.history);
       publishFinal(deps.ownerUserId, turnId, "telegram", result);
+      if (result.status === "done") {
+        // Off the reply's path: save anything lasting the trader just said (memory-autosave.ts).
+        const text = messageText ?? (typeof userContent === "string" ? userContent : "");
+        void autoSaveMemory(modelConfigProvider(deps.db, deps.ownerUserId, () => undefined, "background"), deps.ownerUserId, { userText: text, replyText: result.text, steps: result.steps }).then((saved) => {
+          if (saved.length) publishActivity(deps.ownerUserId, "background", "memory", { text: `🧠 Saved to memory: ${saved.join(" · ")}` });
+        });
+      }
 
       // Both forms of the same answer -- see FinalMessage in thinking-indicator.ts. The rich
       // markdown transport needs the model's ORIGINAL text; the HTML one needs the converted
