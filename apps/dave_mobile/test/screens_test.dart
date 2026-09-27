@@ -15,6 +15,7 @@ import 'dart:ui' as ui;
 import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/app_scope.dart';
 import 'package:dave_mobile/screens/extras.dart';
+import 'package:dave_mobile/widgets/setup_drawing.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
 import 'package:dave_mobile/look.dart';
@@ -300,11 +301,13 @@ http.Client _fakeServer() => MockClient((req) async {
         case '/api/app/pair-groups':
           body = {
             'groups': [
-              {'id': 'boom-crash', 'name': 'Boom & Crash', 'symbols': ['BOOM_1000', 'CRASH_1000', 'BOOM_500']},
-              {'id': 'vol', 'name': 'Volatility', 'symbols': ['VOL_75', 'VOL_100']},
+              {'id': 'synthetic', 'name': 'Synthetic', 'symbols': ['BOOM_1000', 'CRASH_1000', 'VOL_75', 'VOL_100', 'STEP_INDEX']},
+              {'id': 'forex', 'name': 'Forex', 'symbols': ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD']},
+              {'id': 'crypto', 'name': 'Crypto', 'symbols': ['BTCUSD', 'ETHUSD']},
+              {'id': 'metals', 'name': 'Metals', 'symbols': ['XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD']},
             ],
-            'activeGroupId': 'boom-crash',
-            'fallbackGroupId': 'vol',
+            'activeGroupId': 'synthetic',
+            'fallbackGroupId': 'forex',
           };
         case '/api/app/analysis-scope':
           body = {
@@ -469,12 +472,16 @@ void main() {
       await tester.tap(find.text('Copy'));
       await _advance(tester);
       // Older history by period: self-aware alerts, MT5 data requests and the loop's own log.
-      await tester.tap(find.text('3 weeks'));
+      await tester.tap(find.byKey(const ValueKey('live-period')));
+      await _advance(tester);
+      await tester.tap(find.text('Last 3 weeks'));
       await _advance(tester);
       await _shot(tester, 'live_3weeks_$mode');
       expect(find.text('Self-aware'), findsOneWidget);
       expect(find.text('MT5 · candles XAUUSD M5'), findsOneWidget);
-      await tester.tap(find.text('Live').last);
+      await tester.tap(find.byKey(const ValueKey('live-period')));
+      await _advance(tester);
+      await tester.tap(find.text('Live -- as it happens'));
       await _advance(tester);
 
       await tester.tap(find.byIcon(CupertinoIcons.chat_bubble_2).last);
@@ -574,7 +581,7 @@ void main() {
       expect(find.text('5 min'), findsOneWidget);
       await open('Pair groups');
       await _shot(tester, 'pair_groups_$mode');
-      expect(find.text('Boom & Crash'), findsOneWidget);
+      expect(find.text('Synthetic'), findsOneWidget);
       await back();
       await open('What Dave analyses');
       await _shot(tester, 'analysis_scope_$mode');
@@ -584,7 +591,8 @@ void main() {
 
       await open('Risk');
       await _shot(tester, 'settings_risk_$mode');
-      expect(find.text('30 pips'), findsOneWidget, reason: 'stop loss summary from the real settings JSON');
+      expect(find.text('Dave decides'), findsNWidgets(3), reason: 'SL, TP and lots each have their inline Off / Fixed / Dave decides control');
+      expect(find.text('30'), findsWidgets, reason: 'the fixed stop loss from the real settings JSON, editable in place');
       expect(find.text('1:1'), findsOneWidget, reason: 'min reward shown as a typed value');
       await back();
 
@@ -714,6 +722,48 @@ void main() {
       await _shot(tester, 'ea_settings_$mode');
       expect(find.text('20260101'), findsOneWidget);
       expect(find.text('Magic number'), findsOneWidget);
+
+      // Dave's drawing board, as it appears in chat.
+      final cs = [
+        [2648, 2652, 2646, 2651], [2651, 2655, 2650, 2654], [2654, 2658, 2653, 2657], [2657, 2660, 2655, 2656], [2656, 2659, 2652, 2653],
+        [2653, 2656, 2651, 2655], [2655, 2661, 2654, 2660], [2660, 2664, 2659, 2663], [2663, 2667, 2662, 2662.5],
+      ];
+      final proj = [[2662.5, 2668, 2661, 2667], [2667, 2667.5, 2658, 2659], [2659, 2660, 2651, 2652], [2652, 2653, 2645, 2646]];
+      await tester.pumpWidget(_app(
+        AppScope(
+          api: api,
+          onUnpaired: (_) async {},
+          child: CupertinoPageScaffold(
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: SetupDrawingView(drawing: {
+                  'title': 'Sweep of the Asian high, then short',
+                  'symbol': 'XAUUSD',
+                  'timeframe': 'M15',
+                  'candles': [
+                    for (final c in cs) {'o': c[0], 'h': c[1], 'l': c[2], 'c': c[3]},
+                    for (final c in proj) {'o': c[0], 'h': c[1], 'l': c[2], 'c': c[3], 'projected': true},
+                  ],
+                  'lines': [
+                    {'price': 2666, 'kind': 'entry', 'label': 'SELL LIMIT'},
+                    {'price': 2671, 'kind': 'sl', 'label': 'SL'},
+                    {'price': 2646, 'kind': 'tp', 'label': 'TP'},
+                  ],
+                  'zones': [{'from': 2663, 'to': 2668, 'kind': 'supply', 'label': 'Asian high', 'fromIndex': 6}],
+                  'arrows': [{'fromIndex': 9, 'fromPrice': 2668, 'toIndex': 12, 'toPrice': 2647, 'label': 'reversal'}],
+                  'notes': [{'index': 9, 'price': 2668.5, 'text': 'sweep'}],
+                  'caption': 'Wait for the wick above 2,665, then sell the rejection.',
+                }),
+              ),
+            ),
+          ),
+        ),
+        look: look,
+      ));
+      await _advance(tester);
+      await _shot(tester, 'drawing_$mode');
+      expect(find.text('Sweep of the Asian high, then short'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     });
 

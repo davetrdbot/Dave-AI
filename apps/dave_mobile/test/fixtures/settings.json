@@ -39,7 +39,7 @@
       ]
     },
     "pairGroup": {
-      "value": null,
+      "value": "synthetic",
       "options": [
         {
           "id": "synthetic",
@@ -115,7 +115,7 @@
       },
       {
         "id": "breakeven",
-        "label": "Breakeven guard (up ~1R — move stop to BE)",
+        "label": "Breakeven guard (up ~1R \u2014 move stop to BE)",
         "on": true
       },
       {
@@ -130,7 +130,7 @@
       },
       {
         "id": "profit_stable",
-        "label": "Profit stability (in profit 5 min — plan still valid?)",
+        "label": "Profit stability (in profit 5 min \u2014 plan still valid?)",
         "on": true
       },
       {
@@ -145,12 +145,12 @@
       },
       {
         "id": "range",
-        "label": "Range detected (chop — expected move never came)",
+        "label": "Range detected (chop \u2014 expected move never came)",
         "on": false
       },
       {
         "id": "quick_profit_check",
-        "label": "Quick profit check (10 min — still on target?)",
+        "label": "Quick profit check (10 min \u2014 still on target?)",
         "on": true
       },
       {

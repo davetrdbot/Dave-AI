@@ -44,6 +44,7 @@ import { createGetToolCatalogTool } from "./tool-catalog.js";
  * runtime handles, registered into a single `ToolRegistry` -- the
  * thing an `AgentLoop` actually hands to the model.
  */
+import { DRAW_SETUP_PARAMETERS, DRAW_SETUP_TOOL_DESCRIPTION, parseDrawing, renderDrawingPng } from "./setup-drawing.js";
 export interface FullRegistryDeps {
   userId: string;
   db: DaveDatabase;
@@ -370,6 +371,28 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(adaptTools(MT5_ACCOUNT_TOOLS, tradingCtx));
   registry.register(adaptTools(DAVEMA_TOOLS, tradingCtx));
   if (deps.telegram) {
+    // Dave's drawing board: a picture of a setup (setup-drawing.ts). A photo in Telegram; in the
+    // app the sink hands the drawing itself over, and the app draws it natively.
+    const tg = deps.telegram;
+    registry.register([
+      {
+        name: "draw_setup",
+        description: DRAW_SETUP_TOOL_DESCRIPTION,
+        parameters: DRAW_SETUP_PARAMETERS,
+        execute: async (args: Record<string, unknown>) => {
+          const drawing = parseDrawing(args);
+          const caption = [drawing.title, drawing.caption].filter(Boolean).join("\n");
+          const sink = tg.client as unknown as { sendDrawing?: (p: Record<string, unknown>) => Promise<unknown> };
+          if (tg.chatId === 0 && typeof sink.sendDrawing === "function") {
+            await sink.sendDrawing({ drawing, caption });
+          } else {
+            const png = await renderDrawingPng(drawing);
+            await tg.client.sendPhoto({ chat_id: tg.chatId, photo: { buffer: png, filename: "setup.png" }, caption: caption.slice(0, 1000) });
+          }
+          return { drawn: true, note: "The trader can see the picture now -- reply in one short line, don't describe it again." };
+        },
+      },
+    ] as AgentTool[]);
     registry.register(adaptTools(PUSH_TOOLS, deps.telegram));
     registry.register(adaptTools(TELEGRAM_TOOLS, deps.telegram));
     registry.register(adaptTools(NOTIFICATION_TOOLS, { userId: deps.userId, db: deps.db, client: deps.telegram.client, chatId: deps.telegram.chatId }));

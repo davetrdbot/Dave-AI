@@ -168,6 +168,35 @@ class _LiveScreenState extends State<LiveScreen> {
     }
   }
 
+  String _periodLabel() => switch (_period) {
+        _Period.live => 'Live',
+        _Period.today => 'Today',
+        _Period.week => '7 days',
+        _Period.weeks3 => '3 weeks',
+        _Period.custom => _customFrom == null ? 'Dates' : 'Since ${_customFrom!.day}/${_customFrom!.month}',
+      };
+
+  Future<void> _periodMenu() async {
+    final picked = await showCupertinoModalPopup<_Period>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Show'),
+        actions: [
+          for (final (p, label) in const [
+            (_Period.live, 'Live -- as it happens'),
+            (_Period.today, 'Today'),
+            (_Period.week, 'Last 7 days'),
+            (_Period.weeks3, 'Last 3 weeks'),
+            (_Period.custom, 'Pick a start date…'),
+          ])
+            CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, p), isDefaultAction: p == _period, child: Text(label)),
+        ],
+        cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+      ),
+    );
+    if (picked != null) await _choosePeriod(picked);
+  }
+
   Future<DateTime?> _pickDate(DateTime initial) async {
     var picked = initial;
     final ok = await showCupertinoModalPopup<bool>(
@@ -271,7 +300,7 @@ class _LiveScreenState extends State<LiveScreen> {
       child: CustomScrollView(
         physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
         slivers: [
-          const CupertinoSliverNavigationBar(largeTitle: Text('Live'), heroTag: 'nav:Live'),
+          CupertinoSliverNavigationBar(largeTitle: const Text('Live'), heroTag: 'nav:Live', trailing: _PeriodButton(key: const ValueKey('live-period'), label: _periodLabel(), onTap: _periodMenu)),
           CupertinoSliverRefreshControl(onRefresh: _load),
           SliverToBoxAdapter(child: _NowCard(now: now, live: _live, bot: _bot, onRunning: _setRunning)),
           if (_error != null)
@@ -285,26 +314,6 @@ class _LiveScreenState extends State<LiveScreen> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(Space.s4, Space.s4, Space.s4, Space.s2),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(children: [
-                    for (final p in _Period.values) ...[
-                      _Chip(
-                        text: switch (p) {
-                          _Period.live => 'Live',
-                          _Period.today => 'Today',
-                          _Period.week => '7 days',
-                          _Period.weeks3 => '3 weeks',
-                          _Period.custom => _period == _Period.custom && _customFrom != null ? 'Since ${_customFrom!.day}/${_customFrom!.month}' : 'Pick dates…',
-                        },
-                        selected: _period == p,
-                        onTap: () => _choosePeriod(p),
-                      ),
-                      const SizedBox(width: 6),
-                    ],
-                  ]),
-                ),
-                const SizedBox(height: 8),
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(children: [
@@ -677,4 +686,37 @@ class _EventRow extends StatelessWidget {
   }
 
   static String _clock(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+}
+
+
+/// Top-right of Live: which time span the list shows. A pill with the current choice.
+class _PeriodButton extends StatelessWidget {
+  const _PeriodButton({super.key, required this.label, required this.onTap});
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final live = label == 'Live';
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(color: look.chip, borderRadius: BorderRadius.circular(16), border: Border.all(color: look.line)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (live) ...[
+            Container(width: 7, height: 7, decoration: BoxDecoration(color: look.up, shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+          ] else ...[
+            Icon(CupertinoIcons.calendar, size: 15, color: look.accent),
+            const SizedBox(width: 5),
+          ],
+          Text(label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: resolve(context, CupertinoColors.label))),
+          const SizedBox(width: 3),
+          Icon(CupertinoIcons.chevron_down, size: 12, color: resolve(context, CupertinoColors.secondaryLabel)),
+        ]),
+      ),
+    );
+  }
 }

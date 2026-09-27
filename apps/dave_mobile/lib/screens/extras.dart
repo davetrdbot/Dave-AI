@@ -523,3 +523,97 @@ class _Chip extends StatelessWidget {
     );
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+
+/// MCP servers: extra tool servers Dave can connect to, and the Lovable image MCP.
+class McpPage extends StatelessWidget {
+  const McpPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => LoadedPage<Map<String, dynamic>>(
+        title: 'MCP servers',
+        load: (api) => api.mcp(),
+        builder: (context, d, reload) {
+          Future<void> act(Map<String, Object?> body) async {
+            if (await runAction(context, (api) => api.mcpAction(body))) await reload();
+          }
+
+          final servers = _list(d['servers']);
+          final lovable = d['lovable'] is Map ? Map<String, dynamic>.from(d['lovable'] as Map) : const <String, dynamic>{};
+          return [
+            SliverToBoxAdapter(
+              child: _section(context,
+                  header: 'Servers',
+                  footer: 'Dave connects to a saved server when he needs its tools (ask him, or /mcp in Telegram). Tokens are stored on your server and never shown again.',
+                  children: [
+                    if (servers.isEmpty) CupertinoListTile(title: Text('No servers yet', style: TextStyle(color: resolve(context, CupertinoColors.secondaryLabel)))),
+                    for (final m in servers)
+                      CupertinoListTile(
+                        leading: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(shape: BoxShape.circle, color: m['connected'] == true ? Look.of(context).up : resolve(context, CupertinoColors.systemGrey3)),
+                        ),
+                        title: Text('${m['name']}'),
+                        subtitle: Text('${m['url']}${m['hasToken'] == true ? ' · token set' : ''}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        trailing: CupertinoButton(
+                          padding: EdgeInsets.zero,
+                          minimumSize: const Size(32, 32),
+                          onPressed: () async {
+                            final ok = await confirmDestructive(context, title: 'Remove ${m['name']}?', message: 'Dave can no longer connect to it.', action: 'Remove');
+                            if (ok) await act({'action': 'remove', 'id': m['id']});
+                          },
+                          child: Icon(CupertinoIcons.minus_circle_fill, color: Look.of(context).down, size: 22),
+                        ),
+                      ),
+                    CupertinoListTile(
+                      leading: Icon(CupertinoIcons.add_circled_solid, color: Look.of(context).accent),
+                      title: Text('Add server', style: TextStyle(color: Look.of(context).accent)),
+                      onTap: () async {
+                        final saved = await pushScoped<bool>(
+                          context,
+                          EditorPage(
+                            title: 'Add MCP server',
+                            fields: const [
+                              EditorField(label: 'Name', placeholder: 'My tools', required: false),
+                              EditorField(label: 'Server address', placeholder: 'https://example.com/mcp'),
+                              EditorField(label: 'Token (optional)', required: false),
+                            ],
+                            onSave: (v) async {
+                              await AppScope.of(context).api.mcpAction({'action': 'add', 'name': v[0], 'url': v[1], 'token': v[2]});
+                            },
+                          ),
+                        );
+                        if (saved == true) await reload();
+                      },
+                    ),
+                  ]),
+            ),
+            SliverToBoxAdapter(
+              child: _section(context, header: 'Lovable image MCP', footer: 'Lets Dave generate images through your Lovable MCP.', children: [
+                CupertinoListTile(
+                  title: const Text('Address'),
+                  additionalInfo: Text(lovable['url'] == null ? 'Not set' : 'Set'),
+                  subtitle: lovable['url'] == null ? null : Text('${lovable['url']}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  trailing: const CupertinoListTileChevron(),
+                  onTap: () async {
+                    final url = await promptText(context, title: 'Lovable MCP address', initial: '${lovable['url'] ?? ''}', placeholder: 'https://…', keyboardType: TextInputType.url);
+                    if (url != null && context.mounted) await act({'action': 'lovable', 'url': url});
+                  },
+                ),
+                CupertinoListTile(
+                  title: const Text('Token'),
+                  additionalInfo: Text(lovable['tokenSet'] == true ? 'Set' : 'Not set'),
+                  trailing: const CupertinoListTileChevron(),
+                  onTap: () async {
+                    final token = await promptText(context, title: 'Lovable MCP token', obscure: true);
+                    if (token != null && context.mounted) await act({'action': 'lovable', 'token': token});
+                  },
+                ),
+              ]),
+            ),
+          ];
+        },
+      );
+}

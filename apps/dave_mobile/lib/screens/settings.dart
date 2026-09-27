@@ -9,6 +9,7 @@ import '../push/push_service.dart';
 import '../session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/pickers.dart';
 import 'context.dart';
 import 'extras.dart';
 import 'mt5.dart';
@@ -54,7 +55,12 @@ class SettingsScreen extends StatelessWidget {
               _MenuRow(CupertinoIcons.chart_bar_alt_fill, 'Trading & markets', 'Scan speed, session, pairs (${group?.name ?? 'none'}), what Dave analyses',
                   () => open('Trading & markets', (c, d, r) => [_TradingSection(bot: d.bot, reload: r), _MarketsSection(s: d.settings, reload: r), const _MarketsLinks()])),
               _MenuRow(CupertinoIcons.shield_lefthalf_fill, 'Risk', 'Min reward 1:${_num(s.riskReward.value)} · confidence ${s.confidence.value.round()}% · SL, TP, lots, limits',
-                  () => open('Risk', (c, d, r) => [_RiskSection(s: d.settings, reload: r)])),
+                  () => open('Risk', (c, d, r) => [
+                        RiskModeCard(id: 'stopLoss', title: 'Stop loss', icon: CupertinoIcons.shield, mode: d.settings.stopLoss, onChanged: r),
+                        RiskModeCard(id: 'takeProfit', title: 'Take profit', icon: CupertinoIcons.flag, mode: d.settings.takeProfit, onChanged: r),
+                        RiskModeCard(id: 'lotSize', title: 'Lot size', icon: CupertinoIcons.cube_box, mode: d.settings.lotSize, onChanged: r),
+                        _RiskSection(s: d.settings, reload: r),
+                      ])),
               _MenuRow(CupertinoIcons.hourglass, 'Waiting on', 'Setups, reminders and levels Dave set', () => pushScoped<void>(context, const WatchlistPage())),
             ]),
           ),
@@ -74,6 +80,7 @@ class SettingsScreen extends StatelessWidget {
               _MenuRow(CupertinoIcons.slider_horizontal_3, 'EA settings', 'Report speed, slippage, magic number, zones', () => pushScoped<void>(context, const EaSettingsPage())),
               _MenuRow(CupertinoIcons.antenna_radiowaves_left_right, 'Nous copy trading', 'Copy signals from your Telegram channels', () => pushScoped<void>(context, const NousPage())),
               _MenuRow(CupertinoIcons.lock, 'Service keys', 'E2B (scripts) and Firecrawl (web pages)', () => pushScoped<void>(context, const ServiceKeysPage())),
+              _MenuRow(CupertinoIcons.cube, 'MCP servers', 'Extra tools Dave can connect to', () => pushScoped<void>(context, const McpPage())),
             ]),
           ),
           SliverToBoxAdapter(
@@ -392,9 +399,6 @@ class _RiskSection extends StatelessWidget {
           subtitle: Text(s.autoApproveBelowThreshold ? 'Trades anyway' : 'Asks you to approve'),
           trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, value: s.autoApproveBelowThreshold, onChanged: (v) => _set(context, 'autoApproveBelowThreshold', v, reload)),
         ),
-        _riskModeTile(context, 'stopLoss', 'Stop loss', CupertinoIcons.shield, s.stopLoss),
-        _riskModeTile(context, 'takeProfit', 'Take profit', CupertinoIcons.flag, s.takeProfit),
-        _riskModeTile(context, 'lotSize', 'Lot size', CupertinoIcons.cube_box, s.lotSize),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.square_stack),
           title: const Text('Max trades'),
@@ -428,16 +432,6 @@ class _RiskSection extends StatelessWidget {
     );
   }
 
-  Widget _riskModeTile(BuildContext context, String id, String title, IconData icon, RiskMode mode) => CupertinoListTile(
-        leading: Icon(icon),
-        title: Text(title),
-        additionalInfo: Text(mode.summary),
-        trailing: const CupertinoListTileChevron(),
-        onTap: () async {
-          final changed = await pushScoped<bool>(context, RiskModePage(id: id, title: title, mode: mode));
-          if (changed == true) await reload();
-        },
-      );
 }
 
 /// Off / fixed value / Dave decides, for stop loss, take profit or lot size.
@@ -724,6 +718,15 @@ class _AiSection extends StatelessWidget {
       header: const ListHeader('AI'),
       footer: const ListFooter('AI wait is how long Dave waits for an answer before switching to the next key or provider; backup wait is the same for the backup.'),
       children: [
+        CupertinoListTile(
+          leading: Icon(CupertinoIcons.bolt_fill, color: Look.of(context).accent),
+          title: const Text('Main AI & model'),
+          subtitle: Text(providers.main == null ? 'Tap to choose' : '${providers.main!.name} · ${providers.main!.model}', maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: Icon(CupertinoIcons.chevron_up_chevron_down, size: 16, color: resolve(context, CupertinoColors.secondaryLabel)),
+          onTap: () async {
+            if (await showAiSheet(context, providers)) await reload();
+          },
+        ),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.sparkles),
           title: const Text('AI providers'),

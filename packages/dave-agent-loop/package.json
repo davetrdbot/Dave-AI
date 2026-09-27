@@ -27,6 +27,7 @@
     "@dave/trading": "workspace:*",
     "@dave/vision": "workspace:*",
     "@dave/workers": "workspace:*",
+    "@resvg/resvg-js": "^2.6.2",
     "telegram": "^2.26.22"
   },
   "exports": {

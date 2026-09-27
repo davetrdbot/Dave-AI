@@ -229,6 +229,8 @@ export const CORE_TOOL_NAMES: string[] = [
   // is always a file the user just sent or a result it just produced.
   "list_user_files",
   "send_file_to_user",
+  // The drawing board: the moment it's needed is "draw what you mean", mid-conversation.
+  "draw_setup",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the

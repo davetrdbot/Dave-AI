@@ -11,11 +11,12 @@ import '../api/client.dart';
 import '../app_scope.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/pickers.dart';
+import '../widgets/setup_drawing.dart';
 import '../widgets/rich_message.dart';
 import 'chat_timeline.dart';
 import '../api/models.dart';
 import 'shell.dart';
-import 'settings.dart';
 import '../look.dart';
 
 /// Talking to Dave -- the same conversation as Telegram, with every step he takes shown live:
@@ -815,6 +816,9 @@ class _CardView extends StatelessWidget {
       'trade_closed' || 'trade_modified' => (CupertinoIcons.chart_bar_alt_fill, 'Trade'),
       _ => (null, null),
     };
+    if (card.kind == 'drawing' && e.data['drawing'] is Map) {
+      return Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: SetupDrawingView(drawing: Map<String, dynamic>.from(e.data['drawing'] as Map)));
+    }
     Widget body;
     if (card.blocks.isNotEmpty) {
       body = RichBlocks(card.blocks);
@@ -1031,52 +1035,11 @@ class _ControlsStripState extends State<_ControlsStrip> {
   Future<void> _pickModel() async {
     final list = _providers;
     if (list == null) return;
-    final main = list.main;
-    final usable = [...list.backups, ...list.withKeys];
-    final choice = await showCupertinoModalPopup<String>(
-      context: context,
-      builder: (ctx) => CupertinoActionSheet(
-        title: const Text('Dave\'s AI'),
-        message: Text(main == null ? 'No main AI set.' : 'Now: ${main.name} · ${main.model}'),
-        actions: [
-          if (main != null) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'model:${main.provider}'), child: Text('Change ${main.name} model…')),
-          for (final p in usable) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'main:${p.provider}'), child: Text('Use ${p.name} · ${p.model}')),
-        ],
-        cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-      ),
-    );
-    if (choice == null || !mounted) return;
-    final [kind, id] = choice.split(':');
-    if (kind == 'main') {
-      if (await runAction(context, (api) => api.providerAction(id, 'make-main'))) await _load();
-      return;
-    }
-    List<String> models;
-    try {
-      models = await AppScope.of(context).api.providerModels(id);
-    } catch (e) {
-      if (mounted) await showError(context, e);
-      return;
-    }
-    if (!mounted) return;
-    if (models.isEmpty) {
-      await showError(context, 'This provider doesn\'t list its models. Change it in Settings > AI providers.');
-      return;
-    }
-    final model = await showCupertinoModalPopup<String>(
-      context: context,
-      builder: (ctx) => CupertinoActionSheet(
-        title: const Text('Pick a model'),
-        actions: [for (final m in models.take(20)) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, m), child: Text(m, maxLines: 1, overflow: TextOverflow.ellipsis))],
-        cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-      ),
-    );
-    if (model == null || !mounted) return;
-    if (await runAction(context, (api) => api.providerAction(id, 'set-model', {'model': model}))) await _load();
+    if (await showAiSheet(context, list) && mounted) await _load();
   }
 
   Future<void> _risk(String id, String title, RiskMode mode) async {
-    final changed = await pushScoped<bool>(context, RiskModePage(id: id, title: title, mode: mode));
+    final changed = await showRiskModeSheet(context, id: id, title: title, icon: id == 'takeProfit' ? CupertinoIcons.flag : CupertinoIcons.shield, mode: mode);
     if (changed == true) await _load();
   }
 

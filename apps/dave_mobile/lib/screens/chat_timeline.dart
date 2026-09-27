@@ -158,7 +158,7 @@ class ChatTimeline {
     if (e.feed != 'chat') return false;
     if (e.turnId == null) {
       // A message outside any turn: a button's answer, a tool run on its own.
-      if (e.kind == 'message') {
+      if (e.kind == 'message' || e.kind == 'drawing') {
         entries.add(CardEntry(e));
         return true;
       }
@@ -189,7 +189,7 @@ class ChatTimeline {
         if (e.text('text').trim().isNotEmpty) t.steps.add(TurnStep.text(e.text('text'), agent: e.agent));
       case 'thinking':
         if (e.text('text').trim().isNotEmpty) t.steps.add(TurnStep.thinking(e.text('text'), agent: e.agent));
-      case 'message':
+      case 'message' || 'drawing':
         t.steps.add(TurnStep.card(CardEntry(e)));
       case 'message_edit':
         final id = (e.data['messageId'] as num?)?.toInt();

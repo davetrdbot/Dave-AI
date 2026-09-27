@@ -76,6 +76,7 @@ export function createAppSink(userId: string, currentTurn: () => { turnId?: stri
     editMessageReplyMarkup: () => ({ message_id: 0 }),
     deleteMessage: (p) => (post("message_delete", { messageId: p.message_id }), true),
     sendChatAction: () => true,
+    sendDrawing: (p) => post("drawing", { drawing: p.drawing, caption: p.caption }),
     setMessageReaction: (p) => (post("reaction", { messageId: p.message_id, reaction: p.reaction }), true),
   };
   return new Proxy({} as TelegramClient, {

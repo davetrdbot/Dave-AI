@@ -261,6 +261,8 @@ class DaveApi {
   Future<Map<String, dynamic>> serviceKeysAction(Map<String, Object?> body) => _post('/api/app/keys', body);
   Future<Map<String, dynamic>> pairGroups() => _send(() => _http.get(_url('/api/app/pair-groups'), headers: _headers));
   Future<Map<String, dynamic>> pairGroupsAction(Map<String, Object?> body) => _post('/api/app/pair-groups', body);
+  Future<Map<String, dynamic>> mcp() => _send(() => _http.get(_url('/api/app/mcp'), headers: _headers));
+  Future<Map<String, dynamic>> mcpAction(Map<String, Object?> body) => _post('/api/app/mcp', body);
   Future<Map<String, dynamic>> analysisScope() => _send(() => _http.get(_url('/api/app/analysis-scope'), headers: _headers));
   Future<Map<String, dynamic>> analysisScopeAction(Map<String, Object?> body) => _post('/api/app/analysis-scope', body);
 
