@@ -13,6 +13,7 @@ import { isLimitType, planPullbackScalp, placePullbackScalp, describePullbackSca
 import { getDeepLossAlertPercent, setDeepLossAlertPercent } from "./deep-loss-alert-store.js";
 import { getAlertToggles, setAlertToggle, ALERT_CATEGORIES, type AlertCategory } from "./self-aware-alert-toggles.js";
 import { createWatch, listActiveWatches, cancelWatch, type WatchKind } from "./background-watch.js";
+import { createSetup, listSetups, cancelSetup, describeSetup } from "./setups.js";
 import { recordExpectation, findSimilarSetups, predictionAccuracySummary } from "./trade-prediction-store.js";
 import { setThesisStatus, getThesisStatus, listThesisStatuses, thesisStatusLabel, type ThesisStatus } from "./thesis-status-store.js";
 
@@ -101,6 +102,8 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>; // JSON Schema
   execute: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
 }
+
+const SETUP_CONDITION_SCHEMA = {"type": "object", "required": ["op", "price"], "properties": {"op": {"type": "string", "enum": ["above", "below"]}, "price": {"type": "number"}, "note": {"type": "string"}}};
 
 export const TRADING_TOOLS: ToolDefinition[] = [
   {
@@ -343,6 +346,53 @@ export const TRADING_TOOLS: ToolDefinition[] = [
     description: "Stop one of your pending background checks by id (from check_marked_levels) -- e.g. the thesis behind it no longer holds.",
     parameters: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
     execute: async (args, ctx) => cancelWatch(ctx.userId, args.id as string),
+  },
+  {
+    name: "setup_create",
+    description:
+      "Write a SETUP -- a conditional trade plan that runs on its own against the live price, like a small trading script: " +
+      "\"if price goes above X, THEN comes back below Y, place this order; if it goes below Z first, don't\". `steps` must happen IN ORDER " +
+      "(each only counts after the previous one happened); `cancelIf` kills the plan if hit at any point before it fires; `order` is " +
+      "placed automatically (market or pending, with its SL/TP) the moment the last step is met. Use it whenever the trader describes a " +
+      "\"if it does this then that, enter\" idea, or when your own read needs price to do something first. It keeps running after this turn.",
+    parameters: {
+      type: "object",
+      required: ["symbol", "reason", "steps", "order"],
+      properties: {
+        symbol: { type: "string" },
+        reason: { type: "string", description: "the plan in plain words -- shown to the trader and handed back when it fires" },
+        steps: { type: "array", minItems: 1, maxItems: 6, items: SETUP_CONDITION_SCHEMA, description: "conditions that must happen in this order" },
+        cancelIf: { type: "array", items: SETUP_CONDITION_SCHEMA, description: "any of these hit first = the idea is wrong, cancel" },
+        order: {
+          type: "object",
+          required: ["type"],
+          properties: {
+            type: { type: "string", enum: ["buy", "sell", "buy_limit", "sell_limit", "buy_stop", "sell_stop"] },
+            lots: { type: "number" },
+            price: { type: "number", description: "entry price, pending orders only" },
+            sl: { type: "number" },
+            tp: { type: "number" },
+          },
+        },
+        expiresInHours: { type: "number", description: "default 24, max 168" },
+      },
+    },
+    execute: async (args, ctx) => {
+      const s = createSetup(ctx.userId, args as never);
+      return { created: s.id, plan: describeSetup(s), expiresAt: new Date(s.expiresAt).toISOString() };
+    },
+  },
+  {
+    name: "setup_list",
+    description: "List your active setups (conditional trade plans) -- which steps have already happened and what order each will place.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => ({ setups: listSetups(ctx.userId).map((s) => ({ id: s.id, plan: describeSetup(s), reason: s.reason })) }),
+  },
+  {
+    name: "setup_cancel",
+    description: "Cancel one of your active setups by id (from setup_list).",
+    parameters: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
+    execute: async (args, ctx) => cancelSetup(ctx.userId, args.id as string, "Cancelled by Dave."),
   },
   {
     // Self-Awareness spec part 4: record what you EXPECT before a trade, so it can be compared to

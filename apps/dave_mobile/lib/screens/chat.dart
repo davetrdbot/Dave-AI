@@ -237,6 +237,15 @@ class _ChatScreenState extends State<ChatScreen> {
         actions: [
           CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, ImageSource.camera), child: const Text('Take a photo')),
           CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, ImageSource.gallery), child: const Text('Choose from library')),
+          CupertinoActionSheetAction(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // A setup: a trade that waits for price to do something first.
+              _input.text = 'Setup: if XAUUSD goes above ____ and then comes back below ____, buy with SL ____ and TP ____. If it goes below ____ first, cancel.';
+              _focus.requestFocus();
+            },
+            child: const Text('Write a setup'),
+          ),
         ],
         cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
       ),
@@ -433,13 +442,13 @@ class _Bubble extends StatelessWidget {
           ConstrainedBox(
             constraints: BoxConstraints(maxWidth: width * (fromUser ? 0.78 : 0.9)),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: fromUser
                   ? BoxDecoration(
-                      borderRadius: const BorderRadius.only(topLeft: Radius.circular(22), topRight: Radius.circular(22), bottomLeft: Radius.circular(22), bottomRight: Radius.circular(6)),
+                      borderRadius: const BorderRadius.only(topLeft: Radius.circular(18), topRight: Radius.circular(18), bottomLeft: Radius.circular(18), bottomRight: Radius.circular(5)),
                       gradient: Look.of(context).me,
                     )
-                  : glassDecoration(context, radius: 22),
+                  : glassDecoration(context, radius: 18),
               child: child,
             ),
           ),
@@ -471,10 +480,10 @@ class _UserText extends StatelessWidget {
             children: [
               Icon(CupertinoIcons.photo, size: 15, color: white),
               const SizedBox(width: 5),
-              Text(pictures == 1 ? 'Picture' : '$pictures pictures', style: TextStyle(fontSize: 14, color: white)),
+              Text(pictures == 1 ? 'Picture' : '$pictures pictures', style: TextStyle(fontSize: 13, color: white)),
             ],
           ),
-        if (text.isNotEmpty) Text(text, style: TextStyle(fontSize: 16, height: 1.35, color: white, letterSpacing: -0.2)),
+        if (text.isNotEmpty) Text(text, style: TextStyle(fontSize: 14.5, height: 1.35, color: white, letterSpacing: -0.1)),
       ],
     );
   }
@@ -489,7 +498,7 @@ class _HistoryBubble extends StatelessWidget {
     return _Bubble(
       fromUser: false,
       caption: item.tools.isEmpty ? null : 'Used ${item.tools.length} tool${item.tools.length == 1 ? '' : 's'}',
-      child: MarkdownText(_looksHtml(item.text) ? htmlToMarkdown(item.text) : item.text),
+      child: MarkdownText(_looksHtml(item.text) ? htmlToMarkdown(item.text) : item.text, fontSize: 14.5),
     );
   }
 }
@@ -519,10 +528,10 @@ class _TurnView extends StatelessWidget {
     if (turn.notice != null && turn.running) children.add(_Note(turn.notice!));
     final reply = turn.finalText ?? '';
     if (reply.trim().isNotEmpty) {
-      children.add(_Bubble(fromUser: false, caption: turn.tokens == null ? null : '${_compact(turn.tokens!)} tokens', child: MarkdownText(_looksHtml(reply) ? htmlToMarkdown(reply) : reply)));
+      children.add(_Bubble(fromUser: false, caption: turn.tokens == null ? null : '${_compact(turn.tokens!)} tokens', child: MarkdownText(_looksHtml(reply) ? htmlToMarkdown(reply) : reply, fontSize: 14.5)));
     }
     if (turn.question != null) {
-      children.add(_Bubble(fromUser: false, child: MarkdownText(turn.question!)));
+      children.add(_Bubble(fromUser: false, child: MarkdownText(turn.question!, fontSize: 14.5)));
       if (turn.options.isNotEmpty) {
         children.add(
           Padding(
@@ -540,7 +549,7 @@ class _TurnView extends StatelessWidget {
                     onPressed: () => onOption(o),
                     child: Text(
                       o,
-                      style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Look.of(context).accent),
+                      style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: Look.of(context).accent),
                     ),
                   ),
               ],
@@ -640,7 +649,7 @@ class _WorkingCardState extends State<_WorkingCard> {
                         Expanded(
                           child: Text(
                             summary,
-                            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: secondary),
+                            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: secondary),
                           ),
                         ),
                         Icon(open ? CupertinoIcons.chevron_up : CupertinoIcons.chevron_down, size: 13, color: secondary),
@@ -662,7 +671,7 @@ class _WorkingCardState extends State<_WorkingCard> {
                           else if (s.kind == 'text')
                             Padding(
                               padding: const EdgeInsets.symmetric(vertical: 4),
-                              child: MarkdownText(s.text, fontSize: 14.5, color: secondary),
+                              child: MarkdownText(s.text, fontSize: 13.5, color: secondary),
                             ),
                       ],
                     ),
@@ -716,7 +725,7 @@ class _ToolRowState extends State<_ToolRow> {
                       children: [
                         TextSpan(
                           text: _sentence(s.label),
-                          style: TextStyle(fontSize: 14.5, color: resolve(context, CupertinoColors.label)),
+                          style: TextStyle(fontSize: 13.5, color: resolve(context, CupertinoColors.label)),
                         ),
                         if (s.agent != null)
                           TextSpan(
@@ -768,7 +777,7 @@ class _ThinkingRow extends StatelessWidget {
         title: step.agent == null ? 'Thinking' : 'Thinking · ${step.agent}',
         child: Text(
           step.text,
-          style: TextStyle(fontSize: 13.5, height: 1.4, fontStyle: FontStyle.italic, color: secondary),
+          style: TextStyle(fontSize: 12.5, height: 1.4, fontStyle: FontStyle.italic, color: secondary),
         ),
       ),
     );
@@ -908,18 +917,26 @@ class _Composer extends StatelessWidget {
               ),
             ),
           Glass(
-            radius: 26,
+            radius: 16,
             color: Look.of(context).card,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(4, 4, 5, 4),
+              padding: const EdgeInsets.fromLTRB(4, 3, 4, 3),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  CupertinoButton(
-                    padding: const EdgeInsets.only(left: 6, right: 4, bottom: 6),
-                    minimumSize: const Size(36, 36),
-                    onPressed: onAttach,
-                    child: Icon(CupertinoIcons.camera, size: 24, color: blue),
+                  Semantics(
+                    button: true,
+                    label: 'Add',
+                    child: GestureDetector(
+                      onTap: onAttach,
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        margin: const EdgeInsets.only(bottom: 2),
+                        decoration: BoxDecoration(color: Look.of(context).chip, borderRadius: BorderRadius.circular(10)),
+                        child: Icon(CupertinoIcons.add, size: 18, color: blue),
+                      ),
+                    ),
                   ),
                   Expanded(
                     child: CupertinoTextField(
@@ -929,7 +946,8 @@ class _Composer extends StatelessWidget {
                       minLines: 1,
                       maxLines: 6,
                       textCapitalization: TextCapitalization.sentences,
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      style: TextStyle(fontSize: 15, color: resolve(context, CupertinoColors.label)),
                       decoration: null,
                     ),
                   ),
@@ -967,11 +985,11 @@ class _RoundButton extends StatelessWidget {
     child: GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 36,
-        height: 36,
+        width: 32,
+        height: 32,
         margin: const EdgeInsets.only(bottom: 2),
-        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        child: Icon(icon, size: 18, color: color == Look.of(context).accent ? Look.of(context).tabActiveIcon : CupertinoColors.white),
+        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(10)),
+        child: Icon(icon, size: 17, color: color == Look.of(context).accent ? Look.of(context).tabActiveIcon : CupertinoColors.white),
       ),
     ),
   );

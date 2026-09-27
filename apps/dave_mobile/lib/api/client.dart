@@ -226,6 +226,15 @@ class DaveApi {
         timeout: const Duration(minutes: 7),
       ));
 
+  // --- what Dave is waiting on, and his prompt ----------------------------------------------
+
+  Future<Map<String, dynamic>> watchlist() => _send(() => _http.get(_url('/api/app/watchlist'), headers: _headers));
+  Future<Map<String, dynamic>> watchlistAction(String action, String id) => _post('/api/app/watchlist', {'action': action, 'id': id});
+
+  Future<Map<String, dynamic>> promptParts() => _send(() => _http.get(_url('/api/app/prompt'), headers: _headers));
+  Future<Map<String, dynamic>> savePrompt(String file, String text) => _post('/api/app/prompt', {'file': file, 'text': text});
+  Future<Map<String, dynamic>> resetPrompt(String file) => _post('/api/app/prompt', {'file': file, 'reset': true});
+
   // --- context window -------------------------------------------------------------------------
 
   Future<ContextUsage> context({int days = 8}) async =>

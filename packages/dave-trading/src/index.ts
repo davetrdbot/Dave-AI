@@ -16,6 +16,7 @@ export * from "./scalp-cycle.js";
 export * from "./deep-loss-alert-store.js";
 export * from "./self-aware-alert-toggles.js";
 export * from "./background-watch.js";
+export * from "./setups.js";
 export * from "./trade-prediction-store.js";
 export * from "./thesis-status-store.js";
 export * from "./trading-mode.js";

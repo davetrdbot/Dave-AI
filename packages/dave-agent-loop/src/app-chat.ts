@@ -17,6 +17,7 @@ import { friendlyErrorMessage } from "./error-messages.js";
 import { getPrimaryChatId } from "./primary-chat.js";
 import { publishActivity, type ActivityChannel } from "./activity-bus.js";
 import { chatEventPublisher } from "./activity-events.js";
+import { loadSystemPrompt } from "./system-prompt.js";
 
 export { toolLabel, chatEventPublisher } from "./activity-events.js";
 
@@ -118,7 +119,10 @@ export async function runAppChatTurn(deps: AppChatDeps, input: AppChatInput, tur
 
   const historyKey = sharedHistoryKey(db, userId);
   let history = loadConversationHistory(db, historyKey);
-  if (history.length === 0) history = [{ role: "system", content: deps.systemPrompt }];
+  // Always the CURRENT prompt: the stored conversation keeps its first system message forever, so
+  // without this a prompt fix (or an edit from the app) would never reach an ongoing chat.
+  if (history.length === 0) history = [{ role: "system", content: loadSystemPrompt() }];
+  else if (history[0].role === "system") history[0] = { role: "system", content: loadSystemPrompt() };
   const pendingQuestion = input.text ? getPendingQuestion(userId) : undefined;
   const pendingToolCallId = pendingQuestion ? findPendingAskUserToolCallId(history) : undefined;
 

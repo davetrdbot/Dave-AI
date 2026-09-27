@@ -39,6 +39,7 @@ import { chatEventPublisher, newTurnId, publishFinal } from "./app-chat.js";
 import { tryHandleNousEntry } from "./nous/flow.js";
 import { startNous } from "./nous/service.js";
 import { startScalpCycleSweep } from "./scalp-cycle-sweep.js";
+import { startSetupSweep } from "./setup-sweep.js";
 import { seedStructureTargetsSkill } from "@dave/skills";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
@@ -50,6 +51,7 @@ import { friendlyErrorMessage } from "./error-messages.js";
 import { recordCycleOutcome } from "./autonomous-cycle-status.js";
 import { withLiveContext } from "./live-context.js";
 import { isJsonlSkillFile, installSkillsFromJsonl } from "@dave/skills";
+import { loadSystemPrompt } from "./system-prompt.js";
 
 /** Real gap fixed (user: "the auto-trading loop is too chatty"): a cycle only ever reports back
  *  when one of these genuinely fired -- tied to real, verifiable tool-call outcomes, not to
@@ -190,7 +192,10 @@ async function runAgentTurn(
   const loop = new AgentLoop(provider, registry);
 
   let history = loadConversationHistory(deps.db, historyKey);
-  if (history.length === 0) history = [{ role: "system", content: deps.systemPrompt }];
+  // Always the CURRENT prompt: the stored conversation keeps its first system message forever, so
+  // without this a prompt fix (or an edit from the app) would never reach an ongoing chat.
+  if (history.length === 0) history = [{ role: "system", content: loadSystemPrompt() }];
+  else if (history[0].role === "system") history[0] = { role: "system", content: loadSystemPrompt() };
 
   // Real bug fixed: ask_user (ask-user.ts) genuinely pauses the loop and its question
   // WAS being sent to the user, but nothing ever resumed the paused run -- the next
@@ -1217,6 +1222,16 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       executor: deps.executor,
       notify: async (text) => {
         publishActivity(deps.ownerUserId, "background", "scalp", { text });
+        const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
+        if (chatId !== undefined) await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
+      },
+    });
+    // Setups: "if price goes here, then there, place this" -- walked against the live price.
+    startSetupSweep({
+      userId: deps.ownerUserId,
+      executor: deps.executor,
+      notify: async (text) => {
+        publishActivity(deps.ownerUserId, "background", "setup", { text });
         const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
         if (chatId !== undefined) await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
       },

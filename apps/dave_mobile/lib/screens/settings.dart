@@ -10,6 +10,7 @@ import '../session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'context.dart';
+import 'extras.dart';
 import 'mt5.dart';
 import 'nous.dart';
 import 'providers.dart';
@@ -191,6 +192,20 @@ class _TradingSection extends StatelessWidget {
               less: 'Scan less often',
               more: 'Scan more often',
             ),
+          ),
+          CupertinoListTile(
+            leading: const Icon(CupertinoIcons.hourglass),
+            title: const Text('Waiting on'),
+            subtitle: const Text('Setups, reminders and levels Dave set'),
+            trailing: const CupertinoListTileChevron(),
+            onTap: () => pushScoped<void>(context, const WatchlistPage()),
+          ),
+          CupertinoListTile(
+            leading: const Icon(CupertinoIcons.doc_text),
+            title: const Text('Dave\'s prompt'),
+            subtitle: const Text('Read and edit how Dave thinks and trades'),
+            trailing: const CupertinoListTileChevron(),
+            onTap: () => pushScoped<void>(context, const PromptPage()),
           ),
         ],
       );
@@ -592,6 +607,13 @@ class _AiSection extends StatelessWidget {
           subtitle: const Text('Run MT5 in Dave\'s container -- no VPS'),
           trailing: const CupertinoListTileChevron(),
           onTap: () => pushScoped<void>(context, const Mt5Page()),
+        ),
+        CupertinoListTile(
+          leading: const Icon(CupertinoIcons.slider_horizontal_3),
+          title: const Text('EA settings'),
+          subtitle: const Text('Report speed, slippage, magic number, zones'),
+          trailing: const CupertinoListTileChevron(),
+          onTap: () => pushScoped<void>(context, const EaSettingsPage()),
         ),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.antenna_radiowaves_left_right),

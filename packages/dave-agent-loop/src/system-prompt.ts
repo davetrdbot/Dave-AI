@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -26,19 +26,42 @@ import { join } from "node:path";
 // (prompts/*.md and SYSTEM_PROMPT are both fixed at process start). Computed once per process
 // and reused.
 let cachedSystemPrompt: string | undefined;
+let cachedStamp = "";
+
+/** The prompt's parts, in order. Each can be customised from the app (Settings -> Dave's prompt):
+ *  a customised copy lives in data/prompts/<file> and wins over the shipped prompts/<file>. */
+export const PROMPT_FILES = ["SOUL.md", "IDENTITY.md", "SECURITY.md", "trading.md", "BOOTSTRAP.md"] as const;
+
+export function promptOverrideDir(): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "prompts");
+}
+
+/** Only the files' modification times -- a cheap stat per call, so an edit made from the app is
+ *  picked up on the very next turn without re-reading unchanged files. */
+function stamp(): string {
+  return PROMPT_FILES.map((f) => {
+    try {
+      return String(statSync(join(promptOverrideDir(), f)).mtimeMs);
+    } catch {
+      return "-";
+    }
+  }).join("|");
+}
 
 export function loadSystemPrompt(): string {
-  if (cachedSystemPrompt !== undefined) return cachedSystemPrompt;
-  if (process.env.SYSTEM_PROMPT) return (cachedSystemPrompt = process.env.SYSTEM_PROMPT);
+  if (process.env.SYSTEM_PROMPT) return process.env.SYSTEM_PROMPT;
+  const now = stamp();
+  if (cachedSystemPrompt !== undefined && now === cachedStamp) return cachedSystemPrompt;
   const promptsDir = join(process.cwd(), "prompts");
-  const files = ["SOUL.md", "IDENTITY.md", "SECURITY.md", "trading.md", "BOOTSTRAP.md"];
-  const sections = files.flatMap((file) => {
+  const sections = PROMPT_FILES.flatMap((file) => {
+    const custom = join(promptOverrideDir(), file);
     try {
-      return [readFileSync(join(promptsDir, file), "utf8")];
+      return [readFileSync(existsSync(custom) ? custom : join(promptsDir, file), "utf8")];
     } catch {
       console.error(`[boot] could not read prompts/${file} -- continuing without it`);
       return [];
     }
   });
+  cachedStamp = now;
   return (cachedSystemPrompt = sections.length === 0 ? "You are Dave, an autonomous trading assistant." : sections.join("\n\n---\n\n"));
 }

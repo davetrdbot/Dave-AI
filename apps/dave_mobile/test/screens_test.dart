@@ -14,6 +14,7 @@ import 'dart:ui' as ui;
 
 import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/app_scope.dart';
+import 'package:dave_mobile/screens/extras.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
 import 'package:dave_mobile/look.dart';
@@ -209,12 +210,33 @@ http.Client _fakeServer() => MockClient((req) async {
             'status': {
               'installed': true, 'compiled': true, 'running': true, 'login': 'logged-in', 'configured': true,
               'account': {'login': '40123456', 'server': 'Deriv-Demo', 'symbol': 'VOL_80', 'period': 'M1'},
-              'inputs': {'PushSeconds': 8},
+              'inputs': {'PushSeconds': 8, 'MagicNumber': 20260101, 'SlippagePoints': 30, 'EnablePush': 'true', 'EnableEmail': 'false', 'SwingLookback': 50, 'ZoneMax': 6, 'EqTolerancePips': 1.5},
               'marketWatch': ['VOL_80', 'BOOM_100', 'CRASH_500'],
               'metaquotesIds': ['1A2B3C4D'],
               'phonePush': {'state': 'on', 'detail': null, 'eaReports': true},
               'relay': {'count': 1200, 'errors': 0, 'lastAt': DateTime.now().millisecondsSinceEpoch / 1000 - 3, 'lastStatus': 200},
             },
+          };
+        case '/api/app/watchlist':
+          body = {
+            'setups': [
+              {'id': 's1', 'symbol': 'XAUUSD', 'reason': 'Sweep the Asian high, then buy the retest', 'plan': 'XAUUSD: ✓ above 2660 → below 2650, then BUY SL 2641 TP 2672; cancel if below 2640', 'status': 'active', 'stage': 1, 'steps': 2, 'outcome': null, 'expiresAt': DateTime.now().millisecondsSinceEpoch + 5 * 3600000},
+              {'id': 's0', 'symbol': 'BOOM_1000', 'reason': 'Spike catch', 'plan': 'BOOM_1000: ✓ below 10480, then BUY', 'status': 'placed', 'stage': 1, 'steps': 1, 'outcome': 'Placed #88123', 'expiresAt': DateTime.now().millisecondsSinceEpoch},
+            ],
+            'reminders': [
+              {'id': 'r1', 'text': 'Check the London open on EURUSD', 'reason': 'NY range break', 'symbol': 'EURUSD', 'dueAt': DateTime.now().millisecondsSinceEpoch + 90 * 60000},
+            ],
+            'levels': [
+              {'id': 'w1', 'symbol': 'XAUUSD', 'kind': 'price_at_or_below', 'level': 2645.5, 'reason': 'Demand zone -- buy the tap', 'createdAt': DateTime.now().millisecondsSinceEpoch},
+            ],
+            'checks': [],
+          };
+        case '/api/app/prompt':
+          body = {
+            'parts': [
+              {'file': 'SOUL.md', 'title': 'Personality', 'about': 'Who Dave is and how he talks', 'custom': false, 'text': '# Soul\n\nYou are Dave.'},
+              {'file': 'trading.md', 'title': 'Trading', 'about': 'How Dave trades', 'custom': true, 'text': '# Trading\n\nWhen the trader tells you to trade, you trade.'},
+            ],
           };
         case '/api/app/trades':
           body = {'ok': true};
@@ -532,6 +554,8 @@ void main() {
       await tester.tap(find.byType(CupertinoNavigationBarBackButton));
       await _advance(tester);
 
+      await tester.ensureVisible(find.text('Nous copy trading'));
+      await _advance(tester);
       await tester.tap(find.text('Nous copy trading'));
       await _advance(tester);
       await _shot(tester, 'nous_$mode');
@@ -577,6 +601,8 @@ void main() {
       await tester.tap(find.byType(CupertinoNavigationBarBackButton));
       await _advance(tester);
 
+      await tester.scrollUntilVisible(find.text('Self-aware alerts'), -300, scrollable: find.byType(Scrollable).first);
+      await _advance(tester);
       await tester.tap(find.text('Self-aware alerts'));
       await _advance(tester);
       await _shot(tester, 'alerts_$mode');
@@ -584,6 +610,37 @@ void main() {
       await _advance(tester);
 
       await tester.pumpWidget(const SizedBox()); // dispose, cancelling the dashboard's refresh timer
+    });
+
+    testWidgets('waiting on, prompt and EA settings render ($mode)', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 3;
+      tester.view.padding = const FakeViewPadding(top: 72, bottom: 48);
+      tester.platformDispatcher.platformBrightnessTestValue = brightness;
+      addTearDown(tester.view.reset);
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer(), streamClient: _fakeChatStream);
+      final look = brightness == Brightness.dark ? Look.midnightLime : Look.pearl;
+
+      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const WatchlistPage()), look: look));
+      await _advance(tester);
+      await _shot(tester, 'waiting_on_$mode');
+      expect(find.textContaining('XAUUSD: ✓ above 2660'), findsOneWidget);
+      expect(find.text('Check the London open on EURUSD'), findsOneWidget);
+      expect(find.text('XAUUSD ≤ 2645.5'), findsOneWidget);
+
+      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const PromptPage()), look: look));
+      await _advance(tester);
+      await _shot(tester, 'prompt_$mode');
+      expect(find.text('Personality'), findsOneWidget);
+      expect(find.text('Reset Trading'), findsOneWidget);
+
+      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const EaSettingsPage()), look: look));
+      await _advance(tester);
+      await _shot(tester, 'ea_settings_$mode');
+      expect(find.text('20260101'), findsOneWidget);
+      expect(find.text('Magic number'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
     });
 
     testWidgets('connect screen renders ($mode)', (tester) async {
