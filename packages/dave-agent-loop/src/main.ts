@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
-import { EaBridge, DynamicTradeExecutor, setEaPushInterval } from "@dave/ea-bridge";
+import { EaBridge, DynamicTradeExecutor, setEaPushInterval, onEaRequest } from "@dave/ea-bridge";
 import { createHiddenWebhookServer } from "@dave/memory";
 import { startWatchdog, startHeartbeatLoop } from "@dave/safety";
 import { getTelegramCredentials, writeTelegramStatus, type TelegramClient } from "@dave/telegram";
@@ -247,6 +247,13 @@ export async function main(): Promise<void> {
   // Declared before the watchdog handler below (and before the EaBridge handlers further down)
   // because every one of them reads it at FIRE time, not at construction time -- an event that
   // lands before Telegram is paired is silently skipped rather than crashing.
+  // Every piece of data Dave asks MT5 for (candles, the analysis suite...) shows in the app's Live
+  // tab. Plain price checks from the 5-second background loops are left out -- they'd drown it.
+  onEaRequest((e) => {
+    if (e.endpoint === "price") return;
+    publishActivity(e.userId, "loop", "ea_request", { endpoint: e.endpoint, symbol: e.symbol, timeframe: e.timeframe, ok: e.ok, ms: e.ms, ...(e.error ? { error: e.error } : {}) });
+  });
+
   let telegramClient: TelegramClient | undefined;
   const alertOwner = (text: string): void => {
     publishActivity(ownerUserId, "background", "alert", { text });

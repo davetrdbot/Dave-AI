@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { verifyDeviceToken } from "@dave/db";
 import type { CompletionMessage, ContentBlock } from "@dave/brain";
 import { buildImageContentBlock } from "@dave/vision";
-import { activityAfter, latestActivityId, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
+import { activityAfter, activityBetween, latestActivityId, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
 import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, type AppChatDeps } from "./app-chat.js";
 import { dispatchCallback } from "./command-router.js";
 import { ANSWERED_EARLIER, loadConversationHistory } from "./conversation-store.js";
@@ -20,6 +20,7 @@ import { nousDepsFor, placeNousSignal, skipNousSignal, applyNousUpdate, skipNous
  *   POST send               {text, images?: [{data: base64, mediaType}], whenFree?: bool}
  *   GET  stream             Server-Sent Events of the activity bus (Last-Event-ID / ?after=, ?feeds=)
  *   GET  activity           the same events as JSON (catch-up, background notifications)
+ *   GET  activity/range     loop/background events between ?from=&to= (ms), newest first -- the Live tab's periods
  *   GET  state              is Dave busy, and with what
  *   POST stop               stop whatever Dave is doing right now
  *   POST action             {callback, messageId?} -- a card button from the app (Nous, trade approvals, ...)
@@ -123,6 +124,17 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
     if (method === "GET" && path === "state") {
       send(res, 200, stateOf(userId));
       return;
+    }
+    if (method === "GET" && path === "activity/range") {
+      // The Live tab's Today / 7 days / 3 weeks / custom views (activity-bus.ts's dated archive).
+      const now = Date.now();
+      const from = Number(url.searchParams.get("from") ?? now - 86_400_000);
+      const to = Number(url.searchParams.get("to") ?? now);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return send(res, 400, { error: "from and to must be times in ms, from before to." });
+      const kinds = url.searchParams.get("kinds")?.split(",").filter(Boolean);
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 500) || 500, 1), 2000);
+      const feeds = feedsParam(url)?.filter((f) => f !== "chat") ?? (["loop", "background"] as ActivityFeed[]);
+      return send(res, 200, activityBetween(userId, from, to, { feeds, kinds, limit }));
     }
     if (method === "GET" && path === "activity") {
       const after = Number(url.searchParams.get("after") ?? 0) || 0;

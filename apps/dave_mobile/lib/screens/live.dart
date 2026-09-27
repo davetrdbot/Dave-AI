@@ -22,7 +22,10 @@ class LiveScreen extends StatefulWidget {
   State<LiveScreen> createState() => _LiveScreenState();
 }
 
-enum _Filter { all, decisions, agents }
+enum _Filter { all, decisions, alerts, mt5, agents }
+
+/// Live = the running stream; the others read the dated history from the server.
+enum _Period { live, today, week, weeks3, custom }
 
 class _LiveScreenState extends State<LiveScreen> {
   final _events = <ActivityEvent>[];
@@ -33,6 +36,11 @@ class _LiveScreenState extends State<LiveScreen> {
   bool _live = false;
   String? _error;
   _Filter _filter = _Filter.all;
+  _Period _period = _Period.live;
+  List<ActivityEvent>? _history;
+  int _historyTotal = 0;
+  bool _historyLoading = false;
+  DateTime? _customFrom;
   Timer? _rebuild;
   Timer? _clock;
 
@@ -119,6 +127,78 @@ class _LiveScreenState extends State<LiveScreen> {
     stream.start();
   }
 
+  Future<void> _choosePeriod(_Period p) async {
+    DateTime? from;
+    final now = DateTime.now();
+    switch (p) {
+      case _Period.live:
+        setState(() {
+          _period = p;
+          _history = null;
+        });
+        return;
+      case _Period.today:
+        from = DateTime(now.year, now.month, now.day);
+      case _Period.week:
+        from = now.subtract(const Duration(days: 7));
+      case _Period.weeks3:
+        from = now.subtract(const Duration(days: 21));
+      case _Period.custom:
+        from = await _pickDate(_customFrom ?? now.subtract(const Duration(days: 3)));
+        if (from == null) return;
+        _customFrom = from;
+    }
+    setState(() {
+      _period = p;
+      _historyLoading = true;
+    });
+    try {
+      final r = await _api!.activityRange(from, now);
+      if (!mounted) return;
+      setState(() {
+        _history = r.events;
+        _historyTotal = r.total;
+        _historyLoading = false;
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _historyLoading = false);
+        await showError(context, e);
+      }
+    }
+  }
+
+  Future<DateTime?> _pickDate(DateTime initial) async {
+    var picked = initial;
+    final ok = await showCupertinoModalPopup<bool>(
+      context: context,
+      builder: (ctx) => Container(
+        height: 320,
+        color: resolve(ctx, CupertinoColors.systemBackground),
+        child: SafeArea(
+          top: false,
+          child: Column(children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              CupertinoButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              const Text('Show from', style: TextStyle(fontWeight: FontWeight.w600)),
+              CupertinoButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Show')),
+            ]),
+            Expanded(
+              child: CupertinoDatePicker(
+                mode: CupertinoDatePickerMode.date,
+                initialDateTime: initial,
+                minimumDate: DateTime.now().subtract(const Duration(days: 90)),
+                maximumDate: DateTime.now(),
+                onDateTimeChanged: (d) => picked = d,
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+    return ok == true ? DateTime(picked.year, picked.month, picked.day) : null;
+  }
+
   Future<void> _setRunning(bool running) async {
     if (!running) {
       final ok = await confirmDestructive(context,
@@ -173,15 +253,18 @@ class _LiveScreenState extends State<LiveScreen> {
   }
 
   bool _shown(ActivityEvent e) => switch (_filter) {
-        _Filter.all => e.kind != 'log',
-        _Filter.decisions => const {'decision', 'cycle_end', 'flo', 'journal', 'nous_card', 'trade_closed'}.contains(e.kind),
+        _Filter.all => !const {'tool_start', 'tool_end'}.contains(e.kind),
+        _Filter.decisions => const {'decision', 'cycle_end', 'flo', 'journal', 'nous_card', 'trade_closed', 'setup'}.contains(e.kind),
+        _Filter.alerts => const {'self_aware', 'alert', 'level_hit', 'setup', 'memory', 'scalp', 'trade_modified'}.contains(e.kind),
+        _Filter.mt5 => e.kind == 'ea_request',
         _Filter.agents => e.agent != null,
       };
 
   @override
   Widget build(BuildContext context) {
     final bottom = 110 + MediaQuery.paddingOf(context).bottom;
-    final shown = _events.reversed.where(_shown).take(150).toList();
+    final source = _period == _Period.live ? _events.reversed : (_history ?? const <ActivityEvent>[]);
+    final shown = source.where(_shown).take(_period == _Period.live ? 150 : 800).toList();
     final now = _now();
     return CupertinoPageScaffold(
       backgroundColor: const Color(0x00000000),
@@ -201,27 +284,64 @@ class _LiveScreenState extends State<LiveScreen> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(Space.s4, Space.s4, Space.s4, Space.s2),
-              child: Row(children: [
-                for (final f in _Filter.values) ...[
-                  _Chip(
-                    text: switch (f) {
-                      _Filter.all => 'Everything',
-                      _Filter.decisions => 'Decisions',
-                      _Filter.agents => 'Flo · Journal · Workers',
-                    },
-                    selected: _filter == f,
-                    onTap: () => setState(() => _filter = f),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(children: [
+                    for (final p in _Period.values) ...[
+                      _Chip(
+                        text: switch (p) {
+                          _Period.live => 'Live',
+                          _Period.today => 'Today',
+                          _Period.week => '7 days',
+                          _Period.weeks3 => '3 weeks',
+                          _Period.custom => _period == _Period.custom && _customFrom != null ? 'Since ${_customFrom!.day}/${_customFrom!.month}' : 'Pick dates…',
+                        },
+                        selected: _period == p,
+                        onTap: () => _choosePeriod(p),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                  ]),
+                ),
+                const SizedBox(height: 8),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(children: [
+                    for (final f in _Filter.values) ...[
+                      _Chip(
+                        text: switch (f) {
+                          _Filter.all => 'Everything',
+                          _Filter.decisions => 'Decisions',
+                          _Filter.alerts => 'Self-aware & alerts',
+                          _Filter.mt5 => 'MT5 data',
+                          _Filter.agents => 'Flo · Journal · Workers',
+                        },
+                        selected: _filter == f,
+                        onTap: () => setState(() => _filter = f),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                  ]),
+                ),
+                if (_period != _Period.live && !_historyLoading)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8, left: 4),
+                    child: Text(
+                      '${shown.length} shown${_historyTotal > (_history?.length ?? 0) ? ' · newest ${_history?.length} of $_historyTotal' : ''}',
+                      style: TextStyle(fontSize: 12, color: resolve(context, CupertinoColors.secondaryLabel)),
+                    ),
                   ),
-                  const SizedBox(width: 6),
-                ],
               ]),
             ),
           ),
-          if (shown.isEmpty)
+          if (_historyLoading)
+            const SliverToBoxAdapter(child: Padding(padding: EdgeInsets.only(top: Space.s6), child: CupertinoActivityIndicator()))
+          else if (shown.isEmpty)
             const SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.only(top: Space.s6),
-                child: EmptyState(icon: CupertinoIcons.waveform_path_ecg, title: 'Nothing yet', message: 'When Dave scans the market, every step shows up here as it happens.'),
+                child: EmptyState(icon: CupertinoIcons.waveform_path_ecg, title: 'Nothing here', message: 'When Dave scans the market, every step shows up here as it happens. Older days only start filling in from this update on.'),
               ),
             )
           else
@@ -363,8 +483,7 @@ class _Chip extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
   @override
-  Widget build(BuildContext context) => Flexible(
-        child: GestureDetector(
+  Widget build(BuildContext context) => GestureDetector(
           onTap: onTap,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 160),
@@ -377,7 +496,6 @@ class _Chip extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: selected ? resolve(context, CupertinoColors.systemBackground) : resolve(context, CupertinoColors.label))),
           ),
-        ),
       );
 }
 
@@ -415,9 +533,23 @@ class _EventRow extends StatelessWidget {
       'scalp' => (CupertinoIcons.arrow_2_squarepath, green, 'Scalp', e.text('text')),
       'trade_closed' => (CupertinoIcons.chart_bar_alt_fill, (e.data['pnl'] as num? ?? 0) >= 0 ? green : red, 'Trade closed', e.text('text')),
       'trade_modified' => (CupertinoIcons.slider_horizontal_3, grey, 'Trade changed', e.text('text')),
+      'self_aware' => (CupertinoIcons.eye_fill, purple, 'Self-aware', e.text('text')),
+      'level_hit' => (CupertinoIcons.scope, blue, 'Marked level hit', e.text('text')),
+      'setup' => (CupertinoIcons.square_stack_3d_down_right_fill, blue, 'Setup', e.text('text')),
+      'memory' => (CupertinoIcons.memories, purple, 'Memory', e.text('text')),
+      'ea_request' => (
+          e.data['ok'] == false ? CupertinoIcons.exclamationmark_circle : CupertinoIcons.arrow_down_doc,
+          e.data['ok'] == false ? red : grey,
+          'MT5 · ${_endpointName(e.text('endpoint'))} ${e.text('symbol')} ${e.text('timeframe')}',
+          e.data['ok'] == false ? 'Failed after ${_secs(e.data['ms'])}: ${e.text('error')}' : 'Received in ${_secs(e.data['ms'])}',
+        ),
+      'log' => (CupertinoIcons.text_alignleft, grey, _logTitle(e.text('text')), e.text('text')),
       _ => (CupertinoIcons.circle, grey, e.kind.replaceAll('_', ' '), e.text('text').isEmpty ? null : e.text('text')),
     };
-    return Container(
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _showDetail(context, icon, color, title, body),
+      child: Container(
       margin: const EdgeInsets.fromLTRB(Space.s4, 4, Space.s4, 4),
       padding: const EdgeInsets.all(Space.s3),
       decoration: glassDecoration(context, radius: 18),
@@ -438,12 +570,89 @@ class _EventRow extends StatelessWidget {
             if (body != null && body.trim().isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 3),
-                child: Text(body.trim(), maxLines: 6, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13.5, height: 1.35, color: grey)),
+                child: Text(body.trim(), maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13.5, height: 1.35, color: grey)),
               ),
           ]),
         ),
       ]),
+      ),
     );
+  }
+
+  /// The whole thing -- full reason, every detail -- in a sheet you can scroll and copy from.
+  void _showDetail(BuildContext context, IconData icon, Color color, String title, String? body) {
+    HapticFeedback.selectionClick();
+    final extras = <String, String>{
+      for (final entry in e.data.entries)
+        if (entry.value is String || entry.value is num || entry.value is bool)
+          if (!const {'text', 'reason', 'message', 'opinion'}.contains(entry.key)) entry.key: '${entry.value}',
+    };
+    showCupertinoModalPopup<void>(
+      context: context,
+      builder: (ctx) {
+        final look = Look.of(ctx);
+        return Container(
+          constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(ctx).height * 0.8),
+          decoration: BoxDecoration(color: look.card, borderRadius: const BorderRadius.vertical(top: Radius.circular(22))),
+          child: SafeArea(
+            top: false,
+            child: ListView(shrinkWrap: true, padding: const EdgeInsets.fromLTRB(20, 12, 20, 24), children: [
+              Center(child: Container(width: 36, height: 4, decoration: BoxDecoration(color: look.line, borderRadius: BorderRadius.circular(2)))),
+              const SizedBox(height: 14),
+              Row(children: [
+                Icon(icon, color: color, size: 22),
+                const SizedBox(width: 10),
+                Expanded(child: Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+              ]),
+              const SizedBox(height: 4),
+              Text(
+                '${e.at.day}/${e.at.month}/${e.at.year} · ${_clock(e.at)}${e.agent != null ? ' · ${e.agent}' : ''}',
+                style: TextStyle(fontSize: 12.5, color: resolve(ctx, CupertinoColors.secondaryLabel)),
+              ),
+              if (body != null && body.trim().isNotEmpty) ...[
+                const SizedBox(height: 14),
+                Text(body.trim(), style: TextStyle(fontSize: 15, height: 1.45, color: resolve(ctx, CupertinoColors.label))),
+              ],
+              if (extras.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                for (final x in extras.entries)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      SizedBox(width: 110, child: Text(x.key, style: TextStyle(fontSize: 13, color: resolve(ctx, CupertinoColors.secondaryLabel)))),
+                      Expanded(child: Text(x.value, style: const TextStyle(fontSize: 13))),
+                    ]),
+                  ),
+              ],
+              const SizedBox(height: 8),
+              CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: [title, if (body != null) body.trim()].join('\n\n')));
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Copy'),
+              ),
+            ]),
+          ),
+        );
+      },
+    );
+  }
+
+  static String _endpointName(String ep) => switch (ep) {
+        'all' || 'get_all_analysis' => 'full analysis',
+        'candles' => 'candles',
+        '' => 'data',
+        _ => ep.replaceAll('_', ' '),
+      };
+
+  static String _secs(Object? ms) => ms is num ? (ms < 1000 ? '${ms.round()}ms' : '${(ms / 1000).toStringAsFixed(1)}s') : '?';
+
+  /// The first few words of a loop log line, as its title.
+  static String _logTitle(String t) {
+    final first = t.split(RegExp(r' -- |: ')).first.trim();
+    return first.length > 60 ? '${first.substring(0, 60)}…' : first;
   }
 
   static (IconData, Color, String, String?) _decision(ActivityEvent e, Color green, Color red, Color grey) {

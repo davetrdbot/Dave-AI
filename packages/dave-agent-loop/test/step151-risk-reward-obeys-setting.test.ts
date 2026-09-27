@@ -91,7 +91,7 @@ console.log("\n[6] The tick's own skip message names the floor instead of assumi
 {
   const tick = read("packages/dave-agent-loop/src/autonomous-tick.ts");
   assert.ok(!tick.includes("I won't place a trade whose stop costs more than its target pays"), "the hardcoded 1:1 sentence must be gone");
-  assert.match(tick, /your risk:reward floor is \$\{minRiskReward\}:1 and this structure doesn't clear it/);
+  assert.match(tick, /your risk:reward floor is \$\{minRiskReward\}:1 and even after one correction this structure doesn't clear it/);
   console.log("    confirmed: the skip message reports the trader's real number");
 }
 

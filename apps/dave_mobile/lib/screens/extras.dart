@@ -285,3 +285,241 @@ class EaSettingsPage extends StatelessWidget {
         },
       );
 }
+
+// ---------------------------------------------------------------------------------------------
+
+/// E2B and Firecrawl keys -- the services Dave's script and web tools run on. A key is typed once
+/// and only ever shown back masked.
+class ServiceKeysPage extends StatelessWidget {
+  const ServiceKeysPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => LoadedPage<Map<String, dynamic>>(
+        title: 'Service keys',
+        load: (api) => api.serviceKeys(),
+        builder: (context, d, reload) {
+          Future<void> act(Map<String, Object?> body) async {
+            if (await runAction(context, (api) => api.serviceKeysAction(body))) await reload();
+          }
+
+          Widget service(String id) {
+            final m = d[id] is Map ? Map<String, dynamic>.from(d[id] as Map) : const <String, dynamic>{};
+            final keys = _list(m['keys']);
+            final title = '${m['title'] ?? id}';
+            return _section(context, header: title, footer: '${m['about'] ?? ''} Get a key at ${m['link'] ?? 'their website'}.', children: [
+              if (keys.isEmpty) CupertinoListTile(title: Text('No key yet', style: TextStyle(color: resolve(context, CupertinoColors.secondaryLabel)))),
+              for (final k in keys)
+                CupertinoListTile(
+                  leading: const Icon(CupertinoIcons.lock_fill),
+                  title: Text('${k['label']}'),
+                  subtitle: Text('${k['key'] ?? ''}'),
+                  trailing: CupertinoButton(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(32, 32),
+                    onPressed: () async {
+                      final ok = await confirmDestructive(context, title: 'Remove this $title key?', message: 'Dave stops using it straight away.', action: 'Remove');
+                      if (ok && context.mounted) await act({'action': 'remove', 'service': id, 'keyId': k['id']});
+                    },
+                    child: Icon(CupertinoIcons.minus_circle_fill, color: Look.of(context).down, size: 22),
+                  ),
+                ),
+              CupertinoListTile(
+                leading: Icon(CupertinoIcons.add_circled_solid, color: Look.of(context).accent),
+                title: Text('Add $title key', style: TextStyle(color: Look.of(context).accent)),
+                onTap: () async {
+                  final key = await promptText(context, title: '$title API key', message: 'Paste the key. It is stored on your server and never shown in full again.', obscure: true, action: 'Add');
+                  if (key == null || key.trim().isEmpty || !context.mounted) return;
+                  await act({'action': 'add', 'service': id, 'apiKey': key.trim()});
+                },
+              ),
+            ]);
+          }
+
+          return [SliverToBoxAdapter(child: service('e2b')), SliverToBoxAdapter(child: service('firecrawl'))];
+        },
+      );
+}
+
+// ---------------------------------------------------------------------------------------------
+
+/// The groups of symbols Dave hunts: create, edit, delete, and pick the active and fallback one.
+class PairGroupsPage extends StatelessWidget {
+  const PairGroupsPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => LoadedPage<Map<String, dynamic>>(
+        title: 'Pair groups',
+        load: (api) => api.pairGroups(),
+        builder: (context, d, reload) {
+          Future<void> act(Map<String, Object?> body) async {
+            if (await runAction(context, (api) => api.pairGroupsAction(body))) await reload();
+          }
+
+          Future<void> edit([Map<String, dynamic>? g]) async {
+            final saved = await pushScoped<bool>(
+              context,
+              EditorPage(
+                title: g == null ? 'New group' : 'Edit ${g['name']}',
+                fields: [
+                  EditorField(label: 'Name', initial: '${g?['name'] ?? ''}', placeholder: 'Boom & Crash'),
+                  EditorField(label: 'Symbols', initial: g == null ? '' : ((g['symbols'] as List?) ?? const []).join(', '), placeholder: 'BOOM_1000, CRASH_1000, VOL_75', multiline: true),
+                ],
+                footer: 'Symbols exactly as MT5 names them, separated by commas or spaces.',
+                onSave: (v) async {
+                  await AppScope.of(context).api.pairGroupsAction({'action': 'save', if (g != null) 'id': g['id'], 'name': v[0], 'symbols': v[1]});
+                },
+              ),
+            );
+            if (saved == true) await reload();
+          }
+
+          final groups = _list(d['groups']);
+          final active = d['activeGroupId'];
+          final fallback = d['fallbackGroupId'];
+          return [
+            SliverToBoxAdapter(
+              child: _section(context,
+                  header: 'Groups',
+                  footer: 'Tap a group to make Dave hunt it. The fallback group is used when the active one has nothing open to trade.',
+                  children: [
+                    for (final g in groups)
+                      CupertinoListTile(
+                        leading: Icon(g['id'] == active ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.circle, color: g['id'] == active ? Look.of(context).accent : null),
+                        title: Text('${g['name']}'),
+                        subtitle: Text(
+                          [if (g['id'] == fallback) 'Fallback', ((g['symbols'] as List?) ?? const []).join(', ')].join(' · '),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: CupertinoButton(
+                          padding: EdgeInsets.zero,
+                          minimumSize: const Size(32, 32),
+                          onPressed: () async {
+                            final choice = await showCupertinoModalPopup<String>(
+                              context: context,
+                              builder: (ctx) => CupertinoActionSheet(
+                                title: Text('${g['name']}'),
+                                actions: [
+                                  CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'edit'), child: const Text('Edit symbols')),
+                                  if (g['id'] != fallback) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'fallback'), child: const Text('Use as fallback')),
+                                  CupertinoActionSheetAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, 'delete'), child: const Text('Delete group')),
+                                ],
+                                cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                              ),
+                            );
+                            if (!context.mounted) return;
+                            if (choice == 'edit') return edit(g);
+                            if (choice == 'fallback') return act({'action': 'fallback', 'id': g['id']});
+                            if (choice != 'delete') return;
+                            final ok = await confirmDestructive(context, title: 'Delete ${g['name']}?', message: 'Open trades are not touched.', action: 'Delete');
+                            if (ok) await act({'action': 'delete', 'id': g['id']});
+                          },
+                          child: const Icon(CupertinoIcons.ellipsis_circle, size: 22),
+                        ),
+                        onTap: g['id'] == active ? null : () => act({'action': 'activate', 'id': g['id']}),
+                      ),
+                    CupertinoListTile(
+                      leading: Icon(CupertinoIcons.add_circled_solid, color: Look.of(context).accent),
+                      title: Text('New group', style: TextStyle(color: Look.of(context).accent)),
+                      onTap: () => edit(),
+                    ),
+                  ]),
+            ),
+          ];
+        },
+      );
+}
+
+// ---------------------------------------------------------------------------------------------
+
+/// Which timeframes and analysis types Dave pulls from MT5 on each scan -- fewer is faster.
+class AnalysisScopePage extends StatelessWidget {
+  const AnalysisScopePage({super.key});
+
+  @override
+  Widget build(BuildContext context) => LoadedPage<Map<String, dynamic>>(
+        title: 'What Dave analyses',
+        load: (api) => api.analysisScope(),
+        builder: (context, d, reload) {
+          Future<void> act(Map<String, Object?> body) async {
+            if (await runAction(context, (api) => api.analysisScopeAction(body))) await reload();
+          }
+
+          List<String> strings(Object? v) => v is List ? v.map((e) => '$e').toList() : <String>[];
+          final tfs = strings(d['timeframes']);
+          final eps = strings(d['endpoints']);
+          final allTf = strings(d['allTimeframes']);
+          final allEp = strings(d['allEndpoints']);
+          final everything = d['mode'] == 'all';
+          return [
+            SliverToBoxAdapter(
+              child: _section(context, header: 'Scope', footer: 'Everything is the most thorough and the slowest. Trimming analysis types Dave never uses makes each scan faster.', children: [
+                CupertinoListTile(
+                  title: const Text('Analyse everything'),
+                  trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, value: everything, onChanged: everything ? null : (_) => act({'action': 'all'})),
+                ),
+              ]),
+            ),
+            SliverToBoxAdapter(
+              child: _section(context, header: 'Timeframes', children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Wrap(spacing: 8, runSpacing: 8, children: [
+                    for (final tf in allTf)
+                      _Chip(
+                        label: tf,
+                        on: tfs.contains(tf),
+                        onTap: () {
+                          final next = tfs.contains(tf) ? (tfs.where((x) => x != tf).toList()) : [...tfs, tf];
+                          if (next.isEmpty) return;
+                          act({'action': 'timeframes', 'timeframes': next});
+                        },
+                      ),
+                  ]),
+                ),
+              ]),
+            ),
+            SliverToBoxAdapter(
+              child: _section(context, header: 'Analysis types (${eps.length} of ${allEp.length})', children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Wrap(spacing: 6, runSpacing: 6, children: [
+                    for (final ep in allEp)
+                      _Chip(
+                        label: ep.replaceAll('_', ' '),
+                        on: eps.contains(ep),
+                        onTap: () {
+                          final next = eps.contains(ep) ? (eps.where((x) => x != ep).toList()) : [...eps, ep];
+                          if (next.isEmpty) return;
+                          act({'action': 'endpoints', 'endpoints': next});
+                        },
+                      ),
+                  ]),
+                ),
+              ]),
+            ),
+          ];
+        },
+      );
+}
+
+class _Chip extends StatelessWidget {
+  const _Chip({required this.label, required this.on, required this.onTap});
+  final String label;
+  final bool on;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(color: on ? look.accent : look.chip, borderRadius: BorderRadius.circular(14)),
+        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: on ? look.tabActiveIcon : resolve(context, CupertinoColors.label))),
+      ),
+    );
+  }
+}

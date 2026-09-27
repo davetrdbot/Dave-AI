@@ -1372,6 +1372,49 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     return { action: "PAUSE", symbol, notable: true, message: `⏸ Self-pausing for ${minutesLeft}m\n💡 ${summarizeReason(reason)}` };
   }
 
+  // Real bug fixed (the trader, from the live trade logs: "the risk reward stuff"). The model often
+  // works out good levels in its reasoning ("alternative SL 213,963 -> 2.92R, clears the floor")
+  // but submits the OLD numbers in the decision fields -- or flips the stop to the wrong side of a
+  // SELL -- and the whole setup was thrown away at the final check. Now the refusal goes back to
+  // it ONCE, with the exact reason, so it can fix the levels it already found. Still a hard gate:
+  // the final assessRiskRewardForUser check below is unchanged and nothing weaker gets through.
+  if ((TRADE_ACTIONS as readonly string[]).includes(decision.action)) {
+    const probeType = ACTION_TO_ORDER_TYPE[decision.action as TradeAction];
+    const probe: OrderRequest = { symbol, type: probeType, lots: 1, price: decision.entry, sl: decision.sl, tp: decision.tp };
+    const first = assessRiskRewardForUser(userId, probe, decision.entry ?? referencePrice);
+    if (!first.ok) {
+      logTick(userId, `${symbol}: ${decision.action} levels refused (${first.reason}) -- sending it back once to fix the stop/target`);
+      let repaired: TickDecision | null = null;
+      try {
+        repaired = await requestDecision([
+          ...contextLines,
+          `YOUR ${decision.action} (entry ${decision.entry ?? "market"}, SL ${decision.sl ?? "none"}, TP ${decision.tp ?? "none"}) WAS REFUSED BEFORE REACHING THE BROKER: ${first.reason}. ` +
+            `If your reasoning already found better levels, the numbers you submitted did not match it -- submit the SAME trade again with entry/sl/tp that genuinely work: ` +
+            `the stop on the correct side of the entry (below it for a buy, above it for a sell) and a target at least ${minRiskReward}x as far from the entry as the stop. ` +
+            `If no honest levels clear it, SKIP. This is your only retry -- do not request candles, scripts or Journal now.`,
+        ]);
+      } catch (err) {
+        if (err instanceof TickAbortedError) {
+          recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+          advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+          return { action: "NONE", notable: false };
+        }
+        throw err;
+      }
+      if (repaired && (TRADE_ACTIONS as readonly string[]).includes(repaired.action)) {
+        logTick(userId, `${symbol}: corrected to ${repaired.action} entry ${repaired.entry ?? "market"} SL ${repaired.sl ?? "none"} TP ${repaired.tp ?? "none"}`);
+        Object.assign(decision, { ...repaired, confidence: repaired.confidence ?? decision.confidence, reason: repaired.reason ?? decision.reason });
+      } else {
+        logTick(userId, `${symbol}: no corrected levels -- ${repaired?.action ?? "no answer"}; skipping`);
+      }
+    }
+  }
+  if (!(TRADE_ACTIONS as readonly string[]).includes(decision.action)) {
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "its levels were refused and no corrected trade came back" });
+    advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+    return { action: "NONE", notable: false };
+  }
+
   // A real trade action from here.
   const action = decision.action as TradeAction;
 
@@ -1631,7 +1674,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
       // Was hardcoded 1:1 language ("stop costs more than its target pays"), which is plainly
       // wrong once the floor is raised -- a 1.5:1 trade refused against a 2:1 setting does not
       // cost more than it pays. Names the trader's own configured floor instead.
-      message: `⚠️ Skipped ${symbol} -- ${rr.reason}.\n\nI had a ${decisionAction} read at ${confidence}% confidence, but your risk:reward floor is ${minRiskReward}:1 and this structure doesn't clear it.`,
+      message: `⚠️ Skipped ${symbol} -- ${rr.reason}.\n\nI had a ${decisionAction} read at ${confidence}% confidence, ${/risk:reward/.test(rr.reason ?? "") ? `but your risk:reward floor is ${minRiskReward}:1 and even after one correction this structure doesn't clear it.` : "but its levels were still wrong after one correction."}`,
     };
   }
 

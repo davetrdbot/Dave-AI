@@ -59,11 +59,28 @@ function dayKey(at: number): string {
   return new Date(at).toISOString().slice(0, 10);
 }
 
-export const GET = withDevice(async ({ userId }) => {
+export const GET = withDevice(async ({ userId, req }) => {
   const snapshot = getLastKnownAccountSnapshot(userId);
   const { positions, pendingOrders } = getLastKnownState(userId);
   const ea = getEaConnectionStatus(userId);
   const risk = getRiskSettings(userId);
+  const account = {
+    login: snapshot?.account ?? null,
+    name: snapshot?.accountName ?? null,
+    server: snapshot?.server ?? null,
+    balance: snapshot?.balance ?? null,
+    equity: snapshot?.equity ?? null,
+    margin: snapshot?.margin ?? null,
+    freeMargin: snapshot?.freeMargin ?? null,
+    leverage: snapshot?.leverage ?? null,
+    updatedAt: snapshot?.updatedAt ?? null,
+  };
+  const eaView = { connected: ea.connected, lastSeenAt: ea.lastSeenAt, secondsSinceLastSeen: ea.secondsSinceLastSeen };
+  const open = { positions, pendingOrders, count: positions.length, maxOpenTrades: risk.maxOpenTrades ?? null };
+
+  // ?light=1: just what moves every few seconds (money, open trades, pending orders) -- the app
+  // polls this fast and fetches the full history only now and then.
+  if (req.nextUrl.searchParams.get("light") === "1") return NextResponse.json({ account, ea: eaView, open, light: true });
 
   const closed = closedTrades(userId);
 
@@ -83,24 +100,9 @@ export const GET = withDevice(async ({ userId }) => {
   const realisedPnl = closed.reduce((sum, e) => sum + e.pnl, 0);
 
   return NextResponse.json({
-    account: {
-      login: snapshot?.account ?? null,
-      name: snapshot?.accountName ?? null,
-      server: snapshot?.server ?? null,
-      balance: snapshot?.balance ?? null,
-      equity: snapshot?.equity ?? null,
-      margin: snapshot?.margin ?? null,
-      freeMargin: snapshot?.freeMargin ?? null,
-      leverage: snapshot?.leverage ?? null,
-      updatedAt: snapshot?.updatedAt ?? null,
-    },
-    ea: { connected: ea.connected, lastSeenAt: ea.lastSeenAt, secondsSinceLastSeen: ea.secondsSinceLastSeen },
-    open: {
-      positions,
-      pendingOrders,
-      count: positions.length,
-      maxOpenTrades: risk.maxOpenTrades ?? null,
-    },
+    account,
+    ea: eaView,
+    open,
     results: {
       closedTrades: closed.length,
       wins,

@@ -143,7 +143,27 @@ class DaveApi {
     }
   }
 
-  Future<Dashboard> dashboard() async => Dashboard.fromJson(await _send(() => _http.get(_url('/api/app/dashboard'), headers: _headers)));
+  Map<String, dynamic>? _lastDashboard;
+  DateTime _lastDashboardAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Future<Dashboard> dashboard() async {
+    final j = await _send(() => _http.get(_url('/api/app/dashboard'), headers: _headers));
+    _lastDashboard = j;
+    _lastDashboardAt = DateTime.now();
+    return Dashboard.fromJson(j);
+  }
+
+  /// For Home's fast refresh: only the money, open trades and pending orders, laid over the last
+  /// full dashboard. The full one (history, charts) is fetched again every 30s, and straight away
+  /// when the number of open trades changes -- a trade just opened or closed.
+  Future<Dashboard> dashboardLive() async {
+    final last = _lastDashboard;
+    if (last == null || DateTime.now().difference(_lastDashboardAt) > const Duration(seconds: 30)) return dashboard();
+    final light = await _send(() => _http.get(_url('/api/app/dashboard', {'light': '1'}), headers: _headers));
+    int? count(Map<String, dynamic> j) => (j['open'] is Map ? (j['open'] as Map)['count'] : null) as int?;
+    if (count(light) != count(last)) return dashboard();
+    return Dashboard.fromJson({...last, ...light});
+  }
 
   Future<Brain> brain() async => Brain.fromJson(await _send(() => _http.get(_url('/api/app/brain'), headers: _headers)));
 
@@ -234,6 +254,15 @@ class DaveApi {
   Future<Map<String, dynamic>> promptParts() => _send(() => _http.get(_url('/api/app/prompt'), headers: _headers));
   Future<Map<String, dynamic>> savePrompt(String file, String text) => _post('/api/app/prompt', {'file': file, 'text': text});
   Future<Map<String, dynamic>> resetPrompt(String file) => _post('/api/app/prompt', {'file': file, 'reset': true});
+
+  // --- service keys, pair groups, analysis scope -----------------------------------------------
+
+  Future<Map<String, dynamic>> serviceKeys() => _send(() => _http.get(_url('/api/app/keys'), headers: _headers));
+  Future<Map<String, dynamic>> serviceKeysAction(Map<String, Object?> body) => _post('/api/app/keys', body);
+  Future<Map<String, dynamic>> pairGroups() => _send(() => _http.get(_url('/api/app/pair-groups'), headers: _headers));
+  Future<Map<String, dynamic>> pairGroupsAction(Map<String, Object?> body) => _post('/api/app/pair-groups', body);
+  Future<Map<String, dynamic>> analysisScope() => _send(() => _http.get(_url('/api/app/analysis-scope'), headers: _headers));
+  Future<Map<String, dynamic>> analysisScopeAction(Map<String, Object?> body) => _post('/api/app/analysis-scope', body);
 
   // --- context window -------------------------------------------------------------------------
 

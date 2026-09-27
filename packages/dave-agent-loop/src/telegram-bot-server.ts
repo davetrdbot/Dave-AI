@@ -1191,6 +1191,7 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     userId: deps.ownerUserId,
     analysis: createEaAnalysisSource(deps.ownerUserId),
     notify: async (text) => {
+      publishActivity(deps.ownerUserId, "background", "level_hit", { text });
       const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
       if (chatId === undefined) return;
       await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
@@ -1209,6 +1210,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     // suggesting it (the trader: "breakeven doesn't work" -- it had no executor at all).
     executor: deps.executor,
     notify: async (text) => {
+      // Also in the app's Live tab (the trader: "the self aware messages should be in the live").
+      publishActivity(deps.ownerUserId, "background", "self_aware", { text });
       const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
       if (chatId === undefined) return;
       await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);

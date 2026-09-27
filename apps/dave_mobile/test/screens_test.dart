@@ -292,6 +292,38 @@ http.Client _fakeServer() => MockClient((req) async {
               {'id': '-1003', 'title': 'Crypto Calls', 'kind': 'channel', 'picked': false},
             ],
           };
+        case '/api/app/keys':
+          body = {
+            'e2b': {'title': 'E2B', 'about': 'Lets Dave run real scripts.', 'link': 'https://e2b.dev/dashboard', 'keys': [{'id': 'k1', 'label': 'Main', 'key': 'e2b_…9f2a'}]},
+            'firecrawl': {'title': 'Firecrawl', 'about': 'Lets Dave read web pages.', 'link': 'https://firecrawl.dev', 'keys': []},
+          };
+        case '/api/app/pair-groups':
+          body = {
+            'groups': [
+              {'id': 'boom-crash', 'name': 'Boom & Crash', 'symbols': ['BOOM_1000', 'CRASH_1000', 'BOOM_500']},
+              {'id': 'vol', 'name': 'Volatility', 'symbols': ['VOL_75', 'VOL_100']},
+            ],
+            'activeGroupId': 'boom-crash',
+            'fallbackGroupId': 'vol',
+          };
+        case '/api/app/analysis-scope':
+          body = {
+            'mode': 'custom',
+            'timeframes': ['H4', 'H1', 'M15'],
+            'endpoints': ['trend', 'structure', 'zones', 'liquidity'],
+            'allTimeframes': ['D1', 'H4', 'H1', 'M15', 'M5', 'M3', 'M1'],
+            'allEndpoints': ['trend', 'momentum', 'structure', 'zones', 'liquidity', 'candles', 'ict', 'order_blocks'],
+          };
+        case '/api/app/chat/activity/range':
+          final now = DateTime.now().millisecondsSinceEpoch;
+          body = {
+            'total': 3,
+            'events': [
+              {'id': 90, 'at': now - 3600000, 'feed': 'background', 'kind': 'self_aware', 'data': {'text': 'VOL_75 BUY has been losing for 10 min -- still inside the plan, stop at 402,100.'}},
+              {'id': 89, 'at': now - 7200000, 'feed': 'loop', 'kind': 'ea_request', 'data': {'endpoint': 'candles', 'symbol': 'XAUUSD', 'timeframe': 'M5', 'ok': true, 'ms': 1400}},
+              {'id': 88, 'at': now - 86400000 * 3, 'feed': 'loop', 'kind': 'log', 'data': {'text': 'STORM_200: SELL_LIMIT levels refused (risk:reward is 1.56:1) -- sending it back once to fix the stop/target'}},
+            ],
+          };
         case '/api/app/bot':
           body = {'running': true, 'executionEnabled': true, 'intervalMinutes': 5, 'intervalBounds': {'min': 1, 'max': 60}};
         default:
@@ -429,6 +461,21 @@ void main() {
       await _shot(tester, 'live_$mode');
       expect(find.text('Analysing XAUUSD'), findsWidgets);
       expect(find.text('BUY LIMIT XAUUSD'), findsOneWidget);
+      // Every row opens with its full reason.
+      await tester.tap(find.text('BUY LIMIT XAUUSD'));
+      await _advance(tester);
+      await _shot(tester, 'live_detail_$mode');
+      expect(find.text('Copy'), findsOneWidget);
+      await tester.tap(find.text('Copy'));
+      await _advance(tester);
+      // Older history by period: self-aware alerts, MT5 data requests and the loop's own log.
+      await tester.tap(find.text('3 weeks'));
+      await _advance(tester);
+      await _shot(tester, 'live_3weeks_$mode');
+      expect(find.text('Self-aware'), findsOneWidget);
+      expect(find.text('MT5 · candles XAUUSD M5'), findsOneWidget);
+      await tester.tap(find.text('Live').last);
+      await _advance(tester);
 
       await tester.tap(find.byIcon(CupertinoIcons.chat_bubble_2).last);
       await _advance(tester);
@@ -508,18 +555,40 @@ void main() {
       await tester.tap(find.byIcon(CupertinoIcons.gear_alt).last);
       await _advance(tester);
       await _shot(tester, 'settings_$mode');
+      expect(find.text('Dave is trading'), findsOneWidget, reason: 'the trading switch leads Settings');
+      Future<void> open(String row) async {
+        await tester.scrollUntilVisible(find.text(row), 200, scrollable: find.byType(Scrollable).first);
+        await _advance(tester);
+        await tester.tap(find.text(row));
+        await _advance(tester);
+      }
+
+      Future<void> back() async {
+        await tester.tap(find.byType(CupertinoNavigationBarBackButton).last);
+        await _advance(tester);
+      }
+
+      await open('Trading & markets');
+      await _shot(tester, 'settings_trading_$mode');
       expect(find.text('Autonomous trading'), findsOneWidget);
       expect(find.text('5 min'), findsOneWidget);
+      await open('Pair groups');
+      await _shot(tester, 'pair_groups_$mode');
+      expect(find.text('Boom & Crash'), findsOneWidget);
+      await back();
+      await open('What Dave analyses');
+      await _shot(tester, 'analysis_scope_$mode');
+      expect(find.text('H4'), findsOneWidget);
+      await back();
+      await back();
+
+      await open('Risk');
+      await _shot(tester, 'settings_risk_$mode');
       expect(find.text('30 pips'), findsOneWidget, reason: 'stop loss summary from the real settings JSON');
+      expect(find.text('1:1'), findsOneWidget, reason: 'min reward shown as a typed value');
+      await back();
 
-      final settingsScroll = find.byType(CustomScrollView).first;
-      await tester.drag(settingsScroll, const Offset(0, -650));
-      await _advance(tester);
-      await _shot(tester, 'settings_2_$mode');
-      await tester.drag(settingsScroll, const Offset(0, -650));
-      await _advance(tester);
-      await _shot(tester, 'settings_3_$mode');
-
+      await open('AI & models');
       await tester.tap(find.text('AI providers'));
       await _advance(tester);
       await _shot(tester, 'providers_$mode');
@@ -530,11 +599,18 @@ void main() {
       await _shot(tester, 'provider_$mode');
       expect(find.text('Baseten 2'), findsOneWidget);
       expect(find.text('Dave\'s main AI'), findsOneWidget);
-      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
-      await _advance(tester);
-      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
-      await _advance(tester);
+      await back();
+      await back();
+      await back();
 
+      await open('Service keys');
+      await _shot(tester, 'service_keys_$mode');
+      expect(find.text('Add E2B key'), findsOneWidget);
+      expect(find.text('Add Firecrawl key'), findsOneWidget);
+      await back();
+
+      await tester.scrollUntilVisible(find.text('MetaTrader 5'), -200, scrollable: find.byType(Scrollable).first);
+      await _advance(tester);
       await tester.tap(find.text('MetaTrader 5'));
       await _advance(tester);
       await _shot(tester, 'mt5_$mode');
@@ -554,10 +630,7 @@ void main() {
       await tester.tap(find.byType(CupertinoNavigationBarBackButton));
       await _advance(tester);
 
-      await tester.ensureVisible(find.text('Nous copy trading'));
-      await _advance(tester);
-      await tester.tap(find.text('Nous copy trading'));
-      await _advance(tester);
+      await open('Nous copy trading');
       await _shot(tester, 'nous_$mode');
       expect(find.text('Dave Trader (@davetrader)'), findsOneWidget);
       expect(find.text('Live'), findsOneWidget);
@@ -581,6 +654,8 @@ void main() {
       await tester.tap(find.byType(CupertinoNavigationBarBackButton));
       await _advance(tester);
 
+      await tester.scrollUntilVisible(find.text('Context & usage'), -200, scrollable: find.byType(Scrollable).first);
+      await _advance(tester);
       await tester.tap(find.text('Context & usage'));
       await _advance(tester);
       await _shot(tester, 'context_$mode');
@@ -601,13 +676,12 @@ void main() {
       await tester.tap(find.byType(CupertinoNavigationBarBackButton));
       await _advance(tester);
 
-      await tester.scrollUntilVisible(find.text('Self-aware alerts'), -300, scrollable: find.byType(Scrollable).first);
-      await _advance(tester);
+      await open('Alerts & notifications');
       await tester.tap(find.text('Self-aware alerts'));
       await _advance(tester);
       await _shot(tester, 'alerts_$mode');
-      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
-      await _advance(tester);
+      await back();
+      await back();
 
       await tester.pumpWidget(const SizedBox()); // dispose, cancelling the dashboard's refresh timer
     });

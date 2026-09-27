@@ -38,30 +38,174 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return LoadedPage<_SettingsData>(
       title: 'Settings',
-      load: (api) async {
-        final results = await Future.wait([api.bot(), api.settings(), api.providers()]);
-        return _SettingsData(
-          results[0] as BotState,
-          results[1] as AppSettings,
-          results[2] as ProviderList,
-          await Session.notificationsEnabled(),
-          await PushService.isRunning,
-          await PushService.isIgnoringBatteryOptimizations,
-        );
+      load: _loadSettings,
+      builder: (context, data, reload) {
+        Future<void> open(String title, List<Widget> Function(BuildContext, _SettingsData, Future<void> Function()) sections) async {
+          await pushScoped<void>(context, _GroupPage(title: title, sections: sections));
+          await reload();
+        }
+
+        final s = data.settings;
+        final group = s.pairGroups.where((g) => g.id == s.pairGroup).firstOrNull;
+        return [
+          SliverToBoxAdapter(child: _TradingSwitchCard(bot: data.bot, reload: reload)),
+          SliverToBoxAdapter(
+            child: _menu(context, 'Trading', [
+              _MenuRow(CupertinoIcons.chart_bar_alt_fill, 'Trading & markets', 'Scan speed, session, pairs (${group?.name ?? 'none'}), what Dave analyses',
+                  () => open('Trading & markets', (c, d, r) => [_TradingSection(bot: d.bot, reload: r), _MarketsSection(s: d.settings, reload: r), const _MarketsLinks()])),
+              _MenuRow(CupertinoIcons.shield_lefthalf_fill, 'Risk', 'Min reward 1:${_num(s.riskReward.value)} · confidence ${s.confidence.value.round()}% · SL, TP, lots, limits',
+                  () => open('Risk', (c, d, r) => [_RiskSection(s: d.settings, reload: r)])),
+              _MenuRow(CupertinoIcons.hourglass, 'Waiting on', 'Setups, reminders and levels Dave set', () => pushScoped<void>(context, const WatchlistPage())),
+            ]),
+          ),
+          SliverToBoxAdapter(
+            child: _menu(context, 'Dave', [
+              _MenuRow(CupertinoIcons.sparkles, 'AI & models', data.providers.main == null ? 'No main AI yet' : 'Main: ${data.providers.main!.name}',
+                  () => open('AI & models', (c, d, r) => [_AiSection(s: d.settings, providers: d.providers, reload: r)])),
+              _MenuRow(CupertinoIcons.person_crop_circle_badge_checkmark, 'How Dave behaves', 'Self-pause, two-step, deeper thinking, memory',
+                  () => open('How Dave behaves', (c, d, r) => [_BehaviourSection(s: d.settings, reload: r)])),
+              _MenuRow(CupertinoIcons.doc_text, 'Dave\'s prompt', 'Read and edit how Dave thinks and trades', () => pushScoped<void>(context, const PromptPage())),
+              _MenuRow(CupertinoIcons.gauge, 'Context & usage', 'How full Dave\'s context is, and today\'s AI use', () => pushScoped<void>(context, const ContextScreen())),
+            ]),
+          ),
+          SliverToBoxAdapter(
+            child: _menu(context, 'Connections', [
+              _MenuRow(CupertinoIcons.desktopcomputer, 'MetaTrader 5', 'Account, chart, switch account, restart', () => pushScoped<void>(context, const Mt5Page())),
+              _MenuRow(CupertinoIcons.slider_horizontal_3, 'EA settings', 'Report speed, slippage, magic number, zones', () => pushScoped<void>(context, const EaSettingsPage())),
+              _MenuRow(CupertinoIcons.antenna_radiowaves_left_right, 'Nous copy trading', 'Copy signals from your Telegram channels', () => pushScoped<void>(context, const NousPage())),
+              _MenuRow(CupertinoIcons.lock, 'Service keys', 'E2B (scripts) and Firecrawl (web pages)', () => pushScoped<void>(context, const ServiceKeysPage())),
+            ]),
+          ),
+          SliverToBoxAdapter(
+            child: _menu(context, 'Alerts', [
+              _MenuRow(CupertinoIcons.bell, 'Alerts & notifications', '${s.alerts.where((a) => a.on).length} of ${s.alerts.length} Telegram alerts on · phone ${data.notifications ? 'on' : 'off'}',
+                  () => open('Alerts & notifications', (c, d, r) => [_AlertsSection(s: d.settings, reload: r), _NotificationSection(data: d, reload: r)])),
+            ]),
+          ),
+          const SliverToBoxAdapter(child: _AppearanceSection()),
+          const SliverToBoxAdapter(child: _ConnectionSection()),
+        ];
       },
-      builder: (context, data, reload) => [
-        const SliverToBoxAdapter(child: _AppearanceSection()),
-        SliverToBoxAdapter(child: _TradingSection(bot: data.bot, reload: reload)),
-        SliverToBoxAdapter(child: _RiskSection(s: data.settings, reload: reload)),
-        SliverToBoxAdapter(child: _MarketsSection(s: data.settings, reload: reload)),
-        SliverToBoxAdapter(child: _BehaviourSection(s: data.settings, reload: reload)),
-        SliverToBoxAdapter(child: _AlertsSection(s: data.settings, reload: reload)),
-        SliverToBoxAdapter(child: _AiSection(s: data.settings, providers: data.providers, reload: reload)),
-        SliverToBoxAdapter(child: _NotificationSection(data: data, reload: reload)),
-        const SliverToBoxAdapter(child: _ConnectionSection()),
-      ],
     );
   }
+}
+
+Future<_SettingsData> _loadSettings(DaveApi api) async {
+  final results = await Future.wait([api.bot(), api.settings(), api.providers()]);
+  return _SettingsData(
+    results[0] as BotState,
+    results[1] as AppSettings,
+    results[2] as ProviderList,
+    await Session.notificationsEnabled(),
+    await PushService.isRunning,
+    await PushService.isIgnoringBatteryOptimizations,
+  );
+}
+
+/// One group of settings on its own screen, loaded fresh so it always shows what is stored.
+class _GroupPage extends StatelessWidget {
+  const _GroupPage({required this.title, required this.sections});
+  final String title;
+  final List<Widget> Function(BuildContext, _SettingsData, Future<void> Function()) sections;
+
+  @override
+  Widget build(BuildContext context) => LoadedPage<_SettingsData>(
+        title: title,
+        load: _loadSettings,
+        builder: (context, data, reload) => [for (final w in sections(context, data, reload)) SliverToBoxAdapter(child: w)],
+      );
+}
+
+class _MenuRow {
+  const _MenuRow(this.icon, this.title, this.subtitle, this.onTap);
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+}
+
+Widget _menu(BuildContext context, String header, List<_MenuRow> rows) => CupertinoListSection.insetGrouped(
+      backgroundColor: const Color(0x00000000),
+      decoration: glassDecoration(context, radius: 14),
+      separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4),
+      header: ListHeader(header),
+      children: [
+        for (final r in rows)
+          CupertinoListTile(
+            leading: Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(color: Look.of(context).accent.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(8)),
+              child: Icon(r.icon, size: 17, color: Look.of(context).accent),
+            ),
+            title: Text(r.title),
+            subtitle: Text(r.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+            trailing: const CupertinoListTileChevron(),
+            onTap: r.onTap,
+          ),
+      ],
+    );
+
+/// The one switch that matters most, at the top of Settings where nobody can miss it: is Dave
+/// actually hunting for trades right now.
+class _TradingSwitchCard extends StatelessWidget {
+  const _TradingSwitchCard({required this.bot, required this.reload});
+  final BotState bot;
+  final Future<void> Function() reload;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final on = bot.running;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Space.s4, Space.s2, Space.s4, 0),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+        decoration: on ? BoxDecoration(gradient: look.hero, borderRadius: BorderRadius.circular(18)) : glassDecoration(context, radius: 18),
+        child: Row(children: [
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: on ? look.up : look.down),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(on ? 'Dave is trading' : 'Trading is OFF',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: on ? look.heroText : resolve(context, CupertinoColors.label))),
+              const SizedBox(height: 2),
+              Text(
+                on ? (bot.executionEnabled ? 'Scanning every ${bot.intervalMinutes} min and placing trades' : 'Scanning, but asking you before each trade') : 'Dave is not scanning or placing trades',
+                style: TextStyle(fontSize: 13, color: on ? look.heroText.withValues(alpha: 0.75) : resolve(context, CupertinoColors.secondaryLabel)),
+              ),
+            ]),
+          ),
+          CupertinoSwitch(
+            activeTrackColor: look.accent,
+            value: on,
+            onChanged: (v) async {
+              if (!v) {
+                final ok = await confirmDestructive(context, title: 'Stop autonomous trading?', message: 'Open positions are not closed.', action: 'Stop trading');
+                if (!ok) return;
+              }
+              if (context.mounted) await _guarded(context, (api) => api.updateBot(running: v), reload);
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// Pair groups and analysis scope, under the markets section.
+class _MarketsLinks extends StatelessWidget {
+  const _MarketsLinks();
+
+  @override
+  Widget build(BuildContext context) => _menu(context, 'Edit', [
+        _MenuRow(CupertinoIcons.square_grid_2x2, 'Pair groups', 'Create and edit the groups of symbols Dave hunts', () => pushScoped<void>(context, const PairGroupsPage())),
+        _MenuRow(CupertinoIcons.scope, 'What Dave analyses', 'Timeframes and analysis types per scan', () => pushScoped<void>(context, const AnalysisScopePage())),
+      ]);
 }
 
 Future<void> _guarded(BuildContext context, Future<void> Function(DaveApi api) action, Future<void> Function() reload) async {
@@ -72,7 +216,7 @@ Future<void> _guarded(BuildContext context, Future<void> Function(DaveApi api) a
 Future<void> _set(BuildContext context, String id, Object? value, Future<void> Function() reload) =>
     _guarded(context, (api) => api.updateSetting(id, value), reload);
 
-String _num(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+String _num(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : (v * 10 == (v * 10).roundToDouble() ? v.toStringAsFixed(1) : v.toStringAsFixed(2));
 
 // ---------------------------------------------------------------------------------------------
 
@@ -193,20 +337,6 @@ class _TradingSection extends StatelessWidget {
               more: 'Scan more often',
             ),
           ),
-          CupertinoListTile(
-            leading: const Icon(CupertinoIcons.hourglass),
-            title: const Text('Waiting on'),
-            subtitle: const Text('Setups, reminders and levels Dave set'),
-            trailing: const CupertinoListTileChevron(),
-            onTap: () => pushScoped<void>(context, const WatchlistPage()),
-          ),
-          CupertinoListTile(
-            leading: const Icon(CupertinoIcons.doc_text),
-            title: const Text('Dave\'s prompt'),
-            subtitle: const Text('Read and edit how Dave thinks and trades'),
-            trailing: const CupertinoListTileChevron(),
-            onTap: () => pushScoped<void>(context, const PromptPage()),
-          ),
         ],
       );
 }
@@ -227,13 +357,23 @@ class _RiskSection extends StatelessWidget {
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.arrow_up_right_circle),
           title: const Text('Min reward'),
-          trailing: _Stepper(
-            text: '1:${_num(rr)}',
-            onMinus: rr - 0.5 < s.riskReward.min ? null : () => _set(context, 'riskReward', rr - 0.5, reload),
-            onPlus: rr + 0.5 > s.riskReward.max ? null : () => _set(context, 'riskReward', rr + 0.5, reload),
-            less: 'Lower minimum reward',
-            more: 'Raise minimum reward',
-          ),
+          subtitle: const Text('Tap to type any value, e.g. 1.5'),
+          additionalInfo: Text('1:${_num(rr)}'),
+          trailing: const CupertinoListTileChevron(),
+          onTap: () async {
+            final text = await promptText(
+              context,
+              title: 'Min reward',
+              message: 'Dave only takes a trade whose target is at least this many times its stop distance. 1 = even money, 2 = twice the risk. Lower means more trades.',
+              initial: _num(rr),
+              placeholder: 'e.g. 1.5',
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            );
+            final v = double.tryParse((text ?? '').replaceAll(',', '.'));
+            if (v == null || !context.mounted) return;
+            if (v < s.riskReward.min || v > s.riskReward.max) return showError(context, 'Use a number from ${_num(s.riskReward.min)} to ${_num(s.riskReward.max)}.');
+            await _set(context, 'riskReward', v, reload);
+          },
         ),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.gauge),
@@ -600,34 +740,6 @@ class _AiSection extends StatelessWidget {
             await pushScoped<void>(context, const ProvidersPage());
             await reload();
           },
-        ),
-        CupertinoListTile(
-          leading: const Icon(CupertinoIcons.desktopcomputer),
-          title: const Text('MetaTrader 5'),
-          subtitle: const Text('Run MT5 in Dave\'s container -- no VPS'),
-          trailing: const CupertinoListTileChevron(),
-          onTap: () => pushScoped<void>(context, const Mt5Page()),
-        ),
-        CupertinoListTile(
-          leading: const Icon(CupertinoIcons.slider_horizontal_3),
-          title: const Text('EA settings'),
-          subtitle: const Text('Report speed, slippage, magic number, zones'),
-          trailing: const CupertinoListTileChevron(),
-          onTap: () => pushScoped<void>(context, const EaSettingsPage()),
-        ),
-        CupertinoListTile(
-          leading: const Icon(CupertinoIcons.antenna_radiowaves_left_right),
-          title: const Text('Nous copy trading'),
-          subtitle: const Text('Copy signals from your Telegram channels'),
-          trailing: const CupertinoListTileChevron(),
-          onTap: () => pushScoped<void>(context, const NousPage()),
-        ),
-        CupertinoListTile(
-          leading: const Icon(CupertinoIcons.gauge),
-          title: const Text('Context & usage'),
-          subtitle: const Text('How full Dave\'s context is, and today\'s AI use'),
-          trailing: const CupertinoListTileChevron(),
-          onTap: () => pushScoped<void>(context, const ContextScreen()),
         ),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.hourglass),

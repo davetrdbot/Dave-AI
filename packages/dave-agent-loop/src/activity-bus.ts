@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -102,6 +102,7 @@ export function publishActivity(
   } catch (err) {
     console.error(`[activity] couldn't persist event for ${userId}:`, err);
   }
+  archive(userId, event);
   for (const listener of bus.listeners) {
     try {
       listener(event);
@@ -110,6 +111,70 @@ export function publishActivity(
     }
   }
   return event;
+}
+
+// --- the dated archive: what the Live tab's "Today / 3 weeks / custom" views read --------------
+//
+// activity.jsonl only keeps the newest 1,500 events -- a busy day of scans. The trader wants to
+// look back over days and weeks ("the analysing of today only, or the last 3 weeks"), so every
+// loop/background event (never chat, never per-tool noise) also goes into one file per day, and
+// days older than ARCHIVE_DAYS are dropped.
+
+export const ARCHIVE_DAYS = 90;
+const ARCHIVE_SKIP_KINDS = new Set(["tool_start", "tool_end", "thinking", "text"]);
+const lastPrune = new Map<string, string>();
+
+function archiveDir(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, "activity-archive");
+}
+
+const dayKey = (at: number) => new Date(at).toISOString().slice(0, 10);
+
+function archive(userId: string, event: ActivityEvent): void {
+  if (event.feed === "chat" || ARCHIVE_SKIP_KINDS.has(event.kind)) return;
+  try {
+    const dir = archiveDir(userId);
+    mkdirSync(dir, { recursive: true });
+    const day = dayKey(event.at);
+    appendFileSync(join(dir, `${day}.jsonl`), `${JSON.stringify(event)}\n`, "utf8");
+    if (lastPrune.get(userId) !== day) {
+      lastPrune.set(userId, day);
+      const cutoff = dayKey(event.at - ARCHIVE_DAYS * 86_400_000);
+      for (const f of readdirSync(dir)) if (f.endsWith(".jsonl") && f.slice(0, 10) < cutoff) rmSync(join(dir, f), { force: true });
+    }
+  } catch (err) {
+    console.error(`[activity] couldn't archive event for ${userId}:`, err);
+  }
+}
+
+/** Loop/background events between two times (ms), newest first, at most `limit`. */
+export function activityBetween(userId: string, from: number, to: number, opts: { feeds?: ActivityFeed[]; kinds?: string[]; limit?: number } = {}): { events: ActivityEvent[]; total: number } {
+  const dir = archiveDir(userId);
+  if (!existsSync(dir)) return { events: [], total: 0 };
+  const first = dayKey(from);
+  const last = dayKey(to);
+  const days = readdirSync(dir).filter((f) => f.endsWith(".jsonl") && f.slice(0, 10) >= first && f.slice(0, 10) <= last).sort().reverse();
+  const out: ActivityEvent[] = [];
+  let total = 0;
+  const limit = opts.limit ?? 1000;
+  for (const f of days) {
+    const lines = readFileSync(join(dir, f), "utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].trim()) continue;
+      let e: ActivityEvent;
+      try {
+        e = JSON.parse(lines[i]) as ActivityEvent;
+      } catch {
+        continue;
+      }
+      if (e.at < from || e.at > to) continue;
+      if (opts.feeds && !opts.feeds.includes(e.feed)) continue;
+      if (opts.kinds && !opts.kinds.includes(e.kind)) continue;
+      total++;
+      if (out.length < limit) out.push(e);
+    }
+  }
+  return { events: out, total };
 }
 
 /** Events after `afterId`, oldest first (from memory, then the file for older history). */

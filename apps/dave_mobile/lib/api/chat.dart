@@ -162,6 +162,18 @@ class ChatApi {
     );
   }
 
+  /// Loop/background events between two times, newest first -- the Live tab's periods.
+  Future<({List<ActivityEvent> events, int total})> activityRange(DateTime from, DateTime to, {int limit = 800}) async {
+    final body = await _call(() => _http.get(
+        _url('activity/range', {'from': '${from.millisecondsSinceEpoch}', 'to': '${to.millisecondsSinceEpoch}', 'limit': '$limit'}),
+        headers: _headers));
+    final list = body['events'];
+    return (
+      events: list is List ? list.whereType<Map>().map((m) => ActivityEvent.fromJson(Map<String, dynamic>.from(m))).toList() : <ActivityEvent>[],
+      total: (body['total'] as num?)?.toInt() ?? 0,
+    );
+  }
+
   /// Starts a turn and returns its id. Throws [DaveBusyException] when Dave is busy, unless
   /// [whenFree] -- then it is queued and runs as soon as he's done.
   Future<String> send(String text, {List<ChatPicture> pictures = const [], bool whenFree = false}) async {

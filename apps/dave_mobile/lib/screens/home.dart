@@ -29,9 +29,10 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return LoadedPage<_HomeData>(
       title: 'Dave',
-      autoRefresh: const Duration(seconds: 15),
+      // Trades and P&L follow MT5 within a few seconds (a light request); history refreshes less often.
+      autoRefresh: const Duration(seconds: 3),
       load: (api) async {
-        final results = await Future.wait([api.dashboard(), api.bot()]);
+        final results = await Future.wait([api.dashboardLive(), api.bot()]);
         return _HomeData(results[0] as Dashboard, results[1] as BotState);
       },
       builder: (context, data, reload) {

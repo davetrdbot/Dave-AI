@@ -24,6 +24,36 @@ export class AnalysisFailedError extends Error {
   }
 }
 
+/** One finished request to the EA, for the app's Live tab ("when the bot is demanding for any
+ *  candles and others I should see it"). */
+export interface EaRequestEvent {
+  userId: string;
+  endpoint: string;
+  symbol: string;
+  timeframe: string;
+  ok: boolean;
+  ms: number;
+  error?: string;
+}
+
+const requestListeners = new Set<(e: EaRequestEvent) => void>();
+
+/** Watches every analysis request made to the EA. Returns an unsubscribe function. */
+export function onEaRequest(listener: (e: EaRequestEvent) => void): () => void {
+  requestListeners.add(listener);
+  return () => requestListeners.delete(listener);
+}
+
+function emitRequest(e: EaRequestEvent): void {
+  for (const l of requestListeners) {
+    try {
+      l(e);
+    } catch {
+      /* a broken listener never breaks a request */
+    }
+  }
+}
+
 export async function requestAnalysis(
   userId: string,
   endpoint: string,
@@ -42,14 +72,21 @@ export async function requestAnalysis(
   const id = randomBytes(6).toString("hex");
   enqueueCommand(userId, { id, action: "analyze", endpoint, symbol, timeframe });
 
-  const deadline = Date.now() + timeoutMs;
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  const report = (ok: boolean, error?: string) => emitRequest({ userId, endpoint, symbol, timeframe, ok, ms: Date.now() - started, error });
   while (Date.now() < deadline) {
     const result = takeAnalysisResult(userId, id);
     if (result) {
-      if (result.status === "error") throw new AnalysisFailedError(endpoint, symbol, result.message ?? "unknown error");
+      if (result.status === "error") {
+        report(false, result.message ?? "unknown error");
+        throw new AnalysisFailedError(endpoint, symbol, result.message ?? "unknown error");
+      }
+      report(true);
       return result.data;
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
+  report(false, "timed out");
   throw new AnalysisTimeoutError(endpoint, symbol, timeoutMs);
 }
