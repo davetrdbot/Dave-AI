@@ -124,7 +124,9 @@ class _Bento extends StatelessWidget {
                 ],
                 Expanded(
                   child: Text(
-                    d.balance == null ? (d.emptyReason ?? 'Connect MT5 to see a real balance.') : '${d.eaConnected ? 'MT5 live' : 'MT5 offline'}${d.equity == null ? '' : '  ·  Equity ${formatMoney(d.equity!)}'}',
+                    d.balance == null ? (d.emptyReason ?? 'Connect MT5 to see a real balance.') : '${d.eaConnected ? 'MT5 live' : 'MT5 offline'}${d.accountName != null ? '  ·  ${d.accountName}' : (d.equity == null ? '' : '  ·  Equity ${formatMoney(d.equity!)}')}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: d.eaConnected ? look.accent : look.down),
                   ),
                 ),
@@ -252,10 +254,11 @@ class _Editorial extends StatelessWidget {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Text('TOTAL BALANCE', style: TextStyle(fontSize: 12, letterSpacing: 1.6, fontWeight: FontWeight.w600, color: secondary)),
+          const SizedBox(width: 12),
           const Spacer(),
           Container(width: 7, height: 7, decoration: BoxDecoration(color: d.eaConnected ? look.up : look.down, shape: BoxShape.circle)),
           const SizedBox(width: 6),
-          Text(d.eaConnected ? 'MT5 live' : 'MT5 offline', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: secondary)),
+          Flexible(child: Text('${d.eaConnected ? 'MT5 live' : 'MT5 offline'}${d.accountName != null ? ' · ${d.accountName}' : ''}', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: secondary))),
         ]),
         FittedBox(
           fit: BoxFit.scaleDown,

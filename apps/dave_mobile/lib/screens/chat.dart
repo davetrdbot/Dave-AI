@@ -13,6 +13,9 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/rich_message.dart';
 import 'chat_timeline.dart';
+import '../api/models.dart';
+import 'shell.dart';
+import 'settings.dart';
 import '../look.dart';
 
 /// Talking to Dave -- the same conversation as Telegram, with every step he takes shown live:
@@ -31,6 +34,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _timeline = ChatTimeline();
   final _input = TextEditingController();
+  final _controlsKey = GlobalKey<_ControlsStripState>();
   final _focus = FocusNode();
   final _pictures = <ChatPicture>[];
   ChatApi? _api;
@@ -293,12 +297,22 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final keyboard = MediaQuery.viewInsetsOf(context).bottom > 0;
-    final bottomClearance = keyboard ? Space.s2 : 62 + 12 + Space.s2 + MediaQuery.paddingOf(context).bottom;
+    // Chat is full screen -- no tab bar under it -- so the composer only clears the home indicator.
+    final bottomClearance = keyboard ? Space.s2 : Space.s2 + MediaQuery.paddingOf(context).bottom;
     return CupertinoPageScaffold(
       backgroundColor: const Color(0x00000000),
       navigationBar: CupertinoNavigationBar(
         heroTag: 'nav:Chat',
         transitionBetweenRoutes: false,
+        border: null,
+        leading: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: () => ShellScope.of(context)?.goTo(ShellScope.home),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(CupertinoIcons.chevron_back, color: Look.of(context).accent),
+            Text('Home', style: TextStyle(color: Look.of(context).accent)),
+          ]),
+        ),
         middle: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -323,7 +337,20 @@ class _ChatScreenState extends State<ChatScreen> {
         bottom: false,
         child: Column(
           children: [
-            Expanded(child: _body()),
+            _ControlsStrip(key: _controlsKey),
+            // The conversation sits in a rounded panel under the controls.
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(Space.s2, Space.s1, Space.s2, Space.s2),
+                decoration: BoxDecoration(
+                  color: Look.of(context).card.withValues(alpha: Look.of(context).dark ? 0.55 : 0.6),
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(color: Look.of(context).line),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: _body(),
+              ),
+            ),
             _Composer(
               controller: _input,
               focus: _focus,
@@ -523,7 +550,13 @@ class _TurnView extends StatelessWidget {
       }
     }
     if (turn.error != null) children.add(_Note(turn.error!, warning: true));
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
+    // New steps and the reply grow the turn smoothly instead of making the list jump.
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      alignment: Alignment.topCenter,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+    );
   }
 }
 
@@ -942,4 +975,130 @@ class _RoundButton extends StatelessWidget {
       ),
     ),
   );
+}
+
+
+/// Under the header: the AI Dave is using right now, and the stop loss / take profit he trades
+/// with -- each one tap to change, without leaving the chat.
+class _ControlsStrip extends StatefulWidget {
+  const _ControlsStrip({super.key});
+  @override
+  State<_ControlsStrip> createState() => _ControlsStripState();
+}
+
+class _ControlsStripState extends State<_ControlsStrip> {
+  ProviderList? _providers;
+  AppSettings? _settings;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  Future<void> _load() async {
+    final api = AppScope.of(context).api;
+    try {
+      final r = await Future.wait([api.providers(), api.settings()]);
+      if (!mounted) return;
+      setState(() {
+        _providers = r[0] as ProviderList;
+        _settings = r[1] as AppSettings;
+      });
+    } catch (_) {
+      // the strip just stays empty; the chat works without it
+    }
+  }
+
+  Future<void> _pickModel() async {
+    final list = _providers;
+    if (list == null) return;
+    final main = list.main;
+    final usable = [...list.backups, ...list.withKeys];
+    final choice = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Dave\'s AI'),
+        message: Text(main == null ? 'No main AI set.' : 'Now: ${main.name} · ${main.model}'),
+        actions: [
+          if (main != null) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'model:${main.provider}'), child: Text('Change ${main.name} model…')),
+          for (final p in usable) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'main:${p.provider}'), child: Text('Use ${p.name} · ${p.model}')),
+        ],
+        cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    final [kind, id] = choice.split(':');
+    if (kind == 'main') {
+      if (await runAction(context, (api) => api.providerAction(id, 'make-main'))) await _load();
+      return;
+    }
+    List<String> models;
+    try {
+      models = await AppScope.of(context).api.providerModels(id);
+    } catch (e) {
+      if (mounted) await showError(context, e);
+      return;
+    }
+    if (!mounted) return;
+    if (models.isEmpty) {
+      await showError(context, 'This provider doesn\'t list its models. Change it in Settings > AI providers.');
+      return;
+    }
+    final model = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Pick a model'),
+        actions: [for (final m in models.take(20)) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, m), child: Text(m, maxLines: 1, overflow: TextOverflow.ellipsis))],
+        cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+      ),
+    );
+    if (model == null || !mounted) return;
+    if (await runAction(context, (api) => api.providerAction(id, 'set-model', {'model': model}))) await _load();
+  }
+
+  Future<void> _risk(String id, String title, RiskMode mode) async {
+    final changed = await pushScoped<bool>(context, RiskModePage(id: id, title: title, mode: mode));
+    if (changed == true) await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final main = _providers?.main;
+    final s = _settings;
+    Widget chip(IconData icon, String label, VoidCallback? onTap, {bool strong = false}) => GestureDetector(
+          onTap: onTap == null
+              ? null
+              : () {
+                  HapticFeedback.selectionClick();
+                  onTap();
+                },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+            decoration: BoxDecoration(color: strong ? look.accent.withValues(alpha: 0.16) : look.chip, borderRadius: BorderRadius.circular(16), border: Border.all(color: look.line)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(icon, size: 14, color: strong ? look.accent : resolve(context, CupertinoColors.secondaryLabel)),
+              const SizedBox(width: 5),
+              Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: strong ? look.accent : resolve(context, CupertinoColors.label))),
+            ]),
+          ),
+        );
+    return SizedBox(
+      height: 42,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(Space.s3, 4, Space.s3, 4),
+        children: [
+          chip(CupertinoIcons.sparkles, main == null ? 'AI…' : main.model.split('/').last, _providers == null ? null : _pickModel, strong: true),
+          const SizedBox(width: 6),
+          if (s != null) ...[
+            chip(CupertinoIcons.shield, 'SL ${s.stopLoss.summary}', () => _risk('stopLoss', 'Stop loss', s.stopLoss)),
+            const SizedBox(width: 6),
+            chip(CupertinoIcons.flag, 'TP ${s.takeProfit.summary}', () => _risk('takeProfit', 'Take profit', s.takeProfit)),
+          ],
+        ],
+      ),
+    );
+  }
 }

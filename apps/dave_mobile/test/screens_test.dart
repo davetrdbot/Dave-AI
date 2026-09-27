@@ -200,6 +200,11 @@ http.Client _fakeServer() => MockClient((req) async {
           body = {
             'agent': {'url': 'http://dave-mt5.railway.internal:8081'},
             'pairGroup': ['VOL_80', 'BOOM_100', 'CRASH_500', 'VOL_75'],
+            'accountName': 'David Inyang',
+            'accounts': [
+              {'login': '40123456', 'server': 'Deriv-Demo', 'name': 'David Inyang', 'active': true},
+              {'login': '51009988', 'server': 'Headway-Real', 'name': null, 'active': false},
+            ],
             'summary': 'MT5 is running and logged in (40123456 on Deriv-Demo, chart VOL_80 M1). The EA last reported 3s ago.',
             'status': {
               'installed': true, 'compiled': true, 'running': true, 'login': 'logged-in', 'configured': true,
@@ -420,7 +425,10 @@ void main() {
       await _advance(tester);
       await _shot(tester, 'chat_history_$mode');
 
-      await tester.tap(find.byIcon(CupertinoIcons.house).last);
+      // Chat is full screen: no tab bar, a back button instead.
+      expect(find.byIcon(CupertinoIcons.gear_alt), findsNothing);
+      expect(find.textContaining('SL 30 pips'), findsOneWidget, reason: 'stop loss chip in the chat');
+      await tester.tap(find.text('Home').first);
       await _advance(tester);
       expect(find.text('Dave'), findsWidgets);
       expect(find.textContaining('Volatility 75 Index'), findsOneWidget);
@@ -508,6 +516,9 @@ void main() {
       await tester.tap(find.text('MetaTrader 5'));
       await _advance(tester);
       await _shot(tester, 'mt5_$mode');
+      expect(find.text('Account 51009988'), findsOneWidget, reason: 'a saved account to switch to');
+      await tester.dragUntilVisible(find.text('VOL_80, BOOM_100, CRASH_500'), find.byType(CustomScrollView).last, const Offset(0, -200));
+      await _advance(tester);
       expect(find.text('VOL_80, BOOM_100, CRASH_500'), findsOneWidget);
       expect(find.text('Use my pair group'), findsOneWidget);
       await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
@@ -518,7 +529,6 @@ void main() {
       expect(find.text('Chart symbol'), findsOneWidget);
       expect(find.text('VOL_80'), findsOneWidget);
       expect(find.text('8s'), findsOneWidget);
-      expect(find.text('Change account'), findsOneWidget);
       await tester.tap(find.byType(CupertinoNavigationBarBackButton));
       await _advance(tester);
 

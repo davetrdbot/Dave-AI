@@ -419,6 +419,13 @@ bool FileBridgeRequest(const string body, int &status, string &response)
 //| consecutive real reports -- this EA's only job is to always       |
 //| report the truth, every time.                                     |
 //+------------------------------------------------------------------+
+string JsonEscape(string v)
+  {
+   StringReplace(v, "\\", "\\\\");
+   StringReplace(v, "\"", "\\\"");
+   return v;
+  }
+
 string BuildReportJson()
   {
    string positions = "";
@@ -469,6 +476,9 @@ string BuildReportJson()
 
    return "{\"type\":\"heartbeat\"," +
           "\"account\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\"," +
+          // The account holder's name and the broker server, so the app can say whose account it is.
+          "\"accountName\":\"" + JsonEscape(AccountInfoString(ACCOUNT_NAME)) + "\"," +
+          "\"server\":\"" + JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\"," +
           "\"balance\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2) + "," +
           "\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2) + "," +
           // Real gap fixed: margin/free margin were never reported at all,

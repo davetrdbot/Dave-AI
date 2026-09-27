@@ -106,7 +106,15 @@ class Dashboard {
     required this.heatmap,
     required this.trades,
     required this.emptyReason,
+    this.accountLogin,
+    this.accountName,
+    this.accountServer,
   });
+
+  /// Whose MT5 account this is -- number, holder's name, broker server (from the EA's report).
+  final String? accountLogin;
+  final String? accountName;
+  final String? accountServer;
 
   final double? balance;
   final double? equity;
@@ -140,6 +148,9 @@ class Dashboard {
     final results = _map(j['results']);
     final heat = _map(j['heatmap']);
     return Dashboard(
+      accountLogin: account['login'] is String ? account['login'] as String : null,
+      accountName: account['name'] is String && (account['name'] as String).isNotEmpty ? account['name'] as String : null,
+      accountServer: account['server'] is String ? account['server'] as String : null,
       balance: _num(account['balance']),
       equity: _num(account['equity']),
       freeMargin: _num(account['freeMargin']),
@@ -716,7 +727,13 @@ class ContextUsage {
 
 /// MetaTrader 5 running in Dave's own container (no VPS).
 class Mt5View {
-  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt, this.marketWatch = const [], this.pairGroup = const [], this.metaquotesIds = const [], this.phonePush = 'not set', this.phonePushDetail});
+  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt, this.marketWatch = const [], this.pairGroup = const [], this.metaquotesIds = const [], this.phonePush = 'not set', this.phonePushDetail, this.accountName, this.accounts = const []});
+
+  /// The holder's name on the live account, from the EA's own report.
+  final String? accountName;
+
+  /// Accounts connected before, one tap to switch to.
+  final List<({String login, String server, String? name, bool active})> accounts;
   final String summary;
   final String? agentUrl;
   final bool installed;
@@ -761,6 +778,11 @@ class Mt5View {
       pairGroup: j['pairGroup'] is List ? [for (final s in j['pairGroup'] as List) '$s'] : const [],
       metaquotesIds: st?['metaquotesIds'] is List ? [for (final s in st!['metaquotesIds'] as List) '$s'] : const [],
       phonePush: st?['phonePush'] is Map ? _str((st!['phonePush'] as Map)['state'], 'not set') : 'not set',
+      accountName: j['accountName'] is String && (j['accountName'] as String).isNotEmpty ? j['accountName'] as String : null,
+      accounts: [
+        for (final a in _list(j['accounts']))
+          (login: _str(a['login']), server: _str(a['server']), name: a['name'] is String ? a['name'] as String : null, active: a['active'] == true),
+      ],
       phonePushDetail: st?['phonePush'] is Map && (st!['phonePush'] as Map)['detail'] is String ? (st['phonePush'] as Map)['detail'] as String : null,
     );
   }

@@ -279,24 +279,24 @@ class _RiskSection extends StatelessWidget {
         additionalInfo: Text(mode.summary),
         trailing: const CupertinoListTileChevron(),
         onTap: () async {
-          final changed = await pushScoped<bool>(context, _RiskModePage(id: id, title: title, mode: mode));
+          final changed = await pushScoped<bool>(context, RiskModePage(id: id, title: title, mode: mode));
           if (changed == true) await reload();
         },
       );
 }
 
 /// Off / fixed value / Dave decides, for stop loss, take profit or lot size.
-class _RiskModePage extends StatefulWidget {
-  const _RiskModePage({required this.id, required this.title, required this.mode});
+class RiskModePage extends StatefulWidget {
+  const RiskModePage({super.key, required this.id, required this.title, required this.mode});
   final String id;
   final String title;
   final RiskMode mode;
 
   @override
-  State<_RiskModePage> createState() => _RiskModePageState();
+  State<RiskModePage> createState() => RiskModePageState();
 }
 
-class _RiskModePageState extends State<_RiskModePage> {
+class RiskModePageState extends State<RiskModePage> {
   late String _mode = widget.mode.mode;
   late final _value = TextEditingController(text: widget.mode.value == null ? '' : _num(widget.mode.value!));
   String? _error;

@@ -71,7 +71,8 @@ class _ShellState extends State<Shell> {
       goTo: _goTo,
       child: Stack(children: [
         Positioned.fill(child: IndexedStack(index: _index, children: _pages)),
-        if (!keyboard)
+        // Chat is full screen with its own back button -- the bar steps aside there.
+        if (!keyboard && _index != ShellScope.chat)
           Positioned(
             left: 0,
             right: 0,

@@ -84,6 +84,9 @@ export const GET = withDevice(async ({ userId }) => {
 
   return NextResponse.json({
     account: {
+      login: snapshot?.account ?? null,
+      name: snapshot?.accountName ?? null,
+      server: snapshot?.server ?? null,
       balance: snapshot?.balance ?? null,
       equity: snapshot?.equity ?? null,
       margin: snapshot?.margin ?? null,

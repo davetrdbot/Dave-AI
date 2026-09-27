@@ -36,6 +36,9 @@ importers:
       '@dave/brain':
         specifier: workspace:*
         version: link:../dave-brain
+      '@dave/crypto':
+        specifier: workspace:*
+        version: link:../dave-crypto
       '@dave/db':
         specifier: workspace:*
         version: link:../dave-db

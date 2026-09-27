@@ -41,7 +41,12 @@ class Mt5Page extends StatelessWidget {
                     leading: Icon(CupertinoIcons.circle_fill, size: 12, color: resolve(context, tone)),
                     title: Text(v.summary, maxLines: 4),
                   ),
-                  if (a != null) CupertinoListTile(title: const Text('Account'), additionalInfo: Text('${a.login} · ${a.server}')),
+                  if (a != null)
+                    CupertinoListTile(
+                      leading: const Icon(CupertinoIcons.person_crop_circle),
+                      title: Text(v.accountName ?? 'Account ${a.login}'),
+                      subtitle: Text('${a.login} · ${a.server}', maxLines: 2),
+                    ),
                   if (v.lastReportAt != null) CupertinoListTile(title: const Text('EA last reported'), additionalInfo: Text(formatAgo(v.lastReportAt!))),
                 ],
               ),
@@ -76,6 +81,42 @@ class Mt5Page extends StatelessWidget {
                   ],
                 ),
               ),
+              if (v.accounts.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4),
+                    header: const ListHeader('Switch account'),
+                    footer: const ListFooter('Accounts you connected before. Tap one to switch MT5 to it -- the password is kept encrypted on your server, so you don\'t type it again. Switching restarts MT5, about a minute.'),
+                    children: [
+                      for (final acc in v.accounts)
+                        CupertinoListTile(
+                          leading: Icon(acc.active ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.circle, color: acc.active ? Look.of(context).accent : resolve(context, CupertinoColors.tertiaryLabel)),
+                          title: Text(acc.name ?? 'Account ${acc.login}'),
+                          subtitle: Text('${acc.login} · ${acc.server}${acc.active ? '  ·  in use' : ''}'),
+                          onTap: () async {
+                            final choice = await showCupertinoModalPopup<String>(
+                              context: context,
+                              builder: (ctx) => CupertinoActionSheet(
+                                title: Text(acc.name ?? 'Account ${acc.login}'),
+                                message: Text('${acc.login} on ${acc.server}'),
+                                actions: [
+                                  if (!acc.active) CupertinoActionSheetAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx, 'switch'), child: const Text('Switch MT5 to this account')),
+                                  CupertinoActionSheetAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, 'forget'), child: const Text('Forget this account')),
+                                ],
+                                cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                              ),
+                            );
+                            if (choice == null || !context.mounted) return;
+                            await act(choice, {'login': acc.login, 'server': acc.server});
+                          },
+                        ),
+                      CupertinoListTile(
+                        leading: Icon(CupertinoIcons.add_circled, color: Look.of(context).accent),
+                        title: Text('Add another account', style: TextStyle(color: Look.of(context).accent)),
+                        onTap: v.installed ? () => _connect(context, act) : null,
+                      ),
+                    ],
+                  ),
+                ),
               if (v.configured && a != null)
                 SliverToBoxAdapter(
                   child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 

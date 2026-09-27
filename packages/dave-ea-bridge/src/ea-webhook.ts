@@ -83,6 +83,9 @@ export interface EaClosedPosition {
 export interface EaReport {
   type: "heartbeat" | "snapshot";
   account: string;
+  /** The account holder's name and broker server (EAs built before this don't send them). */
+  accountName?: string;
+  server?: string;
   balance: number;
   equity?: number;
   margin?: number;
@@ -102,6 +105,8 @@ export interface EaReport {
 /** Real gap fixed: balance/equity/margin/freeMargin were reported by the EA but never actually PERSISTED anywhere -- nothing could read them back later (e.g. for /account). */
 export interface AccountSnapshot {
   account: string;
+  accountName?: string;
+  server?: string;
   balance: number;
   equity?: number;
   margin?: number;
@@ -451,6 +456,8 @@ export function getLastKnownAccountSnapshot(userId: string): AccountSnapshot | u
 function saveAccountSnapshot(userId: string, report: EaReport): void {
   writeJson(accountSnapshotPath(userId), {
     account: report.account,
+    accountName: report.accountName || undefined,
+    server: report.server || undefined,
     balance: report.balance,
     equity: report.equity,
     margin: report.margin,

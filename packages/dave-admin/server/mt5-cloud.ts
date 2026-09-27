@@ -13,6 +13,73 @@ import {
   parseMetaquotesIds,
 } from "@dave/ea-bridge";
 import { getActiveGroupInfo } from "@dave/trading";
+import { getLastKnownAccountSnapshot } from "@dave/ea-bridge";
+import { decryptSecret, encryptSecret } from "@dave/crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+/**
+ * The MT5 accounts this trader has connected, so switching between them is one tap. The password
+ * is kept encrypted with DAVE_CREDENTIALS_KEY (like every other stored credential) and only ever
+ * decrypted to hand straight to the MT5 container on a switch. It never goes back to the phone.
+ */
+interface SavedAccount {
+  login: string;
+  server: string;
+  passwordEnc: string;
+  /** The holder's name as the EA reported it while this account was live. */
+  name?: string;
+  addedAt: number;
+}
+
+function accountsPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "mt5-accounts", userId, "accounts.json");
+}
+
+function loadAccounts(userId: string): SavedAccount[] {
+  try {
+    return existsSync(accountsPath(userId)) ? (JSON.parse(readFileSync(accountsPath(userId), "utf8")) as SavedAccount[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAccounts(userId: string, accounts: SavedAccount[]): void {
+  mkdirSync(dirname(accountsPath(userId)), { recursive: true });
+  writeFileSync(accountsPath(userId), JSON.stringify(accounts, null, 2), { mode: 0o600 });
+}
+
+function masterKey(): string {
+  const key = process.env.DAVE_CREDENTIALS_KEY;
+  if (!key) throw new Error("DAVE_CREDENTIALS_KEY is not set -- can't store an MT5 password safely.");
+  return key;
+}
+
+function rememberAccount(userId: string, login: string, server: string, password: string): void {
+  let passwordEnc: string;
+  try {
+    passwordEnc = encryptSecret(password, masterKey());
+  } catch {
+    return; // no key: the connect still works, the account just isn't remembered
+  }
+  const rest = loadAccounts(userId).filter((a) => !(a.login === login && a.server === server));
+  const prev = loadAccounts(userId).find((a) => a.login === login && a.server === server);
+  saveAccounts(userId, [...rest, { login, server, passwordEnc, name: prev?.name, addedAt: prev?.addedAt ?? Date.now() }]);
+}
+
+/** Records the live account's holder name on its saved entry (it comes from the EA's report). */
+function learnNames(userId: string): SavedAccount[] {
+  const accounts = loadAccounts(userId);
+  const snap = getLastKnownAccountSnapshot(userId);
+  if (snap?.accountName) {
+    const hit = accounts.find((a) => a.login === snap.account && a.name !== snap.accountName);
+    if (hit) {
+      hit.name = snap.accountName;
+      saveAccounts(userId, accounts);
+    }
+  }
+  return accounts;
+}
 
 /** The active pair group -- what Dave trades, and Market Watch's default. */
 function pairGroup(userId: string): string[] {
@@ -30,7 +97,17 @@ function pairGroup(userId: string): string[] {
  */
 
 export async function mt5CloudView(userId: string) {
-  return { ...(await baseView(userId)), pairGroup: pairGroup(userId) };
+  const base = await baseView(userId);
+  const snap = getLastKnownAccountSnapshot(userId);
+  const activeLogin = (base.status as { account?: { login?: string } } | null)?.account?.login ?? snap?.account;
+  const accounts = learnNames(userId).map((a) => ({ login: a.login, server: a.server, name: a.name ?? null, active: a.login === activeLogin }));
+  return {
+    ...base,
+    pairGroup: pairGroup(userId),
+    // Whose account MT5 is on right now, from the EA's own report.
+    accountName: snap && snap.account === activeLogin ? (snap.accountName ?? null) : null,
+    accounts,
+  };
 }
 
 async function baseView(userId: string) {
@@ -64,7 +141,28 @@ export async function mt5CloudAction(userId: string, body: Record<string, unknow
           return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
         }
         result = await mt5CloudConnect(userId, { login, password, server, symbol: str("symbol") ?? group[0], period: str("period"), marketWatch: group, metaquotesIds });
+        if (result?.ok) rememberAccount(userId, login, server, password);
         break;
+      }
+      case "switch": {
+        // One tap to another account connected before -- its password comes from the encrypted store.
+        const login = str("login");
+        const saved = loadAccounts(userId).find((a) => a.login === login && (!str("server") || a.server === str("server")));
+        if (!saved) return NextResponse.json({ error: "That account isn't saved. Connect it once with its password." }, { status: 404 });
+        let password: string;
+        try {
+          password = decryptSecret(saved.passwordEnc, masterKey());
+        } catch {
+          return NextResponse.json({ error: "Couldn't unlock the saved password. Connect the account again." }, { status: 409 });
+        }
+        const group = pairGroup(userId);
+        result = await mt5CloudConnect(userId, { login: saved.login, password, server: saved.server, symbol: group[0], marketWatch: group });
+        break;
+      }
+      case "forget": {
+        const login = str("login");
+        saveAccounts(userId, loadAccounts(userId).filter((a) => a.login !== login));
+        return NextResponse.json(await mt5CloudView(userId));
       }
       case "settings": {
         const inputs = body.inputs && typeof body.inputs === "object" ? (body.inputs as Record<string, string | number | boolean>) : undefined;
@@ -91,7 +189,7 @@ export async function mt5CloudAction(userId: string, body: Record<string, unknow
         result = await mt5CloudRestart(userId);
         break;
       default:
-        return NextResponse.json({ error: "action must be one of: connect, settings, restart." }, { status: 400 });
+        return NextResponse.json({ error: "action must be one of: connect, switch, forget, settings, restart." }, { status: 400 });
     }
     if (result && !result.ok) return NextResponse.json({ error: result.error ?? "The MT5 container refused.", compileLog: result.compileLog }, { status: 409 });
     return NextResponse.json(await mt5CloudView(userId));
