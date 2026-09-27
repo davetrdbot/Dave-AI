@@ -10,6 +10,7 @@ import '../api/models.dart';
 import '../app_scope.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../look.dart';
 
 /// The autonomous loop ("mode 2") in real time: what Dave is analysing right now and at which
 /// stage, every decision with its reason, Flo's and Journal's verdicts, his thoughts, workers and
@@ -194,7 +195,7 @@ class _LiveScreenState extends State<LiveScreen> {
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.all(Space.s4),
-                child: Text(_error!, style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+                child: Text(_error!, style: TextStyle(color: Look.of(context).down)),
               ),
             ),
           SliverToBoxAdapter(
@@ -251,13 +252,15 @@ class _NowCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final running = bot?.running == true;
+    final look = Look.of(context);
+    final ink = look.heroText;
     return Container(
       margin: const EdgeInsets.fromLTRB(Space.s4, Space.s2, Space.s4, 0),
       padding: const EdgeInsets.all(Space.s4),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(26),
-        gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF6D5BFF), Color(0xFF9B6BFF), Color(0xFF3B2A8C)]),
-        border: Border.all(color: const Color(0x40FFFFFF), width: 0.8),
+        gradient: look.hero,
+        border: Border.all(color: look.line),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
@@ -265,21 +268,21 @@ class _NowCard extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             !live ? 'CONNECTING…' : (running ? (now.busy ? 'WORKING' : 'ON') : 'OFF'),
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1.2, color: Color(0xCCFFFFFF)),
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1.2, color: ink.withValues(alpha: 0.8)),
           ),
           const Spacer(),
           if (bot != null)
-            Text('every ${bot!.intervalMinutes} min', style: const TextStyle(fontSize: 12.5, color: Color(0xB3FFFFFF))),
+            Text('every ${bot!.intervalMinutes} min', style: TextStyle(fontSize: 12.5, color: ink.withValues(alpha: 0.7))),
         ]),
         const SizedBox(height: Space.s3),
-        Text(now.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700, letterSpacing: -0.6, color: CupertinoColors.white)),
+        Text(now.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -1, color: ink)),
         if (now.detail != null && now.detail!.isNotEmpty) ...[
           const SizedBox(height: 4),
-          Text(now.detail!, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14.5, height: 1.35, color: Color(0xE6FFFFFF))),
+          Text(now.detail!, maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 14.5, height: 1.35, color: ink.withValues(alpha: 0.85))),
         ],
         if (now.since != null) ...[
           const SizedBox(height: 6),
-          Text(formatAgo(now.since!), style: const TextStyle(fontSize: 12, color: Color(0x99FFFFFF))),
+          Text(formatAgo(now.since!), style: TextStyle(fontSize: 12, color: ink.withValues(alpha: 0.6))),
         ],
         const SizedBox(height: Space.s4),
         GestureDetector(
@@ -287,12 +290,12 @@ class _NowCard extends StatelessWidget {
           child: Container(
             height: 48,
             alignment: Alignment.center,
-            decoration: BoxDecoration(color: running ? const Color(0x33000000) : CupertinoColors.white, borderRadius: BorderRadius.circular(24)),
+            decoration: BoxDecoration(color: running ? ink.withValues(alpha: 0.12) : look.accent, borderRadius: BorderRadius.circular(24)),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(running ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill, size: 18, color: running ? CupertinoColors.white : const Color(0xFF3B2A8C)),
+              Icon(running ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill, size: 18, color: running ? ink : look.tabActiveIcon),
               const SizedBox(width: 8),
               Text(running ? 'Stop trading' : 'Start trading',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: running ? CupertinoColors.white : const Color(0xFF3B2A8C))),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: running ? ink : look.tabActiveIcon)),
             ]),
           ),
         ),
@@ -346,9 +349,9 @@ class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
           width: 10,
           height: 10,
           decoration: BoxDecoration(
-            color: widget.active ? const Color(0xFFB8F36A) : const Color(0xB3FFFFFF),
+            color: widget.active ? Look.of(context).accent : Look.of(context).heroText.withValues(alpha: 0.6),
             shape: BoxShape.circle,
-            boxShadow: widget.active ? const [BoxShadow(color: Color(0xAAB8F36A), blurRadius: 10)] : null,
+            boxShadow: widget.active ? [BoxShadow(color: Look.of(context).accent.withValues(alpha: 0.6), blurRadius: 10)] : null,
           ),
         ),
       );
@@ -385,9 +388,9 @@ class _EventRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final green = resolve(context, CupertinoColors.systemGreen);
-    final red = resolve(context, CupertinoColors.systemRed);
-    final blue = resolve(context, CupertinoColors.systemBlue);
+    final green = Look.of(context).up;
+    final red = Look.of(context).down;
+    final blue = Look.of(context).accent;
     final purple = resolve(context, CupertinoColors.systemPurple);
     final grey = resolve(context, CupertinoColors.secondaryLabel);
     final (IconData icon, Color color, String title, String? body) = switch (e.kind) {

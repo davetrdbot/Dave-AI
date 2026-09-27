@@ -6,6 +6,7 @@ import '../app_scope.dart';
 import '../theme.dart';
 import '../widgets/charts.dart';
 import '../widgets/common.dart';
+import '../look.dart';
 
 /// Everything Dave durably knows, in the two stores it actually keeps.
 ///
@@ -99,7 +100,7 @@ class _AddRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final blue = resolve(context, CupertinoColors.systemBlue);
+    final blue = Look.of(context).accent;
     return CupertinoListTile(
       leading: Icon(CupertinoIcons.plus_circle_fill, color: blue),
       title: Text(label, style: TextStyle(color: blue)),
@@ -280,7 +281,7 @@ class _KnowledgePageState extends State<_KnowledgePage> {
                       if (!ok || !context.mounted) return;
                       if (await runAction(context, (api) => api.brainAction('knowledge-delete', {'id': k.id})) && context.mounted) Navigator.of(context).pop(true);
                     },
-                    child: Text('Delete lesson', style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+                    child: Text('Delete lesson', style: TextStyle(color: Look.of(context).down)),
                   ),
                 ),
               ]),
@@ -311,7 +312,7 @@ class _ResetMemory extends StatelessWidget {
             HapticFeedback.mediumImpact();
             if (await runAction(context, (api) => api.brainAction('reset-memory'))) await reload();
           },
-          child: Text('Reset memory', style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+          child: Text('Reset memory', style: TextStyle(color: Look.of(context).down)),
         ),
       );
 }

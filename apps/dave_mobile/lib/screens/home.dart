@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import '../app_scope.dart';
+import '../look.dart';
 import '../theme.dart';
 import '../widgets/performance.dart';
 import '../widgets/common.dart';
@@ -48,66 +49,260 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
-/// The hero: the balance on a purple gradient, with round buttons to what the trader reaches for
-/// most -- Dave's chat, the live loop, the MT5 screen, Nous.
+/// The top of Home, in the chosen look's layout: Midnight Lime's grid of tiles, or Pearl's big
+/// editorial numbers. Both lead with the money and put Chat, Live, the MT5 screen and Nous one tap
+/// away.
 class _BalanceCard extends StatelessWidget {
   const _BalanceCard({required this.d});
   final Dashboard d;
 
   @override
+  Widget build(BuildContext context) => switch (Look.of(context).layout) {
+        HomeLayout.bento => _Bento(d: d),
+        HomeLayout.editorial => _Editorial(d: d),
+      };
+}
+
+void _openAction(BuildContext context, String what) {
+  final shell = ShellScope.of(context);
+  switch (what) {
+    case 'chat':
+      shell?.goTo(ShellScope.chat);
+    case 'live':
+      shell?.goTo(ShellScope.live);
+    case 'screen':
+      pushScoped<void>(context, const Mt5ScreenPage());
+    case 'nous':
+      pushScoped<void>(context, const NousPage());
+  }
+}
+
+/// Profit or loss of trades closed since midnight, phone time.
+double _today(Dashboard d) {
+  final now = DateTime.now();
+  final midnight = DateTime(now.year, now.month, now.day);
+  return d.trades.where((t) => !t.at.isBefore(midnight)).fold(0.0, (s, t) => s + t.pnl);
+}
+
+class _Bento extends StatelessWidget {
+  const _Bento({required this.d});
+  final Dashboard d;
+
+  @override
   Widget build(BuildContext context) {
-    const white = CupertinoColors.white;
-    const soft = Color(0xCCFFFFFF);
+    final look = Look.of(context);
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
     final updated = d.accountUpdatedAt;
-    final shell = ShellScope.of(context);
-    return Container(
-      margin: const EdgeInsets.fromLTRB(Space.s4, Space.s2, Space.s4, Space.s2),
-      padding: const EdgeInsets.fromLTRB(Space.s5, Space.s5, Space.s5, Space.s4),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(30),
-        gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF6D5BFF), Color(0xFFA27BFF), Color(0xFF4A35C9)]),
-        border: Border.all(color: const Color(0x40FFFFFF), width: 0.8),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Text('Main account', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: soft)),
-          const Spacer(),
-          if (d.balance != null)
+    Widget tile({required Widget child, EdgeInsets padding = const EdgeInsets.all(Space.s4)}) =>
+        Container(padding: padding, decoration: glassDecoration(context, radius: 26), child: child);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Space.s4, Space.s2, Space.s4, 0),
+      child: Column(children: [
+        tile(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text('Balance', style: TextStyle(fontSize: 13.5, color: secondary)),
+              const Spacer(),
+              if (updated != null) Text(formatAgo(updated), style: TextStyle(fontSize: 12, color: secondary)),
+            ]),
+            const SizedBox(height: 4),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(d.balance == null ? 'Waiting for MT5' : formatMoney(d.balance!),
+                  style: const TextStyle(fontSize: 38, fontWeight: FontWeight.w800, letterSpacing: -1.4, fontFeatures: [FontFeature.tabularFigures()])),
+            ),
+            const SizedBox(height: Space.s2),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(color: const Color(0x26FFFFFF), borderRadius: BorderRadius.circular(20)),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Container(width: 7, height: 7, decoration: BoxDecoration(color: d.eaConnected ? const Color(0xFFB8F36A) : const Color(0xFFFF8A8A), shape: BoxShape.circle)),
-                const SizedBox(width: 6),
-                Text(d.eaConnected ? 'MT5 live' : 'MT5 offline', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: white)),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(color: look.chip, borderRadius: BorderRadius.circular(14)),
+              child: Row(children: [
+                if (d.balance != null) ...[
+                  Container(width: 7, height: 7, decoration: BoxDecoration(color: d.eaConnected ? look.accent : look.down, shape: BoxShape.circle)),
+                  const SizedBox(width: 7),
+                ],
+                Expanded(
+                  child: Text(
+                    d.balance == null ? (d.emptyReason ?? 'Connect MT5 to see a real balance.') : '${d.eaConnected ? 'MT5 live' : 'MT5 offline'}${d.equity == null ? '' : '  ·  Equity ${formatMoney(d.equity!)}'}',
+                    style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: d.eaConnected ? look.accent : look.down),
+                  ),
+                ),
               ]),
             ),
+            const SizedBox(height: Space.s4),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              for (final (icon, label, what) in [
+                (CupertinoIcons.chat_bubble_2, 'Chat', 'chat'),
+                (CupertinoIcons.waveform_path_ecg, 'Live', 'live'),
+                (CupertinoIcons.desktopcomputer, 'Screen', 'screen'),
+                (CupertinoIcons.antenna_radiowaves_left_right, 'Nous', 'nous'),
+              ])
+                _RoundAction(icon: icon, label: label, onTap: () => _openAction(context, what)),
+            ]),
+          ]),
+        ),
+        const SizedBox(height: 10),
+        IntrinsicHeight(
+          child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Expanded(
+              child: tile(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Open P&L', style: TextStyle(fontSize: 13.5, color: secondary)),
+                  const SizedBox(height: 6),
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(d.positions.isEmpty ? '--' : formatMoney(d.openPnl, signed: true),
+                        style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, letterSpacing: -0.8, color: d.positions.isEmpty ? null : pnlColor(context, d.openPnl))),
+                  ),
+                  const SizedBox(height: 2),
+                  Text('${d.positions.length} open  ·  today ${formatMoney(_today(d), signed: true)}', style: TextStyle(fontSize: 12.5, color: secondary)),
+                ]),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: tile(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Win rate', style: TextStyle(fontSize: 13.5, color: secondary)),
+                  const SizedBox(height: 8),
+                  _Ring(percent: d.winRatePercent),
+                ]),
+              ),
+            ),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+/// The win rate as a ring in the accent colour.
+class _Ring extends StatelessWidget {
+  const _Ring({required this.percent});
+  final int? percent;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    return SizedBox(
+      width: 66,
+      height: 66,
+      child: Stack(alignment: Alignment.center, children: [
+        SizedBox.expand(
+          child: CircularProgressRing(value: (percent ?? 0) / 100, color: look.accent, track: look.chip),
+        ),
+        Text(percent == null ? '--' : '$percent%', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+      ]),
+    );
+  }
+}
+
+class CircularProgressRing extends StatelessWidget {
+  const CircularProgressRing({super.key, required this.value, required this.color, required this.track});
+  final double value;
+  final Color color;
+  final Color track;
+  @override
+  Widget build(BuildContext context) => CustomPaint(painter: _RingPainter(value.clamp(0, 1), color, track));
+}
+
+class _RingPainter extends CustomPainter {
+  _RingPainter(this.value, this.color, this.track);
+  final double value;
+  final Color color;
+  final Color track;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const stroke = 7.0;
+    final rect = Offset.zero & size;
+    final r = rect.deflate(stroke / 2);
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..color = track;
+    canvas.drawArc(r, 0, 6.2832, false, base);
+    canvas.drawArc(r, -1.5708, 6.2832 * value, false, base..color = color..strokeCap = StrokeCap.round);
+  }
+
+  @override
+  bool shouldRepaint(_RingPainter old) => old.value != value || old.color != color;
+}
+
+class _Editorial extends StatelessWidget {
+  const _Editorial({required this.d});
+  final Dashboard d;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    final label = resolve(context, CupertinoColors.label);
+    final money = d.balance == null ? null : formatMoney(d.balance!);
+    final dot = money?.lastIndexOf('.') ?? -1;
+    Widget kpi(String title, String value, [Color? color]) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title, style: TextStyle(fontSize: 13, color: secondary)),
+          const SizedBox(height: 2),
+          Text(value, style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800, color: color ?? label)),
+        ]);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Space.s5, Space.s2, Space.s5, 0),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text('TOTAL BALANCE', style: TextStyle(fontSize: 12, letterSpacing: 1.6, fontWeight: FontWeight.w600, color: secondary)),
+          const Spacer(),
+          Container(width: 7, height: 7, decoration: BoxDecoration(color: d.eaConnected ? look.up : look.down, shape: BoxShape.circle)),
+          const SizedBox(width: 6),
+          Text(d.eaConnected ? 'MT5 live' : 'MT5 offline', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: secondary)),
         ]),
-        const SizedBox(height: Space.s2),
         FittedBox(
           fit: BoxFit.scaleDown,
           alignment: Alignment.centerLeft,
-          child: Text(
-            d.balance == null ? 'Waiting for MT5' : formatMoney(d.balance!),
-            style: const TextStyle(fontSize: 42, fontWeight: FontWeight.w700, letterSpacing: -1.4, color: white, fontFeatures: [FontFeature.tabularFigures()]),
-          ),
+          child: money == null
+              ? Text('Waiting for MT5', style: TextStyle(fontSize: 40, fontWeight: FontWeight.w800, letterSpacing: -1.6, color: secondary))
+              : Text.rich(TextSpan(children: [
+                  TextSpan(text: money.substring(0, dot)),
+                  TextSpan(text: money.substring(dot), style: TextStyle(color: resolve(context, CupertinoColors.tertiaryLabel))),
+                ]), style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w800, letterSpacing: -2.6, fontFeatures: [FontFeature.tabularFigures()])),
         ),
-        Text(
-          d.balance == null
-              ? (d.emptyReason ?? 'Connect the MT5 terminal to see a real balance.')
-              : [
-                  if (d.equity != null) 'Equity ${formatMoney(d.equity!)}',
-                  if (d.positions.isNotEmpty) 'Open ${formatMoney(d.openPnl, signed: true)}',
-                  if (updated != null) formatAgo(updated),
-                ].join('  ·  '),
-          style: const TextStyle(fontSize: 13.5, color: soft),
+        const SizedBox(height: Space.s3),
+        Container(
+          padding: const EdgeInsets.symmetric(vertical: Space.s3),
+          decoration: BoxDecoration(border: Border.symmetric(horizontal: BorderSide(color: look.line))),
+          child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            kpi('Open', d.positions.isEmpty ? '--' : formatMoney(d.openPnl, signed: true), d.positions.isEmpty ? null : pnlColor(context, d.openPnl)),
+            kpi('Today', formatMoney(_today(d), signed: true), pnlColor(context, _today(d))),
+            kpi('Win rate', d.winRatePercent == null ? '--' : '${d.winRatePercent}%'),
+          ]),
         ),
-        const SizedBox(height: Space.s5),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          _RoundAction(icon: CupertinoIcons.chat_bubble_2_fill, label: 'Chat', onTap: () => shell?.goTo(ShellScope.chat)),
-          _RoundAction(icon: CupertinoIcons.waveform_path_ecg, label: 'Live', onTap: () => shell?.goTo(ShellScope.live)),
-          _RoundAction(icon: CupertinoIcons.desktopcomputer, label: 'MT5 screen', onTap: () => pushScoped<void>(context, const Mt5ScreenPage())),
-          _RoundAction(icon: CupertinoIcons.antenna_radiowaves_left_right, label: 'Nous', onTap: () => pushScoped<void>(context, const NousPage())),
+        const SizedBox(height: Space.s4),
+        Row(children: [
+          for (final (i, (icon, text, what)) in [
+            (CupertinoIcons.chat_bubble_2, 'Ask Dave', 'chat'),
+            (CupertinoIcons.waveform_path_ecg, 'Live', 'live'),
+            (CupertinoIcons.desktopcomputer, 'MT5', 'screen'),
+          ].indexed) ...[
+            if (i > 0) const SizedBox(width: 8),
+            Expanded(
+              child: GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  _openAction(context, what);
+                },
+                child: Container(
+                  height: 50,
+                  decoration: BoxDecoration(color: i == 0 ? label : look.chip, borderRadius: BorderRadius.circular(16)),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(icon, size: 18, color: i == 0 ? look.base : label),
+                    const SizedBox(width: 6),
+                    Text(text, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: i == 0 ? look.base : label)),
+                  ]),
+                ),
+              ),
+            ),
+          ],
         ]),
       ]),
     );
@@ -121,27 +316,30 @@ class _RoundAction extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Semantics(
-        button: true,
-        label: label,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () {
-            HapticFeedback.selectionClick();
-            onTap();
-          },
-          child: Column(children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(color: const Color(0x2EFFFFFF), shape: BoxShape.circle, border: Border.all(color: const Color(0x40FFFFFF), width: 0.8)),
-              child: Icon(icon, size: 24, color: CupertinoColors.white),
-            ),
-            const SizedBox(height: 6),
-            Text(label, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: CupertinoColors.white)),
-          ]),
-        ),
-      );
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
+        child: Column(children: [
+          Container(
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(color: look.chip, shape: BoxShape.circle, border: Border.all(color: look.line)),
+            child: Icon(icon, size: 22, color: resolve(context, CupertinoColors.label)),
+          ),
+          const SizedBox(height: 6),
+          Text(label, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+        ]),
+      ),
+    );
+  }
 }
 
 /// Start / stop, right on the home screen: the most important control in the app should not be
@@ -209,7 +407,7 @@ class _TradingCardState extends State<_TradingCard> {
           ),
           const SizedBox(width: Space.s3),
           if (_pending != null) const Padding(padding: EdgeInsets.only(right: Space.s2), child: CupertinoActivityIndicator()),
-          CupertinoSwitch(value: running, onChanged: _pending != null ? null : _set),
+          CupertinoSwitch(activeTrackColor: Look.of(context).accent, value: running, onChanged: _pending != null ? null : _set),
         ]),
         const SizedBox(height: Space.s3),
         Pill(text: widget.eaConnected ? 'MT5 connected' : 'MT5 not connected', good: widget.eaConnected),

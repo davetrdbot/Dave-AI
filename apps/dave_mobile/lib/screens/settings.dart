@@ -13,6 +13,7 @@ import 'context.dart';
 import 'mt5.dart';
 import 'nous.dart';
 import 'providers.dart';
+import '../look.dart';
 
 class _SettingsData {
   _SettingsData(this.bot, this.settings, this.providers, this.notifications, this.serviceRunning, this.batteryExempt);
@@ -48,6 +49,7 @@ class SettingsScreen extends StatelessWidget {
         );
       },
       builder: (context, data, reload) => [
+        const SliverToBoxAdapter(child: _AppearanceSection()),
         SliverToBoxAdapter(child: _TradingSection(bot: data.bot, reload: reload)),
         SliverToBoxAdapter(child: _RiskSection(s: data.settings, reload: reload)),
         SliverToBoxAdapter(child: _MarketsSection(s: data.settings, reload: reload)),
@@ -73,6 +75,82 @@ String _num(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStr
 
 // ---------------------------------------------------------------------------------------------
 
+/// Midnight Lime (dark) or Pearl (light) -- the whole app switches at once and the choice is
+/// remembered on this phone.
+class _AppearanceSection extends StatelessWidget {
+  const _AppearanceSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final current = Look.of(context);
+    final controller = LookScope.controllerOf(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Space.s4, Space.s2, Space.s4, 0),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Padding(padding: EdgeInsets.fromLTRB(Space.s4, Space.s3, 0, Space.s2), child: ListHeader('Appearance')),
+        Row(children: [
+          for (final (i, look) in Look.all.indexed) ...[
+            if (i > 0) const SizedBox(width: 10),
+            Expanded(
+              child: GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  controller?.choose(look);
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: look.base,
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(color: look.id == current.id ? current.accent : current.line, width: look.id == current.id ? 2.5 : 1),
+                  ),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    // A tiny preview: a card, the accent, and the round bar.
+                    Container(
+                      height: 54,
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(color: look.card, borderRadius: BorderRadius.circular(14), border: Border.all(color: look.line)),
+                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Container(height: 6, width: 34, decoration: BoxDecoration(color: look.dark ? const Color(0x44FFFFFF) : const Color(0x33000000), borderRadius: BorderRadius.circular(3))),
+                            const SizedBox(height: 6),
+                            Container(height: 12, width: 60, decoration: BoxDecoration(color: look.dark ? const Color(0xEEFFFFFF) : const Color(0xFF141414), borderRadius: BorderRadius.circular(4))),
+                          ]),
+                        ),
+                        Container(width: 16, height: 16, decoration: BoxDecoration(color: look.accent, shape: BoxShape.circle)),
+                      ]),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(color: look.bar, borderRadius: BorderRadius.circular(14)),
+                      child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+                        for (var k = 0; k < 4; k++)
+                          Container(width: 14, height: 14, decoration: BoxDecoration(color: k == 0 ? look.tabActive : look.tabIdle, shape: BoxShape.circle)),
+                      ]),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(children: [
+                      Expanded(
+                        child: Text(look.name,
+                            style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: look.dark ? const Color(0xFFF4F5F0) : const Color(0xFF141414))),
+                      ),
+                      if (look.id == current.id) Icon(CupertinoIcons.checkmark_circle_fill, size: 18, color: look.accent),
+                    ]),
+                    Text(look.dark ? 'Dark' : 'Light', style: TextStyle(fontSize: 12, color: look.dark ? const Color(0xFF8A8F86) : const Color(0xFF8A857C))),
+                  ]),
+                ),
+              ),
+            ),
+          ],
+        ]),
+      ]),
+    );
+  }
+}
+
 class _TradingSection extends StatelessWidget {
   const _TradingSection({required this.bot, required this.reload});
   final BotState bot;
@@ -86,7 +164,7 @@ class _TradingSection extends StatelessWidget {
           CupertinoListTile(
             leading: const Icon(CupertinoIcons.play_circle),
             title: const Text('Autonomous trading'),
-            trailing: CupertinoSwitch(
+            trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, 
               value: bot.running,
               onChanged: (v) async {
                 if (!v) {
@@ -101,7 +179,7 @@ class _TradingSection extends StatelessWidget {
             leading: const Icon(CupertinoIcons.bolt),
             title: const Text('Take trades'),
             subtitle: Text(bot.executionEnabled ? 'Automatically' : 'Watch-only, asks you first'),
-            trailing: CupertinoSwitch(value: bot.executionEnabled, onChanged: (v) => _guarded(context, (api) => api.updateBot(executionEnabled: v), reload)),
+            trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, value: bot.executionEnabled, onChanged: (v) => _guarded(context, (api) => api.updateBot(executionEnabled: v), reload)),
           ),
           CupertinoListTile(
             leading: const Icon(CupertinoIcons.timer),
@@ -157,7 +235,7 @@ class _RiskSection extends StatelessWidget {
           leading: const Icon(CupertinoIcons.checkmark_seal),
           title: const Text('Auto-approve below it'),
           subtitle: Text(s.autoApproveBelowThreshold ? 'Trades anyway' : 'Asks you to approve'),
-          trailing: CupertinoSwitch(value: s.autoApproveBelowThreshold, onChanged: (v) => _set(context, 'autoApproveBelowThreshold', v, reload)),
+          trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, value: s.autoApproveBelowThreshold, onChanged: (v) => _set(context, 'autoApproveBelowThreshold', v, reload)),
         ),
         _riskModeTile(context, 'stopLoss', 'Stop loss', CupertinoIcons.shield, s.stopLoss),
         _riskModeTile(context, 'takeProfit', 'Take profit', CupertinoIcons.flag, s.takeProfit),
@@ -291,7 +369,7 @@ class _RiskModePageState extends State<_RiskModePage> {
           ],
           if (_error != null) ...[
             const SizedBox(height: Space.s3),
-            Text(_error!, style: TextStyle(fontSize: 14, color: resolve(context, CupertinoColors.systemRed))),
+            Text(_error!, style: TextStyle(fontSize: 14, color: Look.of(context).down)),
           ],
         ]),
       ),
@@ -357,7 +435,7 @@ class _PickerPage extends StatelessWidget {
                   CupertinoListTile(
                     title: Text(o.$2),
                     subtitle: o.$3 == null ? null : Text(o.$3!),
-                    trailing: o.$1 == current ? Icon(CupertinoIcons.checkmark_alt, color: resolve(context, CupertinoColors.systemBlue)) : null,
+                    trailing: o.$1 == current ? Icon(CupertinoIcons.checkmark_alt, color: Look.of(context).accent) : null,
                     onTap: () async {
                       if (o.$1 == current) return Navigator.of(context).pop(false);
                       if (await runAction(context, (api) => api.updateSetting(settingId, o.$1)) && context.mounted) Navigator.of(context).pop(true);
@@ -379,7 +457,7 @@ class _BehaviourSection extends StatelessWidget {
         leading: Icon(icon),
         title: Text(title),
         subtitle: Text(subtitle),
-        trailing: CupertinoSwitch(value: value, onChanged: (v) => _set(context, id, v, reload)),
+        trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, value: value, onChanged: (v) => _set(context, id, v, reload)),
       );
 
   @override
@@ -458,7 +536,7 @@ class _AlertsPageState extends State<_AlertsPage> {
                 for (final a in _alerts)
                   CupertinoListTile(
                     title: Text(a.label, maxLines: 2, style: const TextStyle(fontSize: 15)),
-                    trailing: CupertinoSwitch(
+                    trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, 
                       value: a.on,
                       onChanged: (v) async {
                         final api = AppScope.of(context).api;
@@ -632,7 +710,7 @@ class _NotificationSection extends StatelessWidget {
             leading: const Icon(CupertinoIcons.bell),
             title: const Text('Trade alerts'),
             subtitle: Text(data.notifications ? (data.serviceRunning ? 'Connected' : 'Starting…') : 'Off'),
-            trailing: CupertinoSwitch(value: data.notifications, onChanged: (v) => _toggle(context, v)),
+            trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, value: data.notifications, onChanged: (v) => _toggle(context, v)),
           ),
           if (defaultTargetPlatform == TargetPlatform.android)
             CupertinoListTile(
@@ -668,8 +746,8 @@ class _ConnectionSection extends StatelessWidget {
           subtitle: Text(scope.api.base.host, overflow: TextOverflow.ellipsis),
         ),
         CupertinoListTile(
-          leading: Icon(CupertinoIcons.xmark_circle, color: resolve(context, CupertinoColors.systemRed)),
-          title: Text('Disconnect this phone', style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+          leading: Icon(CupertinoIcons.xmark_circle, color: Look.of(context).down),
+          title: Text('Disconnect this phone', style: TextStyle(color: Look.of(context).down)),
           onTap: () async {
             final ok = await confirmDestructive(context, title: 'Disconnect this phone?', message: 'You will need a new pairing code from the web panel to connect again.', action: 'Disconnect');
             if (ok) scope.onUnpaired('Disconnected. Get a new pairing code from the web panel to connect again.');

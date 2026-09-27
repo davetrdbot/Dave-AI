@@ -7,6 +7,7 @@ import '../api/models.dart';
 import '../theme.dart';
 import 'charts.dart';
 import 'common.dart';
+import '../look.dart';
 
 /// The time windows the trader can look at. Days back from now, inclusive of today.
 enum PnlRange {
@@ -164,7 +165,7 @@ class _PnlLineChartState extends State<PnlLineChart> {
   @override
   Widget build(BuildContext context) {
     final running = _running;
-    final line = resolve(context, CupertinoColors.systemBlue);
+    final line = Look.of(context).accent;
     final secondary = resolve(context, CupertinoColors.secondaryLabel);
     final grid = resolve(context, CupertinoColors.separator);
     final span = widget.end.difference(widget.start).inMilliseconds.clamp(1, 1 << 62);

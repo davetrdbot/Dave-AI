@@ -16,6 +16,7 @@ import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/app_scope.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
+import 'package:dave_mobile/look.dart';
 import 'package:dave_mobile/theme.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/rendering.dart';
@@ -347,15 +348,22 @@ Future<void> _advance(WidgetTester tester) async {
   }
 }
 
-Widget _app(Widget home) => RepaintBoundary(
-      key: _frameKey,
+/// The app as main.dart builds it, in one of the two looks.
+Widget _app(Widget home, {Look look = Look.midnightLime}) {
+  final controller = LookController(look);
+  return RepaintBoundary(
+    key: _frameKey,
+    child: LookScope(
+      controller: controller,
       child: CupertinoApp(
         debugShowCheckedModeBanner: false,
-        theme: const CupertinoThemeData(primaryColor: CupertinoColors.systemBlue, scaffoldBackgroundColor: Color(0x00000000), barBackgroundColor: glassBar),
+        theme: CupertinoThemeData(brightness: look.brightness, primaryColor: look.accent, scaffoldBackgroundColor: const Color(0x00000000), barBackgroundColor: look.base.withValues(alpha: 0.82)),
         builder: (context, child) => Stack(fit: StackFit.expand, children: [const Aurora(), ?child]),
         home: home,
       ),
-    );
+    ),
+  );
+}
 
 void main() {
   setUpAll(() async {
@@ -380,13 +388,13 @@ void main() {
       addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
 
       final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer(), streamClient: _fakeChatStream);
-      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const Shell())));
+      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const Shell()), look: brightness == Brightness.dark ? Look.midnightLime : Look.pearl));
       await _advance(tester);
 
       // Home opens first: the purple balance hero with its round buttons.
       await _shot(tester, 'home_$mode');
-      expect(find.text('MT5 screen'), findsOneWidget);
-      expect(find.text('MT5 live'), findsOneWidget);
+      expect(find.textContaining('MT5 live'), findsOneWidget);
+      expect(find.text(brightness == Brightness.dark ? 'Win rate' : 'TOTAL BALANCE'), findsOneWidget, reason: 'Lime has the tile grid, Pearl the editorial numbers');
 
       // Live: what Dave is analysing right now.
       await tester.tap(find.byIcon(CupertinoIcons.waveform_path_ecg).last);
@@ -418,6 +426,8 @@ void main() {
       expect(find.textContaining('Volatility 75 Index'), findsOneWidget);
 
       // Closing a trade asks first, and names the trade.
+      await tester.dragUntilVisible(find.textContaining('XAUUSD  Buy'), find.byType(CustomScrollView).first, const Offset(0, -200));
+      await _advance(tester);
       await tester.tap(find.textContaining('XAUUSD  Buy'));
       await _advance(tester);
       await _shot(tester, 'close_confirm_$mode');

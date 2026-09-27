@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../api/client.dart';
 import '../session.dart';
 import '../theme.dart';
+import '../look.dart';
 
 /// The one-time "power up": the server address and a pairing code, entered once per phone.
 ///
@@ -77,7 +78,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
       backgroundColor: const Color(0x00000000),
       child: SafeArea(
         child: ListView(padding: const EdgeInsets.fromLTRB(Space.s5, Space.s6, Space.s5, Space.s6), children: [
-          Icon(CupertinoIcons.chart_bar_square_fill, size: 56, color: resolve(context, CupertinoColors.systemBlue)),
+          Icon(CupertinoIcons.chart_bar_square_fill, size: 56, color: Look.of(context).accent),
           const SizedBox(height: Space.s4),
           const Text('Connect to Dave', textAlign: TextAlign.center, style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, letterSpacing: -0.6)),
           const SizedBox(height: Space.s2),
@@ -122,7 +123,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
           ),
           if (_error != null) ...[
             const SizedBox(height: Space.s3),
-            Text(_error!, style: TextStyle(fontSize: 14, color: resolve(context, CupertinoColors.systemRed))),
+            Text(_error!, style: TextStyle(fontSize: 14, color: Look.of(context).down)),
           ],
           const SizedBox(height: Space.s5),
           SizedBox(

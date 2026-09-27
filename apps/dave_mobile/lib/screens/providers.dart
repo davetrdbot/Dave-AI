@@ -4,6 +4,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../look.dart';
 
 /// Every AI provider Dave can use (the trader: "add all the providers to the settings").
 ///
@@ -139,7 +140,7 @@ class ProviderPage extends StatelessWidget {
                     ),
                   if (p.isBackup)
                     CupertinoListTile(
-                      title: Text('Stop using as a backup', style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+                      title: Text('Stop using as a backup', style: TextStyle(color: Look.of(context).down)),
                       onTap: () => act('remove-backup'),
                     ),
                 ],
@@ -173,8 +174,8 @@ class ProviderPage extends StatelessWidget {
                       onTap: () => _keyOptions(context, k, act),
                     ),
                   CupertinoListTile(
-                    leading: Icon(CupertinoIcons.plus_circle_fill, color: resolve(context, CupertinoColors.systemBlue)),
-                    title: Text('Add a key', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
+                    leading: Icon(CupertinoIcons.plus_circle_fill, color: Look.of(context).accent),
+                    title: Text('Add a key', style: TextStyle(color: Look.of(context).accent)),
                     onTap: () => _addKey(context, p, act),
                   ),
                 ],
@@ -266,11 +267,11 @@ class _ModelPickerPageState extends State<_ModelPickerPage> {
                   for (final m in shown)
                     CupertinoListTile(
                       title: Text(m, maxLines: 2, overflow: TextOverflow.ellipsis),
-                      trailing: m == widget.current ? Icon(CupertinoIcons.check_mark, color: resolve(context, CupertinoColors.systemBlue)) : null,
+                      trailing: m == widget.current ? Icon(CupertinoIcons.check_mark, color: Look.of(context).accent) : null,
                       onTap: () => Navigator.pop(context, m),
                     ),
                   CupertinoListTile(
-                    title: Text('Type a model id', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
+                    title: Text('Type a model id', style: TextStyle(color: Look.of(context).accent)),
                     onTap: () => Navigator.pop(context, _typeOwn),
                   ),
                 ],

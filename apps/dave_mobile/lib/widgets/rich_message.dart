@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 
 import '../theme.dart';
+import '../look.dart';
 
 /// Dave's messages as the app shows them: his markdown replies, Telegram-style HTML, and the
 /// structured rich blocks (tables, headings, collapsible details...) his tools send -- the same
@@ -157,7 +158,7 @@ class Quote extends StatelessWidget {
     final style = TextStyle(fontSize: large ? 18 : 15, height: 1.35, fontStyle: large ? FontStyle.italic : null, color: resolve(context, CupertinoColors.secondaryLabel));
     return Container(
       padding: const EdgeInsets.only(left: 10),
-      decoration: BoxDecoration(border: Border(left: BorderSide(color: resolve(context, CupertinoColors.systemBlue), width: 3))),
+      decoration: BoxDecoration(border: Border(left: BorderSide(color: Look.of(context).accent, width: 3))),
       child: Text.rich(TextSpan(style: style, children: inlineSpans(context, text, style))),
     );
   }

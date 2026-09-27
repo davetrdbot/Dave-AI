@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
+import '../look.dart';
 import '../theme.dart';
 import 'brain.dart';
 import 'chat.dart';
@@ -39,7 +40,7 @@ class ShellScope extends InheritedWidget {
 }
 
 /// The app frame: the screens, and a floating pill of round icon buttons -- the selected one
-/// lit in lime. The same on Android and iPhone: it's Dave's own look, not either platform's.
+/// lit in the look's accent. The same on Android and iPhone: it's Dave's own look, not either platform's.
 ///
 /// Screens live in an IndexedStack so switching tabs keeps each one's scroll position and loaded
 /// data.
@@ -96,9 +97,6 @@ class _ShellState extends State<Shell> {
   }
 }
 
-/// Lime, the one accent the bar uses -- it reads on the dark glass and on the purple hero.
-const lime = Color(0xFFB8F36A);
-
 class _TabButton extends StatelessWidget {
   const _TabButton({required this.tab, required this.selected, required this.onTap});
   final _Tab tab;
@@ -107,9 +105,7 @@ class _TabButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = CupertinoTheme.brightnessOf(context) == Brightness.dark;
-    final idleFill = dark ? const Color(0x1FFFFFFF) : const Color(0x14000000);
-    final idleIcon = resolve(context, CupertinoColors.label);
+    final look = Look.of(context);
     return Semantics(
       button: true,
       selected: selected,
@@ -123,11 +119,11 @@ class _TabButton extends StatelessWidget {
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: selected ? lime : idleFill,
+            color: selected ? look.tabActive : look.tabIdle,
             shape: BoxShape.circle,
-            boxShadow: selected ? const [BoxShadow(color: Color(0x66B8F36A), blurRadius: 16)] : null,
+            boxShadow: selected && look.dark ? [BoxShadow(color: look.tabActive.withValues(alpha: 0.45), blurRadius: 16)] : null,
           ),
-          child: Icon(selected ? tab.activeIcon : tab.icon, size: 22, color: selected ? const Color(0xFF14200A) : idleIcon),
+          child: Icon(selected ? tab.activeIcon : tab.icon, size: 22, color: selected ? look.tabActiveIcon : look.tabIcon),
         ),
       ),
     );

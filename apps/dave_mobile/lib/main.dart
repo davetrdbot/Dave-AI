@@ -7,6 +7,7 @@ import 'push/push_service.dart';
 import 'screens/connect.dart';
 import 'screens/shell.dart';
 import 'session.dart';
+import 'look.dart';
 import 'theme.dart';
 
 /// Dave -- the app.
@@ -30,12 +31,14 @@ class DaveApp extends StatefulWidget {
 class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
   bool _loading = true;
   DaveApi? _api;
+  final _look = LookController();
   String? _notice;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _look.load();
     _restore();
   }
 
@@ -101,17 +104,32 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
     } else {
       home = AppScope(api: _api!, onUnpaired: _unpaired, child: const Shell());
     }
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(statusBarColor: Color(0x00000000), systemNavigationBarColor: Color(0x00000000)),
-      child: CupertinoApp(
-        title: 'Dave',
-        debugShowCheckedModeBanner: false,
-        // No brightness set: the app follows the system, light by default and dark when chosen.
-        // Dark, on every phone: Dave's own look (purple and lime on deep glass), not the system's.
-        theme: const CupertinoThemeData(brightness: Brightness.dark, primaryColor: Color(0xFF8E7BFF), scaffoldBackgroundColor: Color(0x00000000), barBackgroundColor: glassBar),
-        // Every screen -- pushed ones too -- sits on the same soft colour field (theme.dart).
-        builder: (context, child) => Stack(fit: StackFit.expand, children: [const Aurora(), ?child]),
-        home: home,
+    // The chosen look (Settings -> Appearance) themes the whole app and repaints it on a switch.
+    return LookScope(
+      controller: _look,
+      child: ValueListenableBuilder<Look>(
+        valueListenable: _look,
+        builder: (context, look, _) => AnnotatedRegion<SystemUiOverlayStyle>(
+          value: SystemUiOverlayStyle(
+            statusBarColor: const Color(0x00000000),
+            systemNavigationBarColor: const Color(0x00000000),
+            statusBarIconBrightness: look.dark ? Brightness.light : Brightness.dark,
+            statusBarBrightness: look.brightness,
+          ),
+          child: CupertinoApp(
+            title: 'Dave',
+            debugShowCheckedModeBanner: false,
+            theme: CupertinoThemeData(
+              brightness: look.brightness,
+              primaryColor: look.accent,
+              scaffoldBackgroundColor: const Color(0x00000000),
+              barBackgroundColor: look.base.withValues(alpha: 0.82),
+            ),
+            // Every screen -- pushed ones too -- sits on the look's background (theme.dart).
+            builder: (context, child) => Stack(fit: StackFit.expand, children: [const Aurora(), ?child]),
+            home: home,
+          ),
+        ),
       ),
     );
   }

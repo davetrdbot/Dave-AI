@@ -6,6 +6,7 @@ import '../api/models.dart';
 import '../app_scope.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../look.dart';
 
 /// Nous: copy trading from the trader's Telegram signal channels -- everything /nous does in
 /// Telegram. Log Telegram in, pick the channels and groups, set the options, see what came in.
@@ -24,7 +25,7 @@ class NousPage extends StatelessWidget {
             if (await runAction(context, (api) => api.nousAction(path, body))) await reload();
           }
 
-          final blue = resolve(context, CupertinoColors.systemBlue);
+          final blue = Look.of(context).accent;
           return [
             SliverToBoxAdapter(
               child: _Section(
@@ -72,7 +73,7 @@ class NousPage extends StatelessWidget {
                     leading: const Icon(CupertinoIcons.bolt_fill),
                     title: const Text('Auto-approve'),
                     subtitle: Text(n.autoApprove ? 'Places signals without asking' : 'Asks you Place / Skip for each one'),
-                    trailing: CupertinoSwitch(value: n.autoApprove, onChanged: (v) => act('settings', {'autoApprove': v})),
+                    trailing: CupertinoSwitch(activeTrackColor: Look.of(context).accent, value: n.autoApprove, onChanged: (v) => act('settings', {'autoApprove': v})),
                   ),
                   CupertinoListTile(
                     leading: const Icon(CupertinoIcons.cube_box),
@@ -120,7 +121,7 @@ class NousPage extends StatelessWidget {
                             final ok = await confirmDestructive(context, title: 'Close ${t.symbol} #${t.ticket}?', message: 'Closes it at the market price now.', action: 'Close trade');
                             if (ok && context.mounted) await act('close', {'ticket': t.ticket});
                           },
-                          child: Text('Close', style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+                          child: Text('Close', style: TextStyle(color: Look.of(context).down)),
                         ),
                       ),
                   ],
@@ -145,7 +146,7 @@ class NousPage extends StatelessWidget {
                 child: _Section(
                   children: [
                     CupertinoListTile(
-                      title: Text('Log out of Telegram', style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+                      title: Text('Log out of Telegram', style: TextStyle(color: Look.of(context).down)),
                       onTap: () async {
                         final ok = await confirmDestructive(context,
                             title: 'Log Nous out?', message: 'Nous stops reading your channels, and the session disappears from Telegram\'s Devices list.', action: 'Log out');
@@ -316,7 +317,7 @@ class _NousConnectPageState extends State<NousConnectPage> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(Space.s5, Space.s2, Space.s5, 0),
-              child: Text(_error!, style: TextStyle(fontSize: 14, color: resolve(context, CupertinoColors.systemRed))),
+              child: Text(_error!, style: TextStyle(fontSize: 14, color: Look.of(context).down)),
             ),
           Padding(
             padding: const EdgeInsets.fromLTRB(Space.s4, Space.s4, Space.s4, 0),
@@ -343,8 +344,8 @@ class _Instruction extends StatelessWidget {
           width: 26,
           height: 26,
           alignment: Alignment.center,
-          decoration: BoxDecoration(color: resolve(context, CupertinoColors.systemBlue).withValues(alpha: 0.14), shape: BoxShape.circle),
-          child: Text('$n', style: TextStyle(fontWeight: FontWeight.w700, color: resolve(context, CupertinoColors.systemBlue))),
+          decoration: BoxDecoration(color: Look.of(context).accent.withValues(alpha: 0.14), shape: BoxShape.circle),
+          child: Text('$n', style: TextStyle(fontWeight: FontWeight.w700, color: Look.of(context).accent)),
         ),
         title: Text(text, maxLines: 3, style: const TextStyle(fontSize: 15)),
       );

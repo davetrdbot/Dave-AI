@@ -4,6 +4,7 @@ import '../api/models.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'mt5_screen.dart';
+import '../look.dart';
 
 /// MetaTrader 5 in Dave's own container: the account it's logged into, the EA's chart, how often
 /// the EA reports, and a restart. The same controls as /mt5 in Telegram.
@@ -61,15 +62,15 @@ class Mt5Page extends StatelessWidget {
                   children: [
                     if (v.configured)
                       CupertinoListTile(
-                        leading: Icon(CupertinoIcons.desktopcomputer, color: resolve(context, CupertinoColors.systemBlue)),
-                        title: Text('Open the MT5 screen', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
+                        leading: Icon(CupertinoIcons.desktopcomputer, color: Look.of(context).accent),
+                        title: Text('Open the MT5 screen', style: TextStyle(color: Look.of(context).accent)),
                         subtitle: const Text('Live, with touch as the mouse -- like a VPS'),
                         trailing: const CupertinoListTileChevron(),
                         onTap: () => pushScoped<void>(context, const Mt5ScreenPage()),
                       ),
                     CupertinoListTile(
-                      leading: Icon(CupertinoIcons.person_crop_circle_badge_plus, color: resolve(context, CupertinoColors.systemBlue)),
-                      title: Text(v.configured ? 'Change account' : 'Connect account', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
+                      leading: Icon(CupertinoIcons.person_crop_circle_badge_plus, color: Look.of(context).accent),
+                      title: Text(v.configured ? 'Change account' : 'Connect account', style: TextStyle(color: Look.of(context).accent)),
                       onTap: v.installed ? () => _connect(context, act) : null,
                     ),
                   ],
@@ -95,8 +96,8 @@ class Mt5Page extends StatelessWidget {
                       ),
                       if (v.pairGroup.isNotEmpty && v.pairGroup.join(',') != v.marketWatch.join(','))
                         CupertinoListTile(
-                          leading: Icon(CupertinoIcons.square_stack_3d_up, color: resolve(context, CupertinoColors.systemBlue)),
-                          title: Text('Use my pair group', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
+                          leading: Icon(CupertinoIcons.square_stack_3d_up, color: Look.of(context).accent),
+                          title: Text('Use my pair group', style: TextStyle(color: Look.of(context).accent)),
                           subtitle: Text(v.pairGroup.join(', '), maxLines: 2),
                           onTap: () => act('settings', {'marketWatch': v.pairGroup}),
                         ),
@@ -162,8 +163,8 @@ class Mt5Page extends StatelessWidget {
                         },
                       ),
                       CupertinoListTile(
-                        leading: Icon(CupertinoIcons.arrow_clockwise, color: resolve(context, CupertinoColors.systemBlue)),
-                        title: Text('Restart MT5', style: TextStyle(color: resolve(context, CupertinoColors.systemBlue))),
+                        leading: Icon(CupertinoIcons.arrow_clockwise, color: Look.of(context).accent),
+                        title: Text('Restart MT5', style: TextStyle(color: Look.of(context).accent)),
                         onTap: () => act('restart'),
                       ),
                     ],

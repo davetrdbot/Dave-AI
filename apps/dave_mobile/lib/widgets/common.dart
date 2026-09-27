@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../api/client.dart';
 import '../app_scope.dart';
 import '../theme.dart';
+import '../look.dart';
 
 /// Space the floating tab bar occupies, so the last row of every screen can scroll clear of it.
 double tabBarClearance(BuildContext context) => 110 + MediaQuery.paddingOf(context).bottom;
@@ -389,7 +390,7 @@ class _EditorPageState extends State<EditorPage> {
             ),
             const SizedBox(height: Space.s4),
           ],
-          if (_error != null) Text(_error!, style: TextStyle(fontSize: 14, color: resolve(context, CupertinoColors.systemRed))),
+          if (_error != null) Text(_error!, style: TextStyle(fontSize: 14, color: Look.of(context).down)),
           if (widget.footer != null) Padding(padding: const EdgeInsets.only(left: Space.s2), child: ListFooter(widget.footer!)),
         ]),
       ),

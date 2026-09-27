@@ -13,6 +13,7 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/rich_message.dart';
 import 'chat_timeline.dart';
+import '../look.dart';
 
 /// Talking to Dave -- the same conversation as Telegram, with every step he takes shown live:
 /// each tool as it starts and finishes, his thinking, the workers he starts, and Nous's cards
@@ -408,10 +409,8 @@ class _Bubble extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: fromUser
                   ? BoxDecoration(
-                      borderRadius: BorderRadius.circular(22),
-                      gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF3D8BFF), Color(0xFF5B5BF0)]),
-                      border: Border.all(color: const Color(0x55FFFFFF), width: 0.8),
-                      boxShadow: const [BoxShadow(color: Color(0x333D6BFF), blurRadius: 18, offset: Offset(0, 6))],
+                      borderRadius: const BorderRadius.only(topLeft: Radius.circular(22), topRight: Radius.circular(22), bottomLeft: Radius.circular(22), bottomRight: Radius.circular(6)),
+                      gradient: Look.of(context).me,
                     )
                   : glassDecoration(context, radius: 22),
               child: child,
@@ -434,7 +433,7 @@ class _UserText extends StatelessWidget {
   final int pictures;
   @override
   Widget build(BuildContext context) {
-    final white = CupertinoColors.white;
+    final white = Look.of(context).meText;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -443,9 +442,9 @@ class _UserText extends StatelessWidget {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(CupertinoIcons.photo, size: 15, color: CupertinoColors.white),
+              Icon(CupertinoIcons.photo, size: 15, color: white),
               const SizedBox(width: 5),
-              Text(pictures == 1 ? 'Picture' : '$pictures pictures', style: const TextStyle(fontSize: 14, color: CupertinoColors.white)),
+              Text(pictures == 1 ? 'Picture' : '$pictures pictures', style: TextStyle(fontSize: 14, color: white)),
             ],
           ),
         if (text.isNotEmpty) Text(text, style: TextStyle(fontSize: 16, height: 1.35, color: white, letterSpacing: -0.2)),
@@ -509,12 +508,12 @@ class _TurnView extends StatelessWidget {
                   CupertinoButton(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     minimumSize: const Size(0, 36),
-                    color: resolve(context, CupertinoColors.systemBlue).withValues(alpha: 0.13),
+                    color: Look.of(context).accent.withValues(alpha: 0.13),
                     borderRadius: BorderRadius.circular(18),
                     onPressed: () => onOption(o),
                     child: Text(
                       o,
-                      style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: resolve(context, CupertinoColors.systemBlue)),
+                      style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Look.of(context).accent),
                     ),
                   ),
               ],
@@ -844,7 +843,7 @@ class _Composer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final blue = resolve(context, CupertinoColors.systemBlue);
+    final blue = Look.of(context).accent;
     return Padding(
       padding: const EdgeInsets.fromLTRB(Space.s3, Space.s1, Space.s3, 0),
       child: Column(
@@ -877,6 +876,7 @@ class _Composer extends StatelessWidget {
             ),
           Glass(
             radius: 26,
+            color: Look.of(context).card,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 4, 5, 4),
               child: Row(
@@ -906,7 +906,7 @@ class _Composer extends StatelessWidget {
                     builder: (context, value, _) {
                       final canSend = value.text.trim().isNotEmpty || pictures.isNotEmpty;
                       if (working && !canSend) {
-                        return _RoundButton(icon: CupertinoIcons.stop_fill, color: resolve(context, CupertinoColors.systemRed), semantic: 'Stop', onTap: onStop);
+                        return _RoundButton(icon: CupertinoIcons.stop_fill, color: Look.of(context).down, semantic: 'Stop', onTap: onStop);
                       }
                       return _RoundButton(icon: CupertinoIcons.arrow_up, color: canSend ? blue : resolve(context, CupertinoColors.systemGrey3), semantic: 'Send', onTap: canSend ? onSend : null);
                     },
@@ -938,7 +938,7 @@ class _RoundButton extends StatelessWidget {
         height: 36,
         margin: const EdgeInsets.only(bottom: 2),
         decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        child: Icon(icon, size: 18, color: CupertinoColors.white),
+        child: Icon(icon, size: 18, color: color == Look.of(context).accent ? Look.of(context).tabActiveIcon : CupertinoColors.white),
       ),
     ),
   );

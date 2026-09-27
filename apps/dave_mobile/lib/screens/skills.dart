@@ -9,6 +9,7 @@ import '../api/models.dart';
 import '../app_scope.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../look.dart';
 
 /// Trading-strategy skills: see what is installed, read one, switch the active strategy, and
 /// install a new one from GitHub.
@@ -307,7 +308,7 @@ class _SkillDetailState extends State<SkillDetail> {
                               final ok = await confirmDestructive(context, title: 'Delete "${s.name}"?', message: 'The skill is removed from Dave. This cannot be undone.', action: 'Delete skill');
                               if (ok) await _run((api) => api.deleteSkill(s.id), pop: true);
                             },
-                      child: Text('Delete skill', style: TextStyle(color: resolve(context, CupertinoColors.systemRed))),
+                      child: Text('Delete skill', style: TextStyle(color: Look.of(context).down)),
                     ),
                   ),
               ]),

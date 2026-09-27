@@ -1,7 +1,6 @@
-import 'dart:ui' show ImageFilter;
-
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+
+import 'look.dart';
 
 /// Design tokens for the Dave app, following .claude/skills/apple-design.
 ///
@@ -38,7 +37,7 @@ Color resolve(BuildContext context, Color color) => CupertinoDynamicColor.resolv
 /// Profit / loss colour. Zero is neutral, because a flat trade is not good news.
 Color pnlColor(BuildContext context, num? pnl) {
   if (pnl == null || pnl == 0) return resolve(context, CupertinoColors.secondaryLabel);
-  return resolve(context, pnl > 0 ? CupertinoColors.systemGreen : CupertinoColors.systemRed);
+  return pnl > 0 ? Look.of(context).up : Look.of(context).down;
 }
 
 /// The colour field every screen sits on: a few large, soft orbs of blue, violet and teal on a
@@ -48,15 +47,11 @@ class Aurora extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = CupertinoTheme.brightnessOf(context) == Brightness.dark;
-    final base = dark ? const Color(0xFF07080D) : const Color(0xFFF1F4FB);
-    final orbs = dark
-        ? const [(Alignment(-1.1, -1.0), Color(0xFF6D5BFF), 0.55), (Alignment(1.15, -0.55), Color(0xFF9B4DFF), 0.40), (Alignment(-0.8, 0.9), Color(0xFF3F8F2A), 0.32), (Alignment(1.0, 1.1), Color(0xFF1F6F5A), 0.30)]
-        : const [(Alignment(-1.1, -0.95), Color(0xFF8DB7FF), 0.55), (Alignment(1.15, -0.35), Color(0xFFC9A8FF), 0.50), (Alignment(-0.6, 0.85), Color(0xFF8FE3D6), 0.45), (Alignment(1.0, 1.05), Color(0xFFFFC7DD), 0.40)];
+    final look = Look.of(context);
     return DecoratedBox(
-      decoration: BoxDecoration(color: base),
+      decoration: BoxDecoration(color: look.base),
       child: Stack(fit: StackFit.expand, children: [
-        for (final (align, color, strength) in orbs)
+        for (final (align, color, strength) in look.orbs)
           DecoratedBox(
             decoration: BoxDecoration(
               gradient: RadialGradient(center: align, radius: 0.95, colors: [color.withValues(alpha: strength), color.withValues(alpha: 0)]),
@@ -67,69 +62,41 @@ class Aurora extends StatelessWidget {
   }
 }
 
-/// A frosted panel over the [Aurora]: translucent fill, a bright hairline edge, a soft shadow.
-BoxDecoration glassDecoration(BuildContext context, {double radius = 18, Color? tint}) {
-  final dark = CupertinoTheme.brightnessOf(context) == Brightness.dark;
-  final fill = tint ?? (dark ? const Color(0x1FFFFFFF) : const Color(0x99FFFFFF));
+/// A panel in the chosen look: its card colour with a hairline edge.
+BoxDecoration glassDecoration(BuildContext context, {double radius = 22, Color? tint}) {
+  final look = Look.of(context);
   return BoxDecoration(
-    color: fill,
+    color: tint ?? look.card,
     borderRadius: BorderRadius.circular(radius),
-    border: Border.all(color: dark ? const Color(0x2EFFFFFF) : const Color(0xCCFFFFFF), width: 0.8),
-    gradient: LinearGradient(
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-      colors: [fill.withValues(alpha: (fill.a + (dark ? 0.06 : 0.12)).clamp(0, 1)), fill],
-    ),
-    // No drop shadow: under a see-through panel it shows through as a grey band.
+    border: Border.all(color: look.line, width: 1),
   );
 }
 
 /// The navigation bars' glass: see-through enough for the colour field to glow through the blur.
 const glassBar = CupertinoDynamicColor.withBrightness(color: Color(0x9EF4F6FC), darkColor: Color(0x8C0B0F1C));
 
-/// A floating layer that samples and blurs what is behind it.
-///
-/// Used ONLY for chrome. Under high contrast it becomes an opaque surface: Flutter exposes no
-/// "reduce transparency" flag, and high contrast is the closest honest signal that translucency is
-/// hurting legibility for this person. A translucent bar that stays translucent there is the
-/// accessibility failure, not a lesser effect.
+/// A floating layer -- the bottom bar and the chat's composer -- in the look's bar colour, with
+/// a hairline edge and a soft lift. No live blur: it stays smooth on every Android phone.
 class Glass extends StatelessWidget {
-  const Glass({super.key, required this.child, this.radius = 28});
+  const Glass({super.key, required this.child, this.radius = 28, this.color});
 
   final Widget child;
   final double radius;
 
+  /// Defaults to the look's bar colour.
+  final Color? color;
+
   @override
   Widget build(BuildContext context) {
-    final brightness = CupertinoTheme.brightnessOf(context);
-    final dark = brightness == Brightness.dark;
-    final opaque = MediaQuery.highContrastOf(context);
-    // A live blur re-samples whatever scrolls behind it on every frame -- smooth on an iPhone,
-    // a stutter on most Android phones. There the glass is a translucent tint over the colour
-    // field instead, which reads almost the same.
-    final blur = defaultTargetPlatform == TargetPlatform.iOS;
-    final fill = opaque
-        ? resolve(context, CupertinoColors.secondarySystemGroupedBackground)
-        : blur
-            ? (dark ? const Color(0x661C2030) : const Color(0x8CFFFFFF))
-            // No blur: denser, so text scrolling underneath doesn't show through.
-            : (dark ? const Color(0xE8141826) : const Color(0xEBF7F8FC));
-    // The light top edge is what makes glass read as a physical layer rather than as a tint.
-    final edge = dark ? const Color(0x33FFFFFF) : const Color(0xE6FFFFFF);
-
-    final body = DecoratedBox(
+    final look = Look.of(context);
+    return DecoratedBox(
       decoration: BoxDecoration(
-        color: fill,
+        color: color ?? look.bar,
         borderRadius: BorderRadius.circular(radius),
-        border: Border.all(color: edge, width: 0.5),
-        boxShadow: const [BoxShadow(color: Color(0x1A000000), blurRadius: 24, offset: Offset(0, 8))],
+        border: Border.all(color: look.line, width: 1),
+        boxShadow: [BoxShadow(color: look.dark ? const Color(0x66000000) : const Color(0x22000000), blurRadius: 24, offset: const Offset(0, 8))],
       ),
-      child: child,
-    );
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: opaque || !blur ? body : BackdropFilter(filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), child: body),
+      child: ClipRRect(borderRadius: BorderRadius.circular(radius), child: child),
     );
   }
 }
