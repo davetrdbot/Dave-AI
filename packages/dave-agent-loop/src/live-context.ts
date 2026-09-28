@@ -245,7 +245,8 @@ export function buildLiveSettingsBlock(userId: string): string {
       return null;
     }
   })();
-  if (growth) lines.push("", growth);
+  // Fixed last line: a legacy (unwrapped) history ending with this block must still heal on load.
+  if (growth) lines.push("", growth, GROWTH_BLOCK_END);
 
   const reminders = safeLoadReminders(userId);
   if (reminders) {
@@ -460,6 +461,8 @@ export function withLiveContext(userId: string, content: string | ContentBlock[]
  * Anchored to a `<current_settings>` prefix so this can never chew into genuine user text that
  * merely happens to quote one of these sentences.
  */
+const GROWTH_BLOCK_END = "Your self-improvement loop changes one variable at a time -- play the current card straight.";
+
 const LEGACY_BLOCK_TERMINATORS = [
   "never claim one isn't set when it's listed here.",
   "</active_strategy_skill>",
@@ -474,6 +477,7 @@ const LEGACY_BLOCK_TERMINATORS = [
   // with the old wording. step129's legacy-heal assertion is what catches a miss.
   "made only when they tell you to.",
   "and whenever asked what one of your strategies does.",
+  GROWTH_BLOCK_END,
 ];
 
 function stripLiveContextText(text: string): string {
