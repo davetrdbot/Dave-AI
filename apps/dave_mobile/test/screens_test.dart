@@ -16,6 +16,7 @@ import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/app_scope.dart';
 import 'package:dave_mobile/screens/extras.dart';
 import 'package:dave_mobile/screens/growth.dart';
+import 'package:dave_mobile/screens/history.dart';
 import 'package:dave_mobile/widgets/setup_drawing.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
@@ -167,6 +168,33 @@ Map<String, Object?> _context() {
 http.Client _fakeServer() => MockClient((req) async {
       Object? body;
       switch (req.url.path) {
+        case '/api/app/history':
+          final rnd = Random(7);
+          final now = DateTime(2026, 9, 28, 12).millisecondsSinceEpoch;
+          final syms = ['XAUUSD', 'BOOM_1000', 'EURUSD', 'VOL_75', 'GBPUSD'];
+          final trades = [
+            for (var i = 0; i < 40; i++)
+              {
+                'ticket': '${7000 + i}',
+                'symbol': syms[i % syms.length],
+                'side': i.isEven ? 'buy' : 'sell',
+                'pnl': double.parse(((rnd.nextDouble() < 0.58 ? 1 : -0.6) * (6 + rnd.nextDouble() * 20)).toStringAsFixed(2)),
+                'closedAt': now - (40 - i) * 17 * 3600 * 1000,
+                'closedBy': ['tp', 'sl', 'dave', 'manual'][i % 4],
+                if (i % 3 == 0) 'why': {'reason': 'H1 demand held, M15 bullish engulfing', 'entry': 2650.2, 'sl': 2644, 'tp': 2668},
+              },
+          ];
+          body = {
+            'summary': {'trades': 40, 'wins': 23, 'losses': 17, 'winRatePercent': 58, 'netPnl': 142.3, 'profitFactor': 1.84, 'bestTrade': 25.9, 'worstTrade': -15.5, 'avgWin': 14.2, 'avgLoss': -8.9},
+            'bySymbol': [
+              {'symbol': 'XAUUSD', 'trades': 8, 'pnl': 71.2, 'winRatePercent': 75},
+              {'symbol': 'BOOM_1000', 'trades': 8, 'pnl': 44.5, 'winRatePercent': 62},
+              {'symbol': 'EURUSD', 'trades': 8, 'pnl': 20.1, 'winRatePercent': 50},
+              {'symbol': 'VOL_75', 'trades': 8, 'pnl': -12.4, 'winRatePercent': 38},
+            ],
+            'trades': trades,
+            'truncated': false,
+          };
         case '/api/app/growth':
           body = jsonDecode(File('test/fixtures/growth.json').readAsStringSync());
         case '/api/app/dashboard':
@@ -796,6 +824,30 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('drawing-rotate')));
       await _advance(tester);
       expect(tester.widget<RotatedBox>(find.byType(RotatedBox)).quarterTurns, 2);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('trade history renders ($mode)', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 3;
+      tester.view.padding = const FakeViewPadding(top: 72, bottom: 48);
+      tester.platformDispatcher.platformBrightnessTestValue = brightness;
+      addTearDown(tester.view.reset);
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer(), streamClient: _fakeChatStream);
+      final look = brightness == Brightness.dark ? Look.midnightLime : Look.pearl;
+      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const HistoryScreen()), look: look));
+      await _advance(tester);
+      await _shot(tester, 'history_$mode');
+      expect(find.text('40 trades'.toUpperCase()).evaluate().isNotEmpty || find.text('40 trades').evaluate().isNotEmpty, true);
+      await tester.tap(find.byKey(const ValueKey('range-custom')));
+      await _advance(tester);
+      await _shot(tester, 'history_custom_$mode');
+      await tester.tap(find.text('Show'));
+      await _advance(tester);
+      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -900));
+      await _advance(tester);
+      await _shot(tester, 'history_list_$mode');
       await tester.pumpWidget(const SizedBox());
     });
 

@@ -261,6 +261,12 @@ class DaveApi {
   Future<Map<String, dynamic>> serviceKeysAction(Map<String, Object?> body) => _post('/api/app/keys', body);
   Future<Map<String, dynamic>> pairGroups() => _send(() => _http.get(_url('/api/app/pair-groups'), headers: _headers));
   Future<Map<String, dynamic>> pairGroupsAction(Map<String, Object?> body) => _post('/api/app/pair-groups', body);
+  Future<Map<String, dynamic>> history({DateTime? from, DateTime? to}) => _send(() => _http.get(
+      _url('/api/app/history', {
+        if (from != null) 'from': '${from.millisecondsSinceEpoch}',
+        if (to != null) 'to': '${to.millisecondsSinceEpoch}',
+      }),
+      headers: _headers));
   Future<Map<String, dynamic>> growth() => _send(() => _http.get(_url('/api/app/growth'), headers: _headers));
   Future<Map<String, dynamic>> growthAction(Map<String, Object?> body) => _post('/api/app/growth', body);
   Future<Map<String, dynamic>> mcp() => _send(() => _http.get(_url('/api/app/mcp'), headers: _headers));

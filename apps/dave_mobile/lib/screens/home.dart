@@ -5,6 +5,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../app_scope.dart';
 import '../look.dart';
+import 'history.dart';
 import '../theme.dart';
 import '../widgets/performance.dart';
 import '../widgets/common.dart';
@@ -533,7 +534,16 @@ class _Results extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ContentCard(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const SectionLabel('All time'),
+          Row(children: [
+            const Expanded(child: SectionLabel('All time')),
+            CupertinoButton(
+              key: const ValueKey('open-history'),
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(30, 30),
+              onPressed: () => pushScoped<void>(context, const HistoryScreen()),
+              child: const Text('Full history', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            ),
+          ]),
           const SizedBox(height: Space.s3),
           Row(children: [
             Expanded(child: StatTile(value: d.winRatePercent == null ? '--' : '${d.winRatePercent}%', label: 'Win rate')),

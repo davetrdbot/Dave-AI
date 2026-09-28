@@ -12,6 +12,7 @@ const { NextRequest } = await import("next/server");
 const { createPairingCode, redeemPairingCode } = await import("../server/device-auth.js");
 const trading = await import("@dave/trading");
 const growthRoute = await import("../app/api/app/growth/route.js");
+const historyRoute = await import("../app/api/app/history/route.js");
 
 /** The app's Growth screen: goal, score, strategy card, versions, neurons -- and its buttons. */
 console.log("=== Step 178: /api/app/growth ===\n");
@@ -58,5 +59,16 @@ assert.ok(existsSync(join(workDir, "data", "trading", USER, "growth", "reflect-r
 r = await call(growthRoute.POST as Handler, "POST", { action: "stop_test" });
 assert.equal(r.status, 409, "nothing under test");
 console.log("   ✓ reflect request + stop_test guard");
+{
+  const req = new NextRequest(`http://localhost/api/app/history?from=${now - 3.5 * 3600_000}`, { headers: { authorization: `Bearer ${token}` } });
+  const h = await ((historyRoute.GET as Handler)(req)).then((r) => r.json());
+  assert.equal(h.summary.trades, 3, "only the trades inside the period");
+  assert.equal(h.summary.netPnl, 2);
+  assert.equal(h.trades[0].closedBy, "tp");
+  const all = await ((historyRoute.GET as Handler)(new NextRequest("http://localhost/api/app/history", { headers: { authorization: `Bearer ${token}` } }))).then((r) => r.json());
+  assert.equal(all.summary.trades, 4);
+  assert.equal(all.bySymbol[0].symbol, "EURUSD");
+  console.log("   ✓ /api/app/history: period filter, summary, per pair");
+}
 console.log("\nAll Step 178 route checks passed.");
 process.exit(0);
