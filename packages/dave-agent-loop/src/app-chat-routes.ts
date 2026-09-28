@@ -8,6 +8,7 @@ import { dispatchCallback } from "./command-router.js";
 import { ANSWERED_EARLIER, loadConversationHistory } from "./conversation-store.js";
 import { getBusyState, getAutonomousBusyState } from "./busy-state.js";
 import { abortTurn, isTurnRunning } from "./turn-abort.js";
+import { readAppFile, saveUserUpload, isImageName } from "./app-files.js";
 import { nousDepsFor, placeNousSignal, skipNousSignal, applyNousUpdate, skipNousUpdate, closeNousTrade } from "./nous/service.js";
 
 /**
@@ -17,7 +18,8 @@ import { nousDepsFor, placeNousSignal, skipNousSignal, applyNousUpdate, skipNous
  * (verifyDeviceToken, @dave/db), same answer for any bad token.
  *
  *   GET  history            the shared conversation (app + Telegram), for display
- *   POST send               {text, images?: [{data: base64, mediaType}], whenFree?: bool}
+ *   POST send               {text, images?: [{data: base64, mediaType}], files?: [{name, data: base64}], whenFree?: bool}
+ *   GET  file/<id>          download a file Dave sent in the chat
  *   GET  stream             Server-Sent Events of the activity bus (Last-Event-ID / ?after=, ?feeds=)
  *   GET  activity           the same events as JSON (catch-up, background notifications)
  *   GET  activity/range     loop/background events between ?from=&to= (ms), newest first -- the Live tab's periods
@@ -155,8 +157,30 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
         send(res, 400, { error: err instanceof Error ? err.message : String(err) });
         return;
       }
-      if (!text && !images.length) {
-        send(res, 400, { error: "Type a message or attach a picture." });
+      // Documents: saved into the inbox Dave's scripts read from (the same one Telegram uses);
+      // pictures sent as files still reach him as pictures.
+      const notes: string[] = [];
+      const attached: string[] = [];
+      try {
+        for (const f of Array.isArray(body.files) ? (body.files as { name?: string; data?: string }[]).slice(0, 5) : []) {
+          const data = Buffer.from(String(f.data ?? ""), "base64");
+          if (!data.byteLength) continue;
+          const name = saveUserUpload(userId, String(f.name ?? "file"), data);
+          attached.push(name);
+          if (isImageName(name) && images.length < 4) {
+            images.push(buildImageContentBlock(data, name));
+            notes.push(`[Image "${name}" attached]`);
+          } else {
+            notes.push(`[File "${name}" (${Math.max(1, Math.round(data.byteLength / 1024))} KB) received from the user] -- to read or process it, call run_script with attachUserFiles: ["${name}"]; anything your script writes to $DAVE_OUT_DIR comes back to you, and send_file_to_user hands a result file back to the app.`);
+          }
+        }
+      } catch (err) {
+        send(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      const fullText = [text, ...notes].filter(Boolean).join("\n\n");
+      if (!fullText && !images.length) {
+        send(res, 400, { error: "Type a message or attach a picture or file." });
         return;
       }
       const busy = stateOf(userId);
@@ -170,9 +194,19 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
           const until = Date.now() + WAIT_FOR_FREE_MS;
           while (stateOf(userId).busy && Date.now() < until) await new Promise((r) => setTimeout(r, 1000));
         }
-        await runTurn(deps, { text, images }, turnId);
+        await runTurn(deps, { text: fullText, images, ...(attached.length ? { display: { text, files: attached } } : {}) }, turnId);
       })().catch((err) => console.error("[app-chat] turn failed:", err));
       send(res, 202, { turnId, queued: busy.busy });
+      return;
+    }
+    if (method === "GET" && path.startsWith("file/")) {
+      const file = readAppFile(userId, path.slice(5));
+      if (!file) {
+        send(res, 404, { error: "That file is gone." });
+        return;
+      }
+      res.writeHead(200, { "content-type": file.mime, "content-length": String(file.bytes), "content-disposition": `attachment; filename="${file.name}"`, "cache-control": "private, max-age=3600" });
+      res.end(file.data);
       return;
     }
     if (method === "POST" && path === "stop") {

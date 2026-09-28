@@ -387,6 +387,7 @@ http.Client _fakeChatStream() => MockClient.streaming((req, _) async {
         'event: ready\ndata: {"latestEventId":40,"busy":true,"task":"(app) buy gold?","appTurn":true}\n\n',
         frame('user_message', {'text': 'Should I buy gold now?', 'images': 1}),
         frame('turn_start', {}),
+        frame('file', {'id': 'ab12cd34ef567890', 'name': 'gold-backtest.csv', 'bytes': 48213, 'mime': 'text/csv', 'caption': 'Last 90 days of the pullback setup'}),
         frame('thinking', {'text': 'The trader wants an entry. Check price and structure first.'}),
         frame('tool_start', {'id': 'a', 'name': 'get_price', 'label': 'Checking price', 'args': {'symbol': 'XAUUSD'}}),
         frame('tool_end', {'id': 'a', 'name': 'get_price', 'label': 'Checking price', 'result': {'bid': 2651.2}, 'ms': 420}),
@@ -521,6 +522,7 @@ void main() {
       await _advance(tester);
       // Chat: the stored conversation, then the live turn with its steps.
       await _shot(tester, 'chat_$mode');
+      expect(find.text('gold-backtest.csv'), findsOneWidget, reason: 'a file Dave sent shows as a card');
       expect(find.text('Should I buy gold now?'), findsOneWidget);
       expect(find.text('Checking price'), findsOneWidget);
       expect(find.text('Hunting for a setup'), findsOneWidget);

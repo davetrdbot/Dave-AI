@@ -73,9 +73,13 @@ class ChatState {
 
 /// A picture to send: JPEG or PNG bytes, already shrunk on the phone.
 class ChatPicture {
-  ChatPicture(this.bytes, {this.mediaType = 'image/jpeg'});
+  ChatPicture(this.bytes, {this.mediaType = 'image/jpeg', this.name});
   final List<int> bytes;
   final String mediaType;
+
+  /// Set for a document (a CSV, a PDF, an .mq5...) -- it goes to Dave as a file, not a picture.
+  final String? name;
+  bool get isDocument => name != null;
 }
 
 /// Dave is in the middle of something else. [task] says what.
@@ -181,12 +185,20 @@ class ChatApi {
       'send',
       {
         'text': text,
-        if (pictures.isNotEmpty) 'images': [for (final p in pictures) {'data': base64Encode(p.bytes), 'mediaType': p.mediaType}],
+        if (pictures.any((p) => !p.isDocument)) 'images': [for (final p in pictures.where((p) => !p.isDocument)) {'data': base64Encode(p.bytes), 'mediaType': p.mediaType}],
+        if (pictures.any((p) => p.isDocument)) 'files': [for (final p in pictures.where((p) => p.isDocument)) {'name': p.name, 'data': base64Encode(p.bytes)}],
         if (whenFree) 'whenFree': true,
       },
       timeout: const Duration(seconds: 60),
     );
     return body['turnId'] as String? ?? '';
+  }
+
+  /// A file Dave sent in the chat.
+  Future<List<int>> downloadFile(String id) async {
+    final res = await _http.get(_url('file/$id'), headers: _headers).timeout(const Duration(seconds: 60));
+    if (res.statusCode != 200) throw Exception(res.statusCode == 404 ? 'That file is gone from the server.' : 'Download failed (${res.statusCode}).');
+    return res.bodyBytes;
   }
 
   Future<bool> stop() async => (await _post('stop', {}))['stopped'] == true;

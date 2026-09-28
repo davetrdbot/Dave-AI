@@ -158,7 +158,7 @@ class ChatTimeline {
     if (e.feed != 'chat') return false;
     if (e.turnId == null) {
       // A message outside any turn: a button's answer, a tool run on its own.
-      if (e.kind == 'message' || e.kind == 'drawing') {
+      if (e.kind == 'message' || e.kind == 'drawing' || e.kind == 'file') {
         entries.add(CardEntry(e));
         return true;
       }
@@ -167,7 +167,8 @@ class ChatTimeline {
     final t = _turnFor(e);
     switch (e.kind) {
       case 'user_message':
-        t.userText = e.text('text');
+        final files = (e.data['files'] as List?)?.map((f) => '📎 $f').join('\n');
+        t.userText = [e.text('text'), ?files].where((x) => x.isNotEmpty).join('\n');
         t.pictures = (e.data['images'] as num?)?.toInt() ?? 0;
         t.channel = e.channel ?? t.channel;
       case 'turn_start':
@@ -189,7 +190,7 @@ class ChatTimeline {
         if (e.text('text').trim().isNotEmpty) t.steps.add(TurnStep.text(e.text('text'), agent: e.agent));
       case 'thinking':
         if (e.text('text').trim().isNotEmpty) t.steps.add(TurnStep.thinking(e.text('text'), agent: e.agent));
-      case 'message' || 'drawing':
+      case 'message' || 'drawing' || 'file':
         t.steps.add(TurnStep.card(CardEntry(e)));
       case 'message_edit':
         final id = (e.data['messageId'] as num?)?.toInt();

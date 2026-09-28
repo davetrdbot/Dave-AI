@@ -1,3 +1,6 @@
+import 'package:share_plus/share_plus.dart';
+import 'package:file_picker/file_picker.dart';
+import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
@@ -231,6 +234,27 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _pictures.add(picture));
   }
 
+  /// Any file -- a CSV export, a PDF, an .mq5, a screenshot -- goes to Dave's inbox; his scripts
+  /// can open it and he can send a result back.
+  Future<void> _pickDocument() async {
+    try {
+      final picked = await FilePicker.pickFiles();
+      if (!mounted) return;
+      for (final f in picked.take(5)) {
+        final size = await f.length();
+        if (size != null && size > 20 * 1024 * 1024) {
+          _toast('${f.name} is over 20 MB.');
+          continue;
+        }
+        final bytes = await f.readAsBytes();
+        if (!mounted) return;
+        setState(() => _pictures.add(ChatPicture(bytes, mediaType: 'application/octet-stream', name: f.name)));
+      }
+    } catch (e) {
+      if (mounted) _toast('Could not open that file: $e');
+    }
+  }
+
   Future<ChatPicture?> _pickPicture(BuildContext context) async {
     final source = await showCupertinoModalPopup<ImageSource>(
       context: context,
@@ -238,6 +262,13 @@ class _ChatScreenState extends State<ChatScreen> {
         actions: [
           CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, ImageSource.camera), child: const Text('Take a photo')),
           CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, ImageSource.gallery), child: const Text('Choose from library')),
+          CupertinoActionSheetAction(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _pickDocument();
+            },
+            child: const Text('Send a file'),
+          ),
           CupertinoActionSheetAction(
             onPressed: () {
               Navigator.pop(ctx);
@@ -816,6 +847,7 @@ class _CardView extends StatelessWidget {
       'trade_closed' || 'trade_modified' => (CupertinoIcons.chart_bar_alt_fill, 'Trade'),
       _ => (null, null),
     };
+    if (card.kind == 'file') return _FileCard(event: e);
     if (card.kind == 'drawing' && e.data['drawing'] is Map) {
       return Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: SetupDrawingView(drawing: Map<String, dynamic>.from(e.data['drawing'] as Map)));
     }
@@ -906,7 +938,19 @@ class _Composer extends StatelessWidget {
                   children: [
                     ClipRRect(
                       borderRadius: BorderRadius.circular(10),
-                      child: Image.memory(Uint8List.fromList(pictures[i].bytes), width: 58, height: 58, fit: BoxFit.cover),
+                      child: pictures[i].isDocument
+                          ? Container(
+                              width: 110,
+                              height: 58,
+                              padding: const EdgeInsets.all(6),
+                              color: Look.of(context).chip,
+                              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Icon(CupertinoIcons.doc_fill, size: 18, color: Look.of(context).accent),
+                                const SizedBox(height: 3),
+                                Text(pictures[i].name!, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600)),
+                              ]),
+                            )
+                          : Image.memory(Uint8List.fromList(pictures[i].bytes), width: 58, height: 58, fit: BoxFit.cover),
                     ),
                     Positioned(
                       right: 0,
@@ -1079,6 +1123,70 @@ class _ControlsStripState extends State<_ControlsStrip> {
             chip(CupertinoIcons.flag, 'TP ${s.takeProfit.summary}', () => _risk('takeProfit', 'Take profit', s.takeProfit)),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// A file Dave sent: name, size, his note -- tap to download it and open or share it.
+class _FileCard extends StatefulWidget {
+  const _FileCard({required this.event});
+  final ActivityEvent event;
+
+  @override
+  State<_FileCard> createState() => _FileCardState();
+}
+
+class _FileCardState extends State<_FileCard> {
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _open() async {
+    final scope = AppScope.of(context);
+    setState(() => (_busy = true, _error = null));
+    try {
+      final bytes = await ChatApi.of(scope.api).downloadFile(widget.event.text('id'));
+      final dir = await Directory.systemTemp.createTemp('dave-');
+      final file = File('${dir.path}/${widget.event.text('name')}');
+      await file.writeAsBytes(bytes);
+      await SharePlus.instance.share(ShareParams(files: [XFile(file.path, mimeType: widget.event.text('mime'))], text: widget.event.text('caption').isEmpty ? null : widget.event.text('caption')));
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final e = widget.event;
+    final kb = ((e.data['bytes'] as num?) ?? 0) / 1024;
+    final size = kb >= 1024 ? '${(kb / 1024).toStringAsFixed(1)} MB' : '${math.max(1, kb.round())} KB';
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    return GestureDetector(
+      key: ValueKey('file-${e.text('id')}'),
+      onTap: _busy ? null : _open,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.all(Space.s3),
+        decoration: glassDecoration(context, radius: 16),
+        child: Row(children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(color: look.accent.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(12)),
+            child: Icon(CupertinoIcons.doc_text_fill, color: look.accent),
+          ),
+          const SizedBox(width: Space.s3),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(e.text('name'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+              Text(_error ?? [size, if (e.text('caption').isNotEmpty) e.text('caption')].join(' · '), maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12.5, color: _error != null ? look.down : secondary)),
+            ]),
+          ),
+          _busy ? const CupertinoActivityIndicator() : Icon(CupertinoIcons.arrow_down_circle_fill, color: look.accent, size: 26),
+        ]),
       ),
     );
   }

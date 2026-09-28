@@ -16,6 +16,7 @@ import { beginTurn, endTurn, abortTurn } from "./turn-abort.js";
 import { friendlyErrorMessage } from "./error-messages.js";
 import { getPrimaryChatId } from "./primary-chat.js";
 import { publishActivity, type ActivityChannel } from "./activity-bus.js";
+import { saveAppFile } from "./app-files.js";
 import { chatEventPublisher } from "./activity-events.js";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { autoSaveMemory } from "./memory-autosave.js";
@@ -78,6 +79,15 @@ export function createAppSink(userId: string, currentTurn: () => { turnId?: stri
     sendChatAction: () => true,
     sendDrawing: (p) => post("drawing", { drawing: p.drawing, caption: p.caption }),
     setMessageReaction: (p) => (post("reaction", { messageId: p.message_id, reaction: p.reaction }), true),
+    // Files Dave sends (send_file_to_user, a chart, an export) become file cards in the chat.
+    sendDocument: (p) => postFile(p.document, p.caption as string | undefined, "file"),
+    sendPhoto: (p) => postFile(p.photo, p.caption as string | undefined, "photo.png"),
+  };
+  const postFile = (input: unknown, caption: string | undefined, fallbackName: string) => {
+    const f = input as { buffer?: Buffer; filename?: string } | string | undefined;
+    if (!f || typeof f === "string" || !f.buffer) throw new Error("In the app, send the file's content itself (send_file_to_user), not a Telegram file id or URL.");
+    const saved = saveAppFile(userId, f.filename ?? fallbackName, Buffer.from(f.buffer));
+    return post("file", { ...saved, caption: caption ?? null });
   };
   return new Proxy({} as TelegramClient, {
     get(_t, prop: string) {
@@ -107,6 +117,8 @@ function appRegistry(deps: AppChatDeps): ToolRegistry {
 export interface AppChatInput {
   text: string;
   images?: ContentBlock[];
+  /** What the chat bubble shows when it differs from what Dave reads (files attached). */
+  display?: { text: string; files: string[] };
 }
 
 /**
@@ -116,7 +128,7 @@ export interface AppChatInput {
 export async function runAppChatTurn(deps: AppChatDeps, input: AppChatInput, turnId = newTurnId(), loopFactory = (d: AppChatDeps) => new AgentLoop(modelProvider(d), appRegistry(d))): Promise<AgentRunResult | undefined> {
   const { userId, db } = deps;
   const extra = { turnId, channel: "app" as const };
-  publishActivity(userId, "chat", "user_message", { text: input.text, images: input.images?.length ?? 0 }, extra);
+  publishActivity(userId, "chat", "user_message", { text: input.display?.text ?? input.text, images: input.images?.length ?? 0, ...(input.display?.files.length ? { files: input.display.files } : {}) }, extra);
   publishActivity(userId, "chat", "turn_start", {}, extra);
 
   const historyKey = sharedHistoryKey(db, userId);
