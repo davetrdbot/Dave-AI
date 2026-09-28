@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { DaveDatabase, createAutomationWebhookServer } from "@dave/db";
 import { EaBridge, DynamicTradeExecutor, setEaPushInterval, onEaRequest } from "@dave/ea-bridge";
+import { benchSymbols, NOT_ON_BROKER_HOURS, parseNotOnBroker } from "./symbol-availability.js";
 import { createHiddenWebhookServer } from "@dave/memory";
 import { startWatchdog, startHeartbeatLoop } from "@dave/safety";
 import { getTelegramCredentials, writeTelegramStatus, type TelegramClient } from "@dave/telegram";
@@ -301,7 +302,14 @@ export async function main(): Promise<void> {
   const eaBridge = new EaBridge({
     onCommandResult: (_userId, result) => {
       const said = marketWatch.describeResult(result);
-      if (said !== undefined) console.log(`[ea] market watch: ${said}`);
+      if (said !== undefined) {
+        console.log(`[ea] market watch: ${said}`);
+        // Pairs this broker doesn't offer are never scanned (symbol-availability.ts); the trader
+        // hears about each one once, not every cycle.
+        const missing = parseNotOnBroker(said);
+        const fresh = missing.length ? benchSymbols(ownerUserId, missing, "not offered by this broker (MT5 couldn't add it to Market Watch)", NOT_ON_BROKER_HOURS) : [];
+        if (fresh.length) alertOwner(`ℹ️ Your broker doesn't offer ${fresh.join(", ")} -- I'll skip ${fresh.length === 1 ? "it" : "them"} when scanning. Take ${fresh.length === 1 ? "it" : "them"} out of your pair groups if you like.`);
+      }
     },
     // Real gap fixed (the trader: "find bugs this bot"): ea-webhook.ts's isNewConnection and
     // CONNECTION_GAP_MS exist specifically to detect the EA coming (back) online -- and this

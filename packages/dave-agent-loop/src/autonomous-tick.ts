@@ -64,6 +64,7 @@ import { computeMtfAlignment, computeMtfConfluenceScore, computeBasketCurrencyRi
 import { runSequentialThinking } from "./sequential-thinking.js";
 import { buildClockLine } from "./live-context.js";
 import { loadFrozenSnapshot } from "@dave/memory";
+import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData } from "./symbol-availability.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 
@@ -644,6 +645,12 @@ function resolveCursorSymbol(userId: string, primary: string[], fallback: string
       continue;
     }
     const symbol = active[symbolCursor % active.length];
+    // A pair the broker doesn't have, or that keeps returning nothing, is benched for a while
+    // (symbol-availability.ts) -- skipped quietly instead of asked for again every cycle.
+    if (isSymbolUnavailable(userId, symbol)) {
+      advanceCursor(userId, primary.length, fallback.length);
+      continue;
+    }
     const hours = isMarketOpenForSymbol(symbol, groupIdFor(symbol, scanningFallback), new Date());
     if (!hours.open) {
       logTick(userId, `skipped ${symbol} -- ${hours.reason}`);
@@ -771,13 +778,13 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     activeTimeframes.map((tf) =>
       analysis
         .get<Record<string, unknown>>("all", symbol, tf, { timeoutMs: 300_000 })
-        .then((data) => ({ tf, data }))
-        .catch((err) => {
-          logTick(userId, `analysis for ${symbol} (${tf}) failed/timed out: ${err instanceof Error ? err.message : String(err)}`);
-          return { tf, data: null };
-        })
+        .then((data) => ({ tf, data, error: undefined as string | undefined }))
+        .catch((err) => ({ tf, data: null, error: err instanceof Error ? err.message : String(err) }))
     )
   );
+  // One line for all the timeframes that failed, not one per timeframe.
+  const failedTfs = suiteByTimeframe.filter((r) => r.error);
+  if (failedTfs.length) logTick(userId, `analysis for ${symbol} failed on ${failedTfs.map((r) => r.tf).join("/")}: ${failedTfs[0].error}`);
   const suite: Record<string, unknown> = {};
   for (const { tf, data } of suiteByTimeframe) suite[tf] = data ? filterSuiteToConfig(data, analysisConfig) : { error: "unavailable this cycle" };
 
@@ -817,11 +824,27 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
   // and every cycle still paid for a full model call only to hear "no data, SKIP"). With nothing
   // received for this symbol and no open position that might need managing, there is nothing for
   // the model to decide -- record the skip honestly and move on.
-  if (timeframesReceived.length === 0 && positions.length === 0) {
-    const reason = `no analysis data from the EA for ${symbol} on any timeframe`;
-    logTick(userId, `${symbol}: ${reason} -- skipped without a model call`);
-    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason });
-    return { action: "NONE", notable: false };
+  if (timeframesReceived.length === 0) {
+    // Real bug fixed (the trader, from the logs: XPTUSD asked for every cycle, every timeframe
+    // failing, for hours). This path never moved the round-robin on, so the SAME dead pair was
+    // picked again and again. Now it moves on, and after NO_DATA_STRIKES misses the pair is
+    // benched and the trader is told once.
+    const firstError = suiteByTimeframe.find((r) => r.error)?.error ?? "no data";
+    const strike = recordNoData(userId, symbol, String(firstError).slice(0, 160));
+    if (positions.length === 0 || strike.benched) {
+      const reason = `no analysis data from the EA for ${symbol} on any timeframe`;
+      logTick(userId, `${symbol}: ${reason} -- skipped without a model call${strike.benched ? ` (benched for ${BENCH_HOURS}h)` : ""}`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason });
+      advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+      if (strike.benched) {
+        const text = `⚠️ Leaving ${symbol} alone for ${BENCH_HOURS}h -- MT5 gave no data for it on any timeframe ${strike.strikes} scans in a row (${String(firstError).slice(0, 140)}). If you want it traded, add it to Market Watch in MT5 or check your broker offers it.`;
+        publishActivity(userId, "background", "alert", { text });
+        return { action: "NONE", symbol, notable: true, message: text };
+      }
+      return { action: "NONE", notable: false };
+    }
+  } else {
+    recordHasData(userId, symbol);
   }
 
   const primaryTfResult = suiteByTimeframe.find((r) => r.tf === "H1")?.data ?? suiteByTimeframe.find((r) => r.data)?.data;
