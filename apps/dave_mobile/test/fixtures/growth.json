@@ -1,0 +1,448 @@
+{
+ "goals": {
+  "targetMonthlyReturnPct": 8,
+  "minWinRatePct": 45,
+  "minProfitFactor": 1.5,
+  "maxDrawdownPct": 10,
+  "maxLosingStreak": 5,
+  "maxDailyLossPct": 4,
+  "tradesPerCycle": 6,
+  "enabled": true
+ },
+ "definition": {
+  "success": [
+   "making 8% a month or better",
+   "winning at least 45% of trades",
+   "a profit factor of 1.5 or more (money won ÷ money lost)"
+  ],
+  "failure": [
+   "a drawdown deeper than 10% from the peak",
+   "5 losing trades in a row",
+   "losing more than 4% of the account in one day"
+  ],
+  "perTrade": {
+   "success": [
+    "it hit its target, or was closed in profit on purpose",
+    "a loss that hit the stop exactly where the plan said, at the planned size (a good loss: the process worked)",
+    "a winner protected (breakeven / partial) before it could turn into a loser"
+   ],
+   "failure": [
+    "a loss bigger than the risk planned when it was opened",
+    "a trade taken below your R:R floor, against a rule, or on a pair you were told to leave",
+    "a winner that went back to a loss because nothing protected it",
+    "a stop moved further away to avoid being hit"
+   ]
+  }
+ },
+ "status": {
+  "score": {
+   "score": 0.74,
+   "verdict": "success",
+   "metrics": {
+    "trades": 12,
+    "wins": 7,
+    "losses": 5,
+    "winRatePct": 58.333333333333336,
+    "profitFactor": 3.111111111111111,
+    "netPnl": 95,
+    "returnPct": 9.595959595959595,
+    "monthlyReturnPct": 23.989898804791746,
+    "maxDrawdownPct": 1.762977473065622,
+    "longestLosingStreak": 2,
+    "worstDayLossPct": 0.9090909090909091,
+    "days": 12
+   },
+   "checks": [
+    {
+     "goal": "win rate ≥ 45%",
+     "ok": true,
+     "kind": "success",
+     "value": "58%"
+    },
+    {
+     "goal": "profit factor ≥ 1.5",
+     "ok": true,
+     "kind": "success",
+     "value": "3.11"
+    },
+    {
+     "goal": "8% a month",
+     "ok": true,
+     "kind": "success",
+     "value": "24.0%"
+    },
+    {
+     "goal": "drawdown under 10%",
+     "ok": true,
+     "kind": "failure",
+     "value": "1.8%"
+    },
+    {
+     "goal": "fewer than 5 losses in a row",
+     "ok": true,
+     "kind": "failure",
+     "value": "2"
+    },
+    {
+     "goal": "no day worse than -4%",
+     "ok": true,
+     "kind": "failure",
+     "value": "-0.9%"
+    }
+   ]
+  },
+  "testScore": {
+   "score": 0.58,
+   "verdict": "success",
+   "metrics": {
+    "trades": 3,
+    "wins": 2,
+    "losses": 1,
+    "winRatePct": 66.66666666666666,
+    "profitFactor": 3.2222222222222223,
+    "netPnl": 20,
+    "returnPct": 1.8779342723004695,
+    "monthlyReturnPct": 8.048289738430585,
+    "maxDrawdownPct": 0.8450704225352111,
+    "longestLosingStreak": 1,
+    "worstDayLossPct": 0.8450704225352111,
+    "days": 3
+   },
+   "checks": [
+    {
+     "goal": "win rate ≥ 45%",
+     "ok": true,
+     "kind": "success",
+     "value": "67%"
+    },
+    {
+     "goal": "profit factor ≥ 1.5",
+     "ok": true,
+     "kind": "success",
+     "value": "3.22"
+    },
+    {
+     "goal": "8% a month",
+     "ok": true,
+     "kind": "success",
+     "value": "8.0%"
+    },
+    {
+     "goal": "drawdown under 10%",
+     "ok": true,
+     "kind": "failure",
+     "value": "0.8%"
+    },
+    {
+     "goal": "fewer than 5 losses in a row",
+     "ok": true,
+     "kind": "failure",
+     "value": "1"
+    },
+    {
+     "goal": "no day worse than -4%",
+     "ok": true,
+     "kind": "failure",
+     "value": "-0.8%"
+    }
+   ]
+  },
+  "tradesInCycle": 3,
+  "tradesPerCycle": 6,
+  "stage": "test"
+ },
+ "current": {
+  "v": 4,
+  "createdAt": 1790364442672,
+  "status": "testing",
+  "change": {
+   "variable": "add_rule",
+   "from": null,
+   "to": "No gold entries in the first 15 minutes of the London open."
+  },
+  "outcome": "9 trades, 56% win, PF 1.6.",
+  "hypothesis": "If I skip the first 15 minutes of London on gold, the fake-out losses disappear and win rate passes 60%.",
+  "baselineScore": 0.18,
+  "startedAt": 1790364442672,
+  "startedAtTrade": 10,
+  "changeText": "new rule: \"No gold entries in the first 15 minutes of the London open.\"",
+  "settings": {
+   "minRiskReward": 2,
+   "minConfidence": 70
+  }
+ },
+ "cycle": 4,
+ "floors": {
+  "minRiskReward": 1.5,
+  "minConfidence": 70
+ },
+ "rules": [
+  {
+   "id": "rac4a",
+   "text": "No gold entries in the first 15 minutes of the London open.",
+   "addedInV": 4
+  }
+ ],
+ "avoidSymbols": [],
+ "versions": [
+  {
+   "v": 4,
+   "createdAt": 1790364442672,
+   "status": "testing",
+   "change": {
+    "variable": "add_rule",
+    "from": null,
+    "to": "No gold entries in the first 15 minutes of the London open."
+   },
+   "outcome": "9 trades, 56% win, PF 1.6.",
+   "hypothesis": "If I skip the first 15 minutes of London on gold, the fake-out losses disappear and win rate passes 60%.",
+   "baselineScore": 0.18,
+   "startedAt": 1790364442672,
+   "startedAtTrade": 10,
+   "changeText": "new rule: \"No gold entries in the first 15 minutes of the London open.\""
+  },
+  {
+   "v": 3,
+   "createdAt": 1790191642672,
+   "status": "reverted",
+   "change": {
+    "variable": "min_confidence",
+    "from": 70,
+    "to": 80
+   },
+   "hypothesis": "A higher confidence bar filters the weak London breakouts.",
+   "baselineScore": 0.18,
+   "score": 0.02,
+   "judgedAt": 1790364442672,
+   "verdictNote": "Undone: scored 0.02, worse than 0.18 before.",
+   "startedAt": 1790191642672,
+   "startedAtTrade": 7,
+   "changeText": "confidence bar 70% → 80%"
+  },
+  {
+   "v": 2,
+   "createdAt": 1789932442672,
+   "status": "kept",
+   "change": {
+    "variable": "min_rr",
+    "from": 1.5,
+    "to": 2
+   },
+   "hypothesis": "If I raise the R:R floor to 2, the shallow-target gold trades stop and profit factor rises.",
+   "baselineScore": -0.21,
+   "score": 0.18,
+   "judgedAt": 1790191642672,
+   "verdictNote": "Kept: scored 0.18 vs -0.21 before -- this is the new baseline.",
+   "startedAt": 1789932442672,
+   "startedAtTrade": 4,
+   "changeText": "min R:R 1.5 → 2"
+  },
+  {
+   "v": 1,
+   "createdAt": 1789586842672,
+   "status": "baseline",
+   "startedAtTrade": 0,
+   "startedAt": 0,
+   "outcome": "Starting point: your own settings.",
+   "changeText": null
+  }
+ ],
+ "neurons": [
+  {
+   "id": "rsi",
+   "label": "RSI",
+   "emoji": "📈",
+   "facts": [
+    {
+     "id": "rsi-31759422",
+     "text": "XAUUSD M15 RSI under 25 in a downtrend kept falling -- buying it lost 3 of 4.",
+     "evidence": "#5001 #5004 #5007",
+     "strength": 4,
+     "confirmations": 0,
+     "contradictions": 0,
+     "source": "reflection",
+     "createdAt": 1790623642674,
+     "updatedAt": 1790623642674
+    }
+   ]
+  },
+  {
+   "id": "macd",
+   "label": "MACD",
+   "emoji": "〰️",
+   "facts": []
+  },
+  {
+   "id": "volatility",
+   "label": "Volatility",
+   "emoji": "🌊",
+   "facts": [
+    {
+     "id": "volatility-26f6fb1e",
+     "text": "Gold stops tighter than 1 ATR got wicked out at the London open.",
+     "evidence": "#5004",
+     "strength": 3,
+     "confirmations": 0,
+     "contradictions": 0,
+     "source": "reflection",
+     "createdAt": 1790623642674,
+     "updatedAt": 1790623642674
+    }
+   ]
+  },
+  {
+   "id": "zones",
+   "label": "Zones",
+   "emoji": "🧱",
+   "facts": [
+    {
+     "id": "zones-9131cd35",
+     "text": "H4 supply on XAUUSD held 4 of 5 touches this month.",
+     "strength": 3,
+     "confirmations": 0,
+     "contradictions": 0,
+     "source": "reflection",
+     "createdAt": 1790623642675,
+     "updatedAt": 1790623642675
+    }
+   ]
+  },
+  {
+   "id": "structure",
+   "label": "Structure",
+   "emoji": "🏗️",
+   "facts": []
+  },
+  {
+   "id": "trend",
+   "label": "Trend",
+   "emoji": "🧭",
+   "facts": []
+  },
+  {
+   "id": "momentum",
+   "label": "Momentum",
+   "emoji": "⚡",
+   "facts": []
+  },
+  {
+   "id": "liquidity",
+   "label": "Liquidity",
+   "emoji": "💧",
+   "facts": []
+  },
+  {
+   "id": "sessions",
+   "label": "Sessions",
+   "emoji": "🕐",
+   "facts": [
+    {
+     "id": "sessions-950220d3",
+     "text": "EURUSD fakes out in the first 10 minutes of New York.",
+     "strength": 3,
+     "confirmations": 0,
+     "contradictions": 0,
+     "source": "trader",
+     "createdAt": 1790623642674,
+     "updatedAt": 1790623642674
+    }
+   ]
+  },
+  {
+   "id": "synthetic",
+   "label": "Synthetics",
+   "emoji": "🧪",
+   "facts": [
+    {
+     "id": "synthetic-56538690",
+     "text": "Boom 1000 spikes cluster after 20+ quiet M1 candles.",
+     "evidence": "#5002 #5005 #5011",
+     "strength": 5,
+     "confirmations": 0,
+     "contradictions": 0,
+     "source": "reflection",
+     "createdAt": 1790623642675,
+     "updatedAt": 1790623642675
+    },
+    {
+     "id": "synthetic-704f7b58",
+     "text": "Crash 500 shorts into a spike get stopped on the wick -- wait for the retrace.",
+     "strength": 2,
+     "confirmations": 0,
+     "contradictions": 0,
+     "source": "dave",
+     "createdAt": 1790623642675,
+     "updatedAt": 1790623642675
+    }
+   ]
+  },
+  {
+   "id": "news",
+   "label": "News",
+   "emoji": "📰",
+   "facts": []
+  },
+  {
+   "id": "risk",
+   "label": "Risk",
+   "emoji": "🛡️",
+   "facts": []
+  },
+  {
+   "id": "execution",
+   "label": "Execution",
+   "emoji": "🎯",
+   "facts": []
+  },
+  {
+   "id": "psychology",
+   "label": "Psychology",
+   "emoji": "🧠",
+   "facts": [
+    {
+     "id": "psychology-c8aff1b4",
+     "text": "After two losses I took a weaker third setup -- pause instead.",
+     "strength": 2,
+     "confirmations": 0,
+     "contradictions": 0,
+     "source": "reflection",
+     "createdAt": 1790623642675,
+     "updatedAt": 1790623642675
+    }
+   ]
+  }
+ ],
+ "variables": [
+  {
+   "id": "min_rr",
+   "label": "Minimum risk:reward",
+   "explain": "the R:R floor every trade must clear (Dave can only raise it above what you set)"
+  },
+  {
+   "id": "min_confidence",
+   "label": "Confidence bar",
+   "explain": "the confidence a setup needs (Dave can only raise it above what you set)"
+  },
+  {
+   "id": "add_rule",
+   "label": "New written rule",
+   "explain": "a rule Dave follows on every scan, e.g. 'no gold entries in the first 15 min of London'"
+  },
+  {
+   "id": "remove_rule",
+   "label": "Drop a rule",
+   "explain": "remove a rule an earlier version added"
+  },
+  {
+   "id": "avoid_symbol",
+   "label": "Leave a pair alone",
+   "explain": "stop trading one pair that keeps losing"
+  },
+  {
+   "id": "allow_symbol",
+   "label": "Bring a pair back",
+   "explain": "trade a pair again that an earlier version benched"
+  }
+ ],
+ "lastReflectionAt": null
+}

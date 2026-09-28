@@ -7,6 +7,7 @@ import '../theme.dart';
 import '../widgets/charts.dart';
 import '../widgets/common.dart';
 import '../look.dart';
+import 'growth.dart';
 
 /// Everything Dave durably knows, in the two stores it actually keeps.
 ///
@@ -31,6 +32,7 @@ class BrainScreen extends StatelessWidget {
         final knowledgeSizes = b.knowledge.map((k) => k.chars).toList();
         final empty = memorySizes.isEmpty && knowledgeSizes.isEmpty;
         return [
+          const SliverToBoxAdapter(child: _GrowthLink()),
           SliverToBoxAdapter(
             child: ContentCard(
               child: empty
@@ -315,4 +317,34 @@ class _ResetMemory extends StatelessWidget {
           child: Text('Reset memory', style: TextStyle(color: Look.of(context).down)),
         ),
       );
+}
+
+/// The way into Dave's self-improvement: the goal, the strategy card under test, the neurons.
+class _GrowthLink extends StatelessWidget {
+  const _GrowthLink();
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    return GestureDetector(
+      key: const ValueKey('growth-link'),
+      onTap: () => pushScoped<void>(context, const GrowthScreen()),
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(Space.s4, Space.s2, Space.s4, Space.s2),
+        padding: const EdgeInsets.all(Space.s4),
+        decoration: BoxDecoration(gradient: look.hero, borderRadius: BorderRadius.circular(20)),
+        child: Row(children: [
+          Icon(CupertinoIcons.graph_circle_fill, size: 34, color: look.heroText),
+          const SizedBox(width: Space.s3),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Growth', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: look.heroText)),
+              Text('Score vs your goal, the strategy he is testing, and his neurons', style: TextStyle(fontSize: 13, color: look.heroText.withValues(alpha: 0.8))),
+            ]),
+          ),
+          Icon(CupertinoIcons.chevron_right, color: look.heroText),
+        ]),
+      ),
+    );
+  }
 }

@@ -15,6 +15,7 @@ import 'dart:ui' as ui;
 import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/app_scope.dart';
 import 'package:dave_mobile/screens/extras.dart';
+import 'package:dave_mobile/screens/growth.dart';
 import 'package:dave_mobile/widgets/setup_drawing.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
@@ -166,6 +167,8 @@ Map<String, Object?> _context() {
 http.Client _fakeServer() => MockClient((req) async {
       Object? body;
       switch (req.url.path) {
+        case '/api/app/growth':
+          body = jsonDecode(File('test/fixtures/growth.json').readAsStringSync());
         case '/api/app/dashboard':
           body = _dashboard();
         case '/api/app/brain':
@@ -777,6 +780,39 @@ void main() {
       await _advance(tester);
       await _shot(tester, 'drawing_$mode');
       expect(find.text('Sweep of the Asian high, then short'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('growth screen renders ($mode)', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 3;
+      tester.view.padding = const FakeViewPadding(top: 72, bottom: 48);
+      tester.platformDispatcher.platformBrightnessTestValue = brightness;
+      addTearDown(tester.view.reset);
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer(), streamClient: _fakeChatStream);
+      final look = brightness == Brightness.dark ? Look.midnightLime : Look.pearl;
+
+      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const GrowthScreen()), look: look));
+      await _advance(tester);
+      await _shot(tester, 'growth_$mode');
+      expect(find.text('v04'), findsWidgets);
+      expect(find.text('Reflect now'), findsOneWidget);
+      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -900));
+      await _advance(tester);
+      await _shot(tester, 'growth_goal_$mode');
+      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -700));
+      await _advance(tester);
+      await _shot(tester, 'growth_neurons_$mode');
+      await tester.tap(find.byKey(const ValueKey('neuron-synthetic')));
+      await _advance(tester);
+      await _shot(tester, 'growth_neuron_$mode');
+      expect(find.textContaining('Boom 1000 spikes cluster'), findsOneWidget);
+      await tester.tap(find.byType(CupertinoNavigationBarBackButton));
+      await _advance(tester);
+      await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -1400));
+      await _advance(tester);
+      await _shot(tester, 'growth_versions_$mode');
       await tester.pumpWidget(const SizedBox());
     });
 
