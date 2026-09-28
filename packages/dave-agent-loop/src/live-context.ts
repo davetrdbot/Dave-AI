@@ -1,4 +1,5 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
+import { selfAwareFeedBlock } from "./self-aware-feed.js";
 import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, getWinStreak, ALERT_CATEGORIES } from "@dave/trading";
 import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK, SL_NEAR_PROGRESS, SL_CRITICAL_PROGRESS, TP_NEAR_PROGRESS } from "./trade-monitor-store.js";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
@@ -224,6 +225,16 @@ export function buildLiveSettingsBlock(userId: string): string {
   // Dave's reminders to himself (the trader: "the bot can remind itself of something"). Pending
   // ones so he never sets a duplicate and knows what is coming; fired ones so a reminder that went
   // off between turns actually reaches him, not just the chat.
+  // The monitor's recent alerts, so a chat reply knows what the trader was just told.
+  const feed = (() => {
+    try {
+      return selfAwareFeedBlock(userId, 2 * 60 * 60_000);
+    } catch {
+      return null;
+    }
+  })();
+  if (feed) lines.push("", feed);
+
   const reminders = safeLoadReminders(userId);
   if (reminders) {
     lines.push(

@@ -66,6 +66,7 @@ import { buildClockLine } from "./live-context.js";
 import { loadFrozenSnapshot } from "@dave/memory";
 import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData } from "./symbol-availability.js";
 import { activeAiOutage, clearAiOutage, markAiOutage } from "./ai-outage.js";
+import { selfAwareFeedBlock } from "./self-aware-feed.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 
@@ -1015,6 +1016,7 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     formatRecentDecisions(userId),
     buildTickRemindersLine(userId),
     selfAwareAlertLine,
+    selfAwareFeedBlock(userId),
     activeStrategySkillLine,
   ].filter((line): line is string => line !== null);
 
