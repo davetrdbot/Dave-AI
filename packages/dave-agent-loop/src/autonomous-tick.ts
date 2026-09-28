@@ -69,6 +69,7 @@ import { activeAiOutage, clearAiOutage, markAiOutage } from "./ai-outage.js";
 import { selfAwareFeedBlock } from "./self-aware-feed.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
+import { ACTIONS_SCHEMA, coerceTickActions, gatherData, isDataAction, runManagementActions, type TickAction } from "./tick-actions.js";
 
 /** Bounded so a growing knowledge store can never crowd out the analysis suite in the tick's
  *  prompt. Entries past the budget are listed by title only -- truncated, never silently dropped. */
@@ -213,6 +214,8 @@ type TradeAction = (typeof TRADE_ACTIONS)[number];
 const MANAGEMENT_ACTIONS = ["DELETE_TICKET", "PARTIAL_CLOSE", "MODIFY", "PAUSE", "CONSULT_JOURNAL", "REQUEST_CANDLES", "RUN_SCRIPT"] as const;
 const DECISION_ACTIONS = [...TRADE_ACTIONS, ...MANAGEMENT_ACTIONS, "SKIP", "ASK"] as const;
 type DecisionAction = (typeof DECISION_ACTIONS)[number];
+/** Aux actions that ask for another round -- not allowed as the answer to a gather round. */
+const MANAGEMENT_AUX_ACTIONS = ["CONSULT_JOURNAL", "REQUEST_CANDLES", "RUN_SCRIPT"] as const;
 
 const ACTION_TO_ORDER_TYPE: Record<TradeAction, OrderType> = {
   BUY: "buy",
@@ -294,6 +297,8 @@ export interface TickDecision {
   setReminder?: { text: string; reason: string; inMinutes: number; symbol?: string };
   /** Optional on ANY decision -- ids of reminders to remove (dealt with, or no longer relevant). */
   deleteReminderIds?: string[];
+  /** Optional on ANY decision -- several things at once (see tick-actions.ts). */
+  actions?: TickAction[];
 }
 
 export interface TickOutcome {
@@ -408,6 +413,7 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
       required: ["text", "reason", "inMinutes"],
     },
     deleteReminderIds: { type: "array", items: { type: "string" }, description: "optional on ANY decision -- ids of your reminders to delete: ones you have acted on, or that no longer matter" },
+    actions: ACTIONS_SCHEMA,
   };
   // Real, confirmed bug fixed (user, live: the bot placed a trade at a literal 0% confidence --
   // "what's the point of placing the market then"). Root cause: `confidence` sat in `properties`
@@ -494,6 +500,7 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     scriptLanguage: obj.scriptLanguage === "bash" || obj.scriptLanguage === "node" ? obj.scriptLanguage : "python",
     setReminder: coerceReminder(obj.setReminder),
     deleteReminderIds: Array.isArray(obj.deleteReminderIds) ? obj.deleteReminderIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0) : undefined,
+    actions: coerceTickActions(obj.actions),
   };
 }
 
@@ -577,6 +584,8 @@ DELETE_TICKET closes an existing open position or cancels an existing pending or
 CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest opinion before you commit -- entirely optional, never required. Journal has its own access to trade history and analysis tools; it reviews and comments, it never places or modifies a trade itself. Use it when a setup is genuinely borderline and a second read would help, not as a default detour. After Journal answers, you'll be asked to decide again with its opinion in hand.
 
 REQUEST_CANDLES gets you one fresh real batch of candle data for the symbol you're analyzing right now before you finalize your decision -- entirely optional, never required, available on any cycle, at most once. After the candles come back, you'll be asked to decide again with them in hand -- do not request candles a second time.
+
+You can also do SEVERAL things in one scan with the optional "actions" list on the decision tool: move a winner to breakeven, tighten another trade's stop, take a partial -- all together, alongside your main action -- and/or ask for several fresh reads at once (candles, volatility, momentum, zones... on any symbol/timeframe). Reads come back together and you decide once more with them. Use it when it genuinely saves a cycle, not as a routine step.
 
 RUN_SCRIPT runs one real script (bash/python/node) and hands you its genuine output before you finalize -- entirely optional, never required, at most once per cycle. This symbol's full analysis suite is written into the sandbox as market.json, so your script reads real numbers rather than you eyeballing them. Reach for it ONLY when the decision genuinely hinges on something you cannot work out reliably in your head -- a risk:reward or position-size calculation you want exact, a spread or ratio across the timeframes below, a level derived from a real series. Do NOT use it as a routine step before every trade: it costs a real round trip on a live cycle, and nearly every decision here is already answerable from the suite in front of you. These symbols are synthetic pairs that exist only in this terminal and on no public API, so never have a script try to fetch their price from the internet -- everything you need is in market.json. After the output comes back you'll be asked to decide again -- do not run a second script.
 
@@ -696,6 +705,16 @@ function logTick(userId: string, line: string): void {
 }
 
 export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome> {
+  const sideNotes: string[] = [];
+  const outcome = await runAutonomousTickInner(deps, sideNotes);
+  if (!sideNotes.length) return outcome;
+  // Things Dave did alongside the main action (breakeven, a partial close...) always reach the
+  // trader, even when the main action itself was a quiet SKIP.
+  const extra = `⚡ Also this scan:\n${sideNotes.map((n) => `• ${n}`).join("\n")}`;
+  return { ...outcome, notable: true, message: outcome.message ? `${outcome.message}\n\n${extra}` : extra };
+}
+
+async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): Promise<TickOutcome> {
   const { userId, db, executor, provider, signal, onSequentialThinkingProgress } = deps;
 
   ensureGroupsUsable(userId);
@@ -1253,6 +1272,50 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     }
     decision = decisionAfterScript;
   }
+
+  // Several things at once (mode 2): trade-management items run together right away; GET items
+  // are all fetched in parallel and Dave decides once more with every result in hand.
+  const runSideActions = async (d: TickDecision) => {
+    const mgmt = (d.actions ?? []).filter((a) => !isDataAction(a));
+    if (!mgmt.length) return;
+    const fresh = getLastKnownState(userId);
+    const results = await runManagementActions(executor, mgmt, fresh.positions, fresh.pendingOrders.map((o) => String(o.ticket)));
+    for (const r of results) {
+      logTick(userId, `${symbol}: action ${r.ok ? "done" : "not done"} -- ${r.text}`);
+      publishActivity(userId, "loop", "action", { symbol, type: r.action.type, ok: r.ok, text: r.text });
+      if (r.ok) sideNotes.push(r.text);
+    }
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `side actions: ${results.map((r) => r.text).join("; ")}`.slice(0, 400) });
+  };
+  if (decision.actions?.some(isDataAction)) {
+    const gets = decision.actions.filter(isDataAction);
+    await runSideActions(decision);
+    logTick(userId, `${symbol}: fetching ${gets.length} reads at once (${gets.map((g) => `${g.endpoint}${g.symbol ? ` ${g.symbol}` : ""}${g.timeframe ? ` ${g.timeframe}` : ""}`).join(", ")}) -- ${decision.reason ?? "wants fresh data"}`);
+    const gathered = await gatherData(analysis, gets, symbol);
+    let decisionAfterGather: TickDecision | null;
+    try {
+      decisionAfterGather = await requestDecision([
+        ...contextLines,
+        `DATA YOU ASKED FOR (${gathered.fetched} fetched, ${gathered.failed} failed, all at once -- decide now; any GET items this time are ignored; management items you already ran are done, don't repeat them):`,
+        ...gathered.lines,
+      ]);
+    } catch (err) {
+      if (err instanceof TickAbortedError) {
+        recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "interrupted by a real user message" });
+        advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+        return { action: "NONE", notable: false };
+      }
+      throw err;
+    }
+    if (!decisionAfterGather || (MANAGEMENT_AUX_ACTIONS as readonly string[]).includes(decisionAfterGather.action)) {
+      logTick(userId, `${symbol}: no real decision after gathering data -- treating as SKIP`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "no real decision after gathering data" });
+      advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+      return { action: "NONE", notable: false };
+    }
+    decision = { ...decisionAfterGather, actions: decisionAfterGather.actions?.filter((a) => !isDataAction(a)) };
+  }
+  await runSideActions(decision);
 
   logTick(userId, `${symbol}: model decided ${decision.action}${decision.confidence !== undefined ? ` (confidence ${decision.confidence}%)` : ""} -- ${decision.reason ?? decision.question ?? "no reason given"}`);
 
