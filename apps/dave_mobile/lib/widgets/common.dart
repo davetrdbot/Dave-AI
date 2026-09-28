@@ -401,7 +401,7 @@ class _EditorPageState extends State<EditorPage> {
 /// Pushes [page] with the same API scope, so screens deeper in the stack can call the server.
 Future<T?> pushScoped<T>(BuildContext context, Widget page) {
   final scope = AppScope.of(context);
-  return Navigator.of(context).push<T>(CupertinoPageRoute<T>(builder: (_) => AppScope(api: scope.api, onUnpaired: scope.onUnpaired, child: page)));
+  return Navigator.of(context).push<T>(CupertinoPageRoute<T>(builder: (_) => AppScope(api: scope.api, onUnpaired: scope.onUnpaired, onSwitchBot: scope.onSwitchBot, child: page)));
 }
 
 /// Runs a server call from a button: unpaired goes to the connect screen, anything else is shown.

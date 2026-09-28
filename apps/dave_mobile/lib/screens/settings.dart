@@ -866,27 +866,78 @@ class _NotificationSection extends StatelessWidget {
       );
 }
 
-class _ConnectionSection extends StatelessWidget {
+class _ConnectionSection extends StatefulWidget {
   const _ConnectionSection();
+
+  @override
+  State<_ConnectionSection> createState() => _ConnectionSectionState();
+}
+
+/// Every bot this phone is paired with (the trader's own, a friend's...), one tap to switch.
+class _ConnectionSectionState extends State<_ConnectionSection> {
+  List<SavedBot>? _bots;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final bots = await Session.accounts();
+      if (mounted) setState(() => _bots = bots);
+    } catch (_) {
+      if (mounted) setState(() => _bots = const []);
+    }
+  }
+
+  Future<void> _rename(SavedBot b) async {
+    final name = await promptText(context, title: 'Name this bot', message: b.endpoint.host, initial: b.name ?? '', placeholder: "e.g. Mine, Friend's");
+    if (name == null) return;
+    await Session.renameAccount(b.endpoint, name);
+    await _refresh();
+  }
 
   @override
   Widget build(BuildContext context) {
     final scope = AppScope.of(context);
+    final look = Look.of(context);
+    final current = scope.api.base.toString();
+    final bots = _bots ?? const <SavedBot>[];
     return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
-      header: const ListHeader('Connection'),
-      footer: const ListFooter('To remove this phone\'s access completely, disconnect it from the Phone App tab in the web panel as well.'),
+      header: const ListHeader('Bots'),
+      footer: const ListFooter('Tap a bot to switch to it. Long-press to name it. To remove this phone\'s access completely, disconnect it from the Phone App tab in the web panel as well.'),
       children: [
+        if (bots.isEmpty)
+          CupertinoListTile(
+            leading: const Icon(CupertinoIcons.cloud),
+            title: const Text('Server'),
+            subtitle: Text(scope.api.base.host, overflow: TextOverflow.ellipsis),
+          ),
+        for (final b in bots)
+          GestureDetector(
+            onLongPress: () => _rename(b),
+            child: CupertinoListTile(
+              key: ValueKey('bot-${b.endpoint.host}'),
+              leading: Icon(CupertinoIcons.cloud_fill, color: b.endpoint.toString() == current ? look.accent : resolve(context, CupertinoColors.systemGrey)),
+              title: Text(b.label),
+              subtitle: Text(b.endpoint.host, overflow: TextOverflow.ellipsis),
+              trailing: b.endpoint.toString() == current ? Icon(CupertinoIcons.checkmark_alt, color: look.accent) : null,
+              onTap: b.endpoint.toString() == current || scope.onSwitchBot == null ? null : () => scope.onSwitchBot!(b),
+            ),
+          ),
+        if (scope.onSwitchBot != null)
+          CupertinoListTile(
+            leading: Icon(CupertinoIcons.plus_circle_fill, color: look.accent),
+            title: Text('Pair another bot', style: TextStyle(color: look.accent)),
+            onTap: () => scope.onSwitchBot!(null),
+          ),
         CupertinoListTile(
-          leading: const Icon(CupertinoIcons.cloud),
-          title: const Text('Server'),
-          // A subtitle, not trailing info: Railway hosts are long and the trailing slot cannot shrink.
-          subtitle: Text(scope.api.base.host, overflow: TextOverflow.ellipsis),
-        ),
-        CupertinoListTile(
-          leading: Icon(CupertinoIcons.xmark_circle, color: Look.of(context).down),
-          title: Text('Disconnect this phone', style: TextStyle(color: Look.of(context).down)),
+          leading: Icon(CupertinoIcons.xmark_circle, color: look.down),
+          title: Text('Disconnect from this bot', style: TextStyle(color: look.down)),
           onTap: () async {
-            final ok = await confirmDestructive(context, title: 'Disconnect this phone?', message: 'You will need a new pairing code from the web panel to connect again.', action: 'Disconnect');
+            final ok = await confirmDestructive(context, title: 'Disconnect from this bot?', message: 'You will need a new pairing code from its web panel to connect again.', action: 'Disconnect');
             if (ok) scope.onUnpaired('Disconnected. Get a new pairing code from the web panel to connect again.');
           },
         ),

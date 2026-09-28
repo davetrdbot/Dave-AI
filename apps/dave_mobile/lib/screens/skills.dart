@@ -150,7 +150,7 @@ class _SkillTile extends StatelessWidget {
         trailing: const CupertinoListTileChevron(),
         onTap: () async {
           final scope = AppScope.of(context);
-          await Navigator.of(context).push(CupertinoPageRoute<void>(builder: (_) => AppScope(api: scope.api, onUnpaired: scope.onUnpaired, child: SkillDetail(id: skill.id, name: skill.name))));
+          await Navigator.of(context).push(CupertinoPageRoute<void>(builder: (_) => AppScope(api: scope.api, onUnpaired: scope.onUnpaired, onSwitchBot: scope.onSwitchBot, child: SkillDetail(id: skill.id, name: skill.name))));
           await onChanged();
         },
       );

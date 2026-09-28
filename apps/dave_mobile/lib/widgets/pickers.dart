@@ -27,7 +27,7 @@ Future<bool> showAiSheet(BuildContext context, ProviderList list) async {
     barrierLabel: 'Close',
     barrierColor: const Color(0x99000000),
     transitionDuration: const Duration(milliseconds: 190),
-    pageBuilder: (ctx, _, _) => AppScope(api: scope.api, onUnpaired: scope.onUnpaired, child: _AiSheet(list: list)),
+    pageBuilder: (ctx, _, _) => AppScope(api: scope.api, onUnpaired: scope.onUnpaired, onSwitchBot: scope.onSwitchBot, child: _AiSheet(list: list)),
     transitionBuilder: (ctx, anim, _, child) {
       final curved = CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
       return FadeTransition(

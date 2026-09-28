@@ -11,9 +11,12 @@ import '../look.dart';
 /// After this the app holds a token and never asks again until the phone is disconnected -- which
 /// is why the address is remembered even then, so reconnecting means typing only a new code.
 class ConnectScreen extends StatefulWidget {
-  const ConnectScreen({super.key, required this.onConnected, this.notice});
+  const ConnectScreen({super.key, required this.onConnected, this.notice, this.onCancel});
 
   final void Function(Uri endpoint, String token) onConnected;
+
+  /// Set when pairing ANOTHER bot: goes back to the one already paired.
+  final VoidCallback? onCancel;
 
   /// Why the phone ended up here, if it was disconnected rather than never paired.
   final String? notice;
@@ -78,6 +81,15 @@ class _ConnectScreenState extends State<ConnectScreen> {
       backgroundColor: const Color(0x00000000),
       child: SafeArea(
         child: ListView(padding: const EdgeInsets.fromLTRB(Space.s5, Space.s6, Space.s5, Space.s6), children: [
+          if (widget.onCancel != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: widget.onCancel,
+                child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(CupertinoIcons.chevron_left, size: 18), Text(' Back to my bot')]),
+              ),
+            ),
           Icon(CupertinoIcons.chart_bar_square_fill, size: 56, color: Look.of(context).accent),
           const SizedBox(height: Space.s4),
           const Text('Connect to Dave', textAlign: TextAlign.center, style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, letterSpacing: -0.6)),

@@ -83,6 +83,29 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
     _ensurePush();
   }
 
+  /// Another saved bot becomes the one on screen; null = go pair one more (this one stays saved).
+  Future<void> _switchBot(SavedBot? bot) async {
+    final current = _api?.base.toString();
+    await PushService.stop();
+    _api?.close();
+    if (bot == null) {
+      _returnTo = (await Session.accounts()).where((b) => b.endpoint.toString() == current).firstOrNull;
+      setState(() {
+        _api = null;
+        _notice = 'Pair another bot. The ones you already paired stay in Settings → Bots.';
+      });
+      return;
+    }
+    await Session.activate(bot);
+    _returnTo = null;
+    if (!mounted) return;
+    setState(() => _api = DaveApi(base: bot.endpoint, token: bot.token));
+    await _ensurePush();
+  }
+
+  /// The bot to go back to if the trader backs out of pairing another one.
+  SavedBot? _returnTo;
+
   Future<void> _unpaired(String reason) async {
     if (_api == null) return; // several screens can notice at once; handle it once
     _api?.close();
@@ -92,6 +115,9 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
     });
     await PushService.stop();
     await Session.clear();
+    // Other bots paired on this phone stay one tap away from the connect screen.
+    final others = await Session.accounts().catchError((_) => <SavedBot>[]);
+    if (mounted && others.isNotEmpty) setState(() => _returnTo = others.first);
   }
 
   @override
@@ -100,9 +126,9 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
     if (_loading) {
       home = const CupertinoPageScaffold(child: Center(child: CupertinoActivityIndicator(radius: 14)));
     } else if (_api == null) {
-      home = ConnectScreen(onConnected: _connected, notice: _notice);
+      home = ConnectScreen(onConnected: _connected, notice: _notice, onCancel: _returnTo == null ? null : () => _switchBot(_returnTo));
     } else {
-      home = AppScope(api: _api!, onUnpaired: _unpaired, child: const Shell());
+      home = AppScope(api: _api!, onUnpaired: _unpaired, onSwitchBot: _switchBot, child: Shell(key: ValueKey(_api!.base.toString())));
     }
     // The chosen look (Settings -> Appearance) themes the whole app and repaints it on a switch.
     return LookScope(
