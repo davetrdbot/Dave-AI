@@ -246,6 +246,16 @@ class _LiveScreenState extends State<LiveScreen> {
 
   /// What Dave is doing right now, read from the newest loop events.
   _Now _now() {
+    // Dave paused himself (PAUSE decision): a countdown beats anything else while it lasts.
+    for (final e in _events.reversed) {
+      if (e.kind != 'self_pause') continue;
+      final until = DateTime.fromMillisecondsSinceEpoch((e.data['until'] as num? ?? 0).toInt());
+      final left = until.difference(DateTime.now());
+      if (left.isNegative) break;
+      final mins = left.inSeconds <= 60 ? 'under a minute' : '${(left.inSeconds / 60).ceil()} min';
+      final hh = '${until.hour.toString().padLeft(2, '0')}:${until.minute.toString().padLeft(2, '0')}';
+      return _Now(busy: false, title: 'Paused himself · $mins left', detail: 'No new trades until $hh. ${e.text('reason')}', since: e.at);
+    }
     for (final e in _events.reversed) {
       if (e.feed != 'loop') continue;
       switch (e.kind) {
@@ -281,11 +291,52 @@ class _LiveScreenState extends State<LiveScreen> {
     return _Now(busy: false, title: _bot?.running == true ? 'Waiting for the next scan' : 'Autonomous trading is off', detail: null, since: null);
   }
 
+  /// A scan asks MT5 for every timeframe of a pair -- 7+ rows that say the same thing. Back-to-back
+  /// requests for one pair fold into one row ("MT5 · XAUUSD · 7 requests"); tap it for the list.
+  Iterable<ActivityEvent> _collapseEa(Iterable<ActivityEvent> events) sync* {
+    final run = <ActivityEvent>[];
+    ActivityEvent fold() {
+      if (run.length == 1) return run.first;
+      final failed = run.where((r) => r.data['ok'] == false).toList();
+      final tfs = <String>[];
+      for (final r in run) {
+        final t = '${r.data['timeframe'] ?? ''}';
+        final label = '${r.data['endpoint'] == 'all' || r.data['endpoint'] == null ? '' : '${r.data['endpoint']} '}$t'.trim();
+        if (label.isNotEmpty && !tfs.contains(label)) tfs.add(label);
+      }
+      final ms = run.fold<num>(0, (a, r) => a + ((r.data['ms'] as num?) ?? 0));
+      return ActivityEvent(
+        id: run.first.id,
+        at: run.first.at,
+        feed: run.first.feed,
+        kind: 'ea_batch',
+        data: {'symbol': run.first.data['symbol'], 'count': run.length, 'failed': failed.length, 'error': failed.isEmpty ? null : failed.first.data['error'], 'timeframes': tfs.join(' · '), 'ms': ms},
+      );
+    }
+
+    for (final e in events) {
+      if (e.kind == 'ea_request' && (run.isEmpty || run.first.data['symbol'] == e.data['symbol'])) {
+        run.add(e);
+        continue;
+      }
+      if (run.isNotEmpty) {
+        yield fold();
+        run.clear();
+      }
+      if (e.kind == 'ea_request') {
+        run.add(e);
+      } else {
+        yield e;
+      }
+    }
+    if (run.isNotEmpty) yield fold();
+  }
+
   bool _shown(ActivityEvent e) => switch (_filter) {
         _Filter.all => !const {'tool_start', 'tool_end'}.contains(e.kind),
-        _Filter.decisions => const {'decision', 'cycle_end', 'flo', 'journal', 'nous_card', 'trade_closed', 'setup'}.contains(e.kind),
-        _Filter.alerts => const {'self_aware', 'alert', 'level_hit', 'setup', 'memory', 'scalp', 'trade_modified'}.contains(e.kind),
-        _Filter.mt5 => e.kind == 'ea_request',
+        _Filter.decisions => const {'decision', 'cycle_end', 'flo', 'journal', 'nous_card', 'trade_closed', 'setup', 'self_pause', 'action', 'growth'}.contains(e.kind),
+        _Filter.alerts => const {'self_aware', 'alert', 'level_hit', 'setup', 'memory', 'scalp', 'trade_modified', 'self_pause', 'growth'}.contains(e.kind),
+        _Filter.mt5 => e.kind == 'ea_request' || e.kind == 'ea_batch',
         _Filter.agents => e.agent != null,
       };
 
@@ -293,7 +344,7 @@ class _LiveScreenState extends State<LiveScreen> {
   Widget build(BuildContext context) {
     final bottom = 110 + MediaQuery.paddingOf(context).bottom;
     final source = _period == _Period.live ? _events.reversed : (_history ?? const <ActivityEvent>[]);
-    final shown = source.where(_shown).take(_period == _Period.live ? 150 : 800).toList();
+    final shown = _collapseEa(source.where(_shown)).take(_period == _Period.live ? 150 : 800).toList();
     final now = _now();
     return CupertinoPageScaffold(
       backgroundColor: const Color(0x00000000),
@@ -539,6 +590,15 @@ class _EventRow extends StatelessWidget {
       'worker_report' || 'worker_done' => (CupertinoIcons.person_2_fill, purple, e.text('name'), e.text('text')),
       'tool_start' || 'tool_end' => (CupertinoIcons.wrench_fill, grey, '${e.agent ?? ''}: ${e.text('label')}${e.kind == 'tool_end' ? ' ✓' : '…'}', null),
       'alert' => (CupertinoIcons.bell_fill, red, 'Alert', e.text('text')),
+      'self_pause' => (CupertinoIcons.pause_circle_fill, resolve(context, CupertinoColors.systemOrange), 'Paused himself for ${e.data['minutes'] ?? '?'} min', e.text('reason')),
+      'action' => (e.data['ok'] == true ? CupertinoIcons.bolt_fill : CupertinoIcons.bolt_slash, e.data['ok'] == true ? green : grey, 'Also did', e.text('text')),
+      'growth' => (CupertinoIcons.graph_circle_fill, purple, 'Self-improvement', e.text('text')),
+      'ea_batch' => (
+          (e.data['failed'] as num? ?? 0) > 0 ? CupertinoIcons.exclamationmark_circle : CupertinoIcons.arrow_down_doc,
+          (e.data['failed'] as num? ?? 0) > 0 ? red : grey,
+          'MT5 · ${e.text('symbol')} · ${e.data['count']} requests',
+          '${e.text('timeframes')}${(e.data['failed'] as num? ?? 0) > 0 ? ' · ${e.data['failed']} failed: ${e.text('error')}' : ' · all received'} · ${_secs(e.data['ms'])} total',
+        ),
       'scalp' => (CupertinoIcons.arrow_2_squarepath, green, 'Scalp', e.text('text')),
       'trade_closed' => (CupertinoIcons.chart_bar_alt_fill, (e.data['pnl'] as num? ?? 0) >= 0 ? green : red, 'Trade closed', e.text('text')),
       'trade_modified' => (CupertinoIcons.slider_horizontal_3, grey, 'Trade changed', e.text('text')),

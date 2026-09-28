@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
@@ -16,9 +17,24 @@ import 'common.dart';
 
 /// Returns true when something changed.
 Future<bool> showAiSheet(BuildContext context, ProviderList list) async {
-  final changed = await showCupertinoModalPopup<bool>(
+  // Not a bottom sheet sliding up (the trader: "it looks like iPhone when switching") -- a panel
+  // that drops from the top of the screen, fading and growing into place, providers down a rail
+  // on the left and the models as a plain list on the right.
+  final scope = AppScope.of(context);
+  final changed = await showGeneralDialog<bool>(
     context: context,
-    builder: (ctx) => AppScope(api: AppScope.of(context).api, onUnpaired: AppScope.of(context).onUnpaired, child: _AiSheet(list: list)),
+    barrierDismissible: true,
+    barrierLabel: 'Close',
+    barrierColor: const Color(0x99000000),
+    transitionDuration: const Duration(milliseconds: 190),
+    pageBuilder: (ctx, _, _) => AppScope(api: scope.api, onUnpaired: scope.onUnpaired, child: _AiSheet(list: list)),
+    transitionBuilder: (ctx, anim, _, child) {
+      final curved = CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
+      return FadeTransition(
+        opacity: curved,
+        child: ScaleTransition(alignment: Alignment.topCenter, scale: Tween(begin: 0.92, end: 1.0).animate(curved), child: child),
+      );
+    },
   );
   return changed == true;
 }
@@ -46,7 +62,10 @@ class _AiSheetState extends State<_AiSheet> {
   @override
   void initState() {
     super.initState();
-    if (_selected != null) _load(_selected!);
+    // After the first frame: the API comes from an inherited widget, which initState can't read.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _selected != null) _load(_selected!);
+    });
   }
 
   Future<void> _load(ProviderSummary p) async {
@@ -76,73 +95,172 @@ class _AiSheetState extends State<_AiSheet> {
     final p = _selected;
     final models = p == null ? null : _models[p.provider];
     final shown = models?.where((m) => m.toLowerCase().contains(_query.toLowerCase())).toList();
-    return _Sheet(
-      title: 'Dave\'s AI',
-      subtitle: widget.list.main == null ? 'No main AI yet' : 'Now: ${widget.list.main!.name} · ${widget.list.main!.model}',
-      busy: _busy,
-      children: [
-        if (_providers.isEmpty)
-          Text('No provider has a key yet. Add one in Settings → AI & models → AI providers.', style: TextStyle(color: resolve(context, CupertinoColors.secondaryLabel)))
-        else ...[
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(children: [
-              for (final x in _providers) ...[
-                _Pill(
-                  label: x.name,
-                  badge: x.isPrimary ? 'main' : (x.isBackup ? 'backup ${x.backupPosition}' : null),
-                  selected: x.provider == p?.provider,
-                  onTap: () {
-                    setState(() {
-                      _selected = x;
-                      _query = '';
-                    });
-                    _load(x);
-                  },
-                ),
-                const SizedBox(width: 6),
-              ],
-            ]),
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    final media = MediaQuery.of(context);
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(12, media.padding.top + 8, 12, media.viewInsets.bottom + 12),
+        child: Container(
+          key: const ValueKey('ai-palette'),
+          constraints: BoxConstraints(maxHeight: (media.size.height - media.padding.top - media.viewInsets.bottom) * 0.78, maxWidth: 560),
+          decoration: BoxDecoration(
+            color: look.card,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: look.accent.withValues(alpha: 0.45)),
+            boxShadow: [BoxShadow(color: look.accent.withValues(alpha: 0.18), blurRadius: 30, spreadRadius: 1)],
           ),
-          const SizedBox(height: 12),
-          if (p != null && !p.isPrimary)
+          clipBehavior: Clip.antiAlias,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            // Header
             Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: CupertinoButton(
-                color: look.accent,
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                borderRadius: BorderRadius.circular(12),
-                onPressed: _busy ? null : () => _use(p, null),
-                child: Text('Use ${p.name} (${p.model})', style: TextStyle(color: look.tabActiveIcon, fontWeight: FontWeight.w600, fontSize: 15)),
+              padding: const EdgeInsets.fromLTRB(16, 14, 8, 10),
+              child: Row(children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(color: look.accent, borderRadius: BorderRadius.circular(10)),
+                  child: Icon(CupertinoIcons.sparkles, size: 18, color: look.tabActiveIcon),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text("Dave's brain", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                    Text(widget.list.main == null ? 'No main AI yet' : '${widget.list.main!.name} · ${widget.list.main!.model}',
+                        maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: secondary)),
+                  ]),
+                ),
+                if (_busy) const Padding(padding: EdgeInsets.only(right: 8), child: CupertinoActivityIndicator()),
+                CupertinoButton(padding: EdgeInsets.zero, minimumSize: const Size(36, 36), onPressed: () => Navigator.of(context).pop(false), child: Icon(CupertinoIcons.xmark, size: 18, color: secondary)),
+              ]),
+            ),
+            Container(height: 1, color: look.line),
+            if (_providers.isEmpty)
+              Padding(padding: const EdgeInsets.all(16), child: Text('No provider has a key yet. Add one in Settings → AI & models → AI providers.', style: TextStyle(color: secondary)))
+            else
+              Flexible(
+                child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  // Provider rail
+                  Container(
+                    width: 112,
+                    color: look.chip.withValues(alpha: 0.5),
+                    child: ListView(padding: const EdgeInsets.symmetric(vertical: 6), children: [
+                      for (final x in _providers)
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            setState(() {
+                              _selected = x;
+                              _query = '';
+                            });
+                            _load(x);
+                          },
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 140),
+                            margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            padding: const EdgeInsets.fromLTRB(10, 9, 6, 9),
+                            decoration: BoxDecoration(
+                              color: x.provider == p?.provider ? look.accent.withValues(alpha: 0.16) : null,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border(left: BorderSide(color: x.provider == p?.provider ? look.accent : const Color(0x00000000), width: 3)),
+                            ),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(x.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: x.provider == p?.provider ? FontWeight.w800 : FontWeight.w600)),
+                              if (x.isPrimary || x.isBackup)
+                                Text(x.isPrimary ? 'MAIN' : 'BACKUP ${x.backupPosition}', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, letterSpacing: 0.8, color: x.isPrimary ? look.accent : secondary)),
+                            ]),
+                          ),
+                        ),
+                    ]),
+                  ),
+                  Container(width: 1, color: look.line),
+                  // Models
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
+                        child: CupertinoTextField(
+                          placeholder: models == null ? 'Loading models…' : 'Filter ${models.length} models',
+                          prefix: Padding(padding: const EdgeInsets.only(left: 10), child: Icon(CupertinoIcons.line_horizontal_3_decrease, size: 16, color: secondary)),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+                          decoration: BoxDecoration(color: look.chip, borderRadius: BorderRadius.circular(10), border: Border.all(color: look.line)),
+                          style: const TextStyle(fontSize: 14),
+                          onChanged: (v) => setState(() => _query = v),
+                        ),
+                      ),
+                      if (p != null && !p.isPrimary)
+                        GestureDetector(
+                          onTap: _busy ? null : () => _use(p, null),
+                          child: Container(
+                            margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+                            padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 10),
+                            decoration: BoxDecoration(color: look.accent, borderRadius: BorderRadius.circular(10)),
+                            child: Text('Make ${p.name} main (${p.model.split('/').last})', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: look.tabActiveIcon, fontWeight: FontWeight.w700, fontSize: 13)),
+                          ),
+                        ),
+                      Flexible(
+                        child: p != null && _errors[p.provider] != null
+                            ? Padding(padding: const EdgeInsets.all(10), child: Text(_errors[p.provider]!, style: TextStyle(color: look.down, fontSize: 13)))
+                            : shown == null
+                                ? const Padding(padding: EdgeInsets.all(20), child: CupertinoActivityIndicator())
+                                : shown.isEmpty && (models?.isEmpty ?? true)
+                                    ? Padding(padding: const EdgeInsets.all(10), child: Text('${p?.name} doesn\'t list its models -- type one below.', style: TextStyle(color: secondary, fontSize: 13)))
+                                    : ListView.builder(
+                                        shrinkWrap: true,
+                                        padding: const EdgeInsets.only(bottom: 4),
+                                        itemCount: math.min(shown.length, 200),
+                                        itemBuilder: (context, i) {
+                                          final m = shown[i];
+                                          final current = m == p!.model;
+                                          return GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: _busy ? null : () => _use(p, m),
+                                            child: Padding(
+                                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                              child: Row(children: [
+                                                Container(
+                                                  width: 8,
+                                                  height: 8,
+                                                  decoration: BoxDecoration(shape: BoxShape.circle, color: current ? look.accent : look.line),
+                                                ),
+                                                const SizedBox(width: 10),
+                                                Expanded(
+                                                  child: Text(m,
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                      style: TextStyle(fontSize: 13.5, fontWeight: current ? FontWeight.w800 : FontWeight.w500, color: current ? look.accent : null)),
+                                                ),
+                                                if (current) Text('IN USE', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, letterSpacing: 0.8, color: look.accent)),
+                                              ]),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                      ),
+                      if (p != null)
+                        GestureDetector(
+                          onTap: _busy
+                              ? null
+                              : () async {
+                                  final typed = await promptText(context, title: 'Model id', message: 'Exactly as ${p.name} names it.', initial: p.model);
+                                  if (typed != null && typed.trim().isNotEmpty && mounted) await _use(p, typed.trim());
+                                },
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+                            child: Row(children: [
+                              Icon(CupertinoIcons.keyboard, size: 15, color: look.accent),
+                              const SizedBox(width: 6),
+                              Text('Type a model id', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: look.accent)),
+                            ]),
+                          ),
+                        ),
+                    ]),
+                  ),
+                ]),
               ),
-            ),
-          CupertinoSearchTextField(placeholder: models == null ? 'Loading models…' : 'Search ${models.length} models', onChanged: (v) => setState(() => _query = v)),
-          const SizedBox(height: 10),
-          if (p != null && _errors[p.provider] != null)
-            Text(_errors[p.provider]!, style: TextStyle(color: look.down, fontSize: 13))
-          else if (shown == null)
-            const Padding(padding: EdgeInsets.all(20), child: CupertinoActivityIndicator())
-          else if (shown.isEmpty && (models?.isEmpty ?? true))
-            Text('${p?.name} doesn\'t list its models -- type one below.', style: TextStyle(color: resolve(context, CupertinoColors.secondaryLabel), fontSize: 13))
-          else
-            Wrap(spacing: 6, runSpacing: 6, children: [
-              for (final m in shown.take(120))
-                _Pill(label: m, selected: m == p!.model, dense: true, onTap: _busy ? null : () => _use(p, m)),
-            ]),
-          const SizedBox(height: 10),
-          if (p != null)
-            CupertinoButton(
-              padding: EdgeInsets.zero,
-              onPressed: _busy
-                  ? null
-                  : () async {
-                      final typed = await promptText(context, title: 'Model id', message: 'Exactly as ${p.name} names it.', initial: p.model);
-                      if (typed != null && typed.trim().isNotEmpty && mounted) await _use(p, typed.trim());
-                    },
-              child: const Text('Type a model id'),
-            ),
-        ],
-      ],
+          ]),
+        ),
+      ),
     );
   }
 }
@@ -319,10 +437,8 @@ Future<bool> showRiskModeSheet(BuildContext context, {required String id, requir
 // ---------------------------------------------------------------------------------------------
 
 class _Sheet extends StatelessWidget {
-  const _Sheet({required this.title, this.subtitle, this.busy = false, required this.children});
+  const _Sheet({required this.title, required this.children});
   final String title;
-  final String? subtitle;
-  final bool busy;
   final List<Widget> children;
 
   @override
@@ -340,51 +456,11 @@ class _Sheet extends StatelessWidget {
             const SizedBox(height: 12),
             Row(children: [
               Expanded(child: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
-              if (busy) const CupertinoActivityIndicator(),
             ]),
-            if (subtitle != null) Padding(padding: const EdgeInsets.only(top: 2), child: Text(subtitle!, style: TextStyle(fontSize: 13, color: resolve(context, CupertinoColors.secondaryLabel)))),
             const SizedBox(height: 12),
             ...children,
           ]),
         ),
-      ),
-    );
-  }
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.selected, required this.onTap, this.badge, this.dense = false});
-  final String label;
-  final String? badge;
-  final bool selected;
-  final bool dense;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final look = Look.of(context);
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: EdgeInsets.symmetric(horizontal: dense ? 10 : 14, vertical: dense ? 7 : 9),
-        decoration: BoxDecoration(
-          color: selected ? look.accent : look.chip,
-          borderRadius: BorderRadius.circular(dense ? 10 : 14),
-          border: Border.all(color: selected ? look.accent : look.line),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Flexible(
-            child: Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: dense ? 12.5 : 14, fontWeight: FontWeight.w600, color: selected ? look.tabActiveIcon : resolve(context, CupertinoColors.label))),
-          ),
-          if (badge != null) ...[
-            const SizedBox(width: 6),
-            Text(badge!, style: TextStyle(fontSize: 11, color: selected ? look.tabActiveIcon.withValues(alpha: 0.7) : resolve(context, CupertinoColors.secondaryLabel))),
-          ],
-        ]),
       ),
     );
   }

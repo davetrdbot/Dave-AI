@@ -22,12 +22,61 @@ class SetupDrawingView extends StatelessWidget {
         Row(children: [
           Expanded(child: Text(title, style: const TextStyle(color: Color(0xFFF2F4EF), fontSize: 15, fontWeight: FontWeight.w700))),
           if (sub.isNotEmpty) Text(sub, style: const TextStyle(color: Color(0xFF8E959A), fontSize: 12)),
+          GestureDetector(
+            key: const ValueKey('drawing-open'),
+            onTap: () => Navigator.of(context).push(CupertinoPageRoute<void>(fullscreenDialog: true, builder: (_) => DrawingViewer(drawing: drawing))),
+            child: const Padding(padding: EdgeInsets.only(left: 10, right: 4), child: Icon(CupertinoIcons.rotate_right, size: 19, color: Color(0xFFC6F36B))),
+          ),
         ]),
         const SizedBox(height: 8),
         AspectRatio(aspectRatio: 1.45, child: CustomPaint(painter: _DrawingPainter(drawing, DefaultTextStyle.of(context).style.fontFamily), size: Size.infinite)),
         if (note != null && note.isNotEmpty)
           Padding(padding: const EdgeInsets.only(top: 6, right: 4), child: Text(note, style: const TextStyle(color: Color(0xFF8E959A), fontSize: 12.5, height: 1.3))),
       ]),
+    );
+  }
+}
+
+/// Full screen, pinch to zoom, and a button that turns the picture a quarter at a time -- on a
+/// phone held upright a wide chart reads far better turned sideways.
+class DrawingViewer extends StatefulWidget {
+  const DrawingViewer({super.key, required this.drawing});
+  final Map<String, dynamic> drawing;
+
+  @override
+  State<DrawingViewer> createState() => _DrawingViewerState();
+}
+
+class _DrawingViewerState extends State<DrawingViewer> {
+  int _turns = 1; // opens sideways: that's why you tapped it
+
+  @override
+  Widget build(BuildContext context) {
+    final font = DefaultTextStyle.of(context).style.fontFamily;
+    return CupertinoPageScaffold(
+      backgroundColor: _bg,
+      navigationBar: CupertinoNavigationBar(
+        backgroundColor: _bg,
+        middle: Text('${widget.drawing['title'] ?? 'Setup'}', style: const TextStyle(color: _text)),
+        leading: CupertinoButton(padding: EdgeInsets.zero, onPressed: () => Navigator.pop(context), child: const Icon(CupertinoIcons.xmark, color: _text)),
+        trailing: CupertinoButton(
+          key: const ValueKey('drawing-rotate'),
+          padding: EdgeInsets.zero,
+          onPressed: () => setState(() => _turns = (_turns + 1) % 4),
+          child: const Icon(CupertinoIcons.rotate_right, color: Color(0xFFC6F36B)),
+        ),
+      ),
+      child: SafeArea(
+        child: InteractiveViewer(
+          maxScale: 5,
+          child: Center(
+            child: RotatedBox(
+              quarterTurns: _turns,
+              child: AspectRatio(aspectRatio: 1.45, child: CustomPaint(painter: _DrawingPainter(widget.drawing, font), size: Size.infinite)),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

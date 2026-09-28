@@ -176,6 +176,8 @@ http.Client _fakeServer() => MockClient((req) async {
           body = kid == null ? _brain : {'id': kid, 'title': 'V75 fakes the first London breakout', 'useWhen': 'A London-open breakout on V75 with no retest', 'content': 'The first push out of the Asian range on V75 reverses more often than not.', 'createdAt': 0};
         case '/api/app/settings':
           body = jsonDecode(File('test/fixtures/settings.json').readAsStringSync());
+        case '/api/app/provider' when req.method == 'POST' && req.body.contains('"models"'):
+          body = {'models': ['deepseek-ai/DeepSeek-V3.2', 'deepseek-ai/DeepSeek-R1', 'moonshotai/Kimi-K2-Instruct', 'openai/gpt-oss-120b', 'Qwen/Qwen3-235B-A22B', 'zai-org/GLM-4.6']};
         case '/api/app/provider':
           body = {
             'provider': 'baseten',
@@ -503,6 +505,13 @@ void main() {
       await tester.drag(find.byType(ListView).first, const Offset(0, 500));
       await _advance(tester);
       await _shot(tester, 'chat_history_$mode');
+      await tester.tap(find.text('DeepSeek-V3.2').first);
+      await _advance(tester);
+      await _shot(tester, 'ai_switcher_$mode');
+      expect(find.byKey(const ValueKey('ai-palette')), findsOneWidget);
+      expect(find.text('IN USE'), findsOneWidget);
+      await tester.tap(find.byIcon(CupertinoIcons.xmark).last);
+      await _advance(tester);
 
       // Chat is full screen: no tab bar, a back button instead.
       expect(find.byIcon(CupertinoIcons.gear_alt), findsNothing);
@@ -780,6 +789,13 @@ void main() {
       await _advance(tester);
       await _shot(tester, 'drawing_$mode');
       expect(find.text('Sweep of the Asian high, then short'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('drawing-open')));
+      await _advance(tester);
+      await _shot(tester, 'drawing_rotated_$mode');
+      expect(find.byType(RotatedBox), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('drawing-rotate')));
+      await _advance(tester);
+      expect(tester.widget<RotatedBox>(find.byType(RotatedBox)).quarterTurns, 2);
       await tester.pumpWidget(const SizedBox());
     });
 

@@ -1491,6 +1491,8 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     const state = setSelfPause(userId, decision.pauseMinutes ?? MAX_SELF_PAUSE_MINUTES, reason);
     const minutesLeft = Math.round((state.pausedUntil - Date.now()) / 60_000);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "PAUSE", reason });
+    // Shown in the app's Live tab as a countdown ("Dave paused himself -- 4m left").
+    publishActivity(userId, "loop", "self_pause", { until: state.pausedUntil, minutes: minutesLeft, reason, symbol });
     return { action: "PAUSE", symbol, notable: true, message: `⏸ Self-pausing for ${minutesLeft}m\n💡 ${summarizeReason(reason)}` };
   }
 

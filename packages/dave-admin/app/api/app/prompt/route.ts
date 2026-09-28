@@ -21,7 +21,13 @@ const MAX_CHARS = 200_000;
 
 const root = () => process.env.DAVE_DATA_ROOT ?? join(process.cwd(), "..", "..");
 const customPath = (file: string) => join(root(), "data", "prompts", file);
-const shippedPath = (file: string) => join(root(), "prompts", file);
+/** The shipped prompts live with the code, not in the data folder -- on the server DAVE_DATA_ROOT
+ *  is the volume, which has no prompts/ of its own, so the editor opened empty (the trader: "when
+ *  I want to write my own prompt, the existing prompt should show"). Tried in order. */
+const shippedPath = (file: string) => {
+  const candidates = [join(process.cwd(), "..", "..", "prompts", file), join(process.cwd(), "prompts", file), join(root(), "prompts", file)];
+  return candidates.find((c) => existsSync(c)) ?? candidates[0];
+};
 
 function read(path: string): string {
   try {
