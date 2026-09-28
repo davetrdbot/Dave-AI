@@ -65,6 +65,7 @@ import { runSequentialThinking } from "./sequential-thinking.js";
 import { buildClockLine } from "./live-context.js";
 import { loadFrozenSnapshot } from "@dave/memory";
 import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData } from "./symbol-availability.js";
+import { activeAiOutage, clearAiOutage, markAiOutage } from "./ai-outage.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 
@@ -755,6 +756,14 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
     }
   }
 
+  // The AI is down (out of credit, dead key...): don't pull a whole analysis from MT5 only to fail
+  // at the model call -- wait until the back-off runs out (ai-outage.ts).
+  const outage = activeAiOutage(userId);
+  if (outage) {
+    logTick(userId, `skipped -- ${outage.reason}; trying again in ${Math.max(1, Math.round((outage.retryAt - Date.now()) / 60_000))} min`);
+    return { action: "NONE", notable: false };
+  }
+
   const openSymbols = new Set(positions.map((p) => p.symbol.toUpperCase()));
   const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols, groupIdFor);
   if (!picked) {
@@ -1033,7 +1042,17 @@ export async function runAutonomousTick(deps: RunTickDeps): Promise<TickOutcome>
         throw new TickAbortedError();
       }
       logTick(userId, `model call for ${symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
+      const o = markAiOutage(userId, err);
+      if (o.isNew) {
+        publishActivity(userId, "background", "alert", {
+          text: `⚠️ Trading scans are paused: ${o.reason}. I'll stop asking MT5 for analysis and try again on my own every few minutes -- top up or fix the key and I carry on.`,
+        });
+      }
       throw err;
+    }
+    const downFor = clearAiOutage(userId);
+    if (downFor !== undefined) {
+      publishActivity(userId, "background", "alert", { text: `✅ The AI is answering again after ${Math.max(1, Math.round(downFor / 60_000))} min -- trading scans are back on.` });
     }
     try {
       const toolCall = genResult.toolCalls?.find((c) => c.name === DECISION_TOOL_NAME);
