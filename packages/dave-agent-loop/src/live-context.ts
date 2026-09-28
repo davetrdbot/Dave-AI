@@ -1,5 +1,7 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
 import { selfAwareFeedBlock } from "./self-aware-feed.js";
+import { growthStatus } from "./growth-reflection.js";
+import { growthContextBlock } from "@dave/trading";
 import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, getWinStreak, ALERT_CATEGORIES } from "@dave/trading";
 import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK, SL_NEAR_PROGRESS, SL_CRITICAL_PROGRESS, TP_NEAR_PROGRESS } from "./trade-monitor-store.js";
 import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
@@ -234,6 +236,16 @@ export function buildLiveSettingsBlock(userId: string): string {
     }
   })();
   if (feed) lines.push("", feed);
+
+  // The self-improvement loop: the goal, the strategy card under test, the rules, the brain.
+  const growth = (() => {
+    try {
+      return growthContextBlock(userId, growthStatus(userId).score, 14);
+    } catch {
+      return null;
+    }
+  })();
+  if (growth) lines.push("", growth);
 
   const reminders = safeLoadReminders(userId);
   if (reminders) {

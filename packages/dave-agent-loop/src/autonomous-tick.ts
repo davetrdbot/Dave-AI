@@ -35,6 +35,8 @@ import {
   evaluateAccountAwareness,
   ALL_ANALYSIS_TIMEFRAMES,
   isAnalysisScopeSufficientFor,
+  isAvoidedByStrategy,
+  growthContextBlock,
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -67,6 +69,7 @@ import { loadFrozenSnapshot } from "@dave/memory";
 import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData } from "./symbol-availability.js";
 import { activeAiOutage, clearAiOutage, markAiOutage } from "./ai-outage.js";
 import { selfAwareFeedBlock } from "./self-aware-feed.js";
+import { growthStatus } from "./growth-reflection.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 import { ACTIONS_SCHEMA, coerceTickActions, gatherData, isDataAction, runManagementActions, type TickAction } from "./tick-actions.js";
@@ -658,7 +661,8 @@ function resolveCursorSymbol(userId: string, primary: string[], fallback: string
     const symbol = active[symbolCursor % active.length];
     // A pair the broker doesn't have, or that keeps returning nothing, is benched for a while
     // (symbol-availability.ts) -- skipped quietly instead of asked for again every cycle.
-    if (isSymbolUnavailable(userId, symbol)) {
+    // ...and a pair Dave's own strategy decided to leave alone (growth loop: avoid_symbol).
+    if (isSymbolUnavailable(userId, symbol) || isAvoidedByStrategy(userId, symbol)) {
       advanceCursor(userId, primary.length, fallback.length);
       continue;
     }
@@ -699,6 +703,16 @@ export interface RunTickDeps {
  *  doing between real trades than this stdout log (Railway's own log tail). Every early return
  *  used to be silent; now each one says exactly why, and the real chosen symbol/decision/reason
  *  gets logged too, right where it's decided. */
+/** The goal, the strategy card and what the brain has learned -- never allowed to break a scan. */
+function safeGrowthBlock(userId: string): string | null {
+  try {
+    return growthContextBlock(userId, growthStatus(userId).score);
+  } catch (err) {
+    console.warn(`[autonomous-tick] ${userId}: growth block unavailable -- ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
 function logTick(userId: string, line: string): void {
   console.log(`[autonomous-tick] ${userId}: ${line}`);
   publishActivity(userId, "loop", "log", { text: line });
@@ -1036,6 +1050,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     buildTickRemindersLine(userId),
     selfAwareAlertLine,
     selfAwareFeedBlock(userId),
+    safeGrowthBlock(userId),
     activeStrategySkillLine,
   ].filter((line): line is string => line !== null);
 

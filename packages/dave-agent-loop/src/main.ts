@@ -19,6 +19,8 @@ import { APP_NOUS_PREFIX, createAppNousHandler } from "./nous/app-routes.js";
 import { MT5_SCREEN_PREFIX, createMt5ScreenProxy } from "./mt5-screen.js";
 import { logClosedTrade } from "@dave/feedback";
 import { loadSystemPrompt } from "./system-prompt.js";
+import { startGrowthLoop } from "./growth-reflection.js";
+import { modelConfigProvider } from "./provider-selection.js";
 import { publishActivity } from "./activity-bus.js";
 
 export { loadSystemPrompt };
@@ -299,6 +301,7 @@ export async function main(): Promise<void> {
   // Every pair group's pairs in MT5's Market Watch -- sent on boot, on every EA (re)connect, and
   // when a group changes (checked each minute; the command is cheap and idempotent in the EA).
   const marketWatch = createMarketWatchSync(ownerUserId);
+  let growthLoop: ReturnType<typeof startGrowthLoop> | undefined;
   const eaBridge = new EaBridge({
     onCommandResult: (_userId, result) => {
       const said = marketWatch.describeResult(result);
@@ -341,6 +344,7 @@ export async function main(): Promise<void> {
       // SAME real closed-position data the hardcoded Telegram message is built from is now also
       // persisted for real win-rate aggregation -- never a second, possibly-drifting source of truth.
       logClosedTrade(db, userId, closed);
+      if (userId === ownerUserId) growthLoop?.onTradeClosed();
       const chatId = telegramClient && getPrimaryChatId(db, userId);
       const text = buildClosedTradeMessage(closed);
       publishActivity(userId, "background", "trade_closed", { text, symbol: closed.symbol, ticket: closed.ticket, pnl: closed.pnl, reason: closed.reason });
@@ -372,6 +376,18 @@ export async function main(): Promise<void> {
       console.warn(`[ea] market watch sync failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, 60_000).unref();
+
+  // The self-improvement loop (growth-reflection.ts): judges the strategy version under test and
+  // changes one variable at a time, after closed trades and on a timer.
+  growthLoop = startGrowthLoop({
+    userId: ownerUserId,
+    provider: () => modelConfigProvider(db, ownerUserId, () => undefined, "background"),
+    // The loop already put it on the activity feed (kind "growth") -- only Telegram is left.
+    onMessage: (text) => {
+      const chatId = telegramClient && getPrimaryChatId(db, ownerUserId);
+      if (telegramClient && chatId) void telegramClient.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
+    },
+  });
 
   const adminProcess = spawnAdminPanel(dirname(dbPath));
 

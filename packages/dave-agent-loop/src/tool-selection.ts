@@ -232,6 +232,10 @@ export const CORE_TOOL_NAMES: string[] = [
   // The drawing board: the moment it's needed is "draw what you mean", mid-conversation.
   "draw_setup",
   "set_breakeven",
+  "growth_status",
+  "brain_learn",
+  "brain_recall",
+  "reflect_now",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the
