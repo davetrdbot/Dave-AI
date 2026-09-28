@@ -22,6 +22,8 @@ import {
   getMinRiskReward,
   getConfidenceSettings,
   type GrowthScore,
+  type GrowthStatusView,
+  computeGrowthStatus,
   type ScoredTrade,
   type StrategyState,
   type StrategyVersion,
@@ -68,27 +70,10 @@ export function loadGrowthTrades(userId: string): GrowthTrade[] {
     .sort((a, b) => a.closedAt - b.closedAt);
 }
 
-export interface GrowthStatus {
-  score: GrowthScore;
-  /** Score of just the version under test, when one is. */
-  testScore?: GrowthScore;
-  tradesInCycle: number;
-  tradesPerCycle: number;
-  stage: "outcome" | "hypothesis" | "test" | "revise";
-}
+export type GrowthStatus = GrowthStatusView;
 
 export function growthStatus(userId: string, now = Date.now()): GrowthStatus {
-  const goals = getGrowthGoals(userId);
-  const s = getStrategyState(userId, now);
-  const trades = loadGrowthTrades(userId);
-  const balance = getLastKnownAccountSnapshot(userId)?.balance;
-  const recent = trades.filter((t) => t.closedAt >= now - 30 * 86_400_000);
-  const score = scoreAgainstGoals(recent.length >= 3 ? recent : trades.slice(-OUTCOME_WINDOW), balance, goals, now);
-  const v = currentVersion(s);
-  const inCycle = trades.filter((t) => t.closedAt >= v.startedAt).length;
-  const testScore = v.status === "testing" ? scoreAgainstGoals(trades.filter((t) => t.closedAt >= v.startedAt), balance, goals, now) : undefined;
-  const stage = v.status === "testing" ? (inCycle >= goals.tradesPerCycle ? "revise" : "test") : inCycle >= goals.tradesPerCycle ? "hypothesis" : "outcome";
-  return { score, testScore, tradesInCycle: inCycle, tradesPerCycle: goals.tradesPerCycle, stage };
+  return computeGrowthStatus(userId, loadGrowthTrades(userId), getLastKnownAccountSnapshot(userId)?.balance, now);
 }
 
 export interface ReflectionResult {

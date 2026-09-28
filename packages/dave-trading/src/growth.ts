@@ -619,3 +619,40 @@ export function growthContextBlock(userId: string, score?: GrowthScore, maxFacts
   if (facts.length) lines.push(`WHAT YOUR BRAIN HAS LEARNED (strongest first): ${facts.map((f) => `${f.neuron}: ${f.fact.text} (${"●".repeat(f.fact.strength)})`).join(" | ")}`);
   return lines.join("\n");
 }
+
+// ───────────────────────────── status (shared by the bot and the app) ─────────────────────────────
+
+export interface GrowthStatusView {
+  score: GrowthScore;
+  testScore?: GrowthScore;
+  tradesInCycle: number;
+  tradesPerCycle: number;
+  stage: "outcome" | "hypothesis" | "test" | "revise";
+}
+
+/** Where the loop stands, from the closed trades (oldest first) and the balance now. */
+export function computeGrowthStatus(userId: string, trades: ScoredTrade[], balance: number | undefined, now = Date.now()): GrowthStatusView {
+  const goals = getGrowthGoals(userId);
+  const s = getStrategyState(userId, now);
+  const recent = trades.filter((t) => t.closedAt >= now - 30 * 86_400_000);
+  const score = scoreAgainstGoals(recent.length >= 3 ? recent : trades.slice(-20), balance, goals, now);
+  const v = currentVersion(s);
+  const inCycle = trades.filter((t) => t.closedAt >= v.startedAt).length;
+  const testScore = v.status === "testing" ? scoreAgainstGoals(trades.filter((t) => t.closedAt >= v.startedAt), balance, goals, now) : undefined;
+  const stage = v.status === "testing" ? (inCycle >= goals.tradesPerCycle ? "revise" : "test") : inCycle >= goals.tradesPerCycle ? "hypothesis" : "outcome";
+  return { score, testScore, tradesInCycle: inCycle, tradesPerCycle: goals.tradesPerCycle, stage };
+}
+
+/** The trader stops the version under test: its change is undone, the previous version stands. */
+export function stopCurrentTest(userId: string, now = Date.now()): StrategyVersion | null {
+  const s = getStrategyState(userId, now);
+  const v = currentVersion(s);
+  if (v.status !== "testing" || !v.change) return null;
+  if (changeStillInPlace(userId, s, v.change)) applyChange(userId, s, v.change, v.v, true);
+  v.status = "reverted";
+  v.judgedAt = now;
+  v.verdictNote = "Stopped by you -- the change was undone.";
+  s.cycle++;
+  saveStrategyState(userId, s);
+  return v;
+}
