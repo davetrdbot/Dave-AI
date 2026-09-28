@@ -44,6 +44,10 @@ export interface TradeMonitor {
   direction: "buy" | "sell";
   openPrice: number;
   sl?: number;
+  /** The stop as first seen -- what "1R" means. The live `sl` moves (breakeven, trailing), and
+   *  measuring R against a stop that already sits at the entry made the breakeven alert fire on a
+   *  flat trade, reporting P/L -0.01 (the trader). */
+  initialSl?: number;
   tp?: number;
   /** The original trade idea, captured once at first sight and quoted in every alert. */
   reason: string;
@@ -355,6 +359,7 @@ export function advanceMonitor(
       direction: obs.direction,
       openPrice: obs.openPrice,
       sl: obs.sl,
+      initialSl: obs.sl,
       tp: obs.tp,
       reason: obs.reason,
       openedAt: now,
@@ -365,6 +370,7 @@ export function advanceMonitor(
     };
   // Keep live fields fresh (SL/TP can be modified after entry; reason only fills in if we learn it later).
   m.sl = obs.sl ?? m.sl;
+  if (m.initialSl === undefined && m.sl !== undefined && (m.direction === "buy" ? m.sl < m.openPrice : m.sl > m.openPrice)) m.initialSl = m.sl;
   m.tp = obs.tp ?? m.tp;
   // Real bug fixed (the trader, live: an alert reading "📌 Original idea: (reason not recorded)"
   // on a trade that genuinely had a reason). This used to re-assign the placeholder over itself --
@@ -441,9 +447,14 @@ export function advanceMonitor(
     const risk = Math.abs(m.openPrice - m.sl);
     if (risk > 0) {
       const favorable = m.direction === "buy" ? price - m.openPrice : m.openPrice - price;
-      // Breakeven: up as much as it risked -> suggest moving the stop to breakeven. Latched for the
-      // life of the trade (a later dip must not re-suggest it).
-      if (!m.alerts.breakeven && favorable >= risk * BREAKEVEN_R) {
+      // Breakeven: up as much as it ORIGINALLY risked -> move the stop to breakeven. Latched for
+      // the life of the trade (a later dip must not re-suggest it). Measured against the first stop,
+      // never one that already moved; skipped when the stop is already at/through the entry; and
+      // only while the trade really is in profit.
+      const r1 = m.initialSl !== undefined ? Math.abs(m.openPrice - m.initialSl) : risk;
+      const alreadyProtected = m.direction === "buy" ? m.sl >= m.openPrice : m.sl <= m.openPrice;
+      const inProfit = m.lastPnl === undefined || m.lastPnl > 0;
+      if (!m.alerts.breakeven && !alreadyProtected && inProfit && r1 > 0 && favorable >= r1 * BREAKEVEN_R) {
         m.alerts.breakeven = true;
         alerts.push({ kind: "breakeven", monitor: m });
       }

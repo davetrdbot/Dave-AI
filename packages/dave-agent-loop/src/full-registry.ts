@@ -397,6 +397,46 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
     registry.register(adaptTools(TELEGRAM_TOOLS, deps.telegram));
     registry.register(adaptTools(NOTIFICATION_TOOLS, { userId: deps.userId, db: deps.db, client: deps.telegram.client, chatId: deps.telegram.chatId }));
   }
+  // Breakeven as one call (the trader: "if possible make it a tool -- the agent can send breakeven
+  // to a particular pair ticket"). Reads the entry from MT5's own report, refuses a trade that isn't
+  // in profit (a breakeven stop there would sit on the wrong side and the broker rejects it).
+  registry.register([
+    {
+      name: "set_breakeven",
+      description:
+        "Move an open trade's stop loss to its entry price (breakeven), optionally a few points past it to cover the spread (`offset`, in price units, in the trade's favour). " +
+        "Only works on a trade that is already in profit beyond that level. Pass `ticket`, or `symbol` to do every open trade on that pair.",
+      parameters: {
+        type: "object",
+        properties: { ticket: { type: "string" }, symbol: { type: "string" }, offset: { type: "number", description: "extra distance past the entry, in price units; default 0" } },
+      },
+      execute: async (args: Record<string, unknown>) => {
+        const { positions } = getLastKnownState(deps.userId);
+        const offset = Math.max(0, Number(args.offset) || 0);
+        const targets = positions.filter((p) =>
+          args.ticket ? String(p.ticket) === String(args.ticket) : args.symbol ? p.symbol.toUpperCase() === String(args.symbol).toUpperCase() : false,
+        );
+        if (!targets.length) throw new Error(args.ticket || args.symbol ? "No open trade matches that ticket/symbol in MT5's latest report." : "Pass a ticket or a symbol.");
+        const results = [];
+        for (const p of targets) {
+          const buy = p.type === "buy";
+          const level = buy ? p.openPrice + offset : p.openPrice - offset;
+          const price = p.currentPrice;
+          if (price === undefined || (buy ? price <= level : price >= level)) {
+            results.push({ ticket: p.ticket, moved: false, why: `not in profit past ${level} yet (now ${price ?? "unknown"})` });
+            continue;
+          }
+          if (p.sl !== undefined && p.sl !== 0 && (buy ? p.sl >= level : p.sl <= level)) {
+            results.push({ ticket: p.ticket, moved: false, why: `stop already at ${p.sl}, at or past breakeven` });
+            continue;
+          }
+          await deps.executor.modifyOrder(p.ticket, { sl: level });
+          results.push({ ticket: p.ticket, moved: true, sl: level });
+        }
+        return { results };
+      },
+    },
+  ] as AgentTool[]);
   registry.register([createAskUserTool(deps.userId)] as AgentTool[]);
 
   // Update 11 follow-up: "give the bot ability to search from his tools
