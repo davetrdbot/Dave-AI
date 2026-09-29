@@ -91,6 +91,7 @@
     "sequentialThinking": true,
     "memoryWriteApproval": false,
     "telegramSilent": true,
+    "autoDrawTrades": true,
     "sequentialThinkingEffort": "high"
   },
   "alerts": {

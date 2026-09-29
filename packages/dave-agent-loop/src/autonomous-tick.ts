@@ -76,6 +76,7 @@ import { growthStatus } from "./growth-reflection.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 import { tradeDrawing } from "./setup-drawing.js";
+import { getAutoDrawTrades } from "@dave/trading";
 import { resolveTradeLevels, levelsGuidance, exitPrice, type TradeLevels, type TradeAction as LevelAction } from "./trade-levels.js";
 import { parseCandles } from "./decision-grading.js";
 import { ACTIONS_SCHEMA, coerceTickActions, gatherData, isDataAction, runManagementActions, type TickAction } from "./tick-actions.js";
@@ -1876,8 +1877,9 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   recordTickDecision(userId, { ts: Date.now(), symbol, action: decisionAction, reason });
 
   // A picture of the trade for the app's chat (setup-drawing.ts): real M15 candles plus the
-  // entry/SL/TP. Off the trade's path -- a failed candle fetch just means no picture.
-  void (async () => {
+  // entry/SL/TP. Off the trade's path -- a failed candle fetch just means no picture. The trader
+  // can switch it off (Settings > How Dave behaves > Draw my trades).
+  if (getAutoDrawTrades(userId)) void (async () => {
     try {
       const { bars } = parseCandles(await analysis.get<unknown>("candles", order.symbol, "M15", { timeoutMs: 30_000 }));
       const drawing = tradeDrawing({

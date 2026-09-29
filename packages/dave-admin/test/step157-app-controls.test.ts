@@ -92,6 +92,15 @@ assert.equal(trading.getSelfAwareMode(USER), "act");
 r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "selfAwareMode", value: "yolo" });
 assert.equal(r.status, 400);
 
+// Auto-drawn trades: on by default, switchable.
+r = await call(settingsRoute.GET as Handler, "GET", "/api/app/settings");
+assert.equal(r.json.behaviour.autoDrawTrades, true, "trades are drawn by default");
+r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "autoDrawTrades", value: false });
+assert.equal(r.status, 200);
+assert.equal(trading.getAutoDrawTrades(USER), false);
+r = await call(settingsRoute.GET as Handler, "GET", "/api/app/settings");
+assert.equal(r.json.behaviour.autoDrawTrades, false, "the app sees it off");
+
 // Telegram silent mode, from the app.
 r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "telegramSilent", value: true });
 assert.equal(r.status, 200);

@@ -615,6 +615,7 @@ class _BehaviourSection extends StatelessWidget {
         header: const ListHeader('How Dave works'),
         children: [
           _toggle(context, 'telegramSilent', CupertinoIcons.bell_slash, 'Silence Telegram', s.telegramSilent ? 'Off in Telegram; app only' : 'Dave also messages on Telegram', s.telegramSilent),
+          _toggle(context, 'autoDrawTrades', CupertinoIcons.scribble, 'Draw my trades', 'Each new trade drawn in chat', s.autoDrawTrades),
           _toggle(context, 'selfPause', CupertinoIcons.pause_circle, 'Self-pause', 'Dave may pause himself in bad conditions', s.selfPause),
           _toggle(context, 'twoStepTrading', CupertinoIcons.person_2, 'Two-step trading', 'A second AI reviews every trade first', s.twoStepTrading),
           _toggle(context, 'sequentialThinking', CupertinoIcons.list_number, 'Deeper thinking', 'Step-by-step trade decisions; slower, costs more', s.sequentialThinking),

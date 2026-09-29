@@ -173,3 +173,28 @@ export function setSelfAwareMode(userId: string, mode: SelfAwareMode): SelfAware
   appendSettingsLogEntry(userId, "selfAwareMode", previous, mode);
   return mode;
 }
+
+/** Auto-drawn trades (the trader: "add an on and off switch for this"): every trade Dave places is
+ *  drawn into the app's chat. On by default. */
+function autoDrawPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "auto-draw-trades.json");
+}
+
+export function getAutoDrawTrades(userId: string): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(autoDrawPath(userId), "utf8")) as { enabled?: unknown };
+    if (typeof raw.enabled === "boolean") return raw.enabled;
+  } catch {
+    /* missing or broken: the default */
+  }
+  return true;
+}
+
+export function setAutoDrawTrades(userId: string, enabled: boolean): boolean {
+  const previous = getAutoDrawTrades(userId);
+  const path = autoDrawPath(userId);
+  if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ enabled }), "utf8");
+  appendSettingsLogEntry(userId, "autoDrawTrades", previous ? "on" : "off", enabled ? "on" : "off");
+  return enabled;
+}

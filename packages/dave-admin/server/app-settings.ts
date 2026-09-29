@@ -39,7 +39,7 @@ import {
 } from "@dave/trading";
 import { getWriteApprovalSetting, setWriteApprovalSetting } from "@dave/memory";
 import { getTelegramSilence, setTelegramSilenced } from "@dave/telegram";
-import { getSelfAwareMode, setSelfAwareMode, SELF_AWARE_MODES, type SelfAwareMode } from "@dave/trading";
+import { getSelfAwareMode, setSelfAwareMode, SELF_AWARE_MODES, type SelfAwareMode, getAutoDrawTrades, setAutoDrawTrades } from "@dave/trading";
 
 /**
  * Every trader-changeable bot setting, in one place, for the app.
@@ -113,6 +113,7 @@ export function readAppSettings(userId: string) {
       sequentialThinkingEffort: getSequentialThinkingEffort(userId),
       memoryWriteApproval: getWriteApprovalSetting(userId),
       telegramSilent: getTelegramSilence().silent,
+      autoDrawTrades: getAutoDrawTrades(userId),
     },
     alerts: {
       deepLossPercent: { value: getDeepLossAlertPercent(userId), min: 5, max: 95 },
@@ -209,6 +210,9 @@ export function applyAppSetting(userId: string, id: string, value: unknown): voi
     case "sequentialThinkingEffort":
       if (!THINKING_EFFORTS.includes(value as ThinkingEffort)) throw new InvalidSettingError(`Thinking effort must be one of ${THINKING_EFFORTS.join(", ")}.`);
       setSequentialThinkingEffort(userId, value as ThinkingEffort);
+      return;
+    case "autoDrawTrades":
+      setAutoDrawTrades(userId, bool(value, "Draw my trades"));
       return;
     case "telegramSilent":
       setTelegramSilenced(bool(value, "Telegram silent mode"));

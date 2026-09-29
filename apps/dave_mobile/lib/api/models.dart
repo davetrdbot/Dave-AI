@@ -386,6 +386,7 @@ class AppSettings {
     this.sequentialThinkingEffort = 'medium',
     required this.memoryWriteApproval,
     this.telegramSilent = false,
+    this.autoDrawTrades = true,
     required this.deepLossPercent,
     this.selfAwareMode = 'advise',
     required this.alerts,
@@ -416,6 +417,9 @@ class AppSettings {
 
   /// Telegram silent mode: nothing goes to the Telegram bot; Dave talks in the app only.
   final bool telegramSilent;
+
+  /// Every trade Dave places is drawn into the chat.
+  final bool autoDrawTrades;
   final Bounded deepLossPercent;
 
   /// off / advise / act -- what Dave does when an alert on one of his trades calls for a decision.
@@ -451,6 +455,7 @@ class AppSettings {
       sequentialThinkingEffort: b['sequentialThinkingEffort'] as String? ?? 'medium',
       memoryWriteApproval: b['memoryWriteApproval'] == true,
       telegramSilent: b['telegramSilent'] == true,
+      autoDrawTrades: b['autoDrawTrades'] != false,
       deepLossPercent: Bounded.fromJson(a['deepLossPercent'], 50, 5, 95),
       selfAwareMode: (a['selfAwareMode'] is Map ? (a['selfAwareMode'] as Map)['value'] : null) as String? ?? 'advise',
       alerts: _list(a['toggles']).map((x) => AlertToggle(_str(x['id']), _str(x['label']), x['on'] != false)).toList(),
