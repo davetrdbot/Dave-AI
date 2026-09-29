@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Voice calls switch the phone into call mode (echo cancelling, speakerphone). -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Trade alerts. The connection to the server is held by a foreground service, so alerts
          arrive with no Firebase and nothing else installed. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
