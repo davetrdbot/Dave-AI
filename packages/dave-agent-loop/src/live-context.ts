@@ -1,6 +1,7 @@
 import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTradingSession, getTradingMode, getActiveStrategySkillId, TRADING_SESSION_WINDOWS_UTC, type RiskMode } from "@dave/trading";
 import { selfAwareFeedBlock } from "./self-aware-feed.js";
 import { growthStatus } from "./growth-reflection.js";
+import { todoContextBlock } from "./todos.js";
 import { growthContextBlock } from "@dave/trading";
 import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, getWinStreak, ALERT_CATEGORIES } from "@dave/trading";
 import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK, SL_NEAR_PROGRESS, SL_CRITICAL_PROGRESS, TP_NEAR_PROGRESS } from "./trade-monitor-store.js";
@@ -236,6 +237,16 @@ export function buildLiveSettingsBlock(userId: string): string {
     }
   })();
   if (feed) lines.push("", feed);
+
+  // The to-do list he's in the middle of (a multi-part request, or one resumed after a timeout).
+  const todos = (() => {
+    try {
+      return todoContextBlock(userId);
+    } catch {
+      return null;
+    }
+  })();
+  if (todos) lines.push("", todos);
 
   // The self-improvement loop: the goal, the strategy card under test, the rules, the brain.
   const growth = (() => {

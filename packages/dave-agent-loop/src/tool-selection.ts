@@ -236,6 +236,7 @@ export const CORE_TOOL_NAMES: string[] = [
   "brain_learn",
   "brain_recall",
   "reflect_now",
+  "update_todos",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the

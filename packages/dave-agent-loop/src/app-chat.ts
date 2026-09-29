@@ -20,6 +20,7 @@ import { saveAppFile } from "./app-files.js";
 import { chatEventPublisher } from "./activity-events.js";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { autoSaveMemory } from "./memory-autosave.js";
+import { resumeUnfinishedTodos } from "./todos.js";
 
 export { toolLabel, chatEventPublisher } from "./activity-events.js";
 
@@ -128,6 +129,7 @@ export interface AppChatInput {
 export async function runAppChatTurn(deps: AppChatDeps, input: AppChatInput, turnId = newTurnId(), loopFactory = (d: AppChatDeps) => new AgentLoop(modelProvider(d), appRegistry(d))): Promise<AgentRunResult | undefined> {
   const { userId, db } = deps;
   const extra = { turnId, channel: "app" as const };
+  const turnStartedAt = Date.now();
   publishActivity(userId, "chat", "user_message", { text: input.display?.text ?? input.text, images: input.images?.length ?? 0, ...(input.display?.files.length ? { files: input.display.files } : {}) }, extra);
   publishActivity(userId, "chat", "turn_start", {}, extra);
 
@@ -158,6 +160,12 @@ export async function runAppChatTurn(deps: AppChatDeps, input: AppChatInput, tur
       history.push({ role: "user", content: withLiveContext(userId, content) });
       result = await loop.run(history, { signal: controller.signal, onEvent });
     }
+    // A multi-part request whose to-do list isn't finished carries on by itself (todos.ts).
+    result = await resumeUnfinishedTodos(userId, turnStartedAt, result, (h) => loop.run(h, { signal: controller.signal, onEvent }), (r, progress) => {
+      saveConversationHistory(db, historyKey, r.history);
+      const said = r.status === "done" ? r.text.trim() : "";
+      publishActivity(userId, "chat", "notice", { text: `${said ? `${said}\n\n` : ""}To-do list ${progress} done -- carrying on with the rest.` }, extra);
+    });
     saveConversationHistory(db, historyKey, result.history);
     publishFinal(userId, turnId, "app", result);
     if (result.status === "done") {

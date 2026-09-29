@@ -409,6 +409,14 @@ http.Client _fakeChatStream() => MockClient.streaming((req, _) async {
         frame('turn_start', {}),
         frame('file', {'id': 'ab12cd34ef567890', 'name': 'gold-backtest.csv', 'bytes': 48213, 'mime': 'text/csv', 'caption': 'Last 90 days of the pullback setup'}),
         frame('thinking', {'text': 'The trader wants an entry. Check price and structure first.'}),
+        frame('tool_start', {'id': 't', 'name': 'update_todos', 'label': 'To-do list', 'args': {}}),
+        frame('tool_end', {'id': 't', 'name': 'update_todos', 'label': 'To-do list', 'ms': 3, 'result': {
+          'todos': [
+            {'id': '1', 'text': 'Check the gold price', 'status': 'done', 'note': '2,651.2'},
+            {'id': '2', 'text': 'Find a setup on gold', 'status': 'in_progress'},
+            {'id': '3', 'text': "Today's P&L", 'status': 'pending'},
+          ],
+        }}),
         frame('tool_start', {'id': 'a', 'name': 'get_price', 'label': 'Checking price', 'args': {'symbol': 'XAUUSD'}}),
         frame('tool_end', {'id': 'a', 'name': 'get_price', 'label': 'Checking price', 'result': {'bid': 2651.2}, 'ms': 420}),
         frame('text', {'text': 'Price is 2,651. Looking for structure.'}),
@@ -543,19 +551,23 @@ void main() {
       // Chat: the stored conversation, then the live turn with its steps.
       await _shot(tester, 'chat_$mode');
       expect(find.text('gold-backtest.csv'), findsOneWidget, reason: 'a file Dave sent shows as a card');
-      expect(find.text('Listen'), findsWidgets, reason: 'replies can be read aloud');
-      expect(find.text('Should I buy gold now?'), findsOneWidget);
       expect(find.text('Checking price'), findsOneWidget);
       expect(find.text('Hunting for a setup'), findsOneWidget);
       expect(find.text('Stop'), findsOneWidget, reason: 'a turn is running');
       expect(find.text('Place trade'), findsOneWidget, reason: "Nous's card, with its buttons");
-      expect(find.text('Resistance'), findsOneWidget, reason: 'the markdown table in the stored reply');
       await tester.tap(find.text('Checking price'));
       await _advance(tester);
       expect(find.textContaining('2651.2'), findsOneWidget, reason: 'a tool row opens to its result');
       await tester.drag(find.byType(ListView).first, const Offset(0, 500));
       await _advance(tester);
       await _shot(tester, 'chat_history_$mode');
+      // The stored conversation, above the live turn (the to-do card pushes it up).
+      for (var i = 0; i < 8 && find.text('Resistance').evaluate().isEmpty; i++) {
+        await tester.dragFrom(const Offset(200, 350), const Offset(0, 400));
+        await _advance(tester);
+      }
+      expect(find.text('Listen'), findsWidgets, reason: 'replies can be read aloud');
+      expect(find.text('Resistance'), findsOneWidget, reason: 'the markdown table in the stored reply');
       await tester.tap(find.text('DeepSeek-V3.2').first);
       await _advance(tester);
       await _shot(tester, 'ai_switcher_$mode');

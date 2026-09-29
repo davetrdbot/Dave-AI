@@ -41,6 +41,7 @@ import { startNous } from "./nous/service.js";
 import { startScalpCycleSweep } from "./scalp-cycle-sweep.js";
 import { startSetupSweep } from "./setup-sweep.js";
 import { autoSaveMemory } from "./memory-autosave.js";
+import { resumeUnfinishedTodos } from "./todos.js";
 import { seedStructureTargetsSkill } from "@dave/skills";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
@@ -219,6 +220,7 @@ async function runAgentTurn(
   const abortController = beginTurn(deps.ownerUserId, "telegram");
   // The same turn, live in the app (shared conversation): what was asked, each step, the reply.
   const turnId = newTurnId();
+  const turnStartedAt = Date.now();
   publishActivity(deps.ownerUserId, "chat", "user_message", { text: messageText ?? (typeof userContent === "string" ? userContent : "(attachment)") }, { turnId, channel: "telegram" });
   publishActivity(deps.ownerUserId, "chat", "turn_start", {}, { turnId, channel: "telegram" });
   const onEvent = chatEventPublisher(deps.ownerUserId, turnId, "telegram");
@@ -248,6 +250,13 @@ async function runAgentTurn(
         history.push({ role: "user", content: withLiveContext(deps.ownerUserId, userContent, replyToMessageId) });
         result = await loop.run(history, { signal: abortController.signal, onStep, onEvent });
       }
+      // A multi-part request whose to-do list isn't finished carries on by itself (todos.ts).
+      result = await resumeUnfinishedTodos(deps.ownerUserId, turnStartedAt, result, (h) => loop.run(h, { signal: abortController.signal, onStep, onEvent }), async (r, progress) => {
+        saveConversationHistory(deps.db, historyKey, r.history);
+        const said = r.status === "done" && !endedWithOwnMessage(r.steps) ? r.text.trim() : "";
+        publishActivity(deps.ownerUserId, "chat", "notice", { text: `${said ? `${said}\n\n` : ""}To-do list ${progress} done -- carrying on with the rest.` }, { turnId, channel: "telegram" });
+        if (said) await client.sendMessage({ chat_id: chatId, text: markdownToTelegramHtml(said), parse_mode: "HTML" }).catch(() => undefined);
+      });
       saveConversationHistory(deps.db, historyKey, result.history);
       publishFinal(deps.ownerUserId, turnId, "telegram", result);
       if (result.status === "done") {

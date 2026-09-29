@@ -662,6 +662,7 @@ class _WorkingCardState extends State<_WorkingCard> {
         ? 'Working${tools > 0 ? ' · $tools step${tools == 1 ? '' : 's'}' : ''} · ${elapsed}s'
         : '${turn.stopped != null ? 'Stopped' : 'Done'} · $tools step${tools == 1 ? '' : 's'}${turn.thoughts.isNotEmpty ? ' · thought it through' : ''}';
     final cards = turn.steps.where((s) => s.kind == 'card').toList();
+    final todos = _latestTodos(turn);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Column(
@@ -695,6 +696,8 @@ class _WorkingCardState extends State<_WorkingCard> {
                     ),
                   ),
                 ),
+                // The to-do list stays in view, folded or not: it is the plan he's working through.
+                if (todos != null) _TodoChecklist(items: todos, running: turn.running),
                 if (open)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
@@ -719,6 +722,105 @@ class _WorkingCardState extends State<_WorkingCard> {
           ),
           // Messages Dave sent during the turn (tables, cards) stay visible even when folded.
           for (final c in cards) _CardView(card: c.card!, onButton: widget.onCardButton),
+        ],
+      ),
+    );
+  }
+}
+
+/// The newest state of Dave's to-do list in this turn (from `update_todos`), or null.
+List<Map<String, dynamic>>? _latestTodos(TurnEntry turn) {
+  for (final s in turn.steps.reversed) {
+    if (s.kind != 'tool' || s.name != 'update_todos') continue;
+    final result = s.result;
+    final args = s.args;
+    final raw = (result is Map && result['todos'] is List)
+        ? result['todos'] as List
+        : (args is Map && args['todos'] is List)
+            ? args['todos'] as List
+            : null;
+    if (raw == null) continue;
+    final items = raw.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList();
+    if (items.isNotEmpty) return items;
+  }
+  return null;
+}
+
+class _TodoChecklist extends StatelessWidget {
+  const _TodoChecklist({required this.items, required this.running});
+  final List<Map<String, dynamic>> items;
+  final bool running;
+
+  @override
+  Widget build(BuildContext context) {
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    final label = resolve(context, CupertinoColors.label);
+    final done = items.where((t) => t['status'] == 'done').length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text('To-do list', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: secondary)),
+              const Spacer(),
+              Text('$done of ${items.length} done', style: TextStyle(fontSize: 12, color: secondary, fontFeatures: const [FontFeature.tabularFigures()])),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: Container(
+              height: 3,
+              color: resolve(context, CupertinoColors.systemFill),
+              alignment: Alignment.centerLeft,
+              child: FractionallySizedBox(
+                widthFactor: items.isEmpty ? 0 : done / items.length,
+                child: Container(color: resolve(context, CupertinoColors.systemGreen)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          for (final t in items) _todoRow(context, t, label, secondary),
+        ],
+      ),
+    );
+  }
+
+  Widget _todoRow(BuildContext context, Map<String, dynamic> t, Color label, Color secondary) {
+    final status = t['status'] as String? ?? 'pending';
+    final note = (t['note'] as String?)?.trim();
+    final Widget icon = switch (status) {
+      'done' => Icon(CupertinoIcons.checkmark_circle_fill, size: 16, color: resolve(context, CupertinoColors.systemGreen)),
+      'blocked' => Icon(CupertinoIcons.exclamationmark_circle_fill, size: 16, color: resolve(context, CupertinoColors.systemOrange)),
+      'in_progress' => running ? const CupertinoActivityIndicator(radius: 6) : Icon(CupertinoIcons.circle_lefthalf_fill, size: 16, color: resolve(context, CupertinoColors.systemBlue)),
+      _ => Icon(CupertinoIcons.circle, size: 16, color: resolve(context, CupertinoColors.tertiaryLabel)),
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 18, height: 18, child: Center(child: icon)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${t['text'] ?? ''}',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    height: 1.3,
+                    fontWeight: status == 'in_progress' ? FontWeight.w600 : FontWeight.w400,
+                    color: status == 'done' ? secondary : label,
+                  ),
+                ),
+                if (note != null && note.isNotEmpty) Text(note, style: TextStyle(fontSize: 12, height: 1.3, color: secondary)),
+              ],
+            ),
+          ),
         ],
       ),
     );
