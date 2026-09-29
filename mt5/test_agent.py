@@ -209,6 +209,38 @@ check(code == 409 and "installing" in body["error"], "before MT5 is installed, c
 code, body = call("GET", "/status")
 check(code == 200 and body["installed"] is False and body["account"]["login"] == "123" and "password" not in json.dumps(body), "status never includes the password")
 
+# The EA is rebuilt when its code changes (it used to build only once, ever), and a failed build
+# keeps the previous working EA instead of leaving MT5 with none.
+import subprocess as _sp  # noqa: E402
+_real_run = _sp.run
+src = os.path.join(tmp, "DaveEA-src.mq5")
+agent.EA_SOURCE = src
+with open(src, "w") as f:
+    f.write("// version 1")
+build_ok = {"v": True}
+def _fake_metaeditor(*a, **k):
+    if build_ok["v"]:
+        with open(agent.ex5_path(), "w") as f:
+            f.write(open(src).read())
+    return None
+agent.subprocess.run = _fake_metaeditor
+check(agent.ea_source_changed() is True, "a never-built EA counts as changed")
+ok, _ = agent.compile_ea()
+check(ok and open(agent.ex5_path()).read() == "// version 1", "first build")
+check(agent.ea_source_changed() is False, "same code: no rebuild needed")
+with open(src, "w") as f:
+    f.write("// version 2 (pip fix)")
+check(agent.ea_source_changed() is True, "new EA code is noticed after a redeploy")
+ok, _ = agent.compile_ea()
+check(ok and open(agent.ex5_path()).read() == "// version 2 (pip fix)", "the new version is built")
+with open(src, "w") as f:
+    f.write("// version 3 (broken)")
+build_ok["v"] = False
+ok, _ = agent.compile_ea()
+check(not ok and open(agent.ex5_path()).read() == "// version 2 (pip fix)", "a failed build keeps the previous working EA")
+check(not os.path.exists(agent.ex5_path() + ".bak"), "no leftover backup")
+agent.subprocess.run = _real_run
+
 print()
 if failures:
     print("%d FAILED" % len(failures))

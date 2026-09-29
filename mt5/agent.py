@@ -157,14 +157,35 @@ def compile_ea():
     os.makedirs(dst_dir, exist_ok=True)
     shutil.copyfile(EA_SOURCE, os.path.join(dst_dir, "DaveEA.mq5"))
     log_path = os.path.join(dst_dir, "compile.log")
+    # Keep the working EA until the new one has built: a compile that fails must never leave the
+    # terminal with no EA at all.
+    backup = ex5_path() + ".bak"
     if os.path.exists(ex5_path()):
-        os.remove(ex5_path())
+        os.replace(ex5_path(), backup)
     subprocess.run(
         [WINE, os.path.join(MT5_DIR, "MetaEditor64.exe"), "/portable", r"/compile:MQL5\Experts\Dave\DaveEA.mq5", r"/log:MQL5\Experts\Dave\compile.log"],
         cwd=MT5_DIR, timeout=300, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     summary = read_text(log_path)[-600:]
-    return os.path.exists(ex5_path()), summary.strip()
+    ok = os.path.exists(ex5_path())
+    if ok:
+        if os.path.exists(backup):
+            os.remove(backup)
+    elif os.path.exists(backup):
+        os.replace(backup, ex5_path())
+    return ok, summary.strip()
+
+
+def ea_source_changed():
+    """True when the EA in this image differs from the one last compiled. The compiled EA lives on
+    the volume and outlives redeploys -- without this check a new EA version was never built: the
+    terminal kept running the first one ever compiled."""
+    dst = os.path.join(MT5_DIR, "MQL5", "Experts", "Dave", "DaveEA.mq5")
+    try:
+        with open(dst, "rb") as a, open(EA_SOURCE, "rb") as b:
+            return a.read() != b.read()
+    except OSError:
+        return True
 
 
 def read_text(path):
@@ -707,8 +728,9 @@ def main():
     threading.Thread(target=relay_loop, daemon=True).start()
     state = load_state()
     if state.get("login") and installed():
-        if not os.path.exists(ex5_path()):
-            compile_ea()
+        if not os.path.exists(ex5_path()) or ea_source_changed():
+            ok, summary = compile_ea()
+            log("EA compiled -- new version loaded" if ok else "EA did NOT compile -- kept the previous version", summary[-300:])
         start_terminal(state)
     threading.Thread(target=supervise, daemon=True).start()
     serve()
