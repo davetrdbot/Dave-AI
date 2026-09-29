@@ -75,7 +75,7 @@ export const GET = withDevice(async ({ userId, req }) => {
     leverage: snapshot?.leverage ?? null,
     updatedAt: snapshot?.updatedAt ?? null,
   };
-  const eaView = { connected: ea.connected, lastSeenAt: ea.lastSeenAt, secondsSinceLastSeen: ea.secondsSinceLastSeen };
+  const eaView = { connected: ea.connected, lastSeenAt: ea.lastSeenAt, secondsSinceLastSeen: ea.secondsSinceLastSeen, version: ea.eaVersion ?? null, updateAvailable: ea.eaUpdateAvailable ?? false };
   const open = { positions, pendingOrders, count: positions.length, maxOpenTrades: risk.maxOpenTrades ?? null };
 
   // ?light=1: just what moves every few seconds (money, open trades, pending orders) -- the app

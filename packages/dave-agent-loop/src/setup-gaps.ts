@@ -15,6 +15,9 @@ export function setupGaps(db: DaveDatabase, userId: string): string[] {
   if (getEaConnectionStatus(userId).connected && getLastKnownAccountSnapshot(userId)?.algoTrading === false) {
     gaps.push("Turn on Algo Trading in MetaTrader 5 -- the EA is connected, but MT5 refuses its orders while that button is off. (In my container, /mt5 -> Restart MT5 turns it back on.)");
   }
+  if (getEaConnectionStatus(userId).connected && getEaConnectionStatus(userId).eaUpdateAvailable) {
+    gaps.push("Update the EA -- the connected one is an older version with some wrong analysis numbers. /ea gives you the new file (in my container, /mt5 updates it by itself).");
+  }
   if (!getEaConnectionStatus(userId).connected) {
     gaps.push("Connect MetaTrader 5 -- /mt5 runs it in my own container with no VPS (you send your login), or /ea gives you the EA file for an MT5 you run yourself.");
   }

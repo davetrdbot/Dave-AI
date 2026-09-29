@@ -38,6 +38,14 @@ export interface EaPosition {
    *  reported at all -- Dave had no way to show a real profit/loss figure for an open position
    *  without guessing at pip value from price alone, which MT5 already computes correctly. */
   pnl?: number;
+  /** EA 3.0+: swap so far, when it opened (UTC ISO), its magic number, whether Dave (this EA's
+   *  magic) opened it, its trade comment, and the symbol's decimals. */
+  swap?: number;
+  openTime?: string;
+  magic?: number;
+  byDave?: boolean;
+  comment?: string;
+  digits?: number;
 }
 
 export interface EaPendingOrder {
@@ -49,6 +57,11 @@ export interface EaPendingOrder {
   /** 0 = none. Older EAs don't send these. */
   sl?: number;
   tp?: number;
+  /** EA 3.0+. */
+  placedTime?: string;
+  expiration?: string;
+  byDave?: boolean;
+  comment?: string;
 }
 
 export interface EaCommandResult {
@@ -76,13 +89,37 @@ export interface EaCommandResult {
 export interface EaClosedPosition {
   ticket: string;
   symbol: string;
+  /** EA 3.0+: the whole trade's net result -- every closing deal + swap + commission + fees.
+   *  Older EAs sent only the last closing deal's profit. */
   pnl: number;
-  reason: "tp" | "sl" | "dave" | "manual";
+  /** "stopout" (EA 3.0+) = the broker closed it for margin; "unknown" = MT5 never wrote the history. */
+  reason: "tp" | "sl" | "dave" | "manual" | "stopout" | "unknown";
+  profit?: number;
+  swap?: number;
+  commission?: number;
+  type?: "buy" | "sell" | "";
+  volume?: number;
+  openPrice?: number;
+  closePrice?: number;
+  openTime?: string;
+  closeTime?: string;
+  /** MT5 never wrote the closing deal (after ~6 reports of waiting) -- pnl/reason unknown. */
+  historyMissing?: boolean;
 }
 
 export interface EaReport {
   type: "heartbeat" | "snapshot";
+  /** The EA file's version (absent before 3.0). */
+  eaVersion?: string;
   account: string;
+  company?: string;
+  /** Account currency (USD, EUR, ...). */
+  currency?: string;
+  /** Floating profit of all open trades, and MT5's margin level (%). */
+  profit?: number;
+  marginLevel?: number;
+  /** Broker server clock minus UTC, in seconds. */
+  serverUtcOffset?: number;
   /** The account holder's name and broker server (EAs built before this don't send them). */
   accountName?: string;
   server?: string;
@@ -114,7 +151,24 @@ export interface AccountSnapshot {
   leverage?: number;
   /** Absent from EAs built before this field existed. */
   algoTrading?: boolean;
+  /** EA 3.0+. */
+  eaVersion?: string;
+  currency?: string;
+  marginLevel?: number;
+  profit?: number;
+  serverUtcOffset?: number;
   updatedAt: number;
+}
+
+/** The EA version this bot ships. An older (or unversioned) EA still works -- the bot just says an
+ *  update is available, so the trader gets the corrected data. */
+export const CURRENT_EA_VERSION = "3.0";
+
+export function isEaOutdated(version: string | undefined): boolean {
+  if (!version) return true;
+  const [a, b] = version.split(".").map((n) => Number(n) || 0);
+  const [x, y] = CURRENT_EA_VERSION.split(".").map((n) => Number(n) || 0);
+  return a < x || (a === x && (b ?? 0) < (y ?? 0));
 }
 
 export type EaCommand =
@@ -129,7 +183,9 @@ export type EaCommand =
    * every trade command already uses, not a new push/stream. `symbol` can be ANY symbol in the
    * terminal's Market Watch, not just the chart the EA is attached to (item 13).
    */
-  | { id: string; action: "analyze"; endpoint: string; symbol: string; timeframe: string }
+  // Extra flat settings some endpoints take (candles: count; position_size: side/entry/sl/risk_pct/
+  // risk_money; history: days).
+  | { id: string; action: "analyze"; endpoint: string; symbol: string; timeframe: string; [param: string]: string | number | boolean }
   /**
    * Item 5 real gap fixed (user: "add a real settings button letting the user configure...
    * at what interval" the EA pushes its heartbeat/state). The EA's push cadence
@@ -278,6 +334,9 @@ export interface EaConnectionStatus {
   connected: boolean;
   lastSeenAt: number | null;
   secondsSinceLastSeen: number | null;
+  /** The connected EA's version (undefined = older than 3.0) and whether a newer one is available. */
+  eaVersion?: string;
+  eaUpdateAvailable?: boolean;
 }
 
 /**
@@ -291,7 +350,8 @@ export function getEaConnectionStatus(userId: string, now = Date.now()): EaConne
   const lastSeen = readJson<number | null>(lastSeenPath(userId), null);
   if (lastSeen === null) return { connected: false, lastSeenAt: null, secondsSinceLastSeen: null };
   const secondsSinceLastSeen = Math.floor((now - lastSeen) / 1000);
-  return { connected: now - lastSeen <= CONNECTION_GAP_MS, lastSeenAt: lastSeen, secondsSinceLastSeen };
+  const eaVersion = getLastKnownAccountSnapshot(userId)?.eaVersion;
+  return { connected: now - lastSeen <= CONNECTION_GAP_MS, lastSeenAt: lastSeen, secondsSinceLastSeen, eaVersion, eaUpdateAvailable: isEaOutdated(eaVersion) };
 }
 
 function markSeen(userId: string, now = Date.now()): void {
@@ -464,6 +524,11 @@ function saveAccountSnapshot(userId: string, report: EaReport): void {
     freeMargin: report.freeMargin,
     leverage: report.leverage,
     algoTrading: typeof report.algoTrading === "boolean" ? report.algoTrading : undefined,
+    eaVersion: report.eaVersion || undefined,
+    currency: report.currency || undefined,
+    marginLevel: typeof report.marginLevel === "number" ? report.marginLevel : undefined,
+    profit: typeof report.profit === "number" ? report.profit : undefined,
+    serverUtcOffset: typeof report.serverUtcOffset === "number" ? report.serverUtcOffset : undefined,
     updatedAt: Date.now(),
   } satisfies AccountSnapshot);
 }
@@ -490,9 +555,11 @@ export interface EaReportHandlers {
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => resolve(body));
+    // Joined as bytes, decoded once: a multi-byte UTF-8 character split across two chunks would
+    // otherwise be garbled.
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
@@ -529,7 +596,12 @@ export function createEaWebhookServer(handlers: EaReportHandlers = {}): Server {
     markSeen(userId);
 
     // Checked BEFORE the save below creates the file -- afterwards it always exists.
-    const isFirstReport = !existsSync(lastKnownStatePath(userId));
+    // The first report from a NEW EA version also starts fresh: EA 3.0 reports big ticket numbers
+    // correctly (older EAs cut them), so comparing against the old EA's state could read every
+    // open trade as "closed" and again as "opened".
+    const priorSnapshot = getLastKnownAccountSnapshot(userId);
+    const versionChanged = priorSnapshot !== undefined && (report.eaVersion || undefined) !== priorSnapshot.eaVersion;
+    const isFirstReport = !existsSync(lastKnownStatePath(userId)) || versionChanged;
     const previous = { ...getLastKnownState(userId), isFirstReport };
     saveLastKnownState(userId, report.positions ?? [], report.pendingOrders ?? []);
     saveAccountSnapshot(userId, report);

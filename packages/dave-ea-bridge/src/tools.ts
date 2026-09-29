@@ -1,4 +1,4 @@
-import { getLastKnownState, getLastKnownAccountSnapshot } from "./ea-webhook.js";
+import { getLastKnownState, getLastKnownAccountSnapshot, isEaOutdated } from "./ea-webhook.js";
 import { requestAnalysis } from "./analysis-request.js";
 
 /**
@@ -66,7 +66,19 @@ export const EA_STATE_TOOLS: EaToolDefinition[] = [
     execute: async (_args, ctx) => {
       const snapshot = getLastKnownAccountSnapshot(ctx.userId);
       if (!snapshot) return { balance: undefined, note: "no EA report received yet for this user" };
-      return { balance: snapshot.balance, equity: snapshot.equity, margin: snapshot.margin, freeMargin: snapshot.freeMargin, leverage: snapshot.leverage, updatedAt: snapshot.updatedAt };
+      return {
+        balance: snapshot.balance,
+        equity: snapshot.equity,
+        margin: snapshot.margin,
+        freeMargin: snapshot.freeMargin,
+        marginLevel: snapshot.marginLevel,
+        leverage: snapshot.leverage,
+        currency: snapshot.currency,
+        floatingProfit: snapshot.profit,
+        eaVersion: snapshot.eaVersion ?? "older than 3.0",
+        eaUpdateAvailable: isEaOutdated(snapshot.eaVersion),
+        updatedAt: snapshot.updatedAt,
+      };
     },
   },
 ];
@@ -100,7 +112,23 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
   analysisTool("get_volume", "volume", "volume analysis (current vs average, bull/bear volume delta, spikes/climax)"),
   analysisTool("get_ichimoku", "ichimoku", "Ichimoku Cloud (tenkan/kijun/senkou A+B/chikou, cloud position, TK cross, signal score)"),
   analysisTool("get_fibonacci", "fibonacci", "Fibonacci retracement/extension levels, nearest level, OTE zone, golden-ratio bounce"),
-  analysisTool("get_candles", "candles", "20 candles + the present forming candle, with body/wick ratios, size vs ATR, gap and imbalance detection"),
+  {
+    name: "get_candles",
+    description:
+      "Real candles computed LIVE by the connected MT5 EA, newest first: the still-forming candle (closed:false, seconds_left) plus closed ones, " +
+      "each with UTC time, OHLC, tick volume, body/wick ratios, size vs ATR, candle type (hammer vs hanging man uses the trend before it), gap and imbalance. " +
+      "count = how many (default 21, up to 300).",
+    parameters: {
+      type: "object",
+      properties: { symbol: { type: "string" }, timeframe: { type: "string" }, count: { type: "number", description: "how many candles, 1-300 (default 21)" } },
+      required: ["symbol"],
+    },
+    execute: async (args, ctx) =>
+      requestAnalysis(ctx.userId, "candles", args.symbol as string, (args.timeframe as string) ?? "M15", {
+        ...(ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : {}),
+        params: { count: Math.max(1, Math.min(300, Math.round(Number(args.count) || 21))) },
+      }),
+  },
   analysisTool("get_patterns", "patterns", "candlestick pattern recognition (single/double/triple patterns, strongest pattern, bias, reliability)"),
   analysisTool("get_ict", "ict", "ICT concepts (FVG/iFVG, order blocks, breaker blocks, killzones, silver bullet, Judas swing, AMD phase, OTE zone)"),
   analysisTool("get_wyckoff", "wyckoff", "Wyckoff phase analysis (accumulation/distribution/markup, spring/UTAD events, effort-vs-result)"),
@@ -205,4 +233,66 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
     },
   },
   analysisTool("ping_ea", "ping", "a trivial health check confirming the connected EA is alive and responsive -- no market data"),
+  analysisTool("get_adx", "adx", "Wilder ADX(14) trend strength with +DI/-DI (weak/emerging/strong/very strong, direction, rising or falling)"),
+  {
+    name: "get_mtf",
+    description:
+      "Multi-timeframe summary in ONE call, computed LIVE by the MT5 EA: for M5, M15, H1, H4 and D1 -- the SMMA 6/20/100 trend score and bias " +
+      "(the same system as get_trend), Wilder RSI(14), ATR(14) and ADX(14) -- plus the overall alignment (ALL_BULL / ALL_BEAR / MOSTLY_... / MIXED). " +
+      "Use it to check whether the timeframes agree before a trade. Not included in get_all_analysis.",
+    parameters: { type: "object", properties: { symbol: { type: "string" } }, required: ["symbol"] },
+    execute: async (args, ctx) =>
+      requestAnalysis(ctx.userId, "mtf", args.symbol as string, "M15", ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined),
+  },
+  {
+    name: "get_position_size",
+    description:
+      "EXACT lot size for a trade, calculated by MT5 itself (OrderCalcProfit): from the side, the entry (default: the current price), the stop loss, " +
+      "and the risk (risk_pct of the balance, default 1%, or risk_money). Works for any pair, gold or synthetic index. " +
+      "Returns lots (rounded DOWN to the broker's lot step), the money actually at risk, the loss per 1 lot, margin needed, and whether it's below the minimum lot.",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        side: { type: "string", enum: ["buy", "sell"] },
+        sl: { type: "number", description: "stop loss price" },
+        entry: { type: "number", description: "entry price (omit for the current price)" },
+        risk_pct: { type: "number", description: "% of balance to risk (default 1)" },
+        risk_money: { type: "number", description: "money to risk, in the account currency (instead of risk_pct)" },
+      },
+      required: ["symbol", "side", "sl"],
+    },
+    execute: async (args, ctx) => {
+      const params: Record<string, string | number> = { side: String(args.side ?? "buy"), sl: Number(args.sl) };
+      if (typeof args.entry === "number" && args.entry > 0) params.entry = args.entry;
+      if (typeof args.risk_pct === "number" && args.risk_pct > 0) params.risk_pct = args.risk_pct;
+      if (typeof args.risk_money === "number" && args.risk_money > 0) params.risk_money = args.risk_money;
+      return requestAnalysis(ctx.userId, "position_size", args.symbol as string, "M15", { ...(ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : {}), params });
+    },
+  },
+  {
+    name: "get_symbol_info",
+    description:
+      "The contract for a symbol, straight from the broker via MT5: digits, pip, contract size, tick and pip value per lot, min/max/step lots, " +
+      "margin needed per lot, minimum stop distance (stops level) and freeze level, spread, swaps, trading hours today (UTC) and whether the market is open right now.",
+    parameters: { type: "object", properties: { symbol: { type: "string" } }, required: ["symbol"] },
+    execute: async (args, ctx) =>
+      requestAnalysis(ctx.userId, "symbol_info", args.symbol as string, "M15", ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined),
+  },
+  {
+    name: "get_deal_history",
+    description:
+      "Real closed trades straight from MT5's own history for the last N days (default 7, up to 90), with every fee: profit, swap, commission and net per trade, " +
+      "the close reason (tp / sl / stopout / dave / manual), and a summary (win rate, net, profit factor, total commissions and swaps, deposits and withdrawals). " +
+      "Optional symbol to filter.",
+    parameters: {
+      type: "object",
+      properties: { days: { type: "number", description: "1-90 (default 7)" }, symbol: { type: "string", description: "only this symbol (optional)" } },
+    },
+    execute: async (args, ctx) =>
+      requestAnalysis(ctx.userId, "history", typeof args.symbol === "string" ? args.symbol : "", "M15", {
+        ...(ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : {}),
+        params: { days: Math.max(1, Math.min(90, Math.round(Number(args.days) || 7))) },
+      }),
+  },
 ];

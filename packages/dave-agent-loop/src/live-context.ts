@@ -15,7 +15,7 @@ const safeTelegramSilenced = () => {
 import { growthContextBlock } from "@dave/trading";
 import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, getWinStreak, ALERT_CATEGORIES } from "@dave/trading";
 import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK, SL_NEAR_PROGRESS, SL_CRITICAL_PROGRESS, TP_NEAR_PROGRESS } from "./trade-monitor-store.js";
-import { getEaConnectionStatus, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
+import { getEaConnectionStatus, getLastKnownAccountSnapshot, CURRENT_EA_VERSION } from "@dave/ea-bridge";
 import { getSkill, listSkills } from "@dave/skills";
 import { loadFrozenSnapshot, FROZEN_PAIR_CHAR_BUDGET } from "@dave/memory";
 import { knowledgeList } from "@dave/knowledge";
@@ -91,7 +91,10 @@ export function buildLiveSettingsBlock(userId: string): string {
   // only shows up on a turn where the model happens to call it. Surfaced here instead, proactively
   // on EVERY turn (same pattern as every other setting in this block), so it's never missed.
   const accountLine = account
-    ? `Account: balance ${account.balance} | equity ${account.equity} | margin ${account.margin} | free margin ${account.freeMargin}${account.leverage !== undefined ? ` | leverage 1:${account.leverage}` : " | leverage: not reported by the EA yet"}${account.algoTrading === false ? " | ⚠️ ALGO TRADING IS OFF in MT5 -- every order will be refused until it's on. Tell the trader: press Algo Trading in MT5 (or /mt5 -> Restart MT5 if it runs in Dave's container)." : ""}`
+    ? `Account: balance ${account.balance}${account.currency ? ` ${account.currency}` : ""} | equity ${account.equity} | margin ${account.margin} | free margin ${account.freeMargin}${account.marginLevel ? ` | margin level ${account.marginLevel}%` : ""}${account.leverage !== undefined ? ` | leverage 1:${account.leverage}` : " | leverage: not reported by the EA yet"}${account.algoTrading === false ? " | ⚠️ ALGO TRADING IS OFF in MT5 -- every order will be refused until it's on. Tell the trader: press Algo Trading in MT5 (or /mt5 -> Restart MT5 if it runs in Dave's container)." : ""}` +
+      (ea.connected && ea.eaUpdateAvailable
+        ? ` | EA ${ea.eaVersion ?? "older than 3.0"} is out of date (current ${CURRENT_EA_VERSION}): its analysis has known wrong numbers (candle times, day/week highs, RSI/MACD, news times). Tell the trader once to load the new EA file (/ea).`
+        : "")
     : "Account: no EA report received yet";
 
   const lines = [

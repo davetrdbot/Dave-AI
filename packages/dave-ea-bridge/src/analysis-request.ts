@@ -59,7 +59,7 @@ export async function requestAnalysis(
   endpoint: string,
   symbol: string,
   timeframe: string,
-  opts: { timeoutMs?: number; pollIntervalMs?: number } = {}
+  opts: { timeoutMs?: number; pollIntervalMs?: number; params?: Record<string, string | number | boolean> } = {}
 ): Promise<unknown> {
   // Real bug fixed (user: "increase the timeout... make sure they is nothing stopping the agent
   // to trade"). Same real round-trip as ea-trade-executor.ts -- an "analyze" command's result
@@ -70,7 +70,9 @@ export async function requestAnalysis(
   const timeoutMs = opts.timeoutMs ?? 300_000;
   const pollIntervalMs = opts.pollIntervalMs ?? 300;
   const id = randomBytes(6).toString("hex");
-  enqueueCommand(userId, { id, action: "analyze", endpoint, symbol, timeframe });
+  // Extra flat settings (candle count, position-size inputs, history days) ride on the same command;
+  // they never overwrite the command's own fields.
+  enqueueCommand(userId, { ...(opts.params ?? {}), id, action: "analyze", endpoint, symbol, timeframe });
 
   const started = Date.now();
   const deadline = started + timeoutMs;

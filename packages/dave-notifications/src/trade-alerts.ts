@@ -99,7 +99,7 @@ export interface ClosedPositionRouterInput {
   system: TradeSystem;
   symbol: string;
   pnl: number;
-  reason: "tp" | "sl" | "dave" | "manual";
+  reason: "tp" | "sl" | "dave" | "manual" | "stopout" | "unknown";
   daveCloseReason?: string; // Dave's own stated reason, when reason === "dave"
 }
 
@@ -110,6 +110,13 @@ export async function routeClosedPositionAlert(client: TelegramClient, chatId: n
   if (input.reason === "sl") {
     return sendSlHitAlert(client, chatId, { system: input.system, symbol: input.symbol, loss: input.pnl });
   }
-  const reasonText = input.reason === "dave" ? (input.daveCloseReason ?? "Dave decided to close it.") : "Closed manually in the terminal.";
+  const reasonText =
+    input.reason === "dave"
+      ? (input.daveCloseReason ?? "Dave decided to close it.")
+      : input.reason === "stopout"
+        ? "Stop-out: the broker closed it because the account ran short of margin."
+        : input.reason === "unknown"
+          ? "Closed -- MT5 didn't record why."
+          : "Closed manually in the terminal.";
   return sendTradeClosedAlert(client, chatId, { system: input.system, symbol: input.symbol, pnl: input.pnl, reason: reasonText });
 }

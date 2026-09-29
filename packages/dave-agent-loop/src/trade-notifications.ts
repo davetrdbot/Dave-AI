@@ -21,6 +21,8 @@ const CLOSE_REASON_LABEL: Record<EaClosedPosition["reason"], string> = {
   sl: " (SL hit)",
   dave: "",
   manual: " (closed manually)",
+  stopout: " (stop-out: the broker closed it for margin)",
+  unknown: " (MT5 hasn't said why)",
 };
 
 /** A real trade Dave (or TP/SL) closed -- exact format confirmed against the live bot's own real output: "✅ VOL_80 closed. +$1.60." */

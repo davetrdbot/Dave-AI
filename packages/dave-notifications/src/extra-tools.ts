@@ -90,7 +90,7 @@ export const NOTIFICATION_TOOLS: NotificationToolDefinition[] = [
     },
     execute: async (args, ctx) => {
       if (!getNotificationSettings(ctx.db, ctx.userId).pushEnabled) return { skipped: true, reason: "push notifications are off" };
-      return routeClosedPositionAlert(ctx.client, ctx.chatId, { system: args.system as TradeSystem, symbol: args.symbol as string, pnl: args.pnl as number, reason: args.reason as "tp" | "sl" | "dave" | "manual", daveCloseReason: args.daveCloseReason as string | undefined });
+      return routeClosedPositionAlert(ctx.client, ctx.chatId, { system: args.system as TradeSystem, symbol: args.symbol as string, pnl: args.pnl as number, reason: args.reason as "tp" | "sl" | "dave" | "manual" | "stopout" | "unknown", daveCloseReason: args.daveCloseReason as string | undefined });
     },
   },
 ];

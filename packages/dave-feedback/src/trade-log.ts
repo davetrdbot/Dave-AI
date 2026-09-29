@@ -136,7 +136,7 @@ export interface TradeLifecycle extends TradeLogEntry {
   /** "unknown" only for a pre-migration row with no ticket -- never guessed, since there's
    *  genuinely no way to correlate it to a close event without one. */
   status: "open" | "closed" | "unknown";
-  closeReason?: "tp" | "sl" | "dave" | "manual";
+  closeReason?: "tp" | "sl" | "dave" | "manual" | "stopout" | "unknown";
   closedAt?: number;
   closedPnl?: number;
 }

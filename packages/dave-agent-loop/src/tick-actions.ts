@@ -15,6 +15,11 @@ import { ALL_ANALYSIS_ENDPOINTS } from "@dave/trading";
 
 export const MAX_TICK_ACTIONS = 6;
 
+/** Reads mode 2 can ask for that are NOT part of the per-timeframe analysis suite (get_all_analysis):
+ *  mtf = the multi-timeframe summary (M5/M15/H1/H4/D1 in one read; the trader: "add this as a tool in
+ *  the mode 2 -- it shouldn't be in the get all analysis"), adx, and the symbol's contract/hours. */
+export const MODE2_EXTRA_ENDPOINTS = ["mtf", "adx", "symbol_info"];
+
 export type TickAction =
   | { type: "BREAKEVEN"; ticket: string; offset?: number }
   | { type: "MODIFY"; ticket: string; sl?: number | null; tp?: number | null }
@@ -40,7 +45,8 @@ export const ACTIONS_SCHEMA = {
     "Trade management runs immediately and in parallel, whatever your main action is: " +
     "{type:'BREAKEVEN', ticket, offset?} moves a winning trade's stop to its entry (offset = extra price distance in the trade's favour); " +
     "{type:'MODIFY', ticket, sl?, tp?}; {type:'PARTIAL_CLOSE', ticket, lots}; {type:'CLOSE', ticket} (closes a position or deletes a pending order). " +
-    "Data: {type:'GET', endpoint, symbol? (default: the pair you're scanning), timeframe? (default M5)} -- endpoint is one of candles, volatility, momentum, trend, structure, zones, liquidity, divergence, session, levels, patterns, ict, synthetic, risk_metrics, strength, correlation (and the other analysis categories). " +
+    "Data: {type:'GET', endpoint, symbol? (default: the pair you're scanning), timeframe? (default M5)} -- endpoint is one of candles, volatility, momentum, trend, structure, zones, liquidity, divergence, session, levels, patterns, ict, synthetic, risk_metrics, strength, correlation (and the other analysis categories), " +
+    "or mtf (the multi-timeframe summary: SMMA trend score, RSI, ATR and ADX on M5/M15/H1/H4/D1 in one read -- timeframe is ignored), adx, symbol_info (contract, stop distance, trading hours, market open?). " +
     "If you list ANY GET item, all of them are fetched together and you decide ONCE more with the results -- your main action this time is only a placeholder (SKIP is fine), " +
     "and on that second decision GET items are ignored. Use it when you genuinely need 2+ fresh reads, not as a routine step.",
   items: {
@@ -80,7 +86,7 @@ export function coerceTickActions(raw: unknown): TickAction[] | undefined {
     else if (type === "CLOSE" && ticket) out.push({ type, ticket });
     else if (type === "GET" && typeof a.endpoint === "string") {
       const endpoint = a.endpoint.trim().toLowerCase().replace(/^get_/, "");
-      if (!(ALL_ANALYSIS_ENDPOINTS as readonly string[]).includes(endpoint)) continue;
+      if (!(ALL_ANALYSIS_ENDPOINTS as readonly string[]).includes(endpoint) && !MODE2_EXTRA_ENDPOINTS.includes(endpoint)) continue;
       const tf = typeof a.timeframe === "string" ? a.timeframe.trim().toUpperCase() : undefined;
       out.push({ type, endpoint, symbol: typeof a.symbol === "string" && a.symbol.trim() ? a.symbol.trim() : undefined, timeframe: tf && TIMEFRAMES.has(tf) ? tf : undefined });
     }

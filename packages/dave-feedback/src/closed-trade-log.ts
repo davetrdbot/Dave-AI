@@ -15,7 +15,7 @@ export interface ClosedTradeLogEntry {
   ticket?: string;
   symbol: string;
   pnl: number;
-  reason: "tp" | "sl" | "dave" | "manual";
+  reason: "tp" | "sl" | "dave" | "manual" | "stopout" | "unknown";
   closedAt: number;
 }
 

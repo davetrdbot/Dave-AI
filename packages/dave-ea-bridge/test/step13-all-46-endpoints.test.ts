@@ -28,11 +28,16 @@ const REAL_ENDPOINT_NAMES = [
   "all", "ping",
 ];
 
-console.log(`[1] Exactly ${REAL_ENDPOINT_NAMES.length} real DAVEMA endpoints, each a real, separate tool...\n`);
+// EA 3.0 added 5 more on top of the original 46 (the trader: "add more endpoints"): ADX, the
+// multi-timeframe summary, exact position size, symbol details and MT5's own trade history.
+const EA3_ENDPOINT_NAMES = ["adx", "mtf", "position_size", "symbol_info", "history"];
+const ALL_NAMES = [...REAL_ENDPOINT_NAMES, ...EA3_ENDPOINT_NAMES];
+
+console.log(`[1] Exactly ${REAL_ENDPOINT_NAMES.length} real DAVEMA endpoints (+${EA3_ENDPOINT_NAMES.length} from EA 3.0), each a real, separate tool...\n`);
 assert.equal(REAL_ENDPOINT_NAMES.length, 46, "the real DAVEMA API has exactly 46 endpoints");
-assert.equal(EA_ANALYSIS_TOOLS.length, 46, "every one of the 46 real endpoints must be a real, registered tool");
+assert.equal(EA_ANALYSIS_TOOLS.length, 51, "every one of the 46 real endpoints plus the 5 new ones must be a real, registered tool");
 const toolNames = EA_ANALYSIS_TOOLS.map((t) => t.name);
-assert.equal(new Set(toolNames).size, 46, "no duplicate tool names");
+assert.equal(new Set(toolNames).size, 51, "no duplicate tool names");
 for (const name of toolNames) assert.match(name, /^(get_|ping_)/, `tool "${name}" must follow the real get_/ping_ naming convention`);
 console.log(`    real registered tools: ${toolNames.join(", ")}`);
 
@@ -42,10 +47,10 @@ for (const tool of EA_ANALYSIS_TOOLS) {
   // Recover the endpoint each tool actually calls by inspecting a real dispatch (see below) --
   // simpler and just as real: assert the closed-over endpoint set (by name convention) covers
   // the full real list.
-  const guessed = tool.name === "get_all_analysis" ? "all" : tool.name === "ping_ea" ? "ping" : tool.name.replace(/^get_/, "");
+  const guessed = tool.name === "get_all_analysis" ? "all" : tool.name === "ping_ea" ? "ping" : tool.name === "get_deal_history" ? "history" : tool.name.replace(/^get_/, "");
   dispatchedEndpoints.add(guessed);
 }
-assert.deepEqual([...dispatchedEndpoints].sort(), [...REAL_ENDPOINT_NAMES].sort(), "every real endpoint must have exactly one real tool, no gaps");
+assert.deepEqual([...dispatchedEndpoints].sort(), [...ALL_NAMES].sort(), "every real endpoint must have exactly one real tool, no gaps");
 console.log("    every real endpoint name accounted for -- no gaps, no extras");
 
 // --- Real end-to-end round trip (same simulated-EA pattern step9 uses) for a real sample

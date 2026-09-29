@@ -69,6 +69,11 @@ export const TOOL_CATALOG_CATEGORIES: Record<string, string[]> = {
     "get_order_blocks",
     "get_inducement",
     "get_premium_discount",
+    "get_adx",
+    "get_mtf",
+    "get_symbol_info",
+    "get_position_size",
+    "get_deal_history",
   ],
   Trading: [
     "find_setup",

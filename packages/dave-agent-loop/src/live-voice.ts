@@ -50,6 +50,11 @@ const READ_TOOLS = [
   "get_momentum",
   "get_news",
   "get_trade_thesis",
+  "get_mtf",
+  "get_adx",
+  "get_symbol_info",
+  "get_position_size",
+  "get_deal_history",
   "web_search",
 ];
 /** Tools that change a trade or schedule something: need the trader's spoken yes. */
