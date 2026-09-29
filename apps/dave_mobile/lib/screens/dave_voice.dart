@@ -101,6 +101,7 @@ class DaveVoicePage extends StatelessWidget {
             ),
           ),
           for (final p in providers) SliverToBoxAdapter(child: _ProviderCard(p: p, active: p['id'] == active, act: act, reload: reload)),
+          SliverToBoxAdapter(child: _GeminiLiveCard(g: (v['geminiLive'] as Map?)?.cast<String, dynamic>() ?? const {}, act: act)),
           const SliverToBoxAdapter(child: SizedBox(height: 110)),
         ];
       },
@@ -163,6 +164,56 @@ class _ProviderCard extends StatelessWidget {
                   await pushScoped<void>(context, _VoicePicker(provider: '${p['id']}', name: '${p['name']}', current: voiceId));
                   await reload();
                 },
+        ),
+      ]),
+    );
+  }
+}
+
+/// Talking to Dave live (Gemini Live): the one key it needs.
+class _GeminiLiveCard extends StatelessWidget {
+  const _GeminiLiveCard({required this.g, required this.act});
+  final Map<String, dynamic> g;
+  final Future<void> Function(Map<String, Object?>) act;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    final key = g['key'] as String?;
+    final link = '${g['link'] ?? 'https://aistudio.google.com/app/apikey'}';
+    return ContentCard(
+      key: const ValueKey('gemini-live-card'),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Expanded(child: Text('Talk to Dave live · Gemini', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))),
+          if (key != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+              decoration: BoxDecoration(color: look.accent.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(20)),
+              child: Text('READY', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: look.accent)),
+            ),
+        ]),
+        Text('Speak to Dave and interrupt him, like a phone call -- he hears you, thinks and uses his tools while you talk. Needs a Gemini API key (free to create).',
+            style: TextStyle(fontSize: 12.5, color: secondary)),
+        const SizedBox(height: Space.s3),
+        _Row(
+          icon: CupertinoIcons.lock_fill,
+          title: 'Gemini API key',
+          value: key ?? 'Not added',
+          onTap: () async {
+            final k = await promptText(context, title: 'Gemini API key', message: 'Create one free at $link (Google AI Studio > Get API key), then paste it here. It starts with AIza.', placeholder: 'AIza...', obscure: true, action: 'Save');
+            if (k != null && k.isNotEmpty) await act({'action': 'gemini-key', 'apiKey': k});
+          },
+          trailing: key != null
+              ? GestureDetector(
+                  onTap: () async {
+                    final ok = await confirmDestructive(context, title: 'Remove the Gemini key?', message: 'Live calls with Dave stop working until you add one again.', action: 'Remove');
+                    if (ok) await act({'action': 'remove-gemini-key'});
+                  },
+                  child: Icon(CupertinoIcons.trash, size: 18, color: look.down),
+                )
+              : null,
         ),
       ]),
     );

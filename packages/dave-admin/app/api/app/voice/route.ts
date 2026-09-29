@@ -12,6 +12,10 @@ import {
   FishAudioClient,
   listFishVoices,
   synthesizeSpeech,
+  getGeminiLiveKey,
+  setGeminiLiveKey,
+  removeGeminiLiveKey,
+  checkGeminiKey,
   type TtsProviderName,
 } from "@dave/notifications";
 import { dbPathFor } from "../../../../server/db-path";
@@ -30,6 +34,7 @@ import { speakable } from "../../../../server/speakable";
  *   POST {action:"voices", provider, query?}   the voices that key can use
  *   POST {action:"preview", provider, voiceId, text?}   -> {audio: base64, contentType}
  *   POST {action:"speak", text}                 -> the active voice (falls back to the other)
+ *   POST {action:"gemini-key", apiKey} / {action:"remove-gemini-key"}   the key for talking live
  */
 export const dynamic = "force-dynamic";
 
@@ -57,6 +62,8 @@ function view(db: DaveDatabase, userId: string) {
       key: maskSecret(getTtsProviderKey(db, userId, p.id)) ?? null,
       voiceId: p.id === "elevenlabs" ? s.elevenlabsVoiceId : s.fishVoiceId,
     })),
+    // Talking to Dave live (Gemini Live): the key, masked.
+    geminiLive: { key: maskSecret(getGeminiLiveKey(db, userId)) ?? null, link: "https://aistudio.google.com/app/apikey" },
   };
 }
 
@@ -81,6 +88,17 @@ export const POST = withDevice(async ({ userId, req }) => {
         setTtsProviderKey(db, userId, provider, key);
         break;
       }
+      case "gemini-key": {
+        const key = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+        if (key.length < 20) return NextResponse.json({ error: "Paste the whole Gemini API key (it starts with AIza)." }, { status: 400 });
+        // Checked with Google before it's kept, so a typo is caught now, not mid-call.
+        if ((await checkGeminiKey(key)) === "bad") return NextResponse.json({ error: "Google says this key doesn't work -- copy it again from Google AI Studio." }, { status: 400 });
+        setGeminiLiveKey(db, userId, key);
+        break;
+      }
+      case "remove-gemini-key":
+        removeGeminiLiveKey(db, userId);
+        break;
       case "remove-key":
         if (!isProvider(provider)) return NextResponse.json({ error: "Which provider?" }, { status: 400 });
         removeTtsProviderKey(db, userId, provider);

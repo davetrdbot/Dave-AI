@@ -73,5 +73,32 @@ assert.equal(speakable("## Plan\n**Buy** XAUUSD | SL 2580 [chart](http://x)\n```
 r = await call(route.POST as H, "POST", { action: "remove-key", provider: "fish-audio" });
 assert.equal(r.json.providers[1].key, null);
 console.log("   ✓ markdown stripped for speech; key removal");
+// Gemini Live: a place for the key. Google checks it before it's kept; it only ever comes back masked.
+{
+  const realFetch = globalThis.fetch;
+  const GOOD = "AIzaSyTESTgoodkey1234567890abcdefghij";
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("https://generativelanguage.googleapis.com/")) {
+      return new Response(JSON.stringify(url.includes(encodeURIComponent(GOOD)) ? { models: [] } : { error: { message: "API key not valid" } }), { status: url.includes(encodeURIComponent(GOOD)) ? 200 : 400 });
+    }
+    return realFetch(input as string, init);
+  }) as typeof fetch;
+  r = await call(route.GET as H, "GET");
+  assert.equal(r.json.geminiLive.key, null, "no key yet");
+  assert.match(r.json.geminiLive.link, /aistudio\.google\.com/);
+  r = await call(route.POST as H, "POST", { action: "gemini-key", apiKey: "short" });
+  assert.equal(r.status, 400);
+  r = await call(route.POST as H, "POST", { action: "gemini-key", apiKey: "AIzaSyTESTbadkey00000000000000000000" });
+  assert.equal(r.status, 400);
+  assert.match(r.json.error, /Google says this key doesn't work/);
+  r = await call(route.POST as H, "POST", { action: "gemini-key", apiKey: GOOD });
+  assert.equal(r.status, 200);
+  assert.ok(r.json.geminiLive.key && !r.json.geminiLive.key.includes("TESTgoodkey1234567890"), "masked, never the whole key");
+  r = await call(route.POST as H, "POST", { action: "remove-gemini-key" });
+  assert.equal(r.json.geminiLive.key, null);
+  globalThis.fetch = realFetch;
+  console.log("   ✓ Gemini Live key: checked with Google, saved masked, removable");
+}
 console.log("\nAll Step 180 checks passed.");
 process.exit(0);

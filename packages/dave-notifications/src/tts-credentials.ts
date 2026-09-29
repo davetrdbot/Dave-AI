@@ -57,3 +57,25 @@ export function removeTtsProviderKey(db: DaveDatabase, ownerUserId: string, prov
   for (const r of rows) db.deleteRow(TABLE, ownerUserId, r.id);
   return rows.length > 0;
 }
+
+/**
+ * The Gemini API key for talking to Dave live (Gemini Live -- the trader: "just add a place to put
+ * the api key"). Kept in the same store as the voice keys; it isn't a text-to-speech provider, so
+ * it has its own row name and its own helpers.
+ */
+const GEMINI_LIVE = "gemini-live" as unknown as TtsProviderName;
+
+export const setGeminiLiveKey = (db: DaveDatabase, ownerUserId: string, apiKey: string) => setTtsProviderKey(db, ownerUserId, GEMINI_LIVE, apiKey);
+export const getGeminiLiveKey = (db: DaveDatabase, ownerUserId: string) => getTtsProviderKey(db, ownerUserId, GEMINI_LIVE);
+export const removeGeminiLiveKey = (db: DaveDatabase, ownerUserId: string) => removeTtsProviderKey(db, ownerUserId, GEMINI_LIVE);
+
+/** Asks Google whether the key works (lists the models it can use). "unknown" when Google can't be reached. */
+export async function checkGeminiKey(apiKey: string, fetchImpl: typeof fetch = fetch): Promise<"ok" | "bad" | "unknown"> {
+  try {
+    const res = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(10_000) });
+    if (res.ok) return "ok";
+    return res.status === 400 || res.status === 401 || res.status === 403 ? "bad" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
