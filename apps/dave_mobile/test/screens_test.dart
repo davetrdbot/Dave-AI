@@ -17,6 +17,7 @@ import 'package:dave_mobile/app_scope.dart';
 import 'package:dave_mobile/screens/extras.dart';
 import 'package:dave_mobile/screens/growth.dart';
 import 'package:dave_mobile/screens/history.dart';
+import 'package:dave_mobile/screens/voice.dart';
 import 'package:dave_mobile/widgets/setup_drawing.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
@@ -850,6 +851,75 @@ void main() {
       await tester.drag(find.byType(CustomScrollView).first, const Offset(0, -900));
       await _advance(tester);
       await _shot(tester, 'history_list_$mode');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('voice screens render ($mode)', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 3;
+      tester.view.padding = const FakeViewPadding(top: 72, bottom: 48);
+      tester.platformDispatcher.platformBrightnessTestValue = brightness;
+      addTearDown(tester.view.reset);
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final look = brightness == Brightness.dark ? Look.midnightLime : Look.pearl;
+      Future<void> shot(String name, VoiceSession s) async {
+        await tester.pumpWidget(_app(VoiceScreen(session: s), look: look));
+        for (var i = 0; i < 6; i++) {
+          await tester.pump(const Duration(milliseconds: 90));
+        }
+        await _shot(tester, '${name}_$mode');
+      }
+
+      const model = 'Gemini 3.8 Live';
+      await shot('voice_listening', const VoiceSession(
+        phase: VoicePhase.listening, model: model, elapsed: Duration(minutes: 1, seconds: 12), level: 0.6,
+        lines: [
+          VoiceLine(me: false, text: "Hey -- I'm here. Gold is quiet, one trade open."),
+          VoiceLine(me: true, text: "How's my gold trade doing, and should I move it to", partial: true),
+        ],
+      ));
+      await shot('voice_thinking', const VoiceSession(
+        phase: VoicePhase.thinking, model: model, thinkingLevel: 'high', elapsed: Duration(minutes: 1, seconds: 20),
+        thoughts: [
+          'Ticket #501 XAUUSD buy, entry 2600, stop 2580 -- that is 1R = 20.',
+          'Price 2630 is +1.5R. Breakeven is allowed and the goal card says protect winners.',
+          'Check M15 volatility before suggesting it -- a spike could tag 2600.',
+        ],
+        lines: [VoiceLine(me: true, text: "How's my gold trade doing, and should I move it to breakeven?")],
+      ));
+      await shot('voice_tools', const VoiceSession(
+        phase: VoicePhase.tools, model: model, thinkingLevel: 'high', elapsed: Duration(minutes: 1, seconds: 26), level: 0.3,
+        tools: [
+          VoiceTool(icon: CupertinoIcons.chart_bar_alt_fill, label: 'Open positions', state: ToolRun.done, result: '#501 XAUUSD +\$29.80', ms: 400),
+          VoiceTool(icon: CupertinoIcons.graph_square, label: 'Candles XAUUSD M15', state: ToolRun.running),
+          VoiceTool(icon: CupertinoIcons.waveform_path, label: 'Volatility XAUUSD M15', state: ToolRun.running),
+          VoiceTool(icon: CupertinoIcons.lightbulb, label: 'Brain: volatility neuron', state: ToolRun.done, result: '2 facts', ms: 120),
+        ],
+        lines: [VoiceLine(me: false, text: "Let me pull the fresh candles and the volatility at the same time", partial: true)],
+      ));
+      await shot('voice_speaking', const VoiceSession(
+        phase: VoicePhase.speaking, model: model, thinkingLevel: 'high', elapsed: Duration(minutes: 1, seconds: 41), level: 0.85,
+        tools: [
+          VoiceTool(icon: CupertinoIcons.graph_square, label: 'Candles XAUUSD M15', state: ToolRun.done, result: 'higher lows', ms: 2100),
+          VoiceTool(icon: CupertinoIcons.waveform_path, label: 'Volatility XAUUSD M15', state: ToolRun.done, result: 'ATR 6.1', ms: 1800),
+        ],
+        lines: [
+          VoiceLine(me: true, text: "How's my gold trade doing, and should I move it to breakeven?"),
+          VoiceLine(me: false, text: "You're up 1.5R, about \$30. M15 is still making higher lows and ATR is only 6 -- a breakeven stop at 2600 is 30 points away, so it's safe to", partial: true),
+        ],
+      ));
+      await shot('voice_confirm', const VoiceSession(
+        phase: VoicePhase.confirm, model: model, elapsed: Duration(minutes: 1, seconds: 55),
+        confirm: VoiceConfirm(title: 'Move #501 XAUUSD to breakeven', detail: 'Stop 2580.00 → 2600.00 (entry). Price now 2630.10.', risk: 'Worst case after this: \$0.00 instead of -\$20.00.'),
+      ));
+      expect(find.text('Yes, do it'), findsOneWidget);
+      await shot('voice_limit', const VoiceSession(
+        phase: VoicePhase.listening, model: model, elapsed: Duration(minutes: 13, seconds: 40), level: 0.2, muted: true, chartShared: true,
+        lines: [VoiceLine(me: false, text: "Done -- #501 is at breakeven. I'll tell you if it gets near 2650.")],
+      ));
+      await tester.pumpWidget(_app(const CupertinoPageScaffold(child: Align(alignment: Alignment.bottomCenter, child: VoiceSettingsSheet())), look: look));
+      await tester.pump(const Duration(milliseconds: 200));
+      await _shot(tester, 'voice_settings_$mode');
       await tester.pumpWidget(const SizedBox());
     });
 
