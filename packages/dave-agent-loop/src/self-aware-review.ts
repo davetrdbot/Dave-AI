@@ -28,6 +28,7 @@ export const REVIEW_KINDS = new Set<MonitorAlertKind>([
   "deepLoss",
   "slDanger",
   "slNear",
+  "slLevel",
   "range",
   "stuck",
   "roundTrip",

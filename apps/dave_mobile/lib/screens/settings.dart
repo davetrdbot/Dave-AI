@@ -633,22 +633,21 @@ class _AlertsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final deep = s.deepLossPercent.value.round();
     final on = s.alerts.where((a) => a.on).length;
     return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Trade alerts in Telegram'),
-      footer: const ListFooter('Deep-loss is how far a losing trade gets toward its stop before Dave warns you. Reviews: when an alert needs a decision, Dave checks fresh candles against the idea and gives a verdict.'),
+      footer: const ListFooter('Stop-loss warnings: how far a losing trade gets toward its stop before Dave warns you -- one warning per row. Reviews: when an alert needs a decision, Dave checks fresh candles against the idea and gives a verdict.'),
       children: [
         CupertinoListTile(
+          key: const ValueKey('sl-ladder'),
           leading: const Icon(CupertinoIcons.exclamationmark_triangle),
-          title: const Text('Deep-loss'),
-          trailing: _Stepper(
-            text: '$deep%',
-            onMinus: deep - 5 < s.deepLossPercent.min ? null : () => _set(context, 'deepLossPercent', deep - 5, reload),
-            onPlus: deep + 5 > s.deepLossPercent.max ? null : () => _set(context, 'deepLossPercent', deep + 5, reload),
-            less: 'Warn earlier',
-            more: 'Warn later',
-          ),
+          title: const Text('Stop-loss warnings'),
+          additionalInfo: Text('${s.slAlertLevels.join(' · ')}%'),
+          trailing: const CupertinoListTileChevron(),
+          onTap: () async {
+            await pushScoped<void>(context, _SlLadderPage(initial: s.slAlertLevels, maxRows: s.slAlertMaxRows));
+            await reload();
+          },
         ),
         _ReviewModeRow(mode: s.selfAwareMode, onPick: (m) => _set(context, 'selfAwareMode', m, reload)),
         CupertinoListTile(
@@ -667,6 +666,123 @@ class _AlertsSection extends StatelessWidget {
 }
 
 /// One switch per self-aware alert. Each flips immediately; the list is the server's own.
+/// The stop-loss warning ladder: one row per level, add and delete rows.
+class _SlLadderPage extends StatefulWidget {
+  const _SlLadderPage({required this.initial, required this.maxRows});
+  final List<int> initial;
+  final int maxRows;
+
+  @override
+  State<_SlLadderPage> createState() => _SlLadderPageState();
+}
+
+class _SlLadderPageState extends State<_SlLadderPage> {
+  late var _levels = [...widget.initial];
+
+  Future<void> _save(List<int> next) async {
+    final api = AppScope.of(context).api;
+    final ok = await runAction(context, (_) async {
+      final updated = await api.updateSetting('slAlertLevels', next);
+      if (mounted) setState(() => _levels = [...updated.slAlertLevels]);
+    });
+    if (!ok && mounted) setState(() {});
+  }
+
+  void _change(int i, int delta) {
+    final next = [..._levels];
+    next[i] = (next[i] + delta).clamp(5, 99);
+    _save(next);
+  }
+
+  /// Type an exact level (50 -> 74 without tapping + 24 times).
+  Future<void> _type(int i) async {
+    final ctrl = TextEditingController(text: '${_levels[i]}');
+    final v = await showCupertinoDialog<int>(
+      context: context,
+      builder: (c) => CupertinoAlertDialog(
+        title: Text(i == 0 ? 'Deep loss' : 'Warning ${i + 1}'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: CupertinoTextField(
+            key: const ValueKey('sl-type'),
+            controller: ctrl,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            suffix: const Padding(padding: EdgeInsets.only(right: 8), child: Text('%')),
+          ),
+        ),
+        actions: [
+          CupertinoDialogAction(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
+          CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(c, int.tryParse(ctrl.text.trim())), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (v == null || !mounted) return;
+    final next = [..._levels];
+    next[i] = v.clamp(5, 99);
+    await _save(next);
+  }
+
+  void _add() {
+    final top = _levels.isEmpty ? 45 : _levels.last;
+    var v = (top + 5).clamp(5, 99);
+    while (_levels.contains(v) && v > 5) {
+      v -= 1;
+    }
+    _save([..._levels, v]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    return CupertinoPageScaffold(
+      backgroundColor: const Color(0x00000000),
+      navigationBar: const CupertinoNavigationBar(middle: Text('Stop-loss warnings')),
+      child: SafeArea(
+        child: ListView(children: [
+          CupertinoListSection.insetGrouped(
+            backgroundColor: const Color(0x00000000),
+            decoration: glassDecoration(context, radius: 14),
+            separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4),
+            header: const ListHeader('Warn me when a losing trade is'),
+            footer: const ListFooter('Percent of the way from the entry to the stop loss. Each row warns once per losing stretch; the first row is the deep-loss warning, and rows at 85%+ read as "nearly stopped out".'),
+            children: [
+              for (var i = 0; i < _levels.length; i++)
+                CupertinoListTile(
+                  key: ValueKey('sl-row-$i'),
+                  leading: CupertinoButton(
+                    key: ValueKey('sl-delete-$i'),
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(28, 28),
+                    onPressed: _levels.length <= 1 ? null : () => _save([..._levels]..removeAt(i)),
+                    child: Icon(CupertinoIcons.minus_circle_fill, color: _levels.length <= 1 ? secondary : resolve(context, CupertinoColors.systemRed)),
+                  ),
+                  title: Text(i == 0 ? 'Deep loss' : 'Warning ${i + 1}'),
+                  subtitle: const Text('Tap to type a number'),
+                  onTap: () => _type(i),
+                  trailing: _Stepper(
+                    text: '${_levels[i]}%',
+                    onMinus: _levels[i] <= 5 ? null : () => _change(i, -1),
+                    onPlus: _levels[i] >= 99 ? null : () => _change(i, 1),
+                    less: 'Earlier',
+                    more: 'Later',
+                  ),
+                ),
+              if (_levels.length < widget.maxRows)
+                CupertinoListTile(
+                  key: const ValueKey('sl-add'),
+                  leading: Icon(CupertinoIcons.plus_circle_fill, color: resolve(context, CupertinoColors.systemGreen)),
+                  title: const Text('Add a warning'),
+                  onTap: _add,
+                ),
+            ],
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
 class _AlertsPage extends StatefulWidget {
   const _AlertsPage({required this.initial});
   final List<AlertToggle> initial;

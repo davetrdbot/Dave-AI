@@ -92,6 +92,15 @@ assert.equal(trading.getSelfAwareMode(USER), "act");
 r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "selfAwareMode", value: "yolo" });
 assert.equal(r.status, 400);
 
+// The stop-loss warning ladder: 5 rows by default, editable.
+r = await call(settingsRoute.GET as Handler, "GET", "/api/app/settings");
+assert.equal(r.json.alerts.slAlertLevels.value.length, 5, "five rows by default");
+r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "slAlertLevels", value: [50, 60, 74] });
+assert.equal(r.status, 200);
+assert.deepEqual(trading.getSlAlertLevels(USER), [50, 60, 74]);
+r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "slAlertLevels", value: [] });
+assert.equal(r.status, 400, "can't delete the last row");
+
 // Auto-drawn trades: on by default, switchable.
 r = await call(settingsRoute.GET as Handler, "GET", "/api/app/settings");
 assert.equal(r.json.behaviour.autoDrawTrades, true, "trades are drawn by default");

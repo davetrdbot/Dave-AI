@@ -20,6 +20,7 @@ import 'package:dave_mobile/screens/history.dart';
 import 'package:dave_mobile/screens/voice.dart';
 import 'package:dave_mobile/screens/dave_voice.dart';
 import 'package:dave_mobile/widgets/setup_drawing.dart';
+import 'package:dave_mobile/widgets/money_rain.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
 import 'package:dave_mobile/look.dart';
@@ -517,6 +518,19 @@ void main() {
 
       // Home opens first: the purple balance hero with its round buttons.
       await _shot(tester, 'home_$mode');
+      // A trade hits its take profit: money rain over the app, then it clears itself.
+      tester.state<MoneyRainState>(find.byType(MoneyRain)).celebrate(pnl: 12.4, symbol: 'XAUUSD');
+      await tester.pump(const Duration(milliseconds: 900));
+      await _shot(tester, 'money_rain_$mode');
+      await tester.pump(const Duration(milliseconds: 700));
+      await _shot(tester, 'money_rain_b_$mode');
+      final banner = find.byKey(const ValueKey('money-rain-banner'));
+      expect(find.descendant(of: banner, matching: find.text('+\$12.40')), findsOneWidget, reason: 'the profit on the banner');
+      expect(find.descendant(of: banner, matching: find.text('XAUUSD hit take profit')), findsOneWidget);
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.byKey(const ValueKey('money-rain-banner')), findsNothing, reason: 'gone after a few seconds');
       expect(find.textContaining('MT5 live'), findsOneWidget);
       expect(find.text(brightness == Brightness.dark ? 'Win rate' : 'TOTAL BALANCE'), findsOneWidget, reason: 'Lime has the tile grid, Pearl the editorial numbers');
 
@@ -707,6 +721,16 @@ void main() {
       await _shot(tester, 'settings_alerts_$mode');
       expect(find.byKey(const ValueKey('self-aware-mode')), findsOneWidget, reason: 'the self-aware review mode picker');
       expect(find.textContaining('tells you what he\'d do'), findsOneWidget, reason: 'advise is the default');
+      expect(find.text('50 · 60 · 75 · 89 · 95%'), findsOneWidget, reason: 'the five stop-loss warning rows at a glance');
+      await tester.tap(find.byKey(const ValueKey('sl-ladder')));
+      await _advance(tester);
+      await _shot(tester, 'sl_ladder_$mode');
+      expect(find.text('Deep loss'), findsOneWidget);
+      expect(find.text('Warning 5'), findsOneWidget, reason: 'five rows');
+      expect(find.text('74%'), findsNothing);
+      expect(find.byKey(const ValueKey('sl-add')), findsOneWidget, reason: 'rows can be added');
+      expect(find.byKey(const ValueKey('sl-delete-2')), findsOneWidget, reason: '...and deleted');
+      await back();
       await back();
 
       await open('AI & models');

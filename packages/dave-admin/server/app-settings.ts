@@ -39,7 +39,7 @@ import {
 } from "@dave/trading";
 import { getWriteApprovalSetting, setWriteApprovalSetting } from "@dave/memory";
 import { getTelegramSilence, setTelegramSilenced } from "@dave/telegram";
-import { getSelfAwareMode, setSelfAwareMode, SELF_AWARE_MODES, type SelfAwareMode, getAutoDrawTrades, setAutoDrawTrades } from "@dave/trading";
+import { getSelfAwareMode, setSelfAwareMode, SELF_AWARE_MODES, type SelfAwareMode, getAutoDrawTrades, setAutoDrawTrades, getSlAlertLevels, setSlAlertLevels, MIN_SL_ALERT_LEVEL, MAX_SL_ALERT_LEVEL, MAX_SL_ALERT_ROWS } from "@dave/trading";
 
 /**
  * Every trader-changeable bot setting, in one place, for the app.
@@ -118,6 +118,7 @@ export function readAppSettings(userId: string) {
     alerts: {
       deepLossPercent: { value: getDeepLossAlertPercent(userId), min: 5, max: 95 },
       selfAwareMode: { value: getSelfAwareMode(userId), options: SELF_AWARE_MODES },
+      slAlertLevels: { value: getSlAlertLevels(userId), min: MIN_SL_ALERT_LEVEL, max: MAX_SL_ALERT_LEVEL, maxRows: MAX_SL_ALERT_ROWS },
       toggles: ALERT_CATEGORIES.map((c) => ({ id: c.id, label: c.label, on: toggles[c.id] })),
     },
     ai: {
@@ -219,6 +220,13 @@ export function applyAppSetting(userId: string, id: string, value: unknown): voi
       return;
     case "memoryWriteApproval":
       setWriteApprovalSetting(userId, bool(value, "Memory approval"));
+      return;
+    case "slAlertLevels":
+      try {
+        setSlAlertLevels(userId, value);
+      } catch (err) {
+        throw new InvalidSettingError(err instanceof Error ? err.message : String(err));
+      }
       return;
     case "selfAwareMode":
       if (!SELF_AWARE_MODES.includes(value as SelfAwareMode)) throw new InvalidSettingError(`Self-aware reviews must be one of ${SELF_AWARE_MODES.join(", ")}.`);

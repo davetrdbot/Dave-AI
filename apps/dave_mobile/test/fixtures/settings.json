@@ -96,6 +96,7 @@
   },
   "alerts": {
     "selfAwareMode": { "value": "advise", "options": ["off", "advise", "act"] },
+    "slAlertLevels": { "value": [50, 60, 75, 89, 95], "min": 5, "max": 99, "maxRows": 10 },
     "deepLossPercent": {
       "value": 50,
       "min": 5,

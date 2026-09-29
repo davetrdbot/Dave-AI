@@ -19,7 +19,7 @@ class HistoryScreen extends StatefulWidget {
 enum _Range { custom, today, week, month, quarter, year, all }
 
 class _HistoryScreenState extends State<HistoryScreen> {
-  _Range _range = _Range.month;
+  _Range _range = _Range.today;
   DateTime? _from;
   DateTime? _to;
   Map<String, dynamic>? _data;

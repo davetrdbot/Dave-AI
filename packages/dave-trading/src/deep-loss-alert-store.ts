@@ -79,3 +79,59 @@ export function setDeepLossAlertPercent(userId: string, percent: number): { deep
   appendSettingsLogEntry(userId, "deepLossAlertPercent", previous, Math.round(fraction * 100));
   return { deepLossPercent: Math.round(fraction * 100), deepLossProgress: fraction };
 }
+
+/**
+ * The stop-loss warning ladder (the trader: "make it 5 rows, so I can set 50%, 60%, 74%... and an
+ * option to delete rows or add more rows"). Each level fires once as a losing trade travels that
+ * far from entry toward its stop. The LOWEST level is the deep-loss level above -- the two are one
+ * setting, so everything that reads the deep-loss percent stays in step.
+ */
+export const DEFAULT_SL_ALERT_LEVELS = [50, 60, 75, 89, 95];
+export const MIN_SL_ALERT_LEVEL = 5;
+export const MAX_SL_ALERT_LEVEL = 99;
+export const MAX_SL_ALERT_ROWS = 10;
+
+function levelsPath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "sl-alert-levels.json");
+}
+
+function clean(levels: number[]): number[] {
+  return [...new Set(levels.map((l) => Math.round(l)))].filter((l) => l >= MIN_SL_ALERT_LEVEL && l <= MAX_SL_ALERT_LEVEL).sort((a, b) => a - b);
+}
+
+/** The ladder in percent, lowest first. Always starts at the deep-loss level. */
+export function getSlAlertLevels(userId: string): number[] {
+  let levels: number[] | null = null;
+  try {
+    if (existsSync(levelsPath(userId))) {
+      const raw = JSON.parse(readFileSync(levelsPath(userId), "utf8")) as { levels?: unknown };
+      if (Array.isArray(raw.levels)) levels = clean(raw.levels.filter((x): x is number => typeof x === "number"));
+    }
+  } catch {
+    levels = null;
+  }
+  const deep = getDeepLossAlertPercent(userId);
+  const base = levels && levels.length ? levels : clean([deep, ...DEFAULT_SL_ALERT_LEVELS.filter((l) => l > deep)]);
+  // The deep-loss percent can also be changed elsewhere (Telegram /settings, Dave's tool); the
+  // ladder follows it rather than contradicting it.
+  return clean([deep, ...base.filter((l) => l > deep)]).slice(0, MAX_SL_ALERT_ROWS);
+}
+
+export function setSlAlertLevels(userId: string, input: unknown): number[] {
+  if (!Array.isArray(input)) throw new InvalidDeepLossAlertError(NaN);
+  const nums = input.map((x) => Number(x));
+  if (nums.some((n) => !Number.isFinite(n) || n < MIN_SL_ALERT_LEVEL || n > MAX_SL_ALERT_LEVEL)) {
+    throw new Error(`Each stop-loss warning must be between ${MIN_SL_ALERT_LEVEL}% and ${MAX_SL_ALERT_LEVEL}% of the way to the stop.`);
+  }
+  const levels = clean(nums);
+  if (!levels.length) throw new Error("Keep at least one stop-loss warning.");
+  if (levels.length > MAX_SL_ALERT_ROWS) throw new Error(`At most ${MAX_SL_ALERT_ROWS} stop-loss warnings.`);
+  const previous = getSlAlertLevels(userId);
+  // The lowest row is the deep-loss level (which tops out at 95%).
+  setDeepLossAlertPercent(userId, Math.min(levels[0], Math.round(MAX_DEEP_LOSS_PROGRESS * 100)));
+  const dir = dirname(levelsPath(userId));
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(levelsPath(userId), JSON.stringify({ levels }, null, 2), "utf8");
+  appendSettingsLogEntry(userId, "slAlertLevels", previous.join(","), levels.join(","));
+  return getSlAlertLevels(userId);
+}

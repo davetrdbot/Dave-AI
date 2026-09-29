@@ -74,7 +74,7 @@ class PerformanceCard extends StatefulWidget {
 }
 
 class _PerformanceCardState extends State<PerformanceCard> {
-  var _range = PnlRange.month;
+  var _range = PnlRange.day;
 
   @override
   Widget build(BuildContext context) {

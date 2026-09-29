@@ -91,6 +91,8 @@ export interface TradeMonitor {
   /** Every alert that fired on this trade and the P/L at that moment -- what the outcome memory
    *  (alert-outcomes.ts) learns from once the trade closes. */
   fired?: { kind: MonitorAlertKind; at: number; pnl?: number }[];
+  /** The stop-loss warning levels (fractions) already fired in this losing stretch. */
+  slLevelsHit?: number[];
   /** How far (in R) price ran against the trade in the window that fired the last "racing" alert. */
   raceR?: number;
   lastPnl?: number;
@@ -313,10 +315,14 @@ export type MonitorAlertKind =
   | "roundTrip"
   | "neverGreen"
   | "racing"
-  | "noStop";
+  | "noStop"
+  // A level on the trader's stop-loss warning ladder (between the deep-loss level and 85%).
+  | "slLevel";
 export interface MonitorAlert {
   kind: MonitorAlertKind;
   monitor: TradeMonitor;
+  /** For stop-loss ladder alerts: the level crossed, as a fraction (0.6 = 60% of the way). */
+  level?: number;
 }
 
 /** True when a re-armable alert has waited out its cooldown (or never fired). */
@@ -383,7 +389,10 @@ export function advanceMonitor(
   prev: TradeMonitor | undefined,
   obs: PositionObservation,
   now: number,
-  deepLossThreshold: number = DEEP_LOSS_SL_PROGRESS
+  deepLossThreshold: number = DEEP_LOSS_SL_PROGRESS,
+  /** The trader's stop-loss warning ladder as fractions, lowest first (the lowest is the deep-loss
+   *  level). When given, it replaces the fixed 89% / 95% stages. */
+  slLevels?: number[]
 ): { monitor: TradeMonitor; alerts: MonitorAlert[] } {
   const m: TradeMonitor =
     prev ??
@@ -459,7 +468,17 @@ export function advanceMonitor(
   // own, so 89% firing never suppresses 95% -- the trader asked to be told at both.
   if (price !== undefined) {
     const toStop = slProgress(m, price);
-    if (toStop !== undefined) {
+    if (toStop !== undefined && slLevels && slLevels.length) {
+      // The trader's own ladder. The lowest level is the deep-loss alert below; every other level
+      // fires once per losing stretch -- 85%+ reads as "nearly stopped out", 95%+ as "about to be".
+      const hit = (m.slLevelsHit = m.slLevelsHit ?? []);
+      for (const level of slLevels.slice(1)) {
+        if (toStop >= level && !hit.includes(level)) {
+          hit.push(level);
+          alerts.push({ kind: level >= SL_CRITICAL_PROGRESS ? "slCritical" : level >= 0.85 ? "slNear" : "slLevel", monitor: m, level });
+        }
+      }
+    } else if (toStop !== undefined) {
       if (toStop >= SL_NEAR_PROGRESS && !m.alerts.slNear) {
         m.alerts.slNear = true;
         alerts.push({ kind: "slNear", monitor: m });
@@ -590,6 +609,7 @@ export function advanceMonitor(
     m.alerts.loss10m = false;
     m.alerts.slDanger = false;
     m.alerts.deepLoss = false;
+    m.slLevelsHit = [];
 
     // ---- the trader's profit-side checks ----
     // Only while genuinely green (> 0, not merely "not losing" -- a trade sitting at exactly 0 has

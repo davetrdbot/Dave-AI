@@ -9,6 +9,7 @@ import 'home.dart';
 import 'live.dart';
 import 'settings.dart';
 import 'skills.dart';
+import '../widgets/money_rain.dart';
 
 class _Tab {
   const _Tab(this.label, this.icon, this.activeIcon);
@@ -69,7 +70,8 @@ class _ShellState extends State<Shell> {
     final keyboard = MediaQuery.viewInsetsOf(context).bottom > 0;
     return ShellScope(
       goTo: _goTo,
-      child: Stack(children: [
+      // Money rain over everything when a trade hits its take profit.
+      child: MoneyRain(child: Stack(children: [
         Positioned.fill(child: IndexedStack(index: _index, children: _pages)),
         // Chat is full screen with its own back button -- the bar steps aside there.
         if (!keyboard && _index != ShellScope.chat)
@@ -93,7 +95,7 @@ class _ShellState extends State<Shell> {
               ),
             ),
           ),
-      ]),
+      ])),
     );
   }
 }

@@ -1,6 +1,6 @@
 import { getLastKnownState, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getTradeLifecycle } from "@dave/feedback";
-import { recordOutcome, getDeepLossAlertProgress, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
+import { recordOutcome, getDeepLossAlertProgress, getSlAlertLevels, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
 import type { DaveDatabase } from "@dave/db";
 import {
   readMonitors,
@@ -113,6 +113,8 @@ export function alertCategoryOf(kind: MonitorAlertKind): AlertCategory {
       return "range";
     case "quickProfitCheck":
       return "quick_profit_check";
+    case "slLevel":
+      return "deep_loss";
     case "slNear":
       return "sl_near";
     case "slCritical":
@@ -174,7 +176,7 @@ export function buildMonitorAlert(a: MonitorAlert, now: number, breakeven?: Brea
 }
 
 /** The kinds where a trade is going nowhere in loss -- the moment an automatic scratch exit helps. */
-const CHOP_KINDS = new Set<MonitorAlertKind>(["loss5m", "loss10m", "range", "stuck", "deepLoss", "slDanger", "slNear", "roundTrip", "neverGreen", "racing", "noStop"]);
+const CHOP_KINDS = new Set<MonitorAlertKind>(["loss5m", "loss10m", "range", "stuck", "deepLoss", "slDanger", "slNear", "slLevel", "roundTrip", "neverGreen", "racing", "noStop"]);
 
 /** Every loss-side alert says what exit is armed on the trade -- or how to arm one. */
 function withExitHint(a: MonitorAlert, body: string, rule?: ExitRule): string {
@@ -266,13 +268,18 @@ function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutco
     // trader can act without opening the terminal to work out where price actually is.
     case "slNear":
       return (
-        `⚠️ NEARLY STOPPED OUT\n\n${head} has travelled ${Math.round(SL_NEAR_PROGRESS * 100)}% of the way from entry to its stop (${m.sl}).${pnl}${why}\n\n` +
+        `⚠️ NEARLY STOPPED OUT\n\n${head} has travelled ${Math.round((a.level ?? SL_NEAR_PROGRESS) * 100)}% of the way from entry to its stop (${m.sl}).${pnl}${why}\n\n` +
         `Self-check: is the idea genuinely broken, or is this the noise you expected? Decide now — cut, adjust the stop, or hold deliberately.`
       );
     case "slCritical":
       return (
-        `🚨 ABOUT TO BE STOPPED OUT\n\n${head} is ${Math.round(SL_CRITICAL_PROGRESS * 100)}% of the way to its stop (${m.sl}).${pnl}${why}\n\n` +
+        `🚨 ABOUT TO BE STOPPED OUT\n\n${head} is ${Math.round((a.level ?? SL_CRITICAL_PROGRESS) * 100)}% of the way to its stop (${m.sl}).${pnl}${why}\n\n` +
         `This is the last moment to act deliberately rather than letting the stop decide for you.`
+      );
+    case "slLevel":
+      return (
+        `📉 ${Math.round((a.level ?? 0) * 100)}% OF THE WAY TO THE STOP\n\n${head} has travelled ${Math.round((a.level ?? 0) * 100)}% from entry toward its stop (${m.sl}).${pnl}${why}\n\n` +
+        `Self-check: is the level your idea depended on still holding? Hold deliberately, tighten, or cut -- don't just watch it go.`
       );
     case "tpNear":
       return (
@@ -398,6 +405,8 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
   // The trader's own deep-loss alert level (default 50% -- halfway to the stop), read fresh each
   // sweep so a change takes effect on the very next pass with no restart.
   const deepLossThreshold = getDeepLossAlertProgress(deps.userId);
+  // The trader's stop-loss warning ladder (Settings > Alerts), as fractions -- lowest = deep loss.
+  const slLadder = getSlAlertLevels(deps.userId).map((l) => l / 100);
   // Every self-aware alert has an on/off switch (default on). Read once per sweep. A disabled
   // category is silenced for BOTH the user push and Dave's own context surfacing.
   const toggles = getAlertToggles(deps.userId);
@@ -421,7 +430,7 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
       // exists, then it sticks.
       reason: realReasonOrRetry(deps, byTicket.get(p.ticket)?.reason, p.ticket),
     };
-    const { monitor, alerts } = advanceMonitor(byTicket.get(p.ticket), obs, now, deepLossThreshold);
+    const { monitor, alerts } = advanceMonitor(byTicket.get(p.ticket), obs, now, deepLossThreshold, slLadder);
     next.push(monitor);
     byTicket.delete(p.ticket);
     fired.push(...alerts);

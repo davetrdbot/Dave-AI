@@ -389,6 +389,8 @@ class AppSettings {
     this.autoDrawTrades = true,
     required this.deepLossPercent,
     this.selfAwareMode = 'advise',
+    this.slAlertLevels = const [50, 60, 75, 89, 95],
+    this.slAlertMaxRows = 10,
     required this.alerts,
     required this.primaryTimeout,
     required this.fallbackTimeout,
@@ -424,6 +426,10 @@ class AppSettings {
 
   /// off / advise / act -- what Dave does when an alert on one of his trades calls for a decision.
   final String selfAwareMode;
+
+  /// The stop-loss warning ladder, in percent of the way from entry to the stop, lowest first.
+  final List<int> slAlertLevels;
+  final int slAlertMaxRows;
   final List<AlertToggle> alerts;
   final Bounded primaryTimeout;
   final Bounded fallbackTimeout;
@@ -457,6 +463,10 @@ class AppSettings {
       telegramSilent: b['telegramSilent'] == true,
       autoDrawTrades: b['autoDrawTrades'] != false,
       deepLossPercent: Bounded.fromJson(a['deepLossPercent'], 50, 5, 95),
+      slAlertLevels: a['slAlertLevels'] is Map && (a['slAlertLevels'] as Map)['value'] is List
+          ? ((a['slAlertLevels'] as Map)['value'] as List).whereType<num>().map((n) => n.round()).toList()
+          : const [50, 60, 75, 89, 95],
+      slAlertMaxRows: a['slAlertLevels'] is Map ? ((a['slAlertLevels'] as Map)['maxRows'] as num?)?.round() ?? 10 : 10,
       selfAwareMode: (a['selfAwareMode'] is Map ? (a['selfAwareMode'] as Map)['value'] : null) as String? ?? 'advise',
       alerts: _list(a['toggles']).map((x) => AlertToggle(_str(x['id']), _str(x['label']), x['on'] != false)).toList(),
       primaryTimeout: Bounded.fromJson(ai['primaryTimeoutSeconds'], 20, 3, 120),
