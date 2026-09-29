@@ -90,6 +90,7 @@
     "twoStepTrading": false,
     "sequentialThinking": true,
     "memoryWriteApproval": false,
+    "telegramSilent": true,
     "sequentialThinkingEffort": "high"
   },
   "alerts": {

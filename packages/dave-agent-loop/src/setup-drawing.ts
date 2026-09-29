@@ -84,6 +84,47 @@ export function parseDrawing(args: Record<string, unknown>): SetupDrawing {
   };
 }
 
+/**
+ * The picture of a trade Dave just placed (the trader: "the drawing feature, I haven't seen it yet
+ * in the app"): the last real candles, the entry/SL/TP lines, and an arrow from price to target.
+ * Built from the order itself -- no model call.
+ */
+export function tradeDrawing(t: {
+  symbol: string;
+  side: "buy" | "sell";
+  orderType?: string;
+  entry: number;
+  sl?: number;
+  tp?: number;
+  candles: { o: number; h: number; l: number; c: number }[];
+  timeframe?: string;
+  reason?: string;
+  lots?: number;
+}): SetupDrawing | null {
+  const candles = t.candles.slice(-30).map((c) => ({ o: c.o, h: c.h, l: c.l, c: c.c }));
+  if (candles.length < 2 || !(t.entry > 0)) return null;
+  const kind = (t.orderType ?? t.side).replace(/_/g, " ").toUpperCase();
+  const lines: SetupDrawing["lines"] = [{ price: t.entry, label: `Entry ${t.entry}`, kind: "entry" }];
+  if (t.sl && t.sl > 0) lines.push({ price: t.sl, label: `SL ${t.sl}`, kind: "sl" });
+  if (t.tp && t.tp > 0) lines.push({ price: t.tp, label: `TP ${t.tp}`, kind: "tp" });
+  const last = candles.length - 1;
+  const arrows: SetupDrawing["arrows"] =
+    t.tp && t.tp > 0 ? [{ fromIndex: last, fromPrice: t.entry, toIndex: last, toPrice: t.tp, label: "target" }] : [];
+  const rr = t.sl && t.tp && t.sl !== t.entry ? Math.abs(t.tp - t.entry) / Math.abs(t.entry - t.sl) : null;
+  const reason = t.reason?.replace(/\s+/g, " ").trim();
+  return {
+    title: `${t.symbol} ${kind}${t.lots ? ` ${t.lots} lots` : ""}`,
+    symbol: t.symbol,
+    timeframe: t.timeframe,
+    candles,
+    lines,
+    zones: [],
+    arrows,
+    notes: [],
+    caption: [rr ? `Risk:reward 1:${rr.toFixed(1)}` : null, reason ? (reason.length > 200 ? `${reason.slice(0, 197)}...` : reason) : null].filter(Boolean).join(" -- ") || undefined,
+  };
+}
+
 // --- SVG --------------------------------------------------------------------------------------
 
 const W = 1000;

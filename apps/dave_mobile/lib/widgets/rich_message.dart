@@ -297,6 +297,36 @@ class RichBlocks extends StatelessWidget {
 }
 
 /// Collapsed until tapped.
+/// Opens or closes something without the list jumping: the tapped widget stays where it was on
+/// screen. In the chat (a reversed list, anchored at the newest message) a collapsing step used to
+/// shift everything above it and drop the trader among older messages.
+void toggleKeepingPlace(BuildContext context, VoidCallback change) {
+  final box = context.findRenderObject();
+  final position = Scrollable.maybeOf(context)?.position;
+  final before = box is RenderBox && box.attached ? box.localToGlobal(Offset.zero).dy : null;
+  change();
+  if (box is! RenderBox || position == null || before == null) return;
+  // The list settles the change over a few frames (its size estimates catch up); hold the widget in
+  // place through them -- about half a second, which also covers an animated open.
+  final until = DateTime.now().add(const Duration(milliseconds: 500));
+  var frames = 0;
+  void hold(Duration _) {
+    if (!box.attached || !position.hasPixels) return;
+    final delta = before - box.localToGlobal(Offset.zero).dy;
+    if (delta.abs() >= 0.5) {
+      // Up-growing (reversed) lists scroll the other way round.
+      final move = position.axisDirection == AxisDirection.up ? delta : -delta;
+      position.jumpTo((position.pixels + move).clamp(position.minScrollExtent, position.maxScrollExtent));
+    }
+    if (++frames < 4 || (frames < 60 && DateTime.now().isBefore(until))) {
+      WidgetsBinding.instance.addPostFrameCallback(hold);
+      WidgetsBinding.instance.scheduleFrame();
+    }
+  }
+
+  WidgetsBinding.instance.addPostFrameCallback(hold);
+}
+
 class Details extends StatefulWidget {
   const Details({super.key, required this.title, required this.child, this.initiallyOpen = false});
   final String title;
@@ -314,7 +344,7 @@ class _DetailsState extends State<Details> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: () => setState(() => _open = !_open),
+        onTap: () => toggleKeepingPlace(context, () => setState(() => _open = !_open)),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(children: [

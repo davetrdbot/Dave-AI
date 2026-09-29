@@ -7,6 +7,7 @@ import { publishActivity, type ActivityChannel, type ActivityFeed } from "./acti
 export function toolLabel(name: string): string {
   if (name === "run_script") return "Running a script";
   if (name === "update_todos") return "To-do list";
+  if (name === "set_exit_rule") return "Arming an exit";
   if (name === "search_tools") return "Looking for the right tool";
   if (name.startsWith("get_")) return `Checking ${name.slice(4).replace(/_/g, " ")}`;
   if (name === "find_setup" || name === "hunt_for_setup") return "Hunting for a setup";

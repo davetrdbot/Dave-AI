@@ -675,7 +675,7 @@ class _WorkingCardState extends State<_WorkingCard> {
               children: [
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() => _open = !open),
+                  onTap: () => toggleKeepingPlace(context, () => setState(() => _open = !open)),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                     child: Row(
@@ -852,7 +852,7 @@ class _ToolRowState extends State<_ToolRow> {
       children: [
         GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: () => setState(() => _open = !_open),
+          onTap: () => toggleKeepingPlace(context, () => setState(() => _open = !_open)),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 5),
             child: Row(

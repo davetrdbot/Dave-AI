@@ -38,6 +38,7 @@ import {
   type TradingSession,
 } from "@dave/trading";
 import { getWriteApprovalSetting, setWriteApprovalSetting } from "@dave/memory";
+import { getTelegramSilence, setTelegramSilenced } from "@dave/telegram";
 
 /**
  * Every trader-changeable bot setting, in one place, for the app.
@@ -110,6 +111,7 @@ export function readAppSettings(userId: string) {
       sequentialThinking: getSequentialThinkingEnabled(userId),
       sequentialThinkingEffort: getSequentialThinkingEffort(userId),
       memoryWriteApproval: getWriteApprovalSetting(userId),
+      telegramSilent: getTelegramSilence().silent,
     },
     alerts: {
       deepLossPercent: { value: getDeepLossAlertPercent(userId), min: 5, max: 95 },
@@ -205,6 +207,9 @@ export function applyAppSetting(userId: string, id: string, value: unknown): voi
     case "sequentialThinkingEffort":
       if (!THINKING_EFFORTS.includes(value as ThinkingEffort)) throw new InvalidSettingError(`Thinking effort must be one of ${THINKING_EFFORTS.join(", ")}.`);
       setSequentialThinkingEffort(userId, value as ThinkingEffort);
+      return;
+    case "telegramSilent":
+      setTelegramSilenced(bool(value, "Telegram silent mode"));
       return;
     case "memoryWriteApproval":
       setWriteApprovalSetting(userId, bool(value, "Memory approval"));

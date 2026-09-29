@@ -385,6 +385,7 @@ class AppSettings {
     required this.sequentialThinking,
     this.sequentialThinkingEffort = 'medium',
     required this.memoryWriteApproval,
+    this.telegramSilent = false,
     required this.deepLossPercent,
     required this.alerts,
     required this.primaryTimeout,
@@ -411,6 +412,9 @@ class AppSettings {
   /// low / medium / high / max -- how hard the step-by-step pass works.
   final String sequentialThinkingEffort;
   final bool memoryWriteApproval;
+
+  /// Telegram silent mode: nothing goes to the Telegram bot; Dave talks in the app only.
+  final bool telegramSilent;
   final Bounded deepLossPercent;
   final List<AlertToggle> alerts;
   final Bounded primaryTimeout;
@@ -442,6 +446,7 @@ class AppSettings {
       sequentialThinking: b['sequentialThinking'] == true,
       sequentialThinkingEffort: b['sequentialThinkingEffort'] as String? ?? 'medium',
       memoryWriteApproval: b['memoryWriteApproval'] == true,
+      telegramSilent: b['telegramSilent'] == true,
       deepLossPercent: Bounded.fromJson(a['deepLossPercent'], 50, 5, 95),
       alerts: _list(a['toggles']).map((x) => AlertToggle(_str(x['id']), _str(x['label']), x['on'] != false)).toList(),
       primaryTimeout: Bounded.fromJson(ai['primaryTimeoutSeconds'], 20, 3, 120),

@@ -816,6 +816,8 @@ export function getOrBuildRegistry(deps: TelegramBotServerDeps, client: Telegram
  */
 export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promise<TelegramBotServer> {
   const client = new TelegramClient(deps.botToken);
+  // Telegram silent mode (set from the app) mutes this client, and only this one.
+  client.silenceable = true;
   writeTelegramStatus({ state: "starting" });
   const me = await client.getMe().catch(() => undefined);
   // Real gap fixed: registerDefaultCommandMenu (setMyCommands) only

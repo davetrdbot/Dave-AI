@@ -83,6 +83,15 @@ assert.equal(trading.isAlertEnabled(USER, "range"), false);
 r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "alert:nonsense", value: false });
 assert.equal(r.status, 400);
 
+// Telegram silent mode, from the app.
+r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "telegramSilent", value: true });
+assert.equal(r.status, 200);
+assert.equal((await import("@dave/telegram")).getTelegramSilence().silent, true);
+r = await call(settingsRoute.GET as Handler, "GET", "/api/app/settings");
+assert.equal(r.json.behaviour.telegramSilent, true, "the app sees the switch on");
+r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "telegramSilent", value: false });
+assert.equal((await import("@dave/telegram")).getTelegramSilence().silent, false);
+
 r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "session", value: "london" });
 assert.equal(trading.getTradingSession(USER), "london");
 r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "deepLossPercent", value: 60 });

@@ -2,6 +2,16 @@ import { getRiskSettings, getAutoApprovalEnabled, getActiveGroupInfo, getTrading
 import { selfAwareFeedBlock } from "./self-aware-feed.js";
 import { growthStatus } from "./growth-reflection.js";
 import { todoContextBlock } from "./todos.js";
+import { exitRulesContextBlock } from "./exit-rules.js";
+import { isTelegramSilenced } from "@dave/telegram";
+
+const safeTelegramSilenced = () => {
+  try {
+    return isTelegramSilenced();
+  } catch {
+    return false;
+  }
+};
 import { growthContextBlock } from "@dave/trading";
 import { getConfidenceSettings, getMinRiskReward, getDeepLossAlertPercent, getAlertToggles, getWinStreak, ALERT_CATEGORIES } from "@dave/trading";
 import { listOpenMonitors, HOT_HAND_MIN_STREAK, isRanging, PEAK_PULLBACK_FRACTION, PEAK_PULLBACK_MIN_PEAK, SL_NEAR_PROGRESS, SL_CRITICAL_PROGRESS, TP_NEAR_PROGRESS } from "./trade-monitor-store.js";
@@ -247,6 +257,18 @@ export function buildLiveSettingsBlock(userId: string): string {
     }
   })();
   if (todos) lines.push("", todos);
+
+  const exitRules = (() => {
+    try {
+      return exitRulesContextBlock(userId);
+    } catch {
+      return null;
+    }
+  })();
+  if (exitRules) lines.push("", exitRules);
+
+  // Telegram silent mode: nothing reaches Telegram, so talking there does nothing.
+  if (safeTelegramSilenced()) lines.push("", "TELEGRAM IS SILENCED by the trader: nothing you send reaches Telegram. They read you in the app only -- answer in plain text; don't use send_telegram or other Telegram-only tools.");
 
   // The self-improvement loop: the goal, the strategy card under test, the rules, the brain.
   const growth = (() => {

@@ -237,6 +237,10 @@ export const CORE_TOOL_NAMES: string[] = [
   "brain_recall",
   "reflect_now",
   "update_todos",
+  // Exit rules: the moment is a self-aware alert about a trade chopping in loss.
+  "set_exit_rule",
+  "list_exit_rules",
+  "cancel_exit_rule",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the

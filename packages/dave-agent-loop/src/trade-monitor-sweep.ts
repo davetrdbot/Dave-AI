@@ -17,6 +17,7 @@ import {
   type MonitorAlertKind,
   type PositionObservation,
 } from "./trade-monitor-store.js";
+import { exitRuleFor, describeExitRule, runExitRules, type ExitRule } from "./exit-rules.js";
 
 /**
  * The runtime half of the Self-Aware Trade Monitor. On its own timer it reads every live open
@@ -142,7 +143,23 @@ export type BreakevenOutcome =
   | { status: "failed"; level: number; error: string }
   | { status: "advice" };
 
-export function buildMonitorAlert(a: MonitorAlert, now: number, breakeven?: BreakevenOutcome): string {
+export function buildMonitorAlert(a: MonitorAlert, now: number, breakeven?: BreakevenOutcome, exitRule?: ExitRule): string {
+  return withExitHint(a, buildAlertBody(a, now, breakeven), exitRule);
+}
+
+/** The kinds where a trade is going nowhere in loss -- the moment an automatic scratch exit helps. */
+const CHOP_KINDS = new Set<MonitorAlertKind>(["loss5m", "loss10m", "range", "stuck", "deepLoss", "slDanger", "slNear"]);
+
+/** Every loss-side alert says what exit is armed on the trade -- or how to arm one. */
+function withExitHint(a: MonitorAlert, body: string, rule?: ExitRule): string {
+  if (rule) return `${body}\n\n🛟 Exit rule armed: ${describeExitRule(rule)}.`;
+  if (!CHOP_KINDS.has(a.kind)) return body;
+  const m = a.monitor;
+  const swing = m.bestPnl !== undefined && m.worstPnl !== undefined ? ` Its range so far: best ${money(m.bestPnl)}, worst ${money(m.worstPnl)}.` : "";
+  return `${body}\n\n🛟 No exit rule on it.${swing} Option: set_exit_rule to close it automatically if it recovers (breakeven or a small profit) and/or cut it at a fixed loss -- instead of watching it chop.`;
+}
+
+function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutcome): string {
   const m = a.monitor;
   const head = `${m.symbol} ${m.direction.toUpperCase()} (ticket #${m.ticket})`;
   const pnl = m.lastPnl !== undefined ? ` P/L ${m.lastPnl > 0 ? "+" : ""}${m.lastPnl}` : "";
@@ -354,10 +371,16 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
     // retried every 30s -- a broker that refuses this stop will keep refusing it.
     const breakeven = a.kind === "breakeven" ? await moveStopToBreakeven(deps, a.monitor) : undefined;
     try {
-      await deps.notify(buildMonitorAlert(a, now, breakeven));
+      await deps.notify(buildMonitorAlert(a, now, breakeven, exitRuleFor(deps.userId, a.monitor.ticket)));
     } catch (err) {
       console.error(`[trade-monitor] ${deps.userId}: alert ${a.kind} for #${a.monitor.ticket} failed to send:`, err);
     }
+  }
+  // Exit rules (exit-rules.ts): close the trades whose armed level was reached.
+  try {
+    hotHandMessages.push(...(await runExitRules(deps.userId, deps.executor, now)));
+  } catch (err) {
+    console.error(`[trade-monitor] ${deps.userId}: exit rules failed:`, err);
   }
   for (const msg of hotHandMessages) {
     try {

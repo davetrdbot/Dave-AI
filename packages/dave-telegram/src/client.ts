@@ -1,3 +1,4 @@
+import { isOutboundMethod, isTelegramSilenced, mutedResult } from "./telegram-silence.js";
 /**
  * Step 8: Telegram Bot Core. Raw HTTPS calls to api.telegram.org --
  * deliberately not wrapped in a third-party bot-framework library, since
@@ -276,7 +277,16 @@ export class TelegramClient {
     private readonly baseUrl = process.env.TELEGRAM_API_BASE_URL?.replace(/\/$/, "") || "https://api.telegram.org",
   ) {}
 
+  /** Set on the bot's own client: Telegram silent mode (telegram-silence.ts) mutes it. Other
+   *  clients (pairing codes, the admin panel) always send. */
+  silenceable = false;
+
+  private muted(method: string): boolean {
+    return this.silenceable && isOutboundMethod(method) && isTelegramSilenced();
+  }
+
   private async call<T>(method: string, body?: Record<string, unknown>): Promise<T> {
+    if (this.muted(method)) return mutedResult(method, body) as T;
     const res = await fetch(`${this.baseUrl}/bot${this.token}/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -301,6 +311,7 @@ export class TelegramClient {
    * sendMediaGroup).
    */
   private async callMultipart<T>(method: string, fields: Record<string, unknown>, fileField: string, file: LocalFile): Promise<T> {
+    if (this.muted(method)) return mutedResult(method, fields) as T;
     const form = new FormData();
     for (const [key, value] of Object.entries(fields)) {
       if (value === undefined) continue;

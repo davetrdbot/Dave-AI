@@ -75,6 +75,8 @@ import { selfAwareFeedBlock } from "./self-aware-feed.js";
 import { growthStatus } from "./growth-reflection.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
+import { tradeDrawing } from "./setup-drawing.js";
+import { parseCandles } from "./decision-grading.js";
 import { ACTIONS_SCHEMA, coerceTickActions, gatherData, isDataAction, runManagementActions, type TickAction } from "./tick-actions.js";
 
 /** Bounded so a growing knowledge store can never crowd out the analysis suite in the tick's
@@ -1870,6 +1872,29 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     // Logging must never block or fail a real trade that already succeeded.
   }
   recordTickDecision(userId, { ts: Date.now(), symbol, action: decisionAction, reason });
+
+  // A picture of the trade for the app's chat (setup-drawing.ts): real M15 candles plus the
+  // entry/SL/TP. Off the trade's path -- a failed candle fetch just means no picture.
+  void (async () => {
+    try {
+      const { bars } = parseCandles(await analysis.get<unknown>("candles", order.symbol, "M15", { timeoutMs: 30_000 }));
+      const drawing = tradeDrawing({
+        symbol: order.symbol,
+        side: decisionAction === "BUY" ? "buy" : "sell",
+        orderType: order.type,
+        entry: order.price ?? referencePrice,
+        sl: order.sl,
+        tp: order.tp,
+        candles: bars,
+        timeframe: "M15",
+        reason,
+        lots: placed.placedLots,
+      });
+      if (drawing) publishActivity(userId, "chat", "drawing", { drawing, caption: drawing.caption ?? drawing.title, ticket: placed.ticket });
+    } catch (err) {
+      console.warn(`[autonomous-tick] ${userId}: no drawing for #${placed.ticket} -- ${err instanceof Error ? err.message : String(err)}`);
+    }
+  })();
 
   // The pullback scalp (the trader: instead of waiting for the limit, ride the pullback into it).
   // Optional -- only when Dave asked for it on this decision -- and only for a limit that is really

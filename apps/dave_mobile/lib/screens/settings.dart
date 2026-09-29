@@ -614,6 +614,7 @@ class _BehaviourSection extends StatelessWidget {
   Widget build(BuildContext context) => CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
         header: const ListHeader('How Dave works'),
         children: [
+          _toggle(context, 'telegramSilent', CupertinoIcons.bell_slash, 'Silence Telegram', s.telegramSilent ? 'Off in Telegram; app only' : 'Dave also messages on Telegram', s.telegramSilent),
           _toggle(context, 'selfPause', CupertinoIcons.pause_circle, 'Self-pause', 'Dave may pause himself in bad conditions', s.selfPause),
           _toggle(context, 'twoStepTrading', CupertinoIcons.person_2, 'Two-step trading', 'A second AI reviews every trade first', s.twoStepTrading),
           _toggle(context, 'sequentialThinking', CupertinoIcons.list_number, 'Deeper thinking', 'Step-by-step trade decisions; slower, costs more', s.sequentialThinking),

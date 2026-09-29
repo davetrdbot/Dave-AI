@@ -2,6 +2,7 @@ import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { createGrowthTools } from "./growth-tools.js";
 import { createTodoTool } from "./todos.js";
+import { createExitRuleTools } from "./exit-rules.js";
 import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness, pullbackScalpRoom } from "@dave/trading";
 import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, MT5_CLOUD_TOOLS, createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
@@ -441,6 +442,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   ] as AgentTool[]);
   registry.register(createGrowthTools({ userId: deps.userId, db: deps.db }) as AgentTool[]);
   registry.register([createTodoTool(deps.userId)] as AgentTool[]);
+  registry.register(createExitRuleTools(deps.userId) as AgentTool[]);
   registry.register([createAskUserTool(deps.userId)] as AgentTool[]);
 
   // Update 11 follow-up: "give the bot ability to search from his tools

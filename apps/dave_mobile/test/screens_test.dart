@@ -555,9 +555,16 @@ void main() {
       expect(find.text('Hunting for a setup'), findsOneWidget);
       expect(find.text('Stop'), findsOneWidget, reason: 'a turn is running');
       expect(find.text('Place trade'), findsOneWidget, reason: "Nous's card, with its buttons");
+      final rowBefore = tester.getTopLeft(find.text('Checking price'));
       await tester.tap(find.text('Checking price'));
       await _advance(tester);
       expect(find.textContaining('2651.2'), findsOneWidget, reason: 'a tool row opens to its result');
+      expect(tester.getTopLeft(find.text('Checking price')).dy, closeTo(rowBefore.dy, 1), reason: 'opening a step keeps it in place');
+      await tester.tap(find.text('Checking price'));
+      await _advance(tester);
+      expect(tester.getTopLeft(find.text('Checking price')).dy, closeTo(rowBefore.dy, 1), reason: 'closing it does not jump the chat');
+      await tester.tap(find.text('Checking price'));
+      await _advance(tester);
       await tester.drag(find.byType(ListView).first, const Offset(0, 500));
       await _advance(tester);
       await _shot(tester, 'chat_history_$mode');

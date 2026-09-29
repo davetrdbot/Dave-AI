@@ -14,3 +14,4 @@ export * from "./telegram-webhook.js";
 export * from "./self-delete.js";
 export * from "./bot-status.js";
 export * from "./update-delivery.js";
+export * from "./telegram-silence.js";
