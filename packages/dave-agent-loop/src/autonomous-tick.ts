@@ -37,6 +37,8 @@ import {
   isAnalysisScopeSufficientFor,
   isAvoidedByStrategy,
   growthContextBlock,
+  recordDecisionForGrading,
+  pastCallsBlock,
 } from "@dave/trading";
 import { isTradingHalted } from "@dave/safety";
 import { getLastKnownAccountSnapshot, getLastKnownState, createEaAnalysisSource } from "@dave/ea-bridge";
@@ -703,6 +705,15 @@ export interface RunTickDeps {
  *  doing between real trades than this stdout log (Railway's own log tail). Every early return
  *  used to be silent; now each one says exactly why, and the real chosen symbol/decision/reason
  *  gets logged too, right where it's decided. */
+/** His last graded calls on this pair -- never allowed to break a scan. */
+function safePastCalls(userId: string, symbol: string): string | null {
+  try {
+    return pastCallsBlock(userId, symbol);
+  } catch {
+    return null;
+  }
+}
+
 /** The goal, the strategy card and what the brain has learned -- never allowed to break a scan. */
 function safeGrowthBlock(userId: string): string | null {
   try {
@@ -1051,6 +1062,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     selfAwareAlertLine,
     selfAwareFeedBlock(userId),
     safeGrowthBlock(userId),
+    safePastCalls(userId, symbol),
     activeStrategySkillLine,
   ].filter((line): line is string => line !== null);
 
@@ -1344,6 +1356,13 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   }
 
   applyReminderChanges(userId, symbol, decision);
+
+  // Written down to be graded against what price does next (decision-grades.ts) -- skips included.
+  try {
+    recordDecisionForGrading(userId, { symbol: decision.symbol ?? symbol, action: decision.action, reason: decision.reason ?? "", confidence: decision.confidence });
+  } catch (err) {
+    console.warn(`[autonomous-tick] ${userId}: could not record the call for grading -- ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // The cursor always advances after a real decision, regardless of outcome -- this is what
   // keeps the loop moving through the whole group instead of getting stuck on one symbol.

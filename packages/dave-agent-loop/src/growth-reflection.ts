@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Provider, ToolSpec } from "@dave/brain";
-import { readClosedTradeHistory, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
+import { readClosedTradeHistory, getLastKnownAccountSnapshot, createEaAnalysisSource } from "@dave/ea-bridge";
+import { settleDueDecisions } from "./decision-grading.js";
 import { listJournalEntries } from "@dave/workers";
 import {
   getGrowthGoals,
@@ -342,6 +343,21 @@ export function startGrowthLoop(opts: { userId: string; provider: () => Provider
   let debounce: ReturnType<typeof setTimeout> | undefined;
   const timer = setInterval(() => void run(false), 30 * 60_000);
   timer.unref();
+  // Grade past calls (skips included) against what price did next -- every 15 minutes.
+  let grading = false;
+  const gradeTimer = setInterval(() => {
+    if (grading) return;
+    grading = true;
+    void settleDueDecisions({ userId: opts.userId, analysis: createEaAnalysisSource(opts.userId), provider: opts.provider() })
+      .then((r) => {
+        if (r.settled.length || r.expired) console.log(`[grading] ${opts.userId}: ${r.settled.length} graded, ${r.expired} expired, ${r.lessons} lessons`);
+      })
+      .catch((err) => console.warn(`[grading] ${opts.userId}: ${err instanceof Error ? err.message : String(err)}`))
+      .finally(() => {
+        grading = false;
+      });
+  }, 15 * 60_000);
+  gradeTimer.unref();
   const poll = setInterval(() => {
     if (takeReflectRequest(opts.userId)) void run(true);
   }, 20_000);
@@ -355,6 +371,7 @@ export function startGrowthLoop(opts: { userId: string; provider: () => Provider
     },
     stop: () => {
       clearInterval(timer);
+      clearInterval(gradeTimer);
       clearInterval(poll);
       if (debounce) clearTimeout(debounce);
     },

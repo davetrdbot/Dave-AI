@@ -38,6 +38,7 @@ class GrowthScreen extends StatelessWidget {
           SliverToBoxAdapter(child: _ScoreCard(g: g)),
           SliverToBoxAdapter(child: _StrategyCard(g: g, act: act)),
           SliverToBoxAdapter(child: _LoopCard(g: g)),
+          SliverToBoxAdapter(child: _GradesCard(g: g)),
           SliverToBoxAdapter(child: _GoalCard(g: g, act: act, reload: reload)),
           SliverToBoxAdapter(child: _NeuronCard(g: g, act: act, reload: reload)),
           SliverToBoxAdapter(child: _RulesCard(g: g)),
@@ -687,6 +688,74 @@ class _NeuronPage extends StatelessWidget {
 }
 
 // ───────────────────────────── rules + versions ─────────────────────────────
+
+/// Every call graded against what price did next -- skips too. A skip that let a clean move go is
+/// a miss; an entry that hit its stop first is a bad call. The misses carry Dave's lesson.
+class _GradesCard extends StatelessWidget {
+  const _GradesCard({required this.g});
+  final Map<String, dynamic> g;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    final grades = _m(g['grades']);
+    final st = _m(grades['stats']);
+    final recent = _l(grades['recent']);
+    final pending = (grades['pending'] as num?)?.toInt() ?? 0;
+    String pct(Object? v) => v == null ? '—' : '$v%';
+    Color colorFor(String? v) => switch (v) {
+          'good_skip' || 'good_call' => look.up,
+          'missed_long' || 'missed_short' => resolve(context, CupertinoColors.systemOrange),
+          'bad_call' => look.down,
+          _ => secondary,
+        };
+    IconData iconFor(String? v) => switch (v) {
+          'good_skip' => CupertinoIcons.hand_raised_fill,
+          'good_call' => CupertinoIcons.checkmark_circle_fill,
+          'missed_long' => CupertinoIcons.arrow_up_right_circle_fill,
+          'missed_short' => CupertinoIcons.arrow_down_right_circle_fill,
+          'bad_call' => CupertinoIcons.xmark_circle_fill,
+          _ => CupertinoIcons.minus_circle_fill,
+        };
+    return ContentCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Expanded(child: SectionLabel('Graded calls')),
+          if (pending > 0) Text('$pending waiting', style: TextStyle(fontSize: 12.5, color: secondary)),
+        ]),
+        const SizedBox(height: 4),
+        Text('Every call -- skips too -- checked 2h later against what price did.', style: TextStyle(fontSize: 12.5, color: secondary)),
+        const SizedBox(height: Space.s3),
+        Row(children: [
+          Expanded(child: StatTile(value: pct(st['skipAccuracyPct']), label: 'Right to skip')),
+          Expanded(child: StatTile(value: '${st['missed'] ?? 0}', label: 'Moves missed', color: (st['missed'] as num? ?? 0) > 0 ? resolve(context, CupertinoColors.systemOrange) : null)),
+          Expanded(child: StatTile(value: pct(st['callAccuracyPct']), label: 'Entries right')),
+        ]),
+        if (recent.isEmpty)
+          Padding(padding: const EdgeInsets.only(top: Space.s3), child: Text('Nothing graded yet -- the first calls settle two hours after his next scans.', style: TextStyle(fontSize: 13, color: secondary)))
+        else ...[
+          const SizedBox(height: Space.s3),
+          for (final d in recent.take(8))
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(iconFor(d['verdict'] as String?), size: 20, color: colorFor(d['verdict'] as String?)),
+                const SizedBox(width: Space.s2),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('${d['symbol']} ${d['action']}  ·  ${'${d['text']}'.split(' -- ').first}', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+                    Text('${'${d['text']}'.split(' -- ').skip(1).join(' -- ')}  (up ${d['upAtr']} / down ${d['downAtr']} ATR)', style: TextStyle(fontSize: 12, color: secondary)),
+                    if (d['lesson'] != null) Padding(padding: const EdgeInsets.only(top: 2), child: Text('💡 ${d['lesson']}', style: const TextStyle(fontSize: 12.5, height: 1.3))),
+                  ]),
+                ),
+              ]),
+            ),
+        ],
+      ]),
+    );
+  }
+}
 
 class _RulesCard extends StatelessWidget {
   const _RulesCard({required this.g});

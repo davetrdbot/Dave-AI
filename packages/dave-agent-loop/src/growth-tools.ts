@@ -10,6 +10,9 @@ import {
   learnFact,
   forgetFact,
   reinforceFact,
+  gradeStats,
+  listGradedDecisions,
+  describeVerdict,
 } from "@dave/trading";
 import { growthStatus, runGrowthReflection } from "./growth-reflection.js";
 import { modelConfigProvider } from "./provider-selection.js";
@@ -37,6 +40,10 @@ export function createGrowthTools(deps: { userId: string; db: DaveDatabase }) {
           current: currentVersion(s),
           rules: s.rules,
           avoidSymbols: s.avoidSymbols,
+          gradedCalls: {
+            stats: gradeStats(userId),
+            recent: listGradedDecisions(userId).filter((d) => d.status === "settled").slice(-10).map((d) => ({ symbol: d.symbol, action: d.action, verdict: describeVerdict(d), lesson: d.lesson })),
+          },
           versions: s.versions.slice(-10).map((v) => ({ v: v.v, status: v.status, change: v.change ? describeChange(v.change) : null, hypothesis: v.hypothesis, score: v.score, baselineScore: v.baselineScore, note: v.verdictNote })),
         };
       },

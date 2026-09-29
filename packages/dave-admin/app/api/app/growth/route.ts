@@ -17,6 +17,9 @@ import {
   GROWTH_VARIABLES,
   getMinRiskReward,
   getConfidenceSettings,
+  listGradedDecisions,
+  gradeStats,
+  describeVerdict,
 } from "@dave/trading";
 import { withDevice } from "../../../../server/require-device";
 
@@ -55,6 +58,16 @@ function snapshot(userId: string) {
     neurons: listNeurons(userId),
     variables: GROWTH_VARIABLES,
     lastReflectionAt: s.lastReflectionAt ?? null,
+    // Calls graded against what price did next -- skips included (decision-grades.ts).
+    grades: {
+      stats: gradeStats(userId),
+      recent: listGradedDecisions(userId)
+        .filter((d) => d.status === "settled")
+        .slice(-25)
+        .reverse()
+        .map((d) => ({ id: d.id, at: d.at, symbol: d.symbol, action: d.action, verdict: d.verdict, text: describeVerdict(d), upAtr: d.upAtr, downAtr: d.downAtr, reason: d.reason, lesson: d.lesson ?? null })),
+      pending: listGradedDecisions(userId).filter((d) => d.status === "pending").length,
+    },
   };
 }
 

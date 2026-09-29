@@ -13,7 +13,7 @@
   "success": [
    "making 8% a month or better",
    "winning at least 45% of trades",
-   "a profit factor of 1.5 or more (money won ÷ money lost)"
+   "a profit factor of 1.5 or more (money won \u00f7 money lost)"
   ],
   "failure": [
    "a drawdown deeper than 10% from the peak",
@@ -54,13 +54,13 @@
    },
    "checks": [
     {
-     "goal": "win rate ≥ 45%",
+     "goal": "win rate \u2265 45%",
      "ok": true,
      "kind": "success",
      "value": "58%"
     },
     {
-     "goal": "profit factor ≥ 1.5",
+     "goal": "profit factor \u2265 1.5",
      "ok": true,
      "kind": "success",
      "value": "3.11"
@@ -110,13 +110,13 @@
    },
    "checks": [
     {
-     "goal": "win rate ≥ 45%",
+     "goal": "win rate \u2265 45%",
      "ok": true,
      "kind": "success",
      "value": "67%"
     },
     {
-     "goal": "profit factor ≥ 1.5",
+     "goal": "profit factor \u2265 1.5",
      "ok": true,
      "kind": "success",
      "value": "3.22"
@@ -217,7 +217,7 @@
    "verdictNote": "Undone: scored 0.02, worse than 0.18 before.",
    "startedAt": 1790191642672,
    "startedAtTrade": 7,
-   "changeText": "confidence bar 70% → 80%"
+   "changeText": "confidence bar 70% \u2192 80%"
   },
   {
    "v": 2,
@@ -235,7 +235,7 @@
    "verdictNote": "Kept: scored 0.18 vs -0.21 before -- this is the new baseline.",
    "startedAt": 1789932442672,
    "startedAtTrade": 4,
-   "changeText": "min R:R 1.5 → 2"
+   "changeText": "min R:R 1.5 \u2192 2"
   },
   {
    "v": 1,
@@ -251,7 +251,7 @@
   {
    "id": "rsi",
    "label": "RSI",
-   "emoji": "📈",
+   "emoji": "\ud83d\udcc8",
    "facts": [
     {
      "id": "rsi-31759422",
@@ -269,13 +269,13 @@
   {
    "id": "macd",
    "label": "MACD",
-   "emoji": "〰️",
+   "emoji": "\u3030\ufe0f",
    "facts": []
   },
   {
    "id": "volatility",
    "label": "Volatility",
-   "emoji": "🌊",
+   "emoji": "\ud83c\udf0a",
    "facts": [
     {
      "id": "volatility-26f6fb1e",
@@ -293,7 +293,7 @@
   {
    "id": "zones",
    "label": "Zones",
-   "emoji": "🧱",
+   "emoji": "\ud83e\uddf1",
    "facts": [
     {
      "id": "zones-9131cd35",
@@ -310,31 +310,31 @@
   {
    "id": "structure",
    "label": "Structure",
-   "emoji": "🏗️",
+   "emoji": "\ud83c\udfd7\ufe0f",
    "facts": []
   },
   {
    "id": "trend",
    "label": "Trend",
-   "emoji": "🧭",
+   "emoji": "\ud83e\udded",
    "facts": []
   },
   {
    "id": "momentum",
    "label": "Momentum",
-   "emoji": "⚡",
+   "emoji": "\u26a1",
    "facts": []
   },
   {
    "id": "liquidity",
    "label": "Liquidity",
-   "emoji": "💧",
+   "emoji": "\ud83d\udca7",
    "facts": []
   },
   {
    "id": "sessions",
    "label": "Sessions",
-   "emoji": "🕐",
+   "emoji": "\ud83d\udd50",
    "facts": [
     {
      "id": "sessions-950220d3",
@@ -351,7 +351,7 @@
   {
    "id": "synthetic",
    "label": "Synthetics",
-   "emoji": "🧪",
+   "emoji": "\ud83e\uddea",
    "facts": [
     {
      "id": "synthetic-56538690",
@@ -379,25 +379,25 @@
   {
    "id": "news",
    "label": "News",
-   "emoji": "📰",
+   "emoji": "\ud83d\udcf0",
    "facts": []
   },
   {
    "id": "risk",
    "label": "Risk",
-   "emoji": "🛡️",
+   "emoji": "\ud83d\udee1\ufe0f",
    "facts": []
   },
   {
    "id": "execution",
    "label": "Execution",
-   "emoji": "🎯",
+   "emoji": "\ud83c\udfaf",
    "facts": []
   },
   {
    "id": "psychology",
    "label": "Psychology",
-   "emoji": "🧠",
+   "emoji": "\ud83e\udde0",
    "facts": [
     {
      "id": "psychology-c8aff1b4",
@@ -444,5 +444,69 @@
    "explain": "trade a pair again that an earlier version benched"
   }
  ],
- "lastReflectionAt": null
+ "lastReflectionAt": null,
+ "grades": {
+  "stats": {
+   "graded": 23,
+   "skips": 17,
+   "goodSkips": 13,
+   "missed": 4,
+   "calls": 6,
+   "goodCalls": 3,
+   "badCalls": 2,
+   "skipAccuracyPct": 76,
+   "callAccuracyPct": 60
+  },
+  "pending": 3,
+  "recent": [
+   {
+    "id": "a1",
+    "at": 1790634794685.0,
+    "symbol": "XAUUSD",
+    "action": "SKIP",
+    "verdict": "missed_long",
+    "text": "missed a long -- price ran +2R before a 1R stop",
+    "upAtr": 3.1,
+    "downAtr": 0.4,
+    "reason": "RSI mid, no structure",
+    "lesson": "Gold broke the Asian high with momentum -- a mid RSI was not a reason to sit out a clean breakout."
+   },
+   {
+    "id": "a2",
+    "at": 1790631194685.0,
+    "symbol": "BOOM_1000",
+    "action": "SKIP",
+    "verdict": "good_skip",
+    "text": "good skip -- neither side paid",
+    "upAtr": 0.8,
+    "downAtr": 0.6,
+    "reason": "no spike setup",
+    "lesson": null
+   },
+   {
+    "id": "a3",
+    "at": 1790627594685.0,
+    "symbol": "EURUSD",
+    "action": "BUY",
+    "verdict": "bad_call",
+    "text": "bad call -- hit a 1R stop first",
+    "upAtr": 0.3,
+    "downAtr": 1.4,
+    "reason": "H1 demand",
+    "lesson": "Bought EURUSD into NY open news -- wait for the first 15-minute candle to close before trusting H1 demand."
+   },
+   {
+    "id": "a4",
+    "at": 1790623994685.0,
+    "symbol": "VOL_75",
+    "action": "SELL",
+    "verdict": "good_call",
+    "text": "good call -- reached 2R before the stop",
+    "upAtr": 0.5,
+    "downAtr": 2.6,
+    "reason": "lower high at supply",
+    "lesson": null
+   }
+  ]
+ }
 }
