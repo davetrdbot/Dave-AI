@@ -3,10 +3,12 @@ import { verifyDeviceToken } from "@dave/db";
 import type { CompletionMessage, ContentBlock } from "@dave/brain";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyError } from "@dave/vision";
 import { speechVocabularyPrompt } from "./speech-vocabulary.js";
-import { activityAfter, activityBetween, latestActivityId, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
-import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, type AppChatDeps } from "./app-chat.js";
+import { activityAfter, activityBetween, latestActivityId, publishActivity, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
+import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, appRegistry, type AppChatDeps } from "./app-chat.js";
 import { dispatchCallback } from "./command-router.js";
-import { ANSWERED_EARLIER, loadConversationHistory } from "./conversation-store.js";
+import { ANSWERED_EARLIER, loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
+import { startLiveSession, runLiveTool, NoGeminiKeyError } from "./live-voice.js";
+import type { ToolRegistry } from "./tool-registry.js";
 import { getBusyState, getAutonomousBusyState } from "./busy-state.js";
 import { abortTurn, isTurnRunning } from "./turn-abort.js";
 import { readAppFile, saveUserUpload, isImageName } from "./app-files.js";
@@ -28,6 +30,9 @@ import { nousDepsFor, placeNousSignal, skipNousSignal, applyNousUpdate, skipNous
  *   POST stop               stop whatever Dave is doing right now
  *   POST action             {callback, messageId?} -- a card button from the app (Nous, trade approvals, ...)
  *   POST transcribe         {audio: base64, name?} -> {text} -- the trader's voice, via Groq Whisper
+ *   POST live/start         {thinking?, voice?} -> a one-use Gemini Live token + session setup (live-voice.ts)
+ *   POST live/tool          {name, args} -> the tool's answer, for Gemini (trade actions need confirmed: true)
+ *   POST live/end           {transcript: [{who, text}], seconds} -> saved into the shared conversation
  */
 
 export const APP_CHAT_PREFIX = "/api/app/chat/";
@@ -97,10 +102,13 @@ export function historyForDisplay(history: CompletionMessage[], limit = 60): Cha
 export interface AppChatRouteDeps extends AppChatDeps {
   /** Overridable for tests. */
   runTurn?: typeof runAppChatTurn;
+  registry?: ToolRegistry;
+  fetchImpl?: typeof fetch;
 }
 
 export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMessage, res: ServerResponse) => void {
   const runTurn = deps.runTurn ?? runAppChatTurn;
+  const registryFor = (d: AppChatRouteDeps) => d.registry ?? appRegistry(d);
   return (req, res) => {
     void handle(req, res).catch((err: Error & { status?: number }) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message || "Something went wrong." });
@@ -233,6 +241,50 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
       }
       return;
     }
+    if (method === "POST" && path === "live/start") {
+      // A live voice call (live-voice.ts): a one-use Gemini token plus the whole session setup.
+      const body = await readJson(req);
+      try {
+        const session = await startLiveSession({ db: deps.db, userId, registry: registryFor(deps) }, { thinking: body.thinking === true, voice: typeof body.voice === "string" ? body.voice : undefined, allowActions: body.allowActions !== false }, deps.fetchImpl ?? fetch);
+        publishActivity(userId, "background", "voice_call", { text: "📞 Voice call with Dave started." });
+        send(res, 200, session);
+      } catch (err) {
+        if (err instanceof NoGeminiKeyError) return send(res, 409, { error: err.message });
+        send(res, 502, { error: (err instanceof Error ? err.message : String(err)).replace(/AIza[0-9A-Za-z_-]+/g, "[key]").slice(0, 300) });
+      }
+      return;
+    }
+    if (method === "POST" && path === "live/tool") {
+      const body = await readJson(req);
+      const name = String(body.name ?? "");
+      const args = body.args && typeof body.args === "object" ? (body.args as Record<string, unknown>) : {};
+      const result = await runLiveTool({ registry: registryFor(deps), askDave: (request) => askDave(userId, request) }, name, args);
+      publishActivity(userId, "background", "voice_tool", { text: `📞 ${name}${result.error ? " (failed)" : result.needsConfirmation ? " (waiting for your yes)" : ""}` });
+      send(res, 200, result);
+      return;
+    }
+    if (method === "POST" && path === "live/end") {
+      // The call goes into the shared conversation, so Dave (and Telegram) know what was said.
+      const body = await readJson(req);
+      const lines = Array.isArray(body.transcript) ? (body.transcript as { who?: string; text?: string }[]) : [];
+      const text = lines
+        .map((l) => ({ who: l.who === "dave" ? "Dave" : "Me", text: String(l.text ?? "").trim() }))
+        .filter((l) => l.text)
+        .map((l) => `${l.who}: ${l.text}`)
+        .join("\n")
+        .slice(0, 20_000);
+      const minutes = Math.max(1, Math.round((Number(body.seconds) || 0) / 60));
+      if (text) {
+        const key = sharedHistoryKey(deps.db, userId);
+        const history = loadConversationHistory(deps.db, key);
+        history.push({ role: "user", content: `[Voice call with Dave, about ${minutes} min -- transcript]\n${text}` });
+        history.push({ role: "assistant", content: "📞 Voice call saved -- I've got everything we said." });
+        saveConversationHistory(deps.db, key, history);
+      }
+      publishActivity(userId, "background", "voice_call", { text: `📞 Voice call ended (${minutes} min).` });
+      send(res, 200, { saved: !!text });
+      return;
+    }
     if (method === "POST" && path === "stop") {
       send(res, 200, { stopped: abortTurn(userId) });
       return;
@@ -243,6 +295,17 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
       return;
     }
     send(res, 404, { error: "not found" });
+  }
+
+  /** ask_dave from a call: a normal app turn (every tool, every safeguard), its answer as text. */
+  async function askDave(userId: string, request: string): Promise<string> {
+    const busy = stateOf(userId);
+    if (busy.busy) return `Dave is busy right now${busy.task ? ` (${busy.task})` : ""} -- try again in a minute.`;
+    const result = await runTurn(deps, { text: `[From our voice call] ${request}\n\n(Answer for being read aloud: plain sentences, no tables or markdown, the key numbers only.)` });
+    if (!result) return "Dave couldn't finish that one.";
+    if (result.status === "done") return result.text || "Done.";
+    if (result.status === "awaiting_user") return `Dave needs to know: ${result.question.question}`;
+    return "Dave stopped before finishing.";
   }
 
   function stateOf(userId: string): { busy: boolean; task?: string; since?: number; autonomous?: string; appTurn: boolean } {

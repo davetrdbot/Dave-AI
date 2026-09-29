@@ -45,6 +45,7 @@ dependencies:
   share_plus: ^13.3.0
   audioplayers: ^6.8.1
   record: ^7.1.1
+  flutter_pcm_sound: ^3.3.3
 
 dev_dependencies:
   flutter_test:

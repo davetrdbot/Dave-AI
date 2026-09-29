@@ -1,16 +1,21 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../api/chat.dart';
+import '../api/gemini_live.dart';
 import '../look.dart';
 import '../theme.dart';
+import '../widgets/common.dart';
 
 /// Talk to Dave (Gemini Live): speak, interrupt, watch him think and reach for his tools while he
 /// answers out loud.
 ///
 /// The screen is driven entirely by a [VoiceSession] snapshot, so the same widgets render a live
-/// call (once the bot relays the Gemini Live socket) and the design states used in tests.
+/// call ([LiveCallPage], fed by [LiveCall]) and the design states used in tests.
 ///
 ///   ┌ header ─ model · voice · timer ring (15 min session) ┐
 ///   │ tool rail  ─ live chips: running / done / waiting     │
@@ -263,8 +268,8 @@ class _Header extends StatelessWidget {
             ],
           ),
         ),
-        // Session clock: a ring that fills toward the 15-minute limit (the bot resumes the session
-        // transparently when Google closes the socket).
+        // Call clock: a ring that fills over half an hour (the call resumes by itself when Google
+        // closes the socket, so it's a guide, not a limit).
         SizedBox(
           width: 54,
           height: 54,
@@ -960,12 +965,13 @@ class _Controls extends StatelessWidget {
           onMute,
           on: s.muted,
         ),
-        round(
-          CupertinoIcons.chart_bar_square_fill,
-          s.chartShared ? 'Sharing' : 'Show chart',
-          onChart,
-          on: s.chartShared,
-        ),
+        if (onChart != null)
+          round(
+            CupertinoIcons.chart_bar_square_fill,
+            s.chartShared ? 'Sharing' : 'Show chart',
+            onChart,
+            on: s.chartShared,
+          ),
         round(
           CupertinoIcons.phone_down_fill,
           'End',
@@ -980,39 +986,82 @@ class _Controls extends StatelessWidget {
   }
 }
 
-// ───────────────────────────── settings sheet ─────────────────────────────
+// ───────────────────────────── settings ─────────────────────────────
 
-/// Before/while talking: which Live model, how hard he thinks, his voice, and whether he may act.
+/// What a call starts with: the Live model, Dave's voice, and whether he may act on trades.
+class LiveOptions {
+  const LiveOptions({
+    this.thinking = false,
+    this.voice = 'Charon',
+    this.allowActions = true,
+  });
+  final bool thinking;
+  final String voice;
+  final bool allowActions;
+
+  static const voices = [
+    'Charon',
+    'Puck',
+    'Kore',
+    'Fenrir',
+    'Aoede',
+    'Orus',
+    'Leda',
+    'Zephyr',
+  ];
+  static final _prefs = SharedPreferencesAsync();
+
+  static Future<LiveOptions> load() async {
+    try {
+      final v = await _prefs.getString('live.voice');
+      return LiveOptions(
+        thinking: await _prefs.getBool('live.thinking') ?? false,
+        voice: voices.contains(v) ? v! : 'Charon',
+        allowActions: await _prefs.getBool('live.actions') ?? true,
+      );
+    } catch (_) {
+      return const LiveOptions();
+    }
+  }
+
+  Future<void> save() async {
+    try {
+      await _prefs.setBool('live.thinking', thinking);
+      await _prefs.setString('live.voice', voice);
+      await _prefs.setBool('live.actions', allowActions);
+    } catch (_) {}
+  }
+}
+
+/// Before/while talking: which Live model, his voice, and whether he may act. Changes apply from
+/// the next call.
 class VoiceSettingsSheet extends StatefulWidget {
   const VoiceSettingsSheet({
     super.key,
-    this.extended = true,
-    this.level = 'medium',
-    this.voice = 'Kore',
-    this.engine = 'Gemini',
-    this.allowActions = true,
-    this.alerts = false,
+    this.options = const LiveOptions(),
+    this.onChanged,
   });
-  final bool extended;
-  final String level;
-  final String voice;
-
-  /// Whose voice Dave speaks with: Gemini's own, or ElevenLabs / Fish Audio (Settings → Dave's voice).
-  final String engine;
-  final bool allowActions;
-  final bool alerts;
+  final LiveOptions options;
+  final void Function(LiveOptions)? onChanged;
 
   @override
   State<VoiceSettingsSheet> createState() => _VoiceSettingsSheetState();
 }
 
 class _VoiceSettingsSheetState extends State<VoiceSettingsSheet> {
-  late bool _extended = widget.extended;
-  late String _level = widget.level;
-  late String _voice = widget.voice;
-  late String _engine = widget.engine;
-  late bool _actions = widget.allowActions;
-  late bool _alerts = widget.alerts;
+  late LiveOptions _o = widget.options;
+
+  @override
+  void didUpdateWidget(VoiceSettingsSheet old) {
+    super.didUpdateWidget(old);
+    if (old.options != widget.options) _o = widget.options;
+  }
+
+  void _set(LiveOptions o) {
+    setState(() => _o = o);
+    unawaited(o.save());
+    widget.onChanged?.call(o);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1030,7 +1079,7 @@ class _VoiceSettingsSheetState extends State<VoiceSettingsSheet> {
               for (final i in items)
                 Expanded(
                   child: GestureDetector(
-                    onTap: () => setState(() => on(i)),
+                    onTap: () => on(i),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 150),
                       padding: const EdgeInsets.symmetric(vertical: 9),
@@ -1053,33 +1102,20 @@ class _VoiceSettingsSheetState extends State<VoiceSettingsSheet> {
             ],
           ),
         );
-    Widget toggle(String title, String sub, bool v, void Function(bool) on) =>
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    Text(sub, style: TextStyle(fontSize: 12, color: secondary)),
-                  ],
-                ),
-              ),
-              CupertinoSwitch(
-                value: v,
-                activeTrackColor: look.accent,
-                onChanged: (x) => setState(() => on(x)),
-              ),
-            ],
-          ),
+    Widget label(String t) => Text(
+      t,
+      style: TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 1,
+        color: secondary,
+      ),
+    );
+    LiveOptions with_({bool? thinking, String? voice, bool? allowActions}) =>
+        LiveOptions(
+          thinking: thinking ?? _o.thinking,
+          voice: voice ?? _o.voice,
+          allowActions: allowActions ?? _o.allowActions,
         );
     return Container(
       padding: EdgeInsets.fromLTRB(
@@ -1097,81 +1133,185 @@ class _VoiceSettingsSheetState extends State<VoiceSettingsSheet> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Voice',
+            'Voice call',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
           ),
-          const SizedBox(height: Space.s3),
+          const SizedBox(height: 2),
           Text(
-            'BRAIN',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1,
-              color: secondary,
-            ),
+            'Changes apply from your next call.',
+            style: TextStyle(fontSize: 12.5, color: secondary),
           ),
+          const SizedBox(height: Space.s3),
+          label('BRAIN'),
           const SizedBox(height: 6),
           seg(
             ['Fast', 'Deep thinking'],
-            _extended ? 'Deep thinking' : 'Fast',
-            (v) => _extended = v == 'Deep thinking',
+            _o.thinking ? 'Deep thinking' : 'Fast',
+            (v) => _set(with_(thinking: v == 'Deep thinking')),
           ),
           const SizedBox(height: 6),
           Text(
-            _extended
-                ? 'gemini-3.8-live-extended-thinking -- reasons before he answers; a beat slower.'
-                : 'gemini-3.8-live -- answers instantly, no pause to think.',
+            _o.thinking
+                ? 'Thinks before he answers -- better for tricky questions, a beat slower.'
+                : 'Answers instantly -- best for quick checks and moving trades.',
             style: TextStyle(fontSize: 12, color: secondary),
           ),
-          if (_extended) ...[
-            const SizedBox(height: Space.s3),
-            Text(
-              'HOW HARD HE THINKS',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1,
-                color: secondary,
-              ),
-            ),
-            const SizedBox(height: 6),
-            seg(['low', 'medium', 'high'], _level, (v) => _level = v),
-          ],
           const SizedBox(height: Space.s3),
-          Text(
-            'HIS VOICE',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1,
-              color: secondary,
-            ),
+          label('HIS VOICE'),
+          const SizedBox(height: 6),
+          seg(
+            LiveOptions.voices.sublist(0, 4),
+            _o.voice,
+            (v) => _set(with_(voice: v)),
           ),
           const SizedBox(height: 6),
-          seg(['Gemini', 'ElevenLabs', 'Fish Audio'], _engine, (v) => _engine = v),
-          const SizedBox(height: 6),
-          if (_engine == 'Gemini')
-            seg(['Kore', 'Puck', 'Charon', 'Aoede'], _voice, (v) => _voice = v)
-          else
-            Text(
-              "$_engine speaks Dave's words in the voice picked under Settings → Dave's voice. Gemini still listens and runs the tools; answers start about half a second later.",
-              style: TextStyle(fontSize: 12, color: secondary),
-            ),
-          const SizedBox(height: Space.s3),
-          toggle(
-            'Let him act on trades',
-            'Breakeven, SL/TP, close -- always asks "yes?" first',
-            _actions,
-            (v) => _actions = v,
+          seg(
+            LiveOptions.voices.sublist(4),
+            _o.voice,
+            (v) => _set(with_(voice: v)),
           ),
-          toggle(
-            'Call me on big alerts',
-            'Near SL, up 1R, setup triggered -- he speaks it',
-            _alerts,
-            (v) => _alerts = v,
+          const SizedBox(height: Space.s3),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Let him act on trades',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        'Breakeven, SL/TP, close, new trades -- always asks "yes?" first',
+                        style: TextStyle(fontSize: 12, color: secondary),
+                      ),
+                    ],
+                  ),
+                ),
+                CupertinoSwitch(
+                  value: _o.allowActions,
+                  activeTrackColor: look.accent,
+                  onChanged: (x) => _set(with_(allowActions: x)),
+                ),
+              ],
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+// ───────────────────────────── the call ─────────────────────────────
+
+/// A real call: opens the line (bot -> one-use token -> Google), drives [VoiceScreen] from it, and
+/// saves the transcript into the chat when it ends.
+class LiveCallPage extends StatefulWidget {
+  const LiveCallPage({super.key, required this.api, required this.options});
+  final ChatApi api;
+  final LiveOptions options;
+
+  static Future<void> open(BuildContext context, ChatApi api) async {
+    final options = await LiveOptions.load();
+    if (!context.mounted) return;
+    await Navigator.of(context, rootNavigator: true).push(
+      CupertinoPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => LiveCallPage(api: api, options: options),
+      ),
+    );
+  }
+
+  @override
+  State<LiveCallPage> createState() => _LiveCallPageState();
+}
+
+class _LiveCallPageState extends State<LiveCallPage> {
+  late LiveOptions _options = widget.options;
+  late final LiveCall _call = LiveCall(
+    start: () => widget.api.liveStart(
+      thinking: _options.thinking,
+      voice: _options.voice,
+      allowActions: _options.allowActions,
+    ),
+    runTool: widget.api.liveTool,
+    onEnd: widget.api.liveEnd,
+  )..voiceName = widget.options.voice;
+  bool _closing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _call.addListener(_changed);
+    unawaited(_call.begin());
+  }
+
+  void _changed() {
+    if (!mounted) return;
+    setState(() {});
+    if (_call.ended && !_closing) {
+      _closing = true;
+      final error = _call.error;
+      if (error != null) {
+        unawaited(
+          showError(context, error).then((_) {
+            if (mounted) Navigator.of(context).pop();
+          }),
+        );
+      } else {
+        Navigator.of(context).pop();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _call.removeListener(_changed);
+    _call.dispose();
+    super.dispose();
+  }
+
+  Future<void> _type() async {
+    final text = await promptText(
+      context,
+      title: 'Type to Dave',
+      placeholder: 'e.g. move gold to breakeven',
+      action: 'Send',
+    );
+    if (text != null && text.isNotEmpty) _call.sendText(text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        const Positioned.fill(child: Aurora()),
+        VoiceScreen(
+          session: _call.session,
+          onEnd: () {
+            HapticFeedback.mediumImpact();
+            unawaited(_call.hangUp());
+          },
+          onMute: () {
+            HapticFeedback.selectionClick();
+            _call.toggleMute();
+          },
+          onKeyboard: _type,
+          onConfirm: _call.answerConfirm,
+          onSettings: () => showCupertinoModalPopup<void>(
+            context: context,
+            builder: (_) => VoiceSettingsSheet(
+              options: _options,
+              onChanged: (o) => _options = o,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

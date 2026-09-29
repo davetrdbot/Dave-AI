@@ -105,7 +105,7 @@ export function createAppSink(userId: string, currentTurn: () => { turnId?: stri
 const registryCache = new Map<string, ToolRegistry>();
 const appTurnState = new Map<string, { turnId?: string; channel: ActivityChannel }>();
 
-function appRegistry(deps: AppChatDeps): ToolRegistry {
+export function appRegistry(deps: AppChatDeps): ToolRegistry {
   let registry = registryCache.get(deps.userId);
   if (!registry) {
     const sink = createAppSink(deps.userId, () => appTurnState.get(deps.userId) ?? { channel: "app" });

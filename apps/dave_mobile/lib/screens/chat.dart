@@ -23,6 +23,7 @@ import '../api/models.dart';
 import 'shell.dart';
 import '../look.dart';
 import 'dave_voice.dart';
+import 'voice.dart';
 
 /// Talking to Dave -- the same conversation as Telegram, with every step he takes shown live:
 /// each tool as it starts and finishes, his thinking, the workers he starts, and Nous's cards
@@ -442,7 +443,19 @@ class _ChatScreenState extends State<ChatScreen> {
                 onPressed: _stop,
                 child: const Text('Stop', style: TextStyle(fontWeight: FontWeight.w600)),
               )
-            : null,
+            : CupertinoButton(
+                key: const ValueKey('chat-live-call'),
+                padding: EdgeInsets.zero,
+                // Talk to Dave live (Gemini Live): a real two-way voice call.
+                onPressed: _api == null
+                    ? null
+                    : () async {
+                        HapticFeedback.mediumImpact();
+                        await DaveAudio.stop();
+                        if (context.mounted) await LiveCallPage.open(context, _api!);
+                      },
+                child: Icon(CupertinoIcons.phone_fill, color: Look.of(context).accent),
+              ),
       ),
       child: SafeArea(
         bottom: false,

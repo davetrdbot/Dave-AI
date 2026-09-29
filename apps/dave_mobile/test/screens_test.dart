@@ -1003,9 +1003,10 @@ void main() {
       await tester.pumpWidget(_app(const CupertinoPageScaffold(child: Align(alignment: Alignment.bottomCenter, child: VoiceSettingsSheet())), look: look));
       await tester.pump(const Duration(milliseconds: 200));
       await _shot(tester, 'voice_settings_$mode');
-      await tester.pumpWidget(_app(const CupertinoPageScaffold(child: Align(alignment: Alignment.bottomCenter, child: VoiceSettingsSheet(engine: 'ElevenLabs'))), look: look));
+      await tester.pumpWidget(_app(const CupertinoPageScaffold(child: Align(alignment: Alignment.bottomCenter, child: VoiceSettingsSheet(options: LiveOptions(thinking: true, voice: 'Aoede', allowActions: false)))), look: look));
       await tester.pump(const Duration(milliseconds: 200));
-      await _shot(tester, 'voice_settings_eleven_$mode');
+      expect(find.text('Changes apply from your next call.'), findsOneWidget);
+      await _shot(tester, 'voice_settings_deep_$mode');
       final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer(), streamClient: _fakeChatStream);
       await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const DaveVoicePage()), look: look));
       await _advance(tester);

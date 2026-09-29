@@ -200,6 +200,18 @@ class ChatApi {
     return (body['text'] as String? ?? '').trim();
   }
 
+  /// A live voice call: a one-use Gemini token and the session setup (the Gemini key stays on the bot).
+  Future<Map<String, dynamic>> liveStart({bool thinking = false, String? voice, bool allowActions = true}) =>
+      _post('live/start', {'thinking': thinking, 'voice': ?voice, 'allowActions': allowActions}, timeout: const Duration(seconds: 30));
+
+  /// One tool Gemini asked for, run by the bot.
+  Future<Map<String, dynamic>> liveTool(String name, Map<String, dynamic> args) =>
+      _post('live/tool', {'name': name, 'args': args}, timeout: const Duration(seconds: 150));
+
+  /// The call's transcript, saved into the chat history.
+  Future<void> liveEnd(List<Map<String, String>> transcript, int seconds) =>
+      _post('live/end', {'transcript': transcript, 'seconds': seconds});
+
   /// A file Dave sent in the chat.
   Future<List<int>> downloadFile(String id) async {
     final res = await _http.get(_url('file/$id'), headers: _headers).timeout(const Duration(seconds: 60));
