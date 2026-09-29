@@ -41,6 +41,17 @@ export const MIN_RISK_REWARD_RATIO = 1.0;
  */
 const RATIO_EPSILON = 1e-9;
 
+/**
+ * A price distance the trader can read. Real bug fixed: this was `toFixed(0)` "points", which is
+ * right for a six-figure synthetic but printed "risks 0 points to gain 0" on every forex pair,
+ * where a stop is 0.0050 away.
+ */
+export function fmtDistance(d: number): string {
+  if (d >= 100) return d.toFixed(0);
+  if (d >= 1) return d.toFixed(2);
+  return d.toPrecision(2);
+}
+
 export interface RiskRewardAssessment {
   ok: boolean;
   /** Present only when both an SL and a TP were set and both sit on valid sides of the entry. */
@@ -111,8 +122,8 @@ export function assessRiskReward(order: OrderRequest, entryPrice: number, minRat
       // until the sentence stops being untrue. The refusal now names the configured floor, which
       // is the actual reason, and only adds the break-even point when it genuinely applies.
       reason:
-        `risk:reward is ${ratio.toFixed(2)}:1, below your configured minimum of ${minRatio}:1 -- the stop risks ` +
-        `${riskDistance.toFixed(0)} points to gain ${rewardDistance.toFixed(0)}` +
+        `risk:reward is ${ratio.toFixed(2)}:1, below your configured minimum of ${minRatio}:1 -- the stop is ` +
+        `${fmtDistance(riskDistance)} away and the target only ${fmtDistance(rewardDistance)}` +
         (ratio < 1 ? ". Risking more than the trade stands to make needs a >50% win rate just to break even" : ""),
     };
   }

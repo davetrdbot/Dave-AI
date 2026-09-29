@@ -387,6 +387,7 @@ class AppSettings {
     required this.memoryWriteApproval,
     this.telegramSilent = false,
     required this.deepLossPercent,
+    this.selfAwareMode = 'advise',
     required this.alerts,
     required this.primaryTimeout,
     required this.fallbackTimeout,
@@ -416,6 +417,9 @@ class AppSettings {
   /// Telegram silent mode: nothing goes to the Telegram bot; Dave talks in the app only.
   final bool telegramSilent;
   final Bounded deepLossPercent;
+
+  /// off / advise / act -- what Dave does when an alert on one of his trades calls for a decision.
+  final String selfAwareMode;
   final List<AlertToggle> alerts;
   final Bounded primaryTimeout;
   final Bounded fallbackTimeout;
@@ -448,6 +452,7 @@ class AppSettings {
       memoryWriteApproval: b['memoryWriteApproval'] == true,
       telegramSilent: b['telegramSilent'] == true,
       deepLossPercent: Bounded.fromJson(a['deepLossPercent'], 50, 5, 95),
+      selfAwareMode: (a['selfAwareMode'] is Map ? (a['selfAwareMode'] as Map)['value'] : null) as String? ?? 'advise',
       alerts: _list(a['toggles']).map((x) => AlertToggle(_str(x['id']), _str(x['label']), x['on'] != false)).toList(),
       primaryTimeout: Bounded.fromJson(ai['primaryTimeoutSeconds'], 20, 3, 120),
       fallbackTimeout: Bounded.fromJson(ai['fallbackTimeoutSeconds'], 5, 3, 120),

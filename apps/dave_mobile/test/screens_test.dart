@@ -697,6 +697,17 @@ void main() {
       expect(find.textContaining('Up to 10 steps through a checklist'), findsOneWidget);
       await back();
 
+      for (var i = 0; i < 6 && find.text('Alerts & notifications').hitTestable().evaluate().isEmpty; i++) {
+        await tester.dragFrom(const Offset(200, 600), const Offset(0, -300));
+        await _advance(tester);
+      }
+      await tester.tap(find.text('Alerts & notifications'));
+      await _advance(tester);
+      await _shot(tester, 'settings_alerts_$mode');
+      expect(find.byKey(const ValueKey('self-aware-mode')), findsOneWidget, reason: 'the self-aware review mode picker');
+      expect(find.textContaining('tells you what he\'d do'), findsOneWidget, reason: 'advise is the default');
+      await back();
+
       await open('AI & models');
       await tester.tap(find.text('AI providers'));
       await _advance(tester);

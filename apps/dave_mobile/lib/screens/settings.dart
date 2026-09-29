@@ -636,7 +636,7 @@ class _AlertsSection extends StatelessWidget {
     final on = s.alerts.where((a) => a.on).length;
     return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Trade alerts in Telegram'),
-      footer: const ListFooter('Deep-loss is how far a losing trade gets toward its stop before Dave warns you.'),
+      footer: const ListFooter('Deep-loss is how far a losing trade gets toward its stop before Dave warns you. Reviews: when an alert needs a decision, Dave checks fresh candles against the idea and gives a verdict.'),
       children: [
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.exclamationmark_triangle),
@@ -649,6 +649,7 @@ class _AlertsSection extends StatelessWidget {
             more: 'Warn later',
           ),
         ),
+        _ReviewModeRow(mode: s.selfAwareMode, onPick: (m) => _set(context, 'selfAwareMode', m, reload)),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.eye),
           title: const Text('Self-aware alerts'),
@@ -958,6 +959,53 @@ class _ConnectionSectionState extends State<_ConnectionSection> {
 }
 
 /// How hard "Deeper thinking" works: Low · Medium · High · Max, with what each one costs.
+/// What Dave does when an alert on his trade calls for a decision: nothing, tell you, or act.
+class _ReviewModeRow extends StatelessWidget {
+  const _ReviewModeRow({required this.mode, required this.onPick});
+  final String mode;
+  final void Function(String) onPick;
+
+  static const _about = {
+    'off': 'Alerts only. Dave doesn\'t review the trade.',
+    'advise': 'Dave reviews the trade and tells you what he\'d do. Nothing is touched.',
+    'act': 'Dave does the protective ones himself: breakeven, a tighter stop, an exit rule, a partial. A full close only when he judges the idea broken. Never widens a stop.',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Space.s4, Space.s3, Space.s4, Space.s3),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Self-aware reviews', style: TextStyle(fontSize: 15, color: resolve(context, CupertinoColors.label))),
+        const SizedBox(height: 8),
+        Container(
+          key: const ValueKey('self-aware-mode'),
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(color: look.chip, borderRadius: BorderRadius.circular(12)),
+          child: Row(children: [
+            for (final m in const ['off', 'advise', 'act'])
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => onPick(m),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(color: m == mode ? look.accent : null, borderRadius: BorderRadius.circular(9)),
+                    child: Text(m[0].toUpperCase() + m.substring(1), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: m == mode ? look.tabActiveIcon : null)),
+                  ),
+                ),
+              ),
+          ]),
+        ),
+        const SizedBox(height: 6),
+        Text(_about[mode] ?? '', style: TextStyle(fontSize: 12, color: resolve(context, CupertinoColors.secondaryLabel))),
+      ]),
+    );
+  }
+}
+
 class _EffortRow extends StatelessWidget {
   const _EffortRow({required this.effort, required this.onPick});
   final String effort;

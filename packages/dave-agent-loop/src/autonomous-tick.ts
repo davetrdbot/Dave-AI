@@ -76,6 +76,7 @@ import { growthStatus } from "./growth-reflection.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 import { tradeDrawing } from "./setup-drawing.js";
+import { resolveTradeLevels, levelsGuidance, exitPrice, type TradeLevels, type TradeAction as LevelAction } from "./trade-levels.js";
 import { parseCandles } from "./decision-grading.js";
 import { ACTIONS_SCHEMA, coerceTickActions, gatherData, isDataAction, runManagementActions, type TickAction } from "./tick-actions.js";
 
@@ -256,6 +257,8 @@ export interface TickDecision {
   entry?: number;
   sl?: number;
   tp?: number;
+  /** With TP off: where the model expects price to go. Never placed -- the floor is checked on it. */
+  target?: number;
   lots?: number;
   confidence?: number;
   reason?: string;
@@ -437,10 +440,19 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
   const rrNote =
     `Your configured risk:reward floor is ${minRiskReward}:1 and it is a HARD GATE -- a trade whose target pays less than ${minRiskReward}x what its stop risks is refused before it reaches the broker, no matter how good the setup looks. ` +
     `Place the stop where the thesis is genuinely wrong and the target where price is genuinely likely to reach, then check the ratio clears ${minRiskReward}:1. If it doesn't, the ENTRY is in the wrong place -- SKIP or wait for a better one. Never stretch the target or tighten the stop just to pass this check.`;
-  if (risk.slMode !== "off") properties.sl = { type: "number", description: `Stop loss price. ${rrNote}` };
+  // Only the levels the model actually sets are offered. A FIXED stop/target is the trader's rule
+  // and is applied in code (trade-levels.ts); offering the field anyway is how the model's own
+  // number used to silently replace the trader's fixed 30 pips.
+  if (risk.slMode !== "on") properties.sl = { type: "number", description: `Stop loss price${risk.slMode === "off" ? " (no fixed rule is set -- give one where the idea is proven wrong)" : ""}. ${rrNote}` };
   if (risk.slMode === "auto") required.push("sl");
-  if (risk.tpMode !== "off") properties.tp = { type: "number", description: `Take profit price. ${rrNote}` };
+  if (risk.tpMode !== "on") properties.tp = { type: "number", description: `Take profit price, placed at the broker. ${rrNote}` };
   if (risk.tpMode === "auto") required.push("tp");
+  else if (risk.tpMode === "off") {
+    properties.target = {
+      type: "number",
+      description: `Only when you give no tp: the price you expect this trade to reach. Not placed at the broker -- but every trade needs tp or target, because the risk:reward floor is checked against it. ${rrNote}`,
+    };
+  }
   return {
     name: DECISION_TOOL_NAME,
     description: "Submit your real trading decision for this one symbol, right now.",
@@ -480,6 +492,7 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     entry: typeof obj.entry === "number" ? obj.entry : undefined,
     sl: typeof obj.sl === "number" ? obj.sl : undefined,
     tp: typeof obj.tp === "number" ? obj.tp : undefined,
+    target: typeof obj.target === "number" ? obj.target : undefined,
     lots: typeof obj.lots === "number" ? obj.lots : undefined,
     confidence: typeof obj.confidence === "number" ? obj.confidence : undefined,
     reason: typeof obj.reason === "string" ? obj.reason : undefined,
@@ -1032,6 +1045,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
     `ACCOUNT: balance=${account?.balance ?? "unknown"} equity=${account?.equity ?? "unknown"} freeMargin=${account?.freeMargin ?? "unknown"} leverage=${account?.leverage ?? "unknown"}`,
     `SL_MODE: ${risk.slMode}${risk.slMode === "on" ? ` (fixed ${risk.slValue} pips)` : ""} | TP_MODE: ${risk.tpMode}${risk.tpMode === "on" ? ` (fixed ${risk.tpValue} pips)` : ""} | LOT_MODE: ${risk.lotMode}${risk.lotMode === "on" ? ` (fixed ${risk.lotValue})` : ""}`,
+    levelsGuidance(risk, minRiskReward),
     `CONFIDENCE THRESHOLD: ${confidenceSettings.threshold}%`,
     // The setting the tick used to enforce silently without ever showing it -- see
     // buildDecisionTool's header for why its absence read as "it ignores my setting".
@@ -1526,20 +1540,21 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // SELL -- and the whole setup was thrown away at the final check. Now the refusal goes back to
   // it ONCE, with the exact reason, so it can fix the levels it already found. Still a hard gate:
   // the final assessRiskRewardForUser check below is unchanged and nothing weaker gets through.
+  const levelsFor = (d: TickDecision): TradeLevels =>
+    resolveTradeLevels({ action: d.action as LevelAction, decision: d, risk, price: priceInfo, pip: derivePipSize(priceInfo), minRiskReward });
+  let levels: TradeLevels | null = null;
   if ((TRADE_ACTIONS as readonly string[]).includes(decision.action)) {
-    const probeType = ACTION_TO_ORDER_TYPE[decision.action as TradeAction];
-    const probe: OrderRequest = { symbol, type: probeType, lots: 1, price: decision.entry, sl: decision.sl, tp: decision.tp };
-    const first = assessRiskRewardForUser(userId, probe, decision.entry ?? referencePrice);
-    if (!first.ok) {
-      logTick(userId, `${symbol}: ${decision.action} levels refused (${first.reason}) -- sending it back once to fix the stop/target`);
+    levels = levelsFor(decision);
+    if (levels.problem && !levels.fatal) {
+      logTick(userId, `${symbol}: ${decision.action} levels refused (${levels.problem}) -- sending it back once to fix them`);
       let repaired: TickDecision | null = null;
       try {
         repaired = await requestDecision([
           ...contextLines,
-          `YOUR ${decision.action} (entry ${decision.entry ?? "market"}, SL ${decision.sl ?? "none"}, TP ${decision.tp ?? "none"}) WAS REFUSED BEFORE REACHING THE BROKER: ${first.reason}. ` +
-            `If your reasoning already found better levels, the numbers you submitted did not match it -- submit the SAME trade again with entry/sl/tp that genuinely work: ` +
-            `the stop on the correct side of the entry (below it for a buy, above it for a sell) and a target at least ${minRiskReward}x as far from the entry as the stop. ` +
-            `If no honest levels clear it, SKIP. This is your only retry -- do not request candles, scripts or Journal now.`,
+          `YOUR ${decision.action} (entry ${levels.entry || decision.entry || "market"}, SL ${levels.sl ?? "none"}, ${risk.tpMode === "off" ? `target ${levels.rrTarget ?? "none"}` : `TP ${levels.tp ?? "none"}`}) WAS REFUSED BEFORE REACHING THE BROKER: ${levels.problem} ` +
+            `These are the exact numbers the order would use (fixed settings applied, market orders measured from the live price). ` +
+            `If your reasoning already found better levels, submit the SAME trade again with numbers that genuinely work. If no honest levels clear it, SKIP. ` +
+            `This is your only retry -- do not request candles, scripts or Journal now.`,
         ]);
       } catch (err) {
         if (err instanceof TickAbortedError) {
@@ -1550,11 +1565,24 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
         throw err;
       }
       if (repaired && (TRADE_ACTIONS as readonly string[]).includes(repaired.action)) {
-        logTick(userId, `${symbol}: corrected to ${repaired.action} entry ${repaired.entry ?? "market"} SL ${repaired.sl ?? "none"} TP ${repaired.tp ?? "none"}`);
         Object.assign(decision, { ...repaired, confidence: repaired.confidence ?? decision.confidence, reason: repaired.reason ?? decision.reason });
+        levels = levelsFor(decision);
+        logTick(userId, `${symbol}: corrected to ${decision.action} entry ${levels.entry} SL ${levels.sl ?? "none"} target ${levels.rrTarget ?? "none"}${levels.ratio !== undefined ? ` (${levels.ratio}:1)` : ""}${levels.problem ? ` -- still refused: ${levels.problem}` : ""}`);
       } else {
         logTick(userId, `${symbol}: no corrected levels -- ${repaired?.action ?? "no answer"}; skipping`);
+        decision.action = "SKIP";
       }
+    }
+    if (levels.problem && (TRADE_ACTIONS as readonly string[]).includes(decision.action)) {
+      logTick(userId, `${symbol}: ${decision.action} rejected -- ${levels.problem}`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `bad risk structure: ${levels.problem}` });
+      advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+      return {
+        action: "NONE",
+        symbol,
+        notable: true,
+        message: `⚠️ Skipped ${symbol} ${decision.action} -- ${levels.problem}${levels.fatal ? "" : "\n\nNo trade: even after one correction, there were no honest levels that clear it."}`,
+      };
     }
   }
   if (!(TRADE_ACTIONS as readonly string[]).includes(decision.action)) {
@@ -1591,8 +1619,13 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // SL/entry/direction/TP the model chose, just discards this cycle's decision back to a SKIP so
   // it can recompute on retry, exactly like the existing "SL mode is auto but didn't compute one"
   // rejection below.
-  if (decision.sl !== undefined && atr > 0 && isSlTooTight(referencePrice, decision.sl, atr)) {
-    logTick(userId, `${symbol}: ${action} rejected -- SL ${decision.sl} is too tight relative to current ATR ${atr} (real price noise would likely stop this out immediately)`);
+  // The resolved levels (trade-levels.ts): fixed settings applied, market orders from the live price.
+  let lv = levels ?? levelsFor(decision);
+  // "Too tight" is measured from where the stop is triggered: the bid for a buy, the ask for a sell
+  // (a pending order from its entry). The ratio is measured from where the trade gets in.
+  const noiseRef = isPending ? lv.entry : exitPrice(action as LevelAction, priceInfo);
+  if (lv.sl !== undefined && atr > 0 && isSlTooTight(noiseRef, lv.sl, atr)) {
+    logTick(userId, `${symbol}: ${action} rejected -- SL ${lv.sl} is too tight relative to current ATR ${atr} (real price noise would likely stop this out immediately)`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "SL too tight relative to current volatility" });
     return { action: "NONE", notable: false };
   }
@@ -1607,7 +1640,8 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     symbol,
     type: orderType,
     lots: risk.lotMode === "on" && risk.lotValue !== undefined ? risk.lotValue : (decision.lots ?? 0),
-    price: decision.entry,
+    // A market order has no price of its own -- it fills at the live price.
+    price: isPending ? decision.entry : undefined,
     // Real, live fix (user: the old `Dave ${confidence}% ${reason}`.slice(0, 40) comment crammed
     // as much of the real reasoning text as fit into 40 chars -- garbled/cut off mid-word or
     // mid-sentence on the MT5 side). Short and structured instead: confidence + a short
@@ -1638,54 +1672,10 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // own numbers instead -- see pip-size.ts. undefined means it genuinely could not be established,
   // and the fixed-pip branches below refuse rather than fall back to a number that would be wrong
   // by orders of magnitude.
-  const pip = derivePipSize(priceInfo);
-  const direction = action === "BUY" || action === "BUY_LIMIT" || action === "BUY_STOP" ? 1 : -1;
   const decisionAction = action === "BUY" || action === "BUY_LIMIT" || action === "BUY_STOP" ? "BUY" : "SELL";
-  if (decision.sl !== undefined) order.sl = decision.sl;
-  else if (risk.slMode === "on" && risk.slValue !== undefined && referencePrice > 0) {
-    if (pip === undefined) {
-      logTick(userId, `${symbol}: ${action} rejected -- can't establish this symbol's real pip size, so a fixed ${risk.slValue}-pip SL can't be placed safely`);
-      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "pip size for this symbol could not be established" });
-      return {
-        action: "NONE",
-        symbol,
-        notable: true,
-        message: `⚠️ Skipped ${symbol} -- I couldn't work out this symbol's real pip size from the EA's data, and your SL is set to a fixed ${risk.slValue} pips. I won't guess that: on this instrument a wrong pip size would put the stop essentially at the entry price.`,
-      };
-    }
-    const candidateSl = referencePrice - direction * risk.slValue * pip;
-    if (atr > 0 && isSlTooTight(referencePrice, candidateSl, atr)) {
-      logTick(userId, `${symbol}: ${action} rejected -- the user's fixed ${risk.slValue}-pip SL is too tight relative to current ATR ${atr}`);
-      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "fixed SL is too tight relative to current volatility" });
-      return { action: "NONE", notable: false };
-    }
-    order.sl = candidateSl;
-  } else if (risk.slMode === "auto") {
-    logTick(userId, `${symbol}: ${action} rejected -- SL mode is auto but the model didn't compute one`);
-    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "SL mode is auto but the model didn't compute one" });
-    return { action: "NONE", notable: false };
-  }
-  if (decision.tp !== undefined) order.tp = decision.tp;
-  else if (risk.tpMode === "on" && risk.tpValue !== undefined && referencePrice > 0) {
-    // Same refusal as the SL branch above, and this is the path that had NO guard at all: with the
-    // old hardcoded pip, a fixed TP on a six-figure-priced synthetic landed essentially at the
-    // entry price, so the trade would open and close again immediately for a spread-sized loss.
-    if (pip === undefined) {
-      logTick(userId, `${symbol}: ${action} rejected -- can't establish this symbol's real pip size, so a fixed ${risk.tpValue}-pip TP can't be placed safely`);
-      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "pip size for this symbol could not be established" });
-      return {
-        action: "NONE",
-        symbol,
-        notable: true,
-        message: `⚠️ Skipped ${symbol} -- I couldn't work out this symbol's real pip size from the EA's data, and your TP is set to a fixed ${risk.tpValue} pips. I won't guess that: on this instrument a wrong pip size would put the target essentially at the entry price, closing the trade instantly for a spread-sized loss.`,
-      };
-    }
-    order.tp = referencePrice + direction * risk.tpValue * pip;
-  } else if (risk.tpMode === "auto") {
-    logTick(userId, `${symbol}: ${action} rejected -- TP mode is auto but the model didn't compute one`);
-    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "TP mode is auto but the model didn't compute one" });
-    return { action: "NONE", notable: false };
-  }
+  // Stop and target exactly as resolved above -- the numbers the risk:reward check already passed.
+  order.sl = lv.sl;
+  order.tp = lv.tp;
 
   // Real fix (general, applies regardless of two-step mode -- both this and Flo touch the same
   // pre-execute code path): a pending order (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP) is only
@@ -1717,6 +1707,17 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       order.type = marketOrderType;
       order.price = undefined;
       marketConversionNote = `placed as market -- the limit/stop price had already been reached`;
+      // It now fills at the live price, not the old entry: fixed levels move with it and the ratio
+      // is re-checked from where it really opens.
+      const asMarket = levelsFor({ ...decision, action: marketOrderType === "buy" ? "BUY" : "SELL", entry: undefined });
+      if (asMarket.problem) {
+        logTick(userId, `${symbol}: converted to market but refused from the live price -- ${asMarket.problem}`);
+        recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `bad risk structure at market: ${asMarket.problem}` });
+        return { action: "NONE", symbol, notable: true, message: `⚠️ Skipped ${symbol} -- the ${action} entry had already been passed, and taken at market from here: ${asMarket.problem}` };
+      }
+      lv = asMarket;
+      order.sl = lv.sl;
+      order.tp = lv.tp;
     }
   }
 
@@ -1811,7 +1812,8 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // that needs a >51% win rate just to break even. Nothing in this codebase had ever checked the
   // stop against the target, nor that either sits on the correct side of the entry. See
   // risk-reward-guard.ts.
-  const rr = assessRiskRewardForUser(userId, order, order.price ?? referencePrice);
+  // Defence in depth: the same floor, on the real order, against the planned target when TP is off.
+  const rr = assessRiskRewardForUser(userId, { ...order, tp: order.tp ?? lv.rrTarget }, order.price ?? lv.entry);
   if (!rr.ok) {
     logTick(userId, `${symbol}: ${action} rejected -- ${rr.reason}`);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `bad risk structure: ${rr.reason}` });
@@ -1822,7 +1824,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       // Was hardcoded 1:1 language ("stop costs more than its target pays"), which is plainly
       // wrong once the floor is raised -- a 1.5:1 trade refused against a 2:1 setting does not
       // cost more than it pays. Names the trader's own configured floor instead.
-      message: `⚠️ Skipped ${symbol} -- ${rr.reason}.\n\nI had a ${decisionAction} read at ${confidence}% confidence, ${/risk:reward/.test(rr.reason ?? "") ? `but your risk:reward floor is ${minRiskReward}:1 and even after one correction this structure doesn't clear it.` : "but its levels were still wrong after one correction."}`,
+      message: `⚠️ Skipped ${symbol} -- ${rr.reason}.\n\nI had a ${decisionAction} read at ${confidence}% confidence, ${/risk:reward/.test(rr.reason ?? "") ? `but your risk:reward floor is ${minRiskReward}:1 and this structure doesn't clear it.` : "but its levels were wrong."}`,
     };
   }
 
@@ -1862,7 +1864,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       ticket: placed.ticket,
       symbol: order.symbol,
       direction: decisionAction === "BUY" ? "buy" : "sell",
-      entryPrice: order.price ?? referencePrice,
+      entryPrice: order.price ?? lv.entry,
       sl: order.sl,
       tp: order.tp,
       reasoning: reason ? [reason] : [],

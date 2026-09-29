@@ -1,4 +1,4 @@
-import { getLastKnownState } from "@dave/ea-bridge";
+import { getLastKnownState, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getTradeLifecycle } from "@dave/feedback";
 import { recordOutcome, getDeepLossAlertProgress, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
 import type { DaveDatabase } from "@dave/db";
@@ -16,7 +16,12 @@ import {
   type MonitorAlert,
   type MonitorAlertKind,
   type PositionObservation,
+  rMultiple,
+  riskOf,
+  slProgress,
 } from "./trade-monitor-store.js";
+import { outcomeLine, recordTradeClosed } from "./alert-outcomes.js";
+import { reviewTrade, REVIEW_KINDS, type ReviewDeps } from "./self-aware-review.js";
 import { exitRuleFor, describeExitRule, runExitRules, type ExitRule } from "./exit-rules.js";
 
 /**
@@ -45,7 +50,20 @@ export interface TradeMonitorSweepDeps {
    * working; when it is absent the alert honestly reverts to advice.
    */
   executor?: TradeExecutor;
+  /** Self-aware v2: Dave reviews a trade when an alert calls for a decision (self-aware-review.ts).
+   *  Absent = alerts only. */
+  review?: Pick<ReviewDeps, "provider" | "analysis">;
+  /** Tests: wait for the reviews instead of letting them run in the background. */
+  awaitReviews?: boolean;
 }
+
+/** MT5 reports every few seconds; this long without a report means the monitor is blind. */
+export const FEED_STALE_MS = 3 * 60_000;
+/** Account heat: total floating loss at or past this share of the balance... */
+export const PORTFOLIO_HEAT_PCT = 3;
+/** ...or at least this many trades open and every one of them losing. */
+export const PORTFOLIO_LOSERS_MIN = 3;
+export const PORTFOLIO_COOLDOWN_MS = 30 * 60_000;
 
 function reasonFor(db: DaveDatabase, userId: string, ticket: string): string {
   try {
@@ -101,6 +119,14 @@ export function alertCategoryOf(kind: MonitorAlertKind): AlertCategory {
       return "sl_critical";
     case "tpNear":
       return "tp_near";
+    case "roundTrip":
+      return "round_trip";
+    case "neverGreen":
+      return "never_green";
+    case "racing":
+      return "momentum";
+    case "noStop":
+      return "no_stop";
   }
 }
 
@@ -148,7 +174,7 @@ export function buildMonitorAlert(a: MonitorAlert, now: number, breakeven?: Brea
 }
 
 /** The kinds where a trade is going nowhere in loss -- the moment an automatic scratch exit helps. */
-const CHOP_KINDS = new Set<MonitorAlertKind>(["loss5m", "loss10m", "range", "stuck", "deepLoss", "slDanger", "slNear"]);
+const CHOP_KINDS = new Set<MonitorAlertKind>(["loss5m", "loss10m", "range", "stuck", "deepLoss", "slDanger", "slNear", "roundTrip", "neverGreen", "racing", "noStop"]);
 
 /** Every loss-side alert says what exit is armed on the trade -- or how to arm one. */
 function withExitHint(a: MonitorAlert, body: string, rule?: ExitRule): string {
@@ -254,6 +280,28 @@ function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutco
         `Self-check: let it run to target, take partial profit here, or tighten the stop to protect what it has already made?`
       );
 
+    /* ---- self-aware v2 ---- */
+    case "roundTrip":
+      return (
+        `↩️ WINNER TURNED LOSER\n\n${head} was up ${m.mfeR !== undefined ? `${m.mfeR}R` : m.bestPnl !== undefined ? money(m.bestPnl) : "well"}${m.bestPnl !== undefined ? ` (best ${money(m.bestPnl)})` : ""} and is back in the red.${pnl}${why}\n\n` +
+        `Self-check: the move you wanted happened and reversed. Is there still a reason to be in, or is this now a different trade? (A breakeven or partial at +0.5-1R would have kept this one.)`
+      );
+    case "neverGreen":
+      return (
+        `🕳️ NEVER WENT GREEN\n\n${head} has been open ${fmtDuration(now - m.openedAt)} without one moment in profit${m.maeR !== undefined ? ` (worst ${m.maeR}R)` : ""}.${pnl}${why}\n\n` +
+        `Self-check: a right entry usually pays something early. Did you enter ahead of the trigger, or is the idea wrong?`
+      );
+    case "racing":
+      return (
+        `🏃 RACING TO THE STOP\n\n${head} just moved ${m.raceR !== undefined ? `${m.raceR}R` : "fast"} against you in a few minutes${m.sl !== undefined ? ` toward the stop (${m.sl})` : ""}.${pnl}${why}\n\n` +
+        `Self-check: momentum like this is information -- news, a liquidity sweep, or a real break of the level your idea stood on?`
+      );
+    case "noStop":
+      return (
+        `🚫 NO STOP LOSS\n\n${head} has no stop loss -- nothing caps the loss if price runs.${pnl}${why}\n\n` +
+        `Put a stop where the idea is proven wrong (modify_sl_tp), or at least arm a cut-loss exit rule.`
+      );
+
     // 5. "Current profit / trade duration / original target / current momentum / original thesis"
     case "quickProfitCheck":
       return (
@@ -265,6 +313,40 @@ function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutco
         `Self-check: is this trade still trying to reach the original objective?`
       );
   }
+}
+
+/** Where the trade stands, in one line: R, money, time in, best/worst. */
+export function statusLine(m: TradeMonitor, now: number, price?: number): string {
+  const r = price !== undefined ? rMultiple(m, price) : undefined;
+  const parts = [
+    r !== undefined ? `${r > 0 ? "+" : ""}${r}R` : null,
+    m.lastPnl !== undefined ? `P/L ${money(m.lastPnl)}` : null,
+    `${fmtDuration(now - m.openedAt)} in`,
+    m.mfeR !== undefined && m.maeR !== undefined ? `best ${m.mfeR}R / worst ${m.maeR}R` : m.bestPnl !== undefined && m.worstPnl !== undefined ? `best ${money(m.bestPnl)} / worst ${money(m.worstPnl)}` : null,
+    price !== undefined && slProgress(m, price) !== undefined && (m.lastPnl ?? 0) < 0 ? `${Math.round((slProgress(m, price) as number) * 100)}% to the stop` : null,
+  ].filter(Boolean);
+  return `📊 ${m.symbol} ${m.direction.toUpperCase()} #${m.ticket}: ${parts.join(" · ")}`;
+}
+
+/**
+ * Every alert one trade raised in one sweep, as ONE message: where it stands, each alert, the
+ * original idea once (not once per alert), what history says, and the exit rule on it. Before,
+ * a trade crossing three thresholds at once sent three messages each quoting the whole idea.
+ */
+export function buildTradeMessage(
+  userId: string,
+  alerts: MonitorAlert[],
+  now: number,
+  opts: { breakeven?: BreakevenOutcome; exitRule?: ExitRule; price?: number } = {}
+): string {
+  const m = alerts[0].monitor;
+  const why = `\n\n📌 Original idea: ${m.reason}`;
+  const bodies = alerts.map((a) => buildAlertBody(a, now, a.kind === "breakeven" ? opts.breakeven : undefined).split(why).join(""));
+  const history = [...new Set(alerts.map((a) => outcomeLine(userId, a.kind, now)).filter((x): x is string => !!x))];
+  const body = [statusLine(m, now, opts.price), ...bodies].join("\n\n") + why + (history.length ? `\n\n${history.join("\n")}` : "");
+  // The exit hint once, keyed off the most serious loss-side alert in the batch.
+  const chop = alerts.find((a) => CHOP_KINDS.has(a.kind));
+  return withExitHint(chop ?? alerts[0], body, opts.exitRule);
 }
 
 /**
@@ -288,7 +370,26 @@ async function moveStopToBreakeven(deps: TradeMonitorSweepDeps, m: TradeMonitor)
 /** One real pass. Returns the alerts that newly fired this pass, for testability. */
 export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: number = Date.now()): Promise<MonitorAlert[]> {
   const { positions } = getLastKnownState(deps.userId);
+  // A frozen feed: every price and P/L below would be stale, and the time-based alerts ("stuck
+  // flat 15 min", "losing 10 min") would fire on a picture that stopped moving. Say so once and
+  // hold the monitors still until MT5 reports again.
+  const feed = feedCheck(deps.userId, positions.length, now);
+  if (feed.message && getAlertToggles(deps.userId).feed) {
+    await deps.notify(feed.message).catch((err) => console.error(`[trade-monitor] ${deps.userId}: feed alert failed:`, err));
+  }
+  if (feed.stale) return [];
   const monitors = readMonitors(deps.userId);
+  // Back from a blind stretch: what the trades did in the gap is unknown, so the clocks and the
+  // price history restart now -- or "stuck flat 20 min" would fire on time nobody watched.
+  if (feed.recovered) {
+    for (const m of monitors) {
+      if (m.state === "closed") continue;
+      m.flatStartedAt = undefined;
+      m.lossStartedAt = undefined;
+      m.profitStartedAt = undefined;
+      m.samples = [];
+    }
+  }
   const byTicket = new Map(monitors.map((m) => [m.ticket, m]));
   const openTickets = new Set(positions.map((p) => p.ticket));
 
@@ -345,6 +446,8 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
             worstPnl: closed.worstPnl,
           },
         });
+        // The outcome memory: what happened after every alert and verdict on this trade.
+        recordTradeClosed(deps.userId, closed, now);
         // Hot-hand: a winning close that makes it exactly 3 in a row. Fired once at the crossing
         // (a 4th/5th win won't re-nag); a loss resets the streak so it can arm again later.
         const isWin = closed.lastPnl !== undefined && closed.lastPnl > 0;
@@ -362,20 +465,39 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
 
   writeMonitors(deps.userId, next);
 
-  // Push per-trade alerts, silencing any whose category the user switched off.
-  for (const a of fired) {
-    if (!toggles[alertCategoryOf(a.kind)]) continue;
+  // Push per-trade alerts, silencing any whose category the user switched off -- one message per
+  // trade per sweep, however many thresholds it crossed at once.
+  const delivered = fired.filter((a) => toggles[alertCategoryOf(a.kind)]);
+  const byTrade = new Map<string, MonitorAlert[]>();
+  for (const a of delivered) byTrade.set(a.monitor.ticket, [...(byTrade.get(a.monitor.ticket) ?? []), a]);
+  const reviews: Promise<unknown>[] = [];
+  for (const [ticket, list] of byTrade) {
     // Breakeven is the one alert that DOES something: move the real stop to the entry price before
     // telling the trader about it, so the message reports a fact rather than a suggestion. The
     // alert's latch was already set in advanceMonitor, so a failed move is reported once and never
     // retried every 30s -- a broker that refuses this stop will keep refusing it.
-    const breakeven = a.kind === "breakeven" ? await moveStopToBreakeven(deps, a.monitor) : undefined;
+    const be = list.find((a) => a.kind === "breakeven");
+    const breakeven = be ? await moveStopToBreakeven(deps, be.monitor) : undefined;
+    const price = positions.find((p) => p.ticket === ticket)?.currentPrice;
+    const text = buildTradeMessage(deps.userId, list, now, { breakeven, exitRule: exitRuleFor(deps.userId, ticket), price });
     try {
-      await deps.notify(buildMonitorAlert(a, now, breakeven, exitRuleFor(deps.userId, a.monitor.ticket)));
+      await deps.notify(text);
     } catch (err) {
-      console.error(`[trade-monitor] ${deps.userId}: alert ${a.kind} for #${a.monitor.ticket} failed to send:`, err);
+      console.error(`[trade-monitor] ${deps.userId}: alerts ${list.map((a) => a.kind).join(",")} for #${ticket} failed to send:`, err);
+    }
+    // An alert that calls for a decision gets one: Dave reviews the trade (self-aware-review.ts).
+    const decide = list.filter((a) => REVIEW_KINDS.has(a.kind)).map((a) => a.kind);
+    if (deps.review && decide.length && breakeven?.status !== "moved") {
+      const job = reviewTrade({ ...deps.review, userId: deps.userId, executor: deps.executor, notify: deps.notify }, list[0].monitor, decide, text, now);
+      reviews.push(job);
     }
   }
+  if (deps.awaitReviews) await Promise.all(reviews);
+
+  // Account heat: the trades together, not one at a time.
+  const heat = portfolioHeat(deps.userId, positions, now);
+  if (heat && toggles.portfolio) hotHandMessages.push(heat);
+
   // Exit rules (exit-rules.ts): close the trades whose armed level was reached.
   try {
     hotHandMessages.push(...(await runExitRules(deps.userId, deps.executor, now)));
@@ -386,11 +508,12 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
     try {
       await deps.notify(msg);
     } catch (err) {
-      console.error(`[trade-monitor] ${deps.userId}: hot-hand alert failed to send:`, err);
+      console.error(`[trade-monitor] ${deps.userId}: account-level alert failed to send:`, err);
     }
   }
+
   // Only return the categories that were actually delivered, so callers/tests see real behaviour.
-  return fired.filter((a) => toggles[alertCategoryOf(a.kind)]);
+  return delivered;
 }
 
 const active = new Map<string, ReturnType<typeof setInterval>>();
@@ -410,4 +533,61 @@ export function stopTradeMonitorSweep(userId: string): boolean {
   clearInterval(handle);
   active.delete(userId);
   return true;
+}
+
+const feedState = new Map<string, { staleSince?: number; told?: boolean }>();
+
+/** Whether MT5 has gone quiet with trades open. Tells once per outage, and once when it's back. */
+export function feedCheck(userId: string, openTrades: number, now: number): { stale: boolean; recovered?: boolean; message?: string } {
+  const updatedAt = getLastKnownAccountSnapshot(userId)?.updatedAt;
+  const st = feedState.get(userId) ?? {};
+  const stale = openTrades > 0 && typeof updatedAt === "number" && now - updatedAt > FEED_STALE_MS;
+  if (stale) {
+    if (st.told) return { stale: true };
+    feedState.set(userId, { staleSince: updatedAt, told: true });
+    return {
+      stale: true,
+      message:
+        `📡 MONITOR BLIND\n\nMT5 hasn't reported for ${fmtDuration(now - (updatedAt as number))} and you have ${openTrades} open trade${openTrades === 1 ? "" : "s"}. ` +
+        `I can't see prices, so no alerts, exit rules or reviews until it's back. Check the terminal: is it running, connected, with the EA on the chart and Algo Trading on? Your broker-side stops still work.`,
+    };
+  }
+  if (st.told) {
+    feedState.set(userId, {});
+    return { stale: false, recovered: true, message: `📡 MT5 is reporting again -- I'm watching your trades.` };
+  }
+  return { stale: false };
+}
+
+const heatState = new Map<string, number>();
+
+/** Account heat: the total floating loss against the balance, or every open trade losing at once. */
+export function portfolioHeat(userId: string, positions: { ticket: string; symbol: string; type: string; pnl?: number }[], now: number): string | null {
+  const withPnl = positions.filter((p) => typeof p.pnl === "number");
+  if (withPnl.length < 2) return null;
+  const total = withPnl.reduce((a, p) => a + (p.pnl as number), 0);
+  const losers = withPnl.filter((p) => (p.pnl as number) < 0);
+  const balance = getLastKnownAccountSnapshot(userId)?.balance;
+  const pct = balance && balance > 0 ? (-total / balance) * 100 : undefined;
+  const hot = total < 0 && ((pct !== undefined && pct >= PORTFOLIO_HEAT_PCT) || (losers.length >= PORTFOLIO_LOSERS_MIN && losers.length === withPnl.length));
+  if (!hot) return null;
+  const last = heatState.get(userId);
+  if (last !== undefined && now - last < PORTFOLIO_COOLDOWN_MS) return null;
+  heatState.set(userId, now);
+  const worst = [...losers].sort((a, b) => (a.pnl as number) - (b.pnl as number)).slice(0, 3);
+  const buys = withPnl.filter((p) => p.type === "buy").length;
+  const sells = withPnl.length - buys;
+  const oneSided = buys === 0 || sells === 0;
+  return (
+    `🌡️ ACCOUNT HEAT\n\n${withPnl.length} open trades, ${losers.length} losing -- together ${money(total)}${pct !== undefined ? ` (${pct.toFixed(1)}% of the balance)` : ""}.\n` +
+    `Worst: ${worst.map((p) => `${p.symbol} #${p.ticket} ${money(p.pnl as number)}`).join(", ")}\n` +
+    `${oneSided ? `All ${buys ? "BUYS" : "SELLS"} -- this is one bet placed ${withPnl.length} times, not ${withPnl.length} bets.` : `${buys} buys / ${sells} sells.`}\n\n` +
+    `Self-check: which of these would you still take right now? Cut the weakest instead of adding, and no new trades until the heat comes down.`
+  );
+}
+
+/** Test seam. */
+export function resetSweepState(): void {
+  feedState.clear();
+  heatState.clear();
 }

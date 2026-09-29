@@ -94,6 +94,7 @@
     "sequentialThinkingEffort": "high"
   },
   "alerts": {
+    "selfAwareMode": { "value": "advise", "options": ["off", "advise", "act"] },
     "deepLossPercent": {
       "value": 50,
       "min": 5,

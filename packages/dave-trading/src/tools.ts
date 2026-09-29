@@ -234,7 +234,12 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         if (order.tp === undefined && risk.tpMode === "auto") {
           throw new AutoModeRequiresComputedValueError("tp", order.symbol);
         }
-        let referencePrice = order.price;
+        // A pending order is measured from its own entry; a market order from the live price it
+        // really fills at -- the ask for a buy, the bid for a sell -- never from a price the model
+        // typed (often stale), which let a 2:1-on-paper trade go out at 1.4:1 (the trader's
+        // "risk reward issue").
+        const isMarket = order.type === "buy" || order.type === "sell";
+        let referencePrice = isMarket ? undefined : order.price;
         // Real bug fixed (bug-hunt pass): the quote was fetched, its price used, and the rest of
         // it thrown away -- including the `spread_pips` needed to know what a pip is worth on
         // THIS symbol. Kept now, for the pip derivation below.
@@ -244,7 +249,8 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         } catch {
           // No live quote -- sl/tp stay honestly unset below, never guessed.
         }
-        if (referencePrice === undefined) referencePrice = quote?.ask ?? quote?.bid ?? quote?.close;
+        if (referencePrice === undefined) referencePrice = order.type === "sell" ? (quote?.bid ?? quote?.ask ?? quote?.close) : (quote?.ask ?? quote?.bid ?? quote?.close);
+        if (isMarket && referencePrice === undefined) referencePrice = order.price; // no quote at all: the model's price is all there is
         referencePriceForRisk = referencePrice;
         if (referencePrice !== undefined) {
           const direction = order.type === "buy" || order.type === "buy_limit" || order.type === "buy_stop" ? 1 : -1;
@@ -258,10 +264,11 @@ export const TRADING_TOOLS: ToolDefinition[] = [
           // already does for a missing quote, rather than guessed.
           const pip = derivePipSize(quote);
           if (pip !== undefined) {
-            if (order.sl === undefined && risk.slMode === "on" && risk.slValue !== undefined) {
+            // A FIXED stop/target is the trader's rule: it wins over any number the model wrote.
+            if (risk.slMode === "on" && risk.slValue !== undefined) {
               order.sl = referencePrice - direction * risk.slValue * pip;
             }
-            if (order.tp === undefined && risk.tpMode === "on" && risk.tpValue !== undefined) {
+            if (risk.tpMode === "on" && risk.tpValue !== undefined) {
               order.tp = referencePrice + direction * risk.tpValue * pip;
             }
           }
@@ -287,7 +294,7 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       // to the MODEL as a tool error so it re-computes, rather than a structurally losing order
       // going to the broker.
       {
-        const entry = order.price ?? referencePriceForRisk;
+        const entry = order.type === "buy" || order.type === "sell" ? (referencePriceForRisk ?? order.price) : (order.price ?? referencePriceForRisk);
         if (entry !== undefined) {
           const rr = assessRiskRewardForUser(ctx.userId, order, entry);
           if (!rr.ok) throw new BadRiskStructureError(order.symbol, rr.reason ?? "risk structure is invalid");

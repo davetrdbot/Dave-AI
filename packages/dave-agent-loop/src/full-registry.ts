@@ -3,6 +3,7 @@ import type { TradeExecutor } from "@dave/trading";
 import { createGrowthTools } from "./growth-tools.js";
 import { createTodoTool } from "./todos.js";
 import { createExitRuleTools } from "./exit-rules.js";
+import { createSelfAwareStatsTool } from "./alert-outcomes.js";
 import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness, pullbackScalpRoom } from "@dave/trading";
 import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, MT5_CLOUD_TOOLS, createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
@@ -12,7 +13,7 @@ import { FIRECRAWL_TOOLS } from "@dave/firecrawl";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
-import { PAIR_GROUP_TOOLS } from "@dave/trading";
+import { PAIR_GROUP_TOOLS, getSelfAwareMode } from "@dave/trading";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS, BACKGROUND_CHECK_TOOLS, REMINDER_TOOLS, type BackgroundCheck } from "@dave/workers";
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
@@ -443,6 +444,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   registry.register(createGrowthTools({ userId: deps.userId, db: deps.db }) as AgentTool[]);
   registry.register([createTodoTool(deps.userId)] as AgentTool[]);
   registry.register(createExitRuleTools(deps.userId) as AgentTool[]);
+  registry.register([createSelfAwareStatsTool(deps.userId, () => getSelfAwareMode(deps.userId))] as AgentTool[]);
   registry.register([createAskUserTool(deps.userId)] as AgentTool[]);
 
   // Update 11 follow-up: "give the bot ability to search from his tools

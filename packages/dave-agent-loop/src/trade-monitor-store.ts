@@ -79,10 +79,20 @@ export interface TradeMonitor {
     profitDrop?: number;
     peakPullback?: number;
     range?: number;
+    racing?: number;
   };
   /** True once the trade has been in loss long enough to make a later return to profit a genuine
    *  "recovery" worth announcing. */
   prolongedLoss?: boolean;
+  /** Best and worst excursion in R, measured in PRICE against the original stop -- the trade's MFE
+   *  and MAE. Money P/L alone can't say how far a trade went relative to what it risked. */
+  mfeR?: number;
+  maeR?: number;
+  /** Every alert that fired on this trade and the P/L at that moment -- what the outcome memory
+   *  (alert-outcomes.ts) learns from once the trade closes. */
+  fired?: { kind: MonitorAlertKind; at: number; pnl?: number }[];
+  /** How far (in R) price ran against the trade in the window that fired the last "racing" alert. */
+  raceR?: number;
   lastPnl?: number;
   updatedAt: number;
   /** Edge-trigger latches -- each alert kind fires exactly once. */
@@ -99,6 +109,9 @@ export interface TradeMonitor {
     slNear?: boolean;
     slCritical?: boolean;
     tpNear?: boolean;
+    roundTrip?: boolean;
+    neverGreen?: boolean;
+    noStop?: boolean;
   };
 }
 
@@ -167,6 +180,22 @@ export const SL_NEAR_PROGRESS = 0.89;
 export const SL_CRITICAL_PROGRESS = 0.95;
 /** Fraction of the entry-to-TP distance travelled that means "nearly at target". */
 export const TP_NEAR_PROGRESS = 0.85;
+
+/* ---------------------------------------------------------------------------------------------
+ * Self-aware v2: the blind spots the first version had.
+ * ------------------------------------------------------------------------------------------- */
+
+/** A winner is a trade that got at least this far in its favour (in R). If it then goes red, it
+ *  "round-tripped" -- the most expensive pattern in trading, and invisible before: the profit-side
+ *  checks only ran while the trade was still green. */
+export const ROUND_TRIP_MIN_R = 0.5;
+/** Open this long without ever showing a profit: the entry was early or wrong. */
+export const NEVER_GREEN_MS = 20 * 60_000;
+/** Price moving this far against the trade (in R) inside RACE_WINDOW_MS is momentum, not noise. */
+export const RACE_MIN_R = 0.5;
+export const RACE_WINDOW_MS = 3 * 60_000;
+/** A trade gets this long to have its stop attached before "no stop loss" fires. */
+export const NO_STOP_GRACE_MS = 60_000;
 
 /** Rolling history cap -- about 20 minutes at the sweep's 30s cadence, comfortably more than the
  *  10-minute range window needs, while keeping the on-disk record small. */
@@ -279,7 +308,12 @@ export type MonitorAlertKind =
   // Escalating proximity warnings.
   | "slNear"
   | "slCritical"
-  | "tpNear";
+  | "tpNear"
+  // Self-aware v2.
+  | "roundTrip"
+  | "neverGreen"
+  | "racing"
+  | "noStop";
 export interface MonitorAlert {
   kind: MonitorAlertKind;
   monitor: TradeMonitor;
@@ -369,9 +403,11 @@ export function advanceMonitor(
       updatedAt: now,
     };
   // Keep live fields fresh (SL/TP can be modified after entry; reason only fills in if we learn it later).
-  m.sl = obs.sl ?? m.sl;
+  // MT5 reports "no stop" / "no target" as 0. A 0 must never be read as a price -- it made every
+  // stop-based measure nonsense on a trade without a stop. An explicit 0 means the level was removed.
+  m.sl = obs.sl === undefined ? m.sl : obs.sl > 0 ? obs.sl : undefined;
   if (m.initialSl === undefined && m.sl !== undefined && (m.direction === "buy" ? m.sl < m.openPrice : m.sl > m.openPrice)) m.initialSl = m.sl;
-  m.tp = obs.tp ?? m.tp;
+  m.tp = obs.tp === undefined ? m.tp : obs.tp > 0 ? obs.tp : undefined;
   // Real bug fixed (the trader, live: an alert reading "📌 Original idea: (reason not recorded)"
   // on a trade that genuinely had a reason). This used to re-assign the placeholder over itself --
   // obs.reason was ALSO the placeholder, because the sweep fed its own cached copy back in -- so a
@@ -474,6 +510,47 @@ export function advanceMonitor(
     }
   }
 
+  // ---- self-aware v2 ----
+  const r1 = riskOf(m);
+  const rNow = price !== undefined ? rMultiple(m, price) : undefined;
+  if (rNow !== undefined) {
+    m.mfeR = Math.max(m.mfeR ?? rNow, rNow);
+    m.maeR = Math.min(m.maeR ?? rNow, rNow);
+  }
+  // No stop loss: nothing caps this trade's loss. Once, after a short grace for the stop to attach.
+  if (m.sl === undefined) {
+    if (!m.alerts.noStop && now - m.openedAt >= NO_STOP_GRACE_MS) {
+      m.alerts.noStop = true;
+      alerts.push({ kind: "noStop", monitor: m });
+    }
+  } else m.alerts.noStop = false;
+  // Round trip: was a real winner, now red. Re-arms only once it's a winner again.
+  const wasWinner = r1 ? (m.mfeR ?? 0) >= ROUND_TRIP_MIN_R : (m.bestPnl ?? 0) >= PEAK_PULLBACK_MIN_PEAK;
+  if (inLoss && wasWinner && !m.alerts.roundTrip) {
+    m.alerts.roundTrip = true;
+    alerts.push({ kind: "roundTrip", monitor: m });
+  } else if (m.alerts.roundTrip && (rNow !== undefined ? rNow >= ROUND_TRIP_MIN_R : pnl >= (m.bestPnl ?? 0))) {
+    m.alerts.roundTrip = false;
+  }
+  // Never green: open a good while and not one sweep in profit.
+  if (inLoss && !m.alerts.neverGreen && now - m.openedAt >= NEVER_GREEN_MS && (m.bestPnl ?? 0) <= 0) {
+    m.alerts.neverGreen = true;
+    alerts.push({ kind: "neverGreen", monitor: m });
+  }
+  // Racing toward the stop: a fast adverse move in the last few minutes, not a slow bleed.
+  if (inLoss && r1 && price !== undefined && offCooldown(m.cooldowns?.racing, now)) {
+    const recent = (m.samples ?? []).filter((x) => x.price !== undefined && now - x.at <= RACE_WINDOW_MS);
+    if (recent.length >= 2 && now - recent[0].at >= 60_000) {
+      const prices = recent.map((x) => x.price as number);
+      const adverse = m.direction === "buy" ? Math.max(...prices) - price : price - Math.min(...prices);
+      if (adverse / r1 >= RACE_MIN_R) {
+        m.cooldowns = { ...m.cooldowns, racing: now };
+        m.raceR = Math.round((adverse / r1) * 100) / 100;
+        alerts.push({ kind: "racing", monitor: m });
+      }
+    }
+  }
+
   if (inLoss) {
     if (m.lossStartedAt === undefined) m.lossStartedAt = now;
     const lossFor = now - m.lossStartedAt;
@@ -564,9 +641,27 @@ export function advanceMonitor(
     alerts.push({ kind: "range", monitor: m });
   }
 
+  if (alerts.length) m.fired = [...(m.fired ?? []), ...alerts.map((a) => ({ kind: a.kind, at: now, pnl }))].slice(-40);
   m.lastPnl = pnl;
   m.updatedAt = now;
   return { monitor: m, alerts };
+}
+
+/** The trade's original risk in price: entry to the FIRST stop (a stop moved to breakeven says
+ *  nothing about what the trade risked). Undefined without a stop. */
+export function riskOf(m: Pick<TradeMonitor, "openPrice" | "sl" | "initialSl">): number | undefined {
+  const stop = m.initialSl ?? m.sl;
+  if (stop === undefined) return undefined;
+  const r = Math.abs(m.openPrice - stop);
+  return r > 0 ? r : undefined;
+}
+
+/** Where price is, in R: +1 = up what it risked, -1 = at the original stop. */
+export function rMultiple(m: Pick<TradeMonitor, "openPrice" | "sl" | "initialSl" | "direction">, price: number): number | undefined {
+  const r = riskOf(m);
+  if (!r) return undefined;
+  const favorable = m.direction === "buy" ? price - m.openPrice : m.openPrice - price;
+  return Math.round((favorable / r) * 100) / 100;
 }
 
 /** Marks a monitor closed (its ticket vanished from the live snapshot) and records the transition. */

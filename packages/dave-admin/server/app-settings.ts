@@ -39,6 +39,7 @@ import {
 } from "@dave/trading";
 import { getWriteApprovalSetting, setWriteApprovalSetting } from "@dave/memory";
 import { getTelegramSilence, setTelegramSilenced } from "@dave/telegram";
+import { getSelfAwareMode, setSelfAwareMode, SELF_AWARE_MODES, type SelfAwareMode } from "@dave/trading";
 
 /**
  * Every trader-changeable bot setting, in one place, for the app.
@@ -115,6 +116,7 @@ export function readAppSettings(userId: string) {
     },
     alerts: {
       deepLossPercent: { value: getDeepLossAlertPercent(userId), min: 5, max: 95 },
+      selfAwareMode: { value: getSelfAwareMode(userId), options: SELF_AWARE_MODES },
       toggles: ALERT_CATEGORIES.map((c) => ({ id: c.id, label: c.label, on: toggles[c.id] })),
     },
     ai: {
@@ -213,6 +215,10 @@ export function applyAppSetting(userId: string, id: string, value: unknown): voi
       return;
     case "memoryWriteApproval":
       setWriteApprovalSetting(userId, bool(value, "Memory approval"));
+      return;
+    case "selfAwareMode":
+      if (!SELF_AWARE_MODES.includes(value as SelfAwareMode)) throw new InvalidSettingError(`Self-aware reviews must be one of ${SELF_AWARE_MODES.join(", ")}.`);
+      setSelfAwareMode(userId, value as SelfAwareMode);
       return;
     case "deepLossPercent":
       setDeepLossAlertPercent(userId, num(value, "Deep-loss alert"));

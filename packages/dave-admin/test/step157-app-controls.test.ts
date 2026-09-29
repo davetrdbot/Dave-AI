@@ -83,6 +83,15 @@ assert.equal(trading.isAlertEnabled(USER, "range"), false);
 r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "alert:nonsense", value: false });
 assert.equal(r.status, 400);
 
+// Self-aware reviews: off / advise (default) / act.
+r = await call(settingsRoute.GET as Handler, "GET", "/api/app/settings");
+assert.equal(r.json.alerts.selfAwareMode.value, "advise", "advise by default -- nothing is touched unless the trader chooses act");
+r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "selfAwareMode", value: "act" });
+assert.equal(r.status, 200);
+assert.equal(trading.getSelfAwareMode(USER), "act");
+r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "selfAwareMode", value: "yolo" });
+assert.equal(r.status, 400);
+
 // Telegram silent mode, from the app.
 r = await call(settingsRoute.POST as Handler, "POST", "/api/app/settings", { id: "telegramSilent", value: true });
 assert.equal(r.status, 200);

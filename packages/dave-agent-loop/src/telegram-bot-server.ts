@@ -1220,6 +1220,12 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     // The real executor, so the breakeven alert can genuinely move the stop instead of only
     // suggesting it (the trader: "breakeven doesn't work" -- it had no executor at all).
     executor: deps.executor,
+    // Self-aware v2: an alert that calls for a decision gets Dave's review of the trade
+    // (self-aware-review.ts) -- advice by default, action only if the trader chose "act".
+    review: {
+      provider: () => modelConfigProvider(deps.db, deps.ownerUserId, () => undefined, "background"),
+      analysis: createEaAnalysisSource(deps.ownerUserId),
+    },
     notify: async (text) => {
       // Also in the app's Live tab (the trader: "the self aware messages should be in the live").
       publishActivity(deps.ownerUserId, "background", "self_aware", { text });
