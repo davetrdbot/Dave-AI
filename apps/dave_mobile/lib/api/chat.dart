@@ -194,6 +194,12 @@ class ChatApi {
     return body['turnId'] as String? ?? '';
   }
 
+  /// The trader's voice as text (Groq Whisper on the bot, primed with their pairs and trading words).
+  Future<String> transcribe(List<int> audio, {String name = 'voice.m4a'}) async {
+    final body = await _post('transcribe', {'audio': base64Encode(audio), 'name': name}, timeout: const Duration(seconds: 90));
+    return (body['text'] as String? ?? '').trim();
+  }
+
   /// A file Dave sent in the chat.
   Future<List<int>> downloadFile(String id) async {
     final res = await _http.get(_url('file/$id'), headers: _headers).timeout(const Duration(seconds: 60));

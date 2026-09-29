@@ -82,6 +82,8 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Talk to Dave: your voice is turned into text and sent to him.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Take a photo of a chart to show Dave.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

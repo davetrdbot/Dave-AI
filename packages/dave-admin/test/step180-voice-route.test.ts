@@ -100,5 +100,40 @@ console.log("   ✓ markdown stripped for speech; key removal");
   globalThis.fetch = realFetch;
   console.log("   ✓ Gemini Live key: checked with Google, saved masked, removable");
 }
+// Speech to text (Groq Whisper): the Groq key box. Checked with Groq, stored with the other Groq
+// keys (so Telegram voice notes use it too), removable only if it was added here.
+{
+  const realFetch = globalThis.fetch;
+  const GOOD = "gsk_TESTgoodgroqkey1234567890abcdef";
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("https://api.groq.com/")) {
+      const auth = new Headers(init?.headers).get("authorization") ?? "";
+      return new Response("{}", { status: auth === `Bearer ${GOOD}` ? 200 : 401 });
+    }
+    return realFetch(input as string, init);
+  }) as typeof fetch;
+  r = await call(route.GET as H, "GET");
+  assert.equal(r.json.speechToText.count, 0);
+  r = await call(route.POST as H, "POST", { action: "groq-key", apiKey: "gsk_TESTbadkey00000000000000000000" });
+  assert.equal(r.status, 400);
+  assert.match(r.json.error, /Groq says this key doesn't work/);
+  r = await call(route.POST as H, "POST", { action: "groq-key", apiKey: GOOD });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.speechToText.count, 1);
+  assert.ok(r.json.speechToText.key && !r.json.speechToText.key.includes("TESTgoodgroqkey12345"), "masked");
+  const { listProviderKeys } = await import("@dave/brain");
+  const { DaveDatabase } = await import("@dave/db");
+  const { dbPathFor } = await import("../server/db-path");
+  const db2 = new DaveDatabase(dbPathFor("default"));
+  assert.equal(listProviderKeys(db2, "default", "groq")[0].config.apiKey, GOOD, "stored as a Groq provider key -- the one transcription reads");
+  db2.close();
+  r = await call(route.POST as H, "POST", { action: "groq-key", apiKey: GOOD });
+  assert.equal(r.json.speechToText.count, 1, "saving again replaces, doesn't pile up");
+  r = await call(route.POST as H, "POST", { action: "remove-groq-key" });
+  assert.equal(r.json.speechToText.count, 0);
+  globalThis.fetch = realFetch;
+  console.log("   ✓ Groq key for speech to text: checked, stored with the Groq keys, replace/remove");
+}
 console.log("\nAll Step 180 checks passed.");
 process.exit(0);

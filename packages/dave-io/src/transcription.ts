@@ -38,6 +38,18 @@ export class TranscriptionError extends Error {
   }
 }
 
+/**
+ * Accuracy options (the trader: "so when I'm talking to Dave it transcribes perfectly").
+ * `model: "whisper-large-v3"` is Groq's most accurate Whisper (turbo is faster and cheaper, a bit
+ * less exact). `prompt` is Whisper's vocabulary hint: the words it should expect -- tickers like
+ * XAUUSD, "Volatility 75", "breakeven" -- which it otherwise hears as ordinary English.
+ */
+export interface TranscribeOptions {
+  model?: "whisper-large-v3" | "whisper-large-v3-turbo";
+  prompt?: string;
+  language?: string;
+}
+
 export class TranscriptionClient {
   constructor(private readonly apiKey: string | undefined, private readonly baseUrl = "https://api.groq.com/openai/v1") {}
 
@@ -48,8 +60,8 @@ export class TranscriptionClient {
    * voice notes are far smaller in practice, but this is checked
    * explicitly rather than trusted to just work.
    */
-  async transcribe(audio: Buffer, filename = "voice.ogg"): Promise<TranscriptionResult> {
-    const json = await this.request(audio, filename, "json");
+  async transcribe(audio: Buffer, filename = "voice.ogg", opts: TranscribeOptions = {}): Promise<TranscriptionResult> {
+    const json = await this.request(audio, filename, "json", opts);
     return { text: json.text as string };
   }
 
@@ -61,21 +73,24 @@ export class TranscriptionClient {
    * (confirmed in Step 15's research), so a video file can be handed to
    * this directly -- no separate audio-extraction step needed.
    */
-  async transcribeWithTimestamps(audio: Buffer, filename: string): Promise<TimestampedTranscript> {
-    const json = await this.request(audio, filename, "verbose_json");
+  async transcribeWithTimestamps(audio: Buffer, filename: string, opts: TranscribeOptions = {}): Promise<TimestampedTranscript> {
+    const json = await this.request(audio, filename, "verbose_json", opts);
     const segments = (json.segments as { start: number; end: number; text: string }[] | undefined) ?? [];
     return { text: json.text as string, segments: segments.map((s) => ({ start: s.start, end: s.end, text: s.text.trim() })) };
   }
 
-  private async request(audio: Buffer, filename: string, responseFormat: "json" | "verbose_json"): Promise<any> {
+  private async request(audio: Buffer, filename: string, responseFormat: "json" | "verbose_json", opts: TranscribeOptions = {}): Promise<any> {
     const MAX_BYTES = 25 * 1024 * 1024;
     if (audio.byteLength > MAX_BYTES) {
       throw new TranscriptionError(413, `audio is ${audio.byteLength} bytes, exceeds the 25MB free-tier API limit`);
     }
 
     const form = new FormData();
-    form.append("model", "whisper-large-v3-turbo");
+    form.append("model", opts.model ?? "whisper-large-v3-turbo");
     form.append("response_format", responseFormat);
+    // Whisper reads at most ~224 tokens of prompt; keep the hint short.
+    if (opts.prompt) form.append("prompt", opts.prompt.slice(0, 800));
+    if (opts.language) form.append("language", opts.language);
     form.append("file", new Blob([new Uint8Array(audio)]), filename);
 
     const headers: Record<string, string> = {};

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { runCode } from "@dave/sandbox";
-import { TranscriptionClient, type TimestampedTranscript } from "@dave/io";
+import { TranscriptionClient, type TimestampedTranscript, type TranscribeOptions } from "@dave/io";
 import type { DaveDatabase } from "@dave/db";
 import { listProviderKeys, generateWithKeyFailover } from "@dave/brain";
 import { buildImageContentBlock } from "./image.js";
@@ -185,7 +185,8 @@ export async function transcribeAudioBytesWithKeyFailover(
   db: DaveDatabase,
   userId: string,
   audio: Buffer,
-  filename: string
+  filename: string,
+  opts: TranscribeOptions = {}
 ): Promise<TimestampedTranscript> {
   const keys = listProviderKeys(db, userId, GROQ_PROVIDER);
   if (keys.length === 0) throw new NoGroqKeyError();
@@ -200,7 +201,7 @@ export async function transcribeAudioBytesWithKeyFailover(
       ? new TranscriptionClient(key.config.apiKey, key.config.baseUrlOverride)
       : new TranscriptionClient(key.config.apiKey);
     try {
-      return await client.transcribeWithTimestamps(audio, filename);
+      return await client.transcribeWithTimestamps(audio, filename, opts);
     } catch (err) {
       lastErr = err;
     }

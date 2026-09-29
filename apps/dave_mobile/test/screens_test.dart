@@ -189,6 +189,7 @@ http.Client _fakeServer() => MockClient((req) async {
               {'id': 'fish-audio', 'name': 'Fish Audio', 'about': 'Cheaper, huge public voice library, good cloning.', 'link': 'https://fish.audio/app/api-keys', 'key': 'a8d3********************77c1', 'voiceId': 'fish-mine'},
             ],
             'geminiLive': {'key': null, 'link': 'https://aistudio.google.com/app/apikey'},
+            'speechToText': {'key': 'gsk_****************a1b2', 'count': 1, 'link': 'https://console.groq.com/keys'},
           };
         case '/api/app/history':
           final rnd = Random(7);
@@ -1014,6 +1015,8 @@ void main() {
       await _advance(tester);
       await _shot(tester, 'dave_voice_gemini_$mode');
       expect(find.text('Gemini API key'), findsOneWidget, reason: 'a place for the Gemini Live key');
+      expect(find.text('Groq API key'), findsOneWidget, reason: 'speech to text for talking to Dave');
+      expect(find.text('gsk_****************a1b2'), findsOneWidget, reason: 'shown masked');
       expect(find.text('Not added'), findsOneWidget);
       await tester.tap(find.text('fish-mine'));
       await _advance(tester);

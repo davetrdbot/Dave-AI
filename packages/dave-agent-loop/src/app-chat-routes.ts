@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { verifyDeviceToken } from "@dave/db";
 import type { CompletionMessage, ContentBlock } from "@dave/brain";
-import { buildImageContentBlock } from "@dave/vision";
+import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyError } from "@dave/vision";
+import { speechVocabularyPrompt } from "./speech-vocabulary.js";
 import { activityAfter, activityBetween, latestActivityId, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
 import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, type AppChatDeps } from "./app-chat.js";
 import { dispatchCallback } from "./command-router.js";
@@ -26,6 +27,7 @@ import { nousDepsFor, placeNousSignal, skipNousSignal, applyNousUpdate, skipNous
  *   GET  state              is Dave busy, and with what
  *   POST stop               stop whatever Dave is doing right now
  *   POST action             {callback, messageId?} -- a card button from the app (Nous, trade approvals, ...)
+ *   POST transcribe         {audio: base64, name?} -> {text} -- the trader's voice, via Groq Whisper
  */
 
 export const APP_CHAT_PREFIX = "/api/app/chat/";
@@ -207,6 +209,28 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
       }
       res.writeHead(200, { "content-type": file.mime, "content-length": String(file.bytes), "content-disposition": `attachment; filename="${file.name}"`, "cache-control": "private, max-age=3600" });
       res.end(file.data);
+      return;
+    }
+    if (method === "POST" && path === "transcribe") {
+      // Talking to Dave from the app: Groq's most accurate Whisper, primed with the trader's own
+      // pairs and trading words (speech-vocabulary.ts), English.
+      const body = await readJson(req);
+      const audio = Buffer.from(String(body.audio ?? ""), "base64");
+      if (audio.byteLength < 500) {
+        send(res, 400, { error: "That recording is empty -- hold the mic a little longer." });
+        return;
+      }
+      const name = typeof body.name === "string" && /\.(m4a|mp3|wav|ogg|webm|aac|flac|mp4)$/i.test(body.name) ? body.name : "voice.m4a";
+      try {
+        const t = await transcribeAudioBytesWithKeyFailover(deps.db, userId, audio, name, { model: "whisper-large-v3", prompt: speechVocabularyPrompt(userId), language: "en" });
+        send(res, 200, { text: t.text.trim() });
+      } catch (err) {
+        if (err instanceof NoGroqKeyError) {
+          send(res, 409, { error: "Add a Groq key first (Settings > Dave's voice > Speech to text) -- it's what turns your voice into text." });
+          return;
+        }
+        send(res, 502, { error: `Couldn't turn that into text: ${err instanceof Error ? err.message.replace(/gsk_[A-Za-z0-9]+/g, "[key]") : String(err)}`.slice(0, 300) });
+      }
       return;
     }
     if (method === "POST" && path === "stop") {

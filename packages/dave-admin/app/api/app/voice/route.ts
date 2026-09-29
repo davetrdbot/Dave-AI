@@ -18,6 +18,7 @@ import {
   checkGeminiKey,
   type TtsProviderName,
 } from "@dave/notifications";
+import { listProviderKeys, addProviderKey, removeProviderKey, maskKeyValue } from "@dave/brain";
 import { dbPathFor } from "../../../../server/db-path";
 import { maskSecret } from "../../../../server/mask-secret";
 import { withDevice } from "../../../../server/require-device";
@@ -35,6 +36,7 @@ import { speakable } from "../../../../server/speakable";
  *   POST {action:"preview", provider, voiceId, text?}   -> {audio: base64, contentType}
  *   POST {action:"speak", text}                 -> the active voice (falls back to the other)
  *   POST {action:"gemini-key", apiKey} / {action:"remove-gemini-key"}   the key for talking live
+ *   POST {action:"groq-key", apiKey} / {action:"remove-groq-key"}       speech to text (Groq Whisper)
  */
 export const dynamic = "force-dynamic";
 
@@ -64,6 +66,12 @@ function view(db: DaveDatabase, userId: string) {
     })),
     // Talking to Dave live (Gemini Live): the key, masked.
     geminiLive: { key: maskSecret(getGeminiLiveKey(db, userId)) ?? null, link: "https://aistudio.google.com/app/apikey" },
+    // Speech to text: Groq Whisper -- the same Groq keys as Settings > AI providers (Telegram voice
+    // notes use them too). Shows the first one, masked, and how many there are.
+    speechToText: (() => {
+      const keys = listProviderKeys(db, userId, "groq");
+      return { key: keys.length ? (maskKeyValue(keys[0].config.apiKey) ?? null) : null, count: keys.length, link: "https://console.groq.com/keys" };
+    })(),
   };
 }
 
@@ -94,6 +102,22 @@ export const POST = withDevice(async ({ userId, req }) => {
         // Checked with Google before it's kept, so a typo is caught now, not mid-call.
         if ((await checkGeminiKey(key)) === "bad") return NextResponse.json({ error: "Google says this key doesn't work -- copy it again from Google AI Studio." }, { status: 400 });
         setGeminiLiveKey(db, userId, key);
+        break;
+      }
+      case "groq-key": {
+        const key = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+        if (key.length < 20) return NextResponse.json({ error: "Paste the whole Groq API key (it starts with gsk_)." }, { status: 400 });
+        const check = await fetch("https://api.groq.com/openai/v1/models", { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) }).then((r) => r.status).catch(() => 0);
+        if (check === 401 || check === 403) return NextResponse.json({ error: "Groq says this key doesn't work -- copy it again from console.groq.com/keys." }, { status: 400 });
+        // Replaces the key added here before; Groq keys added under AI providers stay.
+        for (const k of listProviderKeys(db, userId, "groq").filter((k) => k.label === "Speech to text")) removeProviderKey(db, userId, k.id);
+        addProviderKey(db, userId, "groq", "Speech to text", { apiKey: key });
+        break;
+      }
+      case "remove-groq-key": {
+        const mine = listProviderKeys(db, userId, "groq").filter((k) => k.label === "Speech to text");
+        if (!mine.length) return NextResponse.json({ error: "That Groq key was added under Settings > AI providers -- remove it there." }, { status: 409 });
+        for (const k of mine) removeProviderKey(db, userId, k.id);
         break;
       }
       case "remove-gemini-key":

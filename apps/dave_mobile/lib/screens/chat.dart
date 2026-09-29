@@ -8,6 +8,7 @@ import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:record/record.dart';
 
 import '../api/chat.dart';
 import '../api/client.dart';
@@ -66,6 +67,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _close();
     _api?.close();
+    _rec?.dispose();
     _input.dispose();
     _focus.dispose();
     super.dispose();
@@ -136,6 +138,11 @@ class _ChatScreenState extends State<ChatScreen> {
             _rebuildSoon();
             if (e.kind == 'final' || e.kind == 'ask_user') HapticFeedback.lightImpact();
           }
+          // You spoke to him, so he answers out loud.
+          if (_speakTurn != null && e.turnId == _speakTurn && (e.kind == 'final' || e.kind == 'ask_user')) {
+            _speakTurn = null;
+            _speakReply('${e.data['text'] ?? e.data['question'] ?? ''}');
+          }
         },
         onError: (Object err) {
           if (err is UnpairedException && mounted) AppScope.of(context).onUnpaired(err.message);
@@ -157,6 +164,66 @@ class _ChatScreenState extends State<ChatScreen> {
 
   bool get _working => _timeline.runningTurn != null || _sending;
 
+  // ---- talking to Dave: record -> Groq Whisper -> send -> his reply read aloud -------------
+  /// Created on the first tap of the mic -- the chat never touches the microphone before that.
+  AudioRecorder? _rec;
+  AudioRecorder get _recorder => _rec ??= AudioRecorder();
+  String _mic = 'idle'; // idle | recording | transcribing
+  /// The turn started by voice: its answer is read aloud (ElevenLabs / Fish Audio).
+  String? _speakTurn;
+
+  Future<void> _toggleMic() async {
+    if (_mic == 'transcribing') return;
+    if (_mic == 'recording') {
+      HapticFeedback.mediumImpact();
+      final path = await _recorder.stop();
+      setState(() => _mic = 'transcribing');
+      try {
+        final bytes = path == null ? const <int>[] : await File(path).readAsBytes();
+        final text = await _api!.transcribe(bytes, name: 'voice.m4a');
+        if (!mounted) return;
+        setState(() => _mic = 'idle');
+        if (text.isEmpty) {
+          await showError(context, "I didn't catch anything -- try again, a bit closer to the mic.");
+          return;
+        }
+        _speakNextTurn = true;
+        await _send(text: text);
+      } catch (e) {
+        if (mounted) {
+          setState(() => _mic = 'idle');
+          await showError(context, e);
+        }
+      } finally {
+        if (path != null) File(path).delete().ignore();
+      }
+      return;
+    }
+    if (!await _recorder.hasPermission()) {
+      if (mounted) await showError(context, 'Dave needs the microphone to hear you -- allow it in your phone settings.');
+      return;
+    }
+    await DaveAudio.stop();
+    final path = '${Directory.systemTemp.path}/dave-voice-${DateTime.now().millisecondsSinceEpoch}.m4a';
+    // 16 kHz mono AAC: what Whisper works at, and small enough to upload in a moment.
+    await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 16000, numChannels: 1, bitRate: 48000), path: path);
+    HapticFeedback.mediumImpact();
+    if (mounted) setState(() => _mic = 'recording');
+  }
+
+  bool _speakNextTurn = false;
+
+  /// Reads a voice turn's answer aloud in Dave's voice.
+  Future<void> _speakReply(String text) async {
+    if (text.trim().isEmpty) return;
+    try {
+      final r = await AppScope.of(context).api.voiceAction({'action': 'speak', 'text': text});
+      await DaveAudio.play('${r['audio']}', id: 'reply-${text.hashCode}');
+    } catch (e) {
+      if (mounted) await showError(context, e);
+    }
+  }
+
   Future<void> _send({String? text, bool whenFree = false}) async {
     final api = _api;
     if (api == null) return;
@@ -176,6 +243,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final turnId = await api.send(message, pictures: pictures, whenFree: whenFree);
       if (!mounted) return;
       setState(() => _timeline.confirmPending(pending, turnId));
+      if (_speakNextTurn) _speakTurn = turnId;
+      _speakNextTurn = false;
     } on DaveBusyException catch (busy) {
       if (!mounted) return;
       setState(() => _timeline.entries.remove(pending));
@@ -402,6 +471,8 @@ class _ChatScreenState extends State<ChatScreen> {
               onStop: _stop,
               onAttach: _attach,
               onRemovePicture: (i) => setState(() => _pictures.removeAt(i)),
+              mic: _mic,
+              onMic: _toggleMic,
             ),
             SizedBox(height: bottomClearance),
           ],
@@ -1017,7 +1088,12 @@ class _Composer extends StatelessWidget {
     required this.onStop,
     required this.onAttach,
     required this.onRemovePicture,
+    this.mic = 'idle',
+    this.onMic,
   });
+  /// idle | recording | transcribing
+  final String mic;
+  final VoidCallback? onMic;
   final TextEditingController controller;
   final FocusNode focus;
   final List<ChatPicture> pictures;
@@ -1098,7 +1174,7 @@ class _Composer extends StatelessWidget {
                     child: CupertinoTextField(
                       controller: controller,
                       focusNode: focus,
-                      placeholder: 'Message Dave',
+                      placeholder: mic == 'recording' ? 'Listening... tap the red button to send' : mic == 'transcribing' ? 'Turning your voice into text...' : 'Message Dave',
                       minLines: 1,
                       maxLines: 6,
                       textCapitalization: TextCapitalization.sentences,
@@ -1112,6 +1188,15 @@ class _Composer extends StatelessWidget {
                     valueListenable: controller,
                     builder: (context, value, _) {
                       final canSend = value.text.trim().isNotEmpty || pictures.isNotEmpty;
+                      if (mic == 'recording') {
+                        return _RoundButton(key: const ValueKey('mic-stop'), icon: CupertinoIcons.stop_fill, color: resolve(context, CupertinoColors.systemRed), semantic: 'Stop recording and send', onTap: onMic);
+                      }
+                      if (mic == 'transcribing') {
+                        return const SizedBox(width: 34, height: 34, child: Center(child: CupertinoActivityIndicator(radius: 9)));
+                      }
+                      if (!canSend && !working && onMic != null) {
+                        return _RoundButton(key: const ValueKey('mic'), icon: CupertinoIcons.mic_fill, color: blue, semantic: 'Talk to Dave', onTap: onMic);
+                      }
                       if (working && !canSend) {
                         return _RoundButton(icon: CupertinoIcons.stop_fill, color: Look.of(context).down, semantic: 'Stop', onTap: onStop);
                       }
@@ -1129,7 +1214,7 @@ class _Composer extends StatelessWidget {
 }
 
 class _RoundButton extends StatelessWidget {
-  const _RoundButton({required this.icon, required this.color, required this.semantic, this.onTap});
+  const _RoundButton({super.key, required this.icon, required this.color, required this.semantic, this.onTap});
   final IconData icon;
   final Color color;
   final String semantic;

@@ -42,6 +42,7 @@ import { startScalpCycleSweep } from "./scalp-cycle-sweep.js";
 import { startSetupSweep } from "./setup-sweep.js";
 import { autoSaveMemory } from "./memory-autosave.js";
 import { resumeUnfinishedTodos } from "./todos.js";
+import { speechVocabularyPrompt } from "./speech-vocabulary.js";
 import { seedStructureTargetsSkill } from "@dave/skills";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
@@ -720,7 +721,8 @@ export async function buildInboundContent(
     const bytes = await client.downloadFile(message.voice.file_id);
     const filename = `${message.voice.file_unique_id}.ogg`;
     writeFileSync(join(inboxDir(ownerUserId), filename), bytes);
-    const transcript = await transcribeAudioBytesWithKeyFailover(db, ownerUserId, bytes, filename);
+    // Same accuracy as the app: the most accurate Whisper, primed with the trader's pairs and words.
+    const transcript = await transcribeAudioBytesWithKeyFailover(db, ownerUserId, bytes, filename, { model: "whisper-large-v3", prompt: speechVocabularyPrompt(ownerUserId) });
     return `[Voice note transcript]: ${transcript.text}`;
   }
   if (message.photo && message.photo.length > 0) {

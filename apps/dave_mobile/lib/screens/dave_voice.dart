@@ -101,6 +101,7 @@ class DaveVoicePage extends StatelessWidget {
             ),
           ),
           for (final p in providers) SliverToBoxAdapter(child: _ProviderCard(p: p, active: p['id'] == active, act: act, reload: reload)),
+          SliverToBoxAdapter(child: _SpeechToTextCard(s: (v['speechToText'] as Map?)?.cast<String, dynamic>() ?? const {}, act: act)),
           SliverToBoxAdapter(child: _GeminiLiveCard(g: (v['geminiLive'] as Map?)?.cast<String, dynamic>() ?? const {}, act: act)),
           const SliverToBoxAdapter(child: SizedBox(height: 110)),
         ];
@@ -164,6 +165,56 @@ class _ProviderCard extends StatelessWidget {
                   await pushScoped<void>(context, _VoicePicker(provider: '${p['id']}', name: '${p['name']}', current: voiceId));
                   await reload();
                 },
+        ),
+      ]),
+    );
+  }
+}
+
+/// Your voice into text: Groq Whisper (the mic in the chat, and voice notes in Telegram).
+class _SpeechToTextCard extends StatelessWidget {
+  const _SpeechToTextCard({required this.s, required this.act});
+  final Map<String, dynamic> s;
+  final Future<void> Function(Map<String, Object?>) act;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    final key = s['key'] as String?;
+    final link = '${s['link'] ?? 'https://console.groq.com/keys'}';
+    return ContentCard(
+      key: const ValueKey('speech-to-text-card'),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Expanded(child: Text('Speech to text · Groq Whisper', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))),
+          if (key != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+              decoration: BoxDecoration(color: look.accent.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(20)),
+              child: Text('READY', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: look.accent)),
+            ),
+        ]),
+        Text('Tap the mic in the chat and talk -- Groq turns your voice into text (it knows your pairs and trading words), Dave answers out loud in the voice above. Also used for your Telegram voice notes.',
+            style: TextStyle(fontSize: 12.5, color: secondary)),
+        const SizedBox(height: Space.s3),
+        _Row(
+          icon: CupertinoIcons.lock_fill,
+          title: 'Groq API key',
+          value: key ?? 'Not added',
+          onTap: () async {
+            final k = await promptText(context, title: 'Groq API key', message: 'Create one free at $link, then paste it here. It starts with gsk_.', placeholder: 'gsk_...', obscure: true, action: 'Save');
+            if (k != null && k.isNotEmpty) await act({'action': 'groq-key', 'apiKey': k});
+          },
+          trailing: key != null
+              ? GestureDetector(
+                  onTap: () async {
+                    final ok = await confirmDestructive(context, title: 'Remove the Groq key?', message: 'Talking to Dave and Telegram voice notes stop being turned into text.', action: 'Remove');
+                    if (ok) await act({'action': 'remove-groq-key'});
+                  },
+                  child: Icon(CupertinoIcons.trash, size: 18, color: look.down),
+                )
+              : null,
         ),
       ]),
     );
