@@ -123,8 +123,8 @@ export const POST = withDevice(async ({ userId, req }) => {
         if (!text) return NextResponse.json({ error: "Nothing to say." }, { status: 400 });
         const fishKey = getTtsProviderKey(db, userId, "fish-audio");
         const elevenKey = getTtsProviderKey(db, userId, "elevenlabs");
-        if (!fishKey && !elevenKey) return NextResponse.json({ error: "Add an ElevenLabs or Fish Audio key in Settings → Dave's voice." }, { status: 409 });
-        if (!getVoiceSettings(db, userId).enabled) return NextResponse.json({ error: "Dave's voice is switched off -- turn it on in Settings → Dave's voice." }, { status: 409 });
+        if (!fishKey && !elevenKey) return NextResponse.json({ error: "Add an ElevenLabs or Fish Audio key in Settings > Dave's voice." }, { status: 409 });
+        if (!getVoiceSettings(db, userId).enabled) return NextResponse.json({ error: "Dave's voice is switched off -- turn it on in Settings > Dave's voice." }, { status: 409 });
         const r = await synthesizeSpeech(new FishAudioClient(fishKey), new ElevenLabsClient(elevenKey), db, userId, text);
         return NextResponse.json({ audio: r.audio.toString("base64"), contentType: r.contentType, provider: r.provider, usedFallback: r.usedFallback });
       }
