@@ -267,6 +267,8 @@ class DaveApi {
         if (to != null) 'to': '${to.millisecondsSinceEpoch}',
       }),
       headers: _headers));
+  Future<Map<String, dynamic>> voice() => _send(() => _http.get(_url('/api/app/voice'), headers: _headers));
+  Future<Map<String, dynamic>> voiceAction(Map<String, Object?> body) => _post('/api/app/voice', body);
   Future<Map<String, dynamic>> growth() => _send(() => _http.get(_url('/api/app/growth'), headers: _headers));
   Future<Map<String, dynamic>> growthAction(Map<String, Object?> body) => _post('/api/app/growth', body);
   Future<Map<String, dynamic>> mcp() => _send(() => _http.get(_url('/api/app/mcp'), headers: _headers));

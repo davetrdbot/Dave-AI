@@ -18,6 +18,7 @@ import 'package:dave_mobile/screens/extras.dart';
 import 'package:dave_mobile/screens/growth.dart';
 import 'package:dave_mobile/screens/history.dart';
 import 'package:dave_mobile/screens/voice.dart';
+import 'package:dave_mobile/screens/dave_voice.dart';
 import 'package:dave_mobile/widgets/setup_drawing.dart';
 import 'package:dave_mobile/screens/connect.dart';
 import 'package:dave_mobile/screens/shell.dart';
@@ -169,6 +170,24 @@ Map<String, Object?> _context() {
 http.Client _fakeServer() => MockClient((req) async {
       Object? body;
       switch (req.url.path) {
+        case '/api/app/voice' when req.method == 'POST':
+          body = {
+            'voices': [
+              {'voiceId': 'fish-mine', 'name': 'Dave (my clone)', 'mine': true},
+              {'voiceId': 'e58b0d7efca34eb38d5c4985e378abcb', 'name': 'Calm narrator', 'mine': false},
+              {'voiceId': '7f92f8afb8ec43bf81429cc1c9199cb1', 'name': 'Energetic trader', 'mine': false},
+              {'voiceId': '54a5170264694bfc8e9ad98df7bd89c3', 'name': 'Deep British', 'mine': false},
+            ],
+          };
+        case '/api/app/voice':
+          body = {
+            'enabled': true,
+            'activeProvider': 'fish-audio',
+            'providers': [
+              {'id': 'elevenlabs', 'name': 'ElevenLabs', 'about': 'Most natural voices; clone your own.', 'link': 'https://elevenlabs.io/app/settings/api-keys', 'key': 'sk_1************************9f2a', 'voiceId': 'JBFqnCBsd6RMkjVDRZzb'},
+              {'id': 'fish-audio', 'name': 'Fish Audio', 'about': 'Cheaper, huge public voice library, good cloning.', 'link': 'https://fish.audio/app/api-keys', 'key': 'a8d3********************77c1', 'voiceId': 'fish-mine'},
+            ],
+          };
         case '/api/app/history':
           final rnd = Random(7);
           final now = DateTime(2026, 9, 28, 12).millisecondsSinceEpoch;
@@ -524,6 +543,7 @@ void main() {
       // Chat: the stored conversation, then the live turn with its steps.
       await _shot(tester, 'chat_$mode');
       expect(find.text('gold-backtest.csv'), findsOneWidget, reason: 'a file Dave sent shows as a card');
+      expect(find.text('Listen'), findsWidgets, reason: 'replies can be read aloud');
       expect(find.text('Should I buy gold now?'), findsOneWidget);
       expect(find.text('Checking price'), findsOneWidget);
       expect(find.text('Hunting for a setup'), findsOneWidget);
@@ -920,6 +940,18 @@ void main() {
       await tester.pumpWidget(_app(const CupertinoPageScaffold(child: Align(alignment: Alignment.bottomCenter, child: VoiceSettingsSheet())), look: look));
       await tester.pump(const Duration(milliseconds: 200));
       await _shot(tester, 'voice_settings_$mode');
+      await tester.pumpWidget(_app(const CupertinoPageScaffold(child: Align(alignment: Alignment.bottomCenter, child: VoiceSettingsSheet(engine: 'ElevenLabs'))), look: look));
+      await tester.pump(const Duration(milliseconds: 200));
+      await _shot(tester, 'voice_settings_eleven_$mode');
+      final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer(), streamClient: _fakeChatStream);
+      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const DaveVoicePage()), look: look));
+      await _advance(tester);
+      await _shot(tester, 'dave_voice_$mode');
+      expect(find.text('LEADS'), findsOneWidget);
+      await tester.tap(find.text('fish-mine'));
+      await _advance(tester);
+      await _shot(tester, 'dave_voice_picker_$mode');
+      expect(find.text('Dave (my clone)'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     });
 

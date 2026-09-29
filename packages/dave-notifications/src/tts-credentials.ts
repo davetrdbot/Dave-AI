@@ -49,3 +49,11 @@ export function getTtsProviderKey(db: DaveDatabase, ownerUserId: string, provide
 export function hasTtsProviderKey(db: DaveDatabase, ownerUserId: string, provider: TtsProviderName): boolean {
   return getTtsProviderKey(db, ownerUserId, provider) !== undefined;
 }
+
+/** Forgets a provider's key (the app's "Remove key"). */
+export function removeTtsProviderKey(db: DaveDatabase, ownerUserId: string, provider: TtsProviderName): boolean {
+  ensureTable(db);
+  const rows = db.query(TABLE, ownerUserId, { provider }) as unknown as KeyRow[];
+  for (const r of rows) db.deleteRow(TABLE, ownerUserId, r.id);
+  return rows.length > 0;
+}

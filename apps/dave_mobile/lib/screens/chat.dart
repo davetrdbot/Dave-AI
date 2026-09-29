@@ -21,6 +21,7 @@ import 'chat_timeline.dart';
 import '../api/models.dart';
 import 'shell.dart';
 import '../look.dart';
+import 'dave_voice.dart';
 
 /// Talking to Dave -- the same conversation as Telegram, with every step he takes shown live:
 /// each tool as it starts and finishes, his thinking, the workers he starts, and Nous's cards
@@ -527,11 +528,15 @@ class _HistoryBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (item.fromUser) return _Bubble(fromUser: true, child: _UserText(_stripContext(item.text), item.pictures));
-    return _Bubble(
-      fromUser: false,
-      caption: item.tools.isEmpty ? null : 'Used ${item.tools.length} tool${item.tools.length == 1 ? '' : 's'}',
-      child: MarkdownText(_looksHtml(item.text) ? htmlToMarkdown(item.text) : item.text, fontSize: 14.5),
-    );
+    final text = _looksHtml(item.text) ? htmlToMarkdown(item.text) : item.text;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      _Bubble(
+        fromUser: false,
+        caption: item.tools.isEmpty ? null : 'Used ${item.tools.length} tool${item.tools.length == 1 ? '' : 's'}',
+        child: MarkdownText(text, fontSize: 14.5),
+      ),
+      if (text.trim().isNotEmpty) _SpeakButton(text: text),
+    ]);
   }
 }
 
@@ -561,6 +566,7 @@ class _TurnView extends StatelessWidget {
     final reply = turn.finalText ?? '';
     if (reply.trim().isNotEmpty) {
       children.add(_Bubble(fromUser: false, caption: turn.tokens == null ? null : '${_compact(turn.tokens!)} tokens', child: MarkdownText(_looksHtml(reply) ? htmlToMarkdown(reply) : reply, fontSize: 14.5)));
+      if (!turn.running) children.add(_SpeakButton(text: _looksHtml(reply) ? htmlToMarkdown(reply) : reply));
     }
     if (turn.question != null) {
       children.add(_Bubble(fromUser: false, child: MarkdownText(turn.question!, fontSize: 14.5)));
@@ -1187,6 +1193,57 @@ class _FileCardState extends State<_FileCard> {
           ),
           _busy ? const CupertinoActivityIndicator() : Icon(CupertinoIcons.arrow_down_circle_fill, color: look.accent, size: 26),
         ]),
+      ),
+    );
+  }
+}
+
+/// "Listen": Dave reads this reply aloud in his ElevenLabs / Fish Audio voice.
+class _SpeakButton extends StatefulWidget {
+  const _SpeakButton({required this.text});
+  final String text;
+
+  @override
+  State<_SpeakButton> createState() => _SpeakButtonState();
+}
+
+class _SpeakButtonState extends State<_SpeakButton> {
+  bool _loading = false;
+  String get _id => 'reply-${widget.text.hashCode}';
+
+  Future<void> _tap(bool playing) async {
+    if (playing) return DaveAudio.stop();
+    setState(() => _loading = true);
+    try {
+      final r = await AppScope.of(context).api.voiceAction({'action': 'speak', 'text': widget.text});
+      await DaveAudio.play('${r['audio']}', id: _id);
+    } catch (e) {
+      if (mounted) await showError(context, e);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ValueListenableBuilder<String?>(
+        valueListenable: DaveAudio.playing,
+        builder: (context, playing, _) {
+          final on = playing == _id;
+          return CupertinoButton(
+            padding: const EdgeInsets.only(left: 10, top: 2, bottom: 2),
+            minimumSize: const Size(0, 28),
+            onPressed: _loading ? null : () => _tap(on),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              _loading ? const CupertinoActivityIndicator(radius: 7) : Icon(on ? CupertinoIcons.stop_circle_fill : CupertinoIcons.speaker_2_fill, size: 16, color: look.accent),
+              const SizedBox(width: 5),
+              Text(on ? 'Stop' : 'Listen', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: look.accent)),
+            ]),
+          );
+        },
       ),
     );
   }

@@ -989,12 +989,16 @@ class VoiceSettingsSheet extends StatefulWidget {
     this.extended = true,
     this.level = 'medium',
     this.voice = 'Kore',
+    this.engine = 'Gemini',
     this.allowActions = true,
     this.alerts = false,
   });
   final bool extended;
   final String level;
   final String voice;
+
+  /// Whose voice Dave speaks with: Gemini's own, or ElevenLabs / Fish Audio (Settings → Dave's voice).
+  final String engine;
   final bool allowActions;
   final bool alerts;
 
@@ -1006,6 +1010,7 @@ class _VoiceSettingsSheetState extends State<VoiceSettingsSheet> {
   late bool _extended = widget.extended;
   late String _level = widget.level;
   late String _voice = widget.voice;
+  late String _engine = widget.engine;
   late bool _actions = widget.allowActions;
   late bool _alerts = widget.alerts;
 
@@ -1134,7 +1139,7 @@ class _VoiceSettingsSheetState extends State<VoiceSettingsSheet> {
           ],
           const SizedBox(height: Space.s3),
           Text(
-            'VOICE',
+            'HIS VOICE',
             style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w800,
@@ -1143,7 +1148,15 @@ class _VoiceSettingsSheetState extends State<VoiceSettingsSheet> {
             ),
           ),
           const SizedBox(height: 6),
-          seg(['Kore', 'Puck', 'Charon', 'Aoede'], _voice, (v) => _voice = v),
+          seg(['Gemini', 'ElevenLabs', 'Fish Audio'], _engine, (v) => _engine = v),
+          const SizedBox(height: 6),
+          if (_engine == 'Gemini')
+            seg(['Kore', 'Puck', 'Charon', 'Aoede'], _voice, (v) => _voice = v)
+          else
+            Text(
+              "$_engine speaks Dave's words in the voice picked under Settings → Dave's voice. Gemini still listens and runs the tools; answers start about half a second later.",
+              style: TextStyle(fontSize: 12, color: secondary),
+            ),
           const SizedBox(height: Space.s3),
           toggle(
             'Let him act on trades',

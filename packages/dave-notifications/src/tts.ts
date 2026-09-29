@@ -44,6 +44,28 @@ export class FishAudioClient {
   }
 }
 
+export interface FishVoice {
+  voiceId: string;
+  name: string;
+  mine: boolean;
+}
+
+/** Fish Audio voices: the account's own clones first, then the most-liked public ones. */
+export async function listFishVoices(apiKey: string | undefined, query = "", baseUrl = "https://api.fish.audio"): Promise<FishVoice[]> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const get = async (params: string, mine: boolean): Promise<FishVoice[]> => {
+    const res = await fetch(`${baseUrl}/model?${params}`, { headers });
+    if (!res.ok) throw new TtsError("fish-audio", res.status, await res.text());
+    const json = (await res.json()) as { items?: { _id: string; title: string }[] };
+    return (json.items ?? []).map((m) => ({ voiceId: m._id, name: m.title, mine }));
+  };
+  const q = query ? `&title=${encodeURIComponent(query)}` : "";
+  const [own, popular] = await Promise.all([apiKey ? get(`self=true&page_size=50${q}`, true).catch(() => []) : Promise.resolve([]), get(`page_size=30&sort_by=score${q}`, false)]);
+  const seen = new Set(own.map((v) => v.voiceId));
+  return [...own, ...popular.filter((v) => !seen.has(v.voiceId))];
+}
+
 export class ElevenLabsClient {
   constructor(private readonly apiKey: string | undefined, private readonly baseUrl = "https://api.elevenlabs.io") {}
 

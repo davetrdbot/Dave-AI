@@ -7,6 +7,7 @@ import '../api/models.dart';
 import '../app_scope.dart';
 import '../push/push_service.dart';
 import '../session.dart';
+import 'dave_voice.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/pickers.dart';
@@ -726,6 +727,14 @@ class _AiSection extends StatelessWidget {
           onTap: () async {
             if (await showAiSheet(context, providers)) await reload();
           },
+        ),
+        CupertinoListTile(
+          key: const ValueKey('open-dave-voice'),
+          leading: const Icon(CupertinoIcons.waveform),
+          title: const Text("Dave's voice"),
+          subtitle: const Text('ElevenLabs · Fish Audio'),
+          trailing: const CupertinoListTileChevron(),
+          onTap: () => pushScoped<void>(context, const DaveVoicePage()),
         ),
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.sparkles),

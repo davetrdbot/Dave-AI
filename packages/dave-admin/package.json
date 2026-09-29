@@ -18,6 +18,7 @@
     "@dave/knowledge": "workspace:*",
     "@dave/lovable-mcp": "workspace:*",
     "@dave/mcp-manager": "workspace:*",
+    "@dave/notifications": "workspace:*",
     "@dave/memory": "workspace:*",
     "@dave/sandbox": "workspace:*",
     "@dave/skills": "workspace:*",

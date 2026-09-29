@@ -63,6 +63,9 @@ importers:
       '@dave/memory':
         specifier: workspace:*
         version: link:../dave-memory
+      '@dave/notifications':
+        specifier: workspace:*
+        version: link:../dave-notifications
       '@dave/sandbox':
         specifier: workspace:*
         version: link:../dave-sandbox
