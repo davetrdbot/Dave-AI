@@ -1781,7 +1781,7 @@ string A_Fibonacci(string sym)
   }
 
 //--- 11 candles ----------------------------------------------------
-string A_Candles()
+string A_Candles(string sym)
   {
    double atr = A_ATR(14);
    string arr[];
@@ -1807,7 +1807,9 @@ string A_Candles()
       A_Push(b, Jn("upper_wick", uw, g_aDigits)); A_Push(b, Jn("lower_wick", lw, g_aDigits));
       A_Push(b, Jn("body_ratio", body / rng, 3));
       A_Push(b, Jn("wick_ratio", (uw + lw) / rng, 3));
-      A_Push(b, Jn("size_pips", A_Pips(_Symbol, rng), 1));
+      // The pips of the pair that was ASKED for -- it used the chart's own pair (_Symbol), so a
+      // Volatility 75 candle read through a EURUSD chart came back 100x too big.
+      A_Push(b, Jn("size_pips", A_Pips(sym, rng), 1));
       A_Push(b, Jn("size_vs_atr", atr > 0 ? rng / atr : 0, 3));
       A_Push(b, J("type", body / rng > 0.7 ? "MARUBOZU" : body / rng < 0.1 ? "DOJI" :
                         (lw > body * 2 ? "HAMMER" : uw > body * 2 ? "SHOOTING_STAR" : "NORMAL")));
@@ -2881,7 +2883,7 @@ string A_All(string sym, ENUM_TIMEFRAMES tf)
    A_Push(d, Jr("volume",           A_Volume()));
    A_Push(d, Jr("ichimoku",         A_Ichimoku()));
    A_Push(d, Jr("fibonacci",        A_Fibonacci(sym)));
-   A_Push(d, Jr("candles",          A_Candles()));
+   A_Push(d, Jr("candles",          A_Candles(sym)));
    A_Push(d, Jr("patterns",         A_Patterns()));
    A_Push(d, Jr("ict",              A_Ict(sym, tf)));
    A_Push(d, Jr("wyckoff",          A_Wyckoff()));
@@ -2950,7 +2952,7 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr)
    else if(endpoint == "volume") data = A_Volume();
    else if(endpoint == "ichimoku") data = A_Ichimoku();
    else if(endpoint == "fibonacci") data = A_Fibonacci(symbol);
-   else if(endpoint == "candles") data = A_Candles();
+   else if(endpoint == "candles") data = A_Candles(symbol);
    else if(endpoint == "patterns") data = A_Patterns();
    else if(endpoint == "ict") data = A_Ict(symbol, tf);
    else if(endpoint == "wyckoff") data = A_Wyckoff();
