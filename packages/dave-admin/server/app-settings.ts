@@ -14,6 +14,10 @@ import {
   getRiskSettings,
   getSelfPauseEnabled,
   getSequentialThinkingEnabled,
+  getSequentialThinkingEffort,
+  setSequentialThinkingEffort,
+  THINKING_EFFORTS,
+  type ThinkingEffort,
   getTradingSession,
   getTwoStepTradingEnabled,
   listGroups,
@@ -104,6 +108,7 @@ export function readAppSettings(userId: string) {
       selfPause: getSelfPauseEnabled(userId),
       twoStepTrading: getTwoStepTradingEnabled(userId),
       sequentialThinking: getSequentialThinkingEnabled(userId),
+      sequentialThinkingEffort: getSequentialThinkingEffort(userId),
       memoryWriteApproval: getWriteApprovalSetting(userId),
     },
     alerts: {
@@ -196,6 +201,10 @@ export function applyAppSetting(userId: string, id: string, value: unknown): voi
       return;
     case "sequentialThinking":
       setSequentialThinkingEnabled(userId, bool(value, "Sequential thinking"));
+      return;
+    case "sequentialThinkingEffort":
+      if (!THINKING_EFFORTS.includes(value as ThinkingEffort)) throw new InvalidSettingError(`Thinking effort must be one of ${THINKING_EFFORTS.join(", ")}.`);
+      setSequentialThinkingEffort(userId, value as ThinkingEffort);
       return;
     case "memoryWriteApproval":
       setWriteApprovalSetting(userId, bool(value, "Memory approval"));

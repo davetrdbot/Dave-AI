@@ -246,7 +246,30 @@ export function setSequentialThinkingEnabled(userId: string, enabled: boolean): 
   const path = sequentialThinkingEnabledPath(userId);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(path, JSON.stringify({ enabled }, null, 2), "utf8");
+  writeFileSync(path, JSON.stringify({ enabled, effort: getSequentialThinkingEffort(userId) }, null, 2), "utf8");
+}
+
+/** How hard the sequential-thinking pass works (the trader: "so it can think like high"). Stored
+ *  next to the on/off switch; "medium" is the original 5-step pass. */
+export type ThinkingEffort = "low" | "medium" | "high" | "max";
+export const THINKING_EFFORTS: ThinkingEffort[] = ["low", "medium", "high", "max"];
+
+export function getSequentialThinkingEffort(userId: string): ThinkingEffort {
+  const path = sequentialThinkingEnabledPath(userId);
+  if (!existsSync(path)) return "medium";
+  try {
+    const e = (JSON.parse(readFileSync(path, "utf8")) as { effort?: string }).effort;
+    return THINKING_EFFORTS.includes(e as ThinkingEffort) ? (e as ThinkingEffort) : "medium";
+  } catch {
+    return "medium";
+  }
+}
+
+export function setSequentialThinkingEffort(userId: string, effort: ThinkingEffort): void {
+  if (!THINKING_EFFORTS.includes(effort)) throw new Error(`effort must be one of ${THINKING_EFFORTS.join(", ")}`);
+  const path = sequentialThinkingEnabledPath(userId);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ enabled: getSequentialThinkingEnabled(userId), effort }, null, 2), "utf8");
 }
 
 /** Item 8 (/reset "config/settings back to defaults"): deletes the underlying files so

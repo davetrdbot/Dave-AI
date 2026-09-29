@@ -26,6 +26,43 @@ import type { Provider, ToolSpec } from "@dave/brain";
  * pass and has said so by turning the toggle on.
  */
 
+export type ThinkingEffortLevel = "low" | "medium" | "high" | "max";
+
+/** The stages a high/max-effort pass has to cover before it may stop -- a trader's checklist. */
+export const THINKING_STAGES = ["bias", "trigger", "invalidation", "target", "counter", "memory", "scenario", "verdict"] as const;
+export type ThinkingStage = (typeof THINKING_STAGES)[number];
+
+const STAGE_HELP: Record<ThinkingStage, string> = {
+  bias: "higher-timeframe bias -- which way the bigger picture leans, and how strongly",
+  trigger: "the entry trigger on the lower timeframe -- is it actually there right now, or hoped for",
+  invalidation: "where the idea is wrong -- the stop from structure, not from a number",
+  target: "where price is genuinely likely to reach, and whether the R:R clears the floor",
+  counter: "the strongest case AGAINST this trade -- argue it like you'd lose money if you ignore it",
+  memory: "your own rules, strategy card, brain facts and past graded calls on this pair -- do any of them say no",
+  scenario: "the alternative path -- what price does if you're wrong, and what you'd see first",
+  verdict: "the call, with an honest confidence -- or why no trade",
+};
+
+export interface EffortProfile {
+  maxThoughts: number;
+  /** The pass may not stop before this many thoughts. */
+  minThoughts: number;
+  /** Stages that must each appear at least once before it may stop. */
+  requiredStages: ThinkingStage[];
+  /** An independent critic reads the whole trace and attacks its weakest point (max only). */
+  critic: boolean;
+  timeoutMs: number;
+  /** Wall-clock budget for the whole pass -- a scan never waits longer than this for thinking. */
+  budgetMs: number;
+}
+
+export const EFFORT_PROFILES: Record<ThinkingEffortLevel, EffortProfile> = {
+  low: { maxThoughts: 3, minThoughts: 1, requiredStages: [], critic: false, timeoutMs: 30_000, budgetMs: 90_000 },
+  medium: { maxThoughts: 5, minThoughts: 2, requiredStages: [], critic: false, timeoutMs: 30_000, budgetMs: 150_000 },
+  high: { maxThoughts: 10, minThoughts: 5, requiredStages: ["bias", "trigger", "invalidation", "target", "counter", "memory", "verdict"], critic: false, timeoutMs: 45_000, budgetMs: 240_000 },
+  max: { maxThoughts: 16, minThoughts: 7, requiredStages: [...THINKING_STAGES], critic: true, timeoutMs: 60_000, budgetMs: 360_000 },
+};
+
 export interface SequentialThought {
   thought: string;
   thoughtNumber: number;
@@ -33,44 +70,67 @@ export interface SequentialThought {
   nextThoughtNeeded: boolean;
   isRevision?: boolean;
   revisesThought?: number;
+  stage?: ThinkingStage;
+  /** A thought written in answer to the critic (max effort). */
+  answersCritic?: boolean;
 }
 
 export interface SequentialThinkingResult {
   thoughts: SequentialThought[];
   /** A single real block ready to append to the decision prompt's context lines. */
   summary: string;
+  effort: ThinkingEffortLevel;
+  critique?: { weakestPoint: string; holds: boolean; adjustment?: string };
+  /** Required stages the pass never reached (budget ran out). */
+  missedStages: ThinkingStage[];
 }
 
 const THOUGHT_TOOL_NAME = "submit_thought";
+const CRITIC_TOOL_NAME = "submit_critique";
 
-/** Hard cap on real extra model round trips this pass will ever make -- the real bound on its
- *  own worst-case cost/latency, never open-ended. */
-export const MAX_SEQUENTIAL_THOUGHTS = 5;
+/** Kept for callers that used the old constant: the medium profile's cap. */
+export const MAX_SEQUENTIAL_THOUGHTS = EFFORT_PROFILES.medium.maxThoughts;
 
-function buildThoughtTool(): ToolSpec {
+function buildThoughtTool(staged: boolean): ToolSpec {
+  const properties: Record<string, unknown> = {
+    thought: { type: "string", description: "This step's real, specific reasoning with numbers from the data -- not a restatement of the last one." },
+    thoughtNumber: { type: "number", description: "1-indexed position of this thought." },
+    totalThoughts: { type: "number", description: "your current honest estimate of how many thoughts this will take -- revise it as you go, it's not a fixed plan" },
+    nextThoughtNeeded: { type: "boolean", description: "true if you genuinely need another thought before you're ready to decide; false once you are" },
+    isRevision: { type: "boolean", description: "true if this thought revises an earlier one instead of building forward" },
+    revisesThought: { type: "number", description: "required when isRevision is true -- which earlier thoughtNumber this reconsiders" },
+  };
+  if (staged) properties.stage = { type: "string", enum: [...THINKING_STAGES], description: "which part of the checklist this thought covers" };
   return {
     name: THOUGHT_TOOL_NAME,
     description:
       "Submit your next real reasoning step toward this ONE trade decision -- not your final answer yet, just this step. " +
       "Build on, or explicitly revise, the thoughts before it. Set nextThoughtNeeded to false only once you've genuinely reasoned it through.",
+    parameters: { type: "object", properties, required: staged ? ["thought", "thoughtNumber", "totalThoughts", "nextThoughtNeeded", "stage"] : ["thought", "thoughtNumber", "totalThoughts", "nextThoughtNeeded"] },
+  };
+}
+
+function buildCriticTool(): ToolSpec {
+  return {
+    name: CRITIC_TOOL_NAME,
+    description: "Your critique of the reasoning trace.",
     parameters: {
       type: "object",
       properties: {
-        thought: { type: "string", description: "This step's real, specific reasoning -- not a restatement of the last one." },
-        thoughtNumber: { type: "number", description: "1-indexed position of this thought." },
-        totalThoughts: { type: "number", description: "your current honest estimate of how many thoughts this will take -- revise it as you go, it's not a fixed plan" },
-        nextThoughtNeeded: { type: "boolean", description: "true if you genuinely need another thought before you're ready to decide; false once you are" },
-        isRevision: { type: "boolean", description: "true if this thought revises an earlier one instead of building forward" },
-        revisesThought: { type: "number", description: "required when isRevision is true -- which earlier thoughtNumber this reconsiders" },
+        weakestPoint: { type: "string", description: "the single weakest link in the reasoning, specifically" },
+        holds: { type: "boolean", description: "does the conclusion still hold once that weakness is taken seriously?" },
+        adjustment: { type: "string", description: "what should change (entry, stop, size, or no trade) if it doesn't fully hold" },
       },
-      required: ["thought", "thoughtNumber", "totalThoughts", "nextThoughtNeeded"],
+      required: ["weakestPoint", "holds"],
     },
   };
 }
 
 function renderThought(t: SequentialThought): string {
   const tag = t.isRevision ? `[revises thought ${t.revisesThought}] ` : "";
-  return `${tag}Thought ${t.thoughtNumber}/${t.totalThoughts}: ${t.thought}`;
+  const stage = t.stage ? ` (${t.stage})` : "";
+  const critic = t.answersCritic ? "[answers critic] " : "";
+  return `${critic}${tag}Thought ${t.thoughtNumber}/${t.totalThoughts}${stage}: ${t.thought}`;
 }
 
 export interface RunSequentialThinkingDeps {
@@ -79,36 +139,56 @@ export interface RunSequentialThinkingDeps {
   /** The same real context (symbol, price, account state, full analysis suite, etc) the final
    *  decision call itself will see -- the thinking pass reasons over the real data, not a summary. */
   contextLines: string[];
-  /** Real per-thought progress callback -- the caller wires this to the SAME automatic
-   *  `ThinkingIndicator` mechanism the real chat turn itself uses (tools.ts's activeIndicators),
-   *  never a separate indicator. During a silent autonomous cycle there is normally no active
-   *  indicator at all, so this is a safe no-op in the common case -- it only does anything if the
-   *  user happens to have a live chat turn's indicator open on this chat already. */
+  /** Real per-thought progress callback -- shown live (the app's Live tab, a chat indicator). */
   onProgress?: (text: string) => void;
+  /** How hard to think. Defaults to medium (the original pass). */
+  effort?: ThinkingEffortLevel;
+  /** Overrides of the effort profile (tests). */
   maxThoughts?: number;
   timeoutMs?: number;
+  now?: () => number;
 }
 
 /** Real, bounded pre-pass -- never called for anything but the one trade-decision path this is
  *  wired into (autonomous-tick.ts), and always gated behind getSequentialThinkingEnabled(). A
  *  failure at any step is swallowed (best-effort): a broken or slow thinking pass must never
- *  block the real trade decision that follows it, only skip the extra context it would have added. */
+ *  block the real trade decision that follows it, only skip the extra context it would have added.
+ *
+ *  Effort (the trader: "so it can think like high"):
+ *    low/medium -- free-form numbered thoughts, as before (3 / 5 at most)
+ *    high       -- a checklist: bias, trigger, invalidation, target, counter-case, own memory,
+ *                  verdict. It may not stop early while any is missing, and must argue AGAINST
+ *                  its own trade. Up to 10 thoughts.
+ *    max        -- all of high, plus the alternative scenario, up to 16 thoughts, then an
+ *                  independent critic attacks the weakest link and gets one answer.
+ */
 export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Promise<SequentialThinkingResult> {
-  const maxThoughts = deps.maxThoughts ?? MAX_SEQUENTIAL_THOUGHTS;
-  const timeoutMs = deps.timeoutMs ?? 30_000;
+  const effort = deps.effort ?? "medium";
+  const profile = EFFORT_PROFILES[effort];
+  const maxThoughts = deps.maxThoughts ?? profile.maxThoughts;
+  const timeoutMs = deps.timeoutMs ?? profile.timeoutMs;
+  const now = deps.now ?? Date.now;
+  const started = now();
+  const staged = profile.requiredStages.length > 0;
   const thoughts: SequentialThought[] = [];
-  const tool = buildThoughtTool();
+  const tool = buildThoughtTool(staged);
+  const covered = () => new Set(thoughts.map((t) => t.stage).filter(Boolean) as ThinkingStage[]);
+  const missing = () => profile.requiredStages.filter((st) => !covered().has(st));
+  const overBudget = () => now() - started > profile.budgetMs;
 
-  for (let i = 0; i < maxThoughts; i++) {
+  const ask = async (extra: string[]): Promise<SequentialThought | null> => {
     const rendered = thoughts.map(renderThought);
     const userPrompt = [
       ...deps.contextLines,
       "",
-      "Before you finalize this trade decision, reason through it step by step -- call submit_thought with your next real thought.",
+      `Before you finalize this trade decision, reason through it step by step (${effort} effort) -- call ${THOUGHT_TOOL_NAME} with your next real thought.`,
+      staged ? `Your checklist (cover every one; tag each thought with its stage):\n${profile.requiredStages.map((st) => `- ${st}: ${STAGE_HELP[st]}`).join("\n")}` : "",
       rendered.length > 0 ? `THOUGHTS SO FAR:\n${rendered.join("\n")}` : "This is your first thought -- start with the single most important real question this setup raises.",
+      ...extra,
       `You have used ${thoughts.length}/${maxThoughts} thoughts. Once you're genuinely ready to decide, set nextThoughtNeeded to false.`,
-    ].join("\n");
-
+    ]
+      .filter(Boolean)
+      .join("\n");
     let genResult;
     try {
       genResult = await deps.provider.generate(
@@ -116,29 +196,83 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
         timeoutMs
       );
     } catch {
-      break; // best-effort -- a failed thinking pass must never block the real decision that follows it
+      return null;
     }
-
     const call = genResult.toolCalls?.find((c) => c.name === THOUGHT_TOOL_NAME);
-    if (!call) break;
+    if (!call) return null;
     const args = call.arguments as Record<string, unknown>;
+    const stage = typeof args.stage === "string" && (THINKING_STAGES as readonly string[]).includes(args.stage) ? (args.stage as ThinkingStage) : undefined;
     const t: SequentialThought = {
       thought: typeof args.thought === "string" ? args.thought : "",
-      thoughtNumber: typeof args.thoughtNumber === "number" ? args.thoughtNumber : thoughts.length + 1,
-      totalThoughts: typeof args.totalThoughts === "number" ? args.totalThoughts : maxThoughts,
+      thoughtNumber: thoughts.length + 1,
+      totalThoughts: typeof args.totalThoughts === "number" ? Math.max(args.totalThoughts, thoughts.length + 1) : maxThoughts,
       nextThoughtNeeded: args.nextThoughtNeeded === true,
       isRevision: args.isRevision === true ? true : undefined,
       revisesThought: typeof args.revisesThought === "number" ? args.revisesThought : undefined,
+      stage,
     };
-    if (!t.thought) break; // an empty thought means nothing real to add -- stop rather than pad the trace
+    return t.thought ? t : null;
+  };
+
+  for (let i = 0; i < maxThoughts && !overBudget(); i++) {
+    const gaps = missing();
+    const extra: string[] = [];
+    if (thoughts.length > 0 && gaps.length && thoughts.length >= maxThoughts - gaps.length) {
+      extra.push(`Running out of thoughts -- cover what's still missing now: ${gaps.join(", ")}.`);
+    }
+    const t = await ask(extra);
+    if (!t) break;
     thoughts.push(t);
-    deps.onProgress?.(renderThought(t).slice(0, 200));
-    if (!t.nextThoughtNeeded) break;
+    deps.onProgress?.(renderThought(t).slice(0, 220));
+    if (t.nextThoughtNeeded) continue;
+    // It says it's done. Is it allowed to be?
+    const stillMissing = missing();
+    if (thoughts.length >= profile.minThoughts && stillMissing.length === 0) break;
+    // Not yet: keep going (the next prompt names what's missing).
+    t.nextThoughtNeeded = true;
+    if (stillMissing.length) deps.onProgress?.(`Not done yet -- still to cover: ${stillMissing.join(", ")}`);
   }
 
+  // MAX: an independent critic attacks the trace, and the thinker answers once.
+  let critique: SequentialThinkingResult["critique"];
+  if (profile.critic && thoughts.length && !overBudget()) {
+    try {
+      const res = await deps.provider.generate(
+        {
+          messages: [
+            { role: "system", content: "You are a sceptical senior trader reviewing a junior's reasoning before real money goes in. Find the single weakest link. Be concrete; don't nitpick style." },
+            { role: "user", content: [...deps.contextLines, "", "THE REASONING TO REVIEW:", ...thoughts.map(renderThought)].join("\n") },
+          ],
+          tools: [buildCriticTool()],
+          toolChoice: { name: CRITIC_TOOL_NAME },
+        },
+        timeoutMs
+      );
+      const args = res.toolCalls?.find((c) => c.name === CRITIC_TOOL_NAME)?.arguments as Record<string, unknown> | undefined;
+      if (args && typeof args.weakestPoint === "string") {
+        critique = { weakestPoint: args.weakestPoint, holds: args.holds !== false, adjustment: typeof args.adjustment === "string" ? args.adjustment : undefined };
+        deps.onProgress?.(`Critic: ${critique.weakestPoint}${critique.holds ? " (still holds)" : " -- DOES NOT HOLD"}`.slice(0, 220));
+        if (!overBudget()) {
+          const answer = await ask([`A SCEPTICAL REVIEWER SAYS the weakest link is: "${critique.weakestPoint}" -- ${critique.holds ? "but the conclusion still holds" : "and the conclusion does NOT hold as it stands"}${critique.adjustment ? `; suggested: ${critique.adjustment}` : ""}. Answer it in one thought (stage: verdict): concede and adjust, or show with the data why it's wrong.`]);
+          if (answer) {
+            answer.answersCritic = true;
+            answer.stage = answer.stage ?? "verdict";
+            thoughts.push(answer);
+            deps.onProgress?.(renderThought(answer).slice(0, 220));
+          }
+        }
+      }
+    } catch {
+      /* the critic is best-effort too */
+    }
+  }
+
+  const missedStages = missing();
+  const parts = thoughts.map(renderThought);
+  if (critique) parts.push(`CRITIC: weakest link -- ${critique.weakestPoint}; ${critique.holds ? "conclusion holds" : "conclusion does NOT hold"}${critique.adjustment ? `; suggested: ${critique.adjustment}` : ""}`);
   const summary =
     thoughts.length > 0
-      ? `SEQUENTIAL THINKING TRACE (${thoughts.length} real reasoning step(s), opt-in pass -- weigh it, don't just repeat it back): ${thoughts.map(renderThought).join(" | ")}`
+      ? `SEQUENTIAL THINKING TRACE (${effort} effort, ${thoughts.length} step(s)${missedStages.length ? `, never reached: ${missedStages.join(", ")}` : ""} -- weigh it, don't just repeat it back${critique && !critique.holds ? "; the critic says the conclusion does NOT hold -- address that before trading" : ""}): ${parts.join(" | ")}`
       : "";
-  return { thoughts, summary };
+  return { thoughts, summary, effort, critique, missedStages };
 }

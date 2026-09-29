@@ -672,6 +672,12 @@ void main() {
       expect(find.text('1:1'), findsOneWidget, reason: 'min reward shown as a typed value');
       await back();
 
+      await open('How Dave behaves');
+      await _shot(tester, 'settings_behaviour_$mode');
+      expect(find.byKey(const ValueKey('thinking-effort')), findsOneWidget, reason: 'the effort picker shows while deeper thinking is on');
+      expect(find.textContaining('Up to 10 steps through a checklist'), findsOneWidget);
+      await back();
+
       await open('AI & models');
       await tester.tap(find.text('AI providers'));
       await _advance(tester);

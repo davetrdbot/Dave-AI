@@ -617,6 +617,7 @@ class _BehaviourSection extends StatelessWidget {
           _toggle(context, 'selfPause', CupertinoIcons.pause_circle, 'Self-pause', 'Dave may pause himself in bad conditions', s.selfPause),
           _toggle(context, 'twoStepTrading', CupertinoIcons.person_2, 'Two-step trading', 'A second AI reviews every trade first', s.twoStepTrading),
           _toggle(context, 'sequentialThinking', CupertinoIcons.list_number, 'Deeper thinking', 'Step-by-step trade decisions; slower, costs more', s.sequentialThinking),
+          if (s.sequentialThinking) _EffortRow(effort: s.sequentialThinkingEffort, onPick: (e) => _set(context, 'sequentialThinkingEffort', e, reload)),
           _toggle(context, 'autoApproval', CupertinoIcons.slider_horizontal_3, 'Let Dave change limits', 'Approves his own limit changes without asking', s.autoApproval),
           _toggle(context, 'memoryWriteApproval', CupertinoIcons.lock_shield, 'Approve memory writes', 'Dave asks before saving to memory', s.memoryWriteApproval),
         ],
@@ -951,6 +952,52 @@ class _ConnectionSectionState extends State<_ConnectionSection> {
           },
         ),
       ],
+    );
+  }
+}
+
+/// How hard "Deeper thinking" works: Low · Medium · High · Max, with what each one costs.
+class _EffortRow extends StatelessWidget {
+  const _EffortRow({required this.effort, required this.onPick});
+  final String effort;
+  final void Function(String) onPick;
+
+  static const _about = {
+    'low': 'Up to 3 steps. Quick sanity check.',
+    'medium': 'Up to 5 steps. The original.',
+    'high': 'Up to 10 steps through a checklist: bias, trigger, stop, target, the case against, your rules & past calls, verdict. Can\'t stop early.',
+    'max': 'Up to 16 steps, plus the "what if I\'m wrong" path, then a sceptical critic attacks the weakest link. Slowest, costs most.',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Space.s4, 4, Space.s4, Space.s3),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          key: const ValueKey('thinking-effort'),
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(color: look.chip, borderRadius: BorderRadius.circular(12)),
+          child: Row(children: [
+            for (final e in const ['low', 'medium', 'high', 'max'])
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => onPick(e),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(color: e == effort ? look.accent : null, borderRadius: BorderRadius.circular(9)),
+                    child: Text(e[0].toUpperCase() + e.substring(1), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: e == effort ? look.tabActiveIcon : null)),
+                  ),
+                ),
+              ),
+          ]),
+        ),
+        const SizedBox(height: 6),
+        Text(_about[effort] ?? '', style: TextStyle(fontSize: 12, color: resolve(context, CupertinoColors.secondaryLabel))),
+      ]),
     );
   }
 }

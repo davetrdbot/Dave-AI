@@ -31,6 +31,7 @@ import {
   filterSuiteToConfig,
   getTwoStepTradingEnabled,
   getSequentialThinkingEnabled,
+  getSequentialThinkingEffort,
   isForexSymbol,
   evaluateAccountAwareness,
   ALL_ANALYSIS_TIMEFRAMES,
@@ -1118,18 +1119,20 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // MAX_SEQUENTIAL_THOUGHTS extra real model calls before the decision itself, so this only runs
   // when the user has explicitly turned it on (getSequentialThinkingEnabled, OFF by default).
   if (getSequentialThinkingEnabled(userId)) {
-    logTick(userId, `${symbol}: sequential thinking enabled -- running a bounded reasoning pass before deciding`);
+    logTick(userId, `${symbol}: sequential thinking (${getSequentialThinkingEffort(userId)} effort) -- running a bounded reasoning pass before deciding`);
+    const effort = getSequentialThinkingEffort(userId);
     const { thoughts, summary } = await runSequentialThinking({
       provider,
       systemPrompt: buildSystemPrompt(),
       contextLines,
+      effort,
       onProgress: (text: string) => {
         publishActivity(userId, "loop", "thought", { symbol, text }, { agent: "thinking" });
         onSequentialThinkingProgress?.(text);
       },
     });
     if (summary) {
-      logTick(userId, `${symbol}: sequential thinking produced ${thoughts.length} real thought(s)`);
+      logTick(userId, `${symbol}: sequential thinking (${effort}) produced ${thoughts.length} real thought(s)`);
       contextLines.push(summary);
     }
   }

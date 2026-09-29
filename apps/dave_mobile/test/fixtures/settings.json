@@ -88,8 +88,9 @@
     "autoApproval": false,
     "selfPause": true,
     "twoStepTrading": false,
-    "sequentialThinking": false,
-    "memoryWriteApproval": false
+    "sequentialThinking": true,
+    "memoryWriteApproval": false,
+    "sequentialThinkingEffort": "high"
   },
   "alerts": {
     "deepLossPercent": {

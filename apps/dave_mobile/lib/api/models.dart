@@ -383,6 +383,7 @@ class AppSettings {
     required this.selfPause,
     required this.twoStepTrading,
     required this.sequentialThinking,
+    this.sequentialThinkingEffort = 'medium',
     required this.memoryWriteApproval,
     required this.deepLossPercent,
     required this.alerts,
@@ -406,6 +407,9 @@ class AppSettings {
   final bool selfPause;
   final bool twoStepTrading;
   final bool sequentialThinking;
+
+  /// low / medium / high / max -- how hard the step-by-step pass works.
+  final String sequentialThinkingEffort;
   final bool memoryWriteApproval;
   final Bounded deepLossPercent;
   final List<AlertToggle> alerts;
@@ -436,6 +440,7 @@ class AppSettings {
       selfPause: b['selfPause'] == true,
       twoStepTrading: b['twoStepTrading'] == true,
       sequentialThinking: b['sequentialThinking'] == true,
+      sequentialThinkingEffort: b['sequentialThinkingEffort'] as String? ?? 'medium',
       memoryWriteApproval: b['memoryWriteApproval'] == true,
       deepLossPercent: Bounded.fromJson(a['deepLossPercent'], 50, 5, 95),
       alerts: _list(a['toggles']).map((x) => AlertToggle(_str(x['id']), _str(x['label']), x['on'] != false)).toList(),
