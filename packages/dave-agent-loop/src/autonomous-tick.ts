@@ -81,6 +81,7 @@ import { selfAwareFeedBlock } from "./self-aware-feed.js";
 import { growthStatus } from "./growth-reflection.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
+import { holdOrClose, protectInstead } from "./hold-to-plan.js";
 import { tradeDrawing } from "./setup-drawing.js";
 import { getAutoDrawTrades } from "@dave/trading";
 import { resolveTradeLevels, levelsGuidance, exitPrice, type TradeLevels, type TradeAction as LevelAction } from "./trade-levels.js";
@@ -671,7 +672,10 @@ function resolveCursorSymbol(userId: string, primary: string[], fallback: string
   }
   // An alert on a pair (a marked level hit, a self-aware alert on a trade) comes first -- even a
   // pair outside the active group, and even one with an open trade: that scan manages the trade.
-  const openTickets = new Set(getLastKnownState(userId).positions.map((p) => String(p.ticket)));
+  // Open trades AND pending orders are live -- seen live: a pending order's 10-minute recheck was
+  // dropped as "already closed" because only positions were counted.
+  const liveState = getLastKnownState(userId);
+  const openTickets = new Set([...liveState.positions.map((p) => String(p.ticket)), ...(liveState.pendingOrders ?? []).map((o) => String(o.ticket))]);
   for (let f = takeAlertFocus(userId); f; f = takeAlertFocus(userId)) {
     // An alert about a trade that has closed since: nothing left to manage.
     const tickets = [...f.reason.matchAll(/#(\d{5,})/g)].map((m) => m[1]);
@@ -1126,7 +1130,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
           pendingOrders.filter((o) => o.symbol.toUpperCase() === symbol.toUpperCase()).map((o) => `${o.type} @ ${o.price} #${o.ticket}`).join("; ") || "none"
         }. The full multi-timeframe analysis for ${symbol} is below.\n` +
         (picked.focus.manage
-          ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, tighten it, take a partial, or close it -- via actions/MODIFY/PARTIAL_CLOSE. No new entry on ${symbol} in this scan.`
+          ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, tighten it, or take a partial -- via actions/MODIFY/PARTIAL_CLOSE. The market deceives: its stop is its invalidation, so no closing before the stop out of fear (a close order before the stop is held anyway). No new entry on ${symbol} in this scan.`
           : pendingOrders.some((o) => o.symbol.toUpperCase() === symbol.toUpperCase())
             ? `You have a pending order on ${symbol} (above). Recheck it on this fresh analysis: keep it (say in one line why the level and idea still hold), cancel it with DELETE_TICKET, or cancel and place it where price will really come. Never stack a second pending order on the same idea.`
             : `If the level/setup is live, take the trade or arm the order now; if it isn't, SKIP with one line saying why.`)
@@ -1549,6 +1553,17 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       logTick(userId, `${symbol}: DELETE_TICKET rejected -- ticket #${decision.ticket} isn't a real open position or pending order`);
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `DELETE_TICKET given an unknown ticket #${decision.ticket}` });
       return { action: "NONE", notable: false };
+    }
+    if (!isPendingTicket) {
+      // Hold to the plan: no fear exits before the stop (hold-to-plan.ts).
+      const pos = positions.find((p) => p.ticket === decision.ticket)!;
+      const hold = holdOrClose(pos);
+      if (!hold.close) {
+        const protectedNote = hold.inProfit ? ` -- ${await protectInstead(executor, pos).catch((e) => `couldn't protect it: ${e instanceof Error ? e.message : String(e)}`)}` : "";
+        logTick(userId, `${symbol}: close not done -- ${hold.why}${protectedNote}`);
+        recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `held #${decision.ticket} to its plan (${hold.inProfit ? "in profit, protected" : "stop not hit"}) instead of closing: ${reason}` });
+        return { action: "NONE", notable: false };
+      }
     }
     if (isPendingTicket) await deletePendingOrder(executor, decision.ticket);
     else await fullClose(executor, decision.ticket);

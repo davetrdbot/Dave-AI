@@ -1,6 +1,7 @@
 import type { Provider, ToolSpec } from "@dave/brain";
 import { getLastKnownState } from "@dave/ea-bridge";
-import { getSelfAwareMode, type TradeExecutor } from "@dave/trading";
+import { breakevenStop, getSelfAwareMode, type TradeExecutor } from "@dave/trading";
+import { holdOrClose, protectInstead } from "./hold-to-plan.js";
 import { parseCandles, type AnalysisLike } from "./decision-grading.js";
 import { activeAiOutage } from "./ai-outage.js";
 import { rMultiple, slProgress, type MonitorAlertKind, type TradeMonitor } from "./trade-monitor-store.js";
@@ -301,14 +302,19 @@ export async function reviewTrade(deps: ReviewDeps, m: TradeMonitor, alertKinds:
   }
 }
 
-async function carryOut(deps: ReviewDeps, v: VerdictArgs, pos: { ticket: string; lots: number; openPrice: number }): Promise<string> {
+async function carryOut(deps: ReviewDeps, v: VerdictArgs, pos: { ticket: string; symbol?: string; type?: string; lots: number; openPrice: number; currentPrice?: number; sl?: number; tp?: number; spread?: number; digits?: number; stopsLevel?: number }): Promise<string> {
   const ex = deps.executor;
   try {
     switch (v.verdict) {
       case "BREAKEVEN":
         if (!ex) return "⚠️ Couldn't act: no connection to MT5.";
-        await ex.modifyOrder(pos.ticket, { sl: pos.openPrice });
-        return `✅ Done: stop moved to breakeven (${pos.openPrice}).`;
+      {
+        // True breakeven: past the entry by the spread, so a hit closes at 0.00, not -spread.
+        const be = breakevenStop({ side: String(pos.type ?? "buy").toLowerCase().startsWith("sell") ? "sell" : "buy", openPrice: pos.openPrice, currentPrice: pos.currentPrice, spread: pos.spread, digits: pos.digits, stopsLevel: pos.stopsLevel });
+        const level = be.ok ? be.level : pos.openPrice;
+        await ex.modifyOrder(pos.ticket, { sl: level });
+        return `✅ Done: stop moved to breakeven (${level}).`;
+      }
       case "TIGHTEN_STOP":
         if (!ex) return "⚠️ Couldn't act: no connection to MT5.";
         await ex.modifyOrder(pos.ticket, { sl: v.newSl });
@@ -321,6 +327,14 @@ async function carryOut(deps: ReviewDeps, v: VerdictArgs, pos: { ticket: string;
       }
       case "CLOSE":
         if (!ex) return "⚠️ Couldn't act: no connection to MT5.";
+        {
+          // Hold to the plan: no fear exits before the stop (hold-to-plan.ts).
+          const hold = holdOrClose({ ...pos, symbol: pos.symbol ?? "", type: pos.type ?? "buy" });
+          if (!hold.close) {
+            const note = hold.inProfit ? ` ${await protectInstead(ex, { ...pos, symbol: pos.symbol ?? "", type: pos.type ?? "buy" })}.` : "";
+            return `✋ Held, not closed: ${hold.why}.${note}`;
+          }
+        }
         await ex.closePosition(pos.ticket);
         return "✅ Done: closed.";
       case "EXIT_RULE": {

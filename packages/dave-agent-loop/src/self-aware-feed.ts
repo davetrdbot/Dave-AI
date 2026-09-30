@@ -41,7 +41,8 @@ const TICKET = /#(\d{5,})/g;
  *  named as closed (seen live: Dave kept trying to move #1237942718 to breakeven in scan after scan
  *  after it had closed -- the alerts about it were still in this block). */
 export function selfAwareFeedBlock(userId: string, windowMs?: number, now = Date.now(), only?: { symbol?: string; exclude?: string }): string | null {
-  const open = new Set(getLastKnownState(userId).positions.map((p) => String(p.ticket)));
+  const live = getLastKnownState(userId);
+  const open = new Set([...live.positions.map((p) => String(p.ticket)), ...(live.pendingOrders ?? []).map((o) => String(o.ticket))]);
   const closedNow = new Set<string>();
   const items = recentSelfAwareAlerts(userId, windowMs, MAX_ALERTS * 2, now)
     // One thing per scan: only alerts about this pair (a word match on its name), and not the
@@ -74,7 +75,7 @@ export function selfAwareFeedBlock(userId: string, windowMs?: number, now = Date
   return [
     "SELF-AWARE ALERTS (your own monitor, fired recently -- the trader has seen these too):",
     ...lines,
-    "Respond to each still-relevant one per the self-aware rules in your prompt: act (breakeven, tighten, partial close, cut) or say in one line why the idea still holds. Never ignore one silently.",
+    "Respond to each still-relevant one per the self-aware rules in your prompt: act (breakeven, tighten, partial close -- never a fear exit before the stop: the market deceives) or say in one line why the idea still holds. Never ignore one silently.",
     ...(closedLine ? [closedLine] : []),
   ].join("\n");
 }

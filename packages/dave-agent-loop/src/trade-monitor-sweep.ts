@@ -203,7 +203,7 @@ function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutco
     case "loss5m":
       return `⏳ ${head} has been in the red about ${lossFor}.${pnl} Still losing — worth a look at whether the idea holds.${why}`;
     case "loss10m":
-      return `⏳ ${head} has now been losing for ${lossFor}.${pnl} This is dragging — decide: hold, cut, or adjust.${why}`;
+      return `⏳ ${head} has now been losing for ${lossFor}.${pnl} This is dragging -- normal; the stop is the plan. Hold, or tighten/partial on named evidence.${why}`;
     case "deepLoss":
       return `🚨 ${head} is in DEEP loss — past your alert level on the way to its stop.${pnl} Genuinely close to being stopped out.${why}`;
     case "slDanger":
@@ -271,7 +271,7 @@ function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutco
     case "slNear":
       return (
         `⚠️ NEARLY STOPPED OUT\n\n${head} has travelled ${Math.round((a.level ?? SL_NEAR_PROGRESS) * 100)}% of the way from entry to its stop (${m.sl}).${pnl}${why}\n\n` +
-        `Self-check: is the idea genuinely broken, or is this the noise you expected? Decide now — cut, adjust the stop, or hold deliberately.`
+        `Self-check: the market deceives -- is this the shake-out before the real move? The stop is your invalidation: hold to it, never widen it.`
       );
     case "slCritical":
       return (
@@ -281,7 +281,7 @@ function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutco
     case "slLevel":
       return (
         `📉 ${Math.round((a.level ?? 0) * 100)}% OF THE WAY TO THE STOP\n\n${head} has travelled ${Math.round((a.level ?? 0) * 100)}% from entry toward its stop (${m.sl}).${pnl}${why}\n\n` +
-        `Self-check: is the level your idea depended on still holding? Hold deliberately, tighten, or cut -- don't just watch it go.`
+        `Self-check: is the level your idea depended on still holding? Hold to the stop deliberately -- no fear exits.`
       );
     case "tpNear":
       return (
@@ -604,7 +604,7 @@ export function portfolioHeat(userId: string, positions: { ticket: string; symbo
     `🌡️ ACCOUNT HEAT\n\n${withPnl.length} open trades, ${losers.length} losing -- together ${money(total)}${pct !== undefined ? ` (${pct.toFixed(1)}% of the balance)` : ""}.\n` +
     `Worst: ${worst.map((p) => `${p.symbol} #${p.ticket} ${money(p.pnl as number)}`).join(", ")}\n` +
     `${oneSided ? `All ${buys ? "BUYS" : "SELLS"} -- this is one bet placed ${withPnl.length} times, not ${withPnl.length} bets.` : `${buys} buys / ${sells} sells.`}\n\n` +
-    `Self-check: which of these would you still take right now? Cut the weakest instead of adding, and no new trades until the heat comes down.`
+    `Self-check: no new trades until the heat comes down; let the stops you set do their job.`
   );
 }
 

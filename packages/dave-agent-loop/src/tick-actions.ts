@@ -1,5 +1,6 @@
 import type { TradeExecutor } from "@dave/trading";
 import { tradeModify, partialClose, fullClose, deletePendingOrder, breakevenStop } from "@dave/trading";
+import { holdOrClose, protectInstead } from "./hold-to-plan.js";
 import { ALL_ANALYSIS_ENDPOINTS } from "@dave/trading";
 
 /**
@@ -135,6 +136,11 @@ async function runOne(executor: TradeExecutor, a: TickAction, positions: TickPos
         return { action: a, ok: true, text: `🗑 pending order #${a.ticket} deleted` };
       }
       if (!p) return { action: a, ok: false, text: `CLOSE #${a.ticket}: no such open trade or pending order` };
+      const hold = holdOrClose(p);
+      if (!hold.close) {
+        const note = hold.inProfit ? ` -- ${await protectInstead(executor, p)}` : "";
+        return { action: a, ok: false, text: `held, not closed: ${hold.why}${note}` };
+      }
       await fullClose(executor, a.ticket);
       return { action: a, ok: true, text: `🗑 #${a.ticket} ${p.symbol} closed` };
     }
