@@ -477,8 +477,11 @@ class AppSettings {
 
 /// One stored API key for a provider. The real key never reaches the phone -- only a masked form.
 class ProviderKey {
-  ProviderKey({required this.id, required this.label, required this.maskedKey, required this.model, required this.healthy, required this.isPrimary, this.lastError});
+  ProviderKey({required this.id, required this.label, required this.maskedKey, required this.model, required this.healthy, required this.isPrimary, this.lastError, this.baseUrl});
   final String id;
+
+  /// A custom (OpenAI-compatible) connection's own web address.
+  final String? baseUrl;
   final String label;
   final String maskedKey;
   final String model;
@@ -499,8 +502,12 @@ class ProviderState {
     this.manualModelEntry = false,
     this.requiresExtraConfig = const [],
     this.notes = '',
+    this.isCustom = false,
   });
   final String provider;
+
+  /// "Custom (OpenAI-compatible)": each connection has its own web address and model.
+  final bool isCustom;
   final String name;
   final bool isPrimary;
   final String defaultModel;
@@ -530,6 +537,7 @@ class ProviderState {
         manualModelEntry: j['manualModelEntry'] == true,
         requiresExtraConfig: j['requiresExtraConfig'] is List ? (j['requiresExtraConfig'] as List).whereType<String>().toList() : const [],
         notes: _str(j['notes']),
+        isCustom: j['isCustom'] == true,
         keys: _list(j['keys'])
             .map((k) => ProviderKey(
                   id: _str(k['id']),
@@ -539,6 +547,7 @@ class ProviderState {
                   healthy: k['healthy'] == true,
                   isPrimary: k['isPrimary'] == true,
                   lastError: k['lastError'] is String ? k['lastError'] as String : null,
+                  baseUrl: k['baseUrl'] is String ? k['baseUrl'] as String : null,
                 ))
             .toList(),
       );

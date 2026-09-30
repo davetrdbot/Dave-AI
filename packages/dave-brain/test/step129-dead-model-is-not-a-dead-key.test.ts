@@ -179,8 +179,8 @@ try {
   const stillManual = Object.values(PROVIDER_CATALOG).filter((e) => e.manualModelEntry).map((e) => e.id);
   assert.deepEqual(
     stillManual.sort(),
-    ["azure", "custom", "huggingface", "openrouter", "orcarouter"],
-    `Azure and Custom genuinely cannot list models; the three routers keep manual entry at the trader's explicit instruction -- got ${stillManual.join(", ")}`
+    ["ai302", "azure", "cometapi", "custom", "glama", "huggingface", "openrouter", "orcarouter", "requesty", "vercelgateway"],
+    `Azure and Custom genuinely cannot list models; the routers (the three original ones plus the five added 2026-09-30) keep manual entry at the trader's explicit instruction -- got ${stillManual.join(", ")}`
   );
   // The routers' endpoints DO work -- manual entry there is a deliberate choice, not a defect --
   // so the models path stays populated even though the picker is off.

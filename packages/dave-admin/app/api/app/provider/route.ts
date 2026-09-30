@@ -32,6 +32,22 @@ import { resolveAppProvider } from "../../../../server/app-providers";
  * failover pool immediately. Real keys never leave the server: only masked forms are returned.
  */
 
+/** A pasted address, cleaned: https only (http for a local test server), no trailing slash, and
+ *  no /chat/completions on the end (people often paste the full endpoint). Undefined if unusable. */
+function normalizeBaseUrl(raw: string | undefined): string | undefined {
+  let value = raw?.trim();
+  if (!value) return undefined;
+  if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+  value = value.replace(/\/+$/, "").replace(/\/chat\/completions$/i, "").replace(/\/+$/, "");
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(url.hostname))) return undefined;
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
 function withDb<T>(userId: string, fn: (db: DaveDatabase) => T): T {
   const db = new DaveDatabase(dbPathFor(userId));
   try {
@@ -54,9 +70,12 @@ function describe(userId: string, db: DaveDatabase, provider: ProviderName) {
     notes: entry.notes,
     isPrimary: config.primary === provider,
     backupPosition: config.primary === provider || backupIndex === -1 ? null : backupIndex + 1,
+    // Custom (OpenAI-compatible): every connection carries its own web address and model.
+    isCustom: provider === "custom",
     keys: listProviderKeys(db, userId, provider).map((k) => ({
       id: k.id,
       label: k.label,
+      baseUrl: k.config.baseUrlOverride ?? null,
       maskedKey: maskSecret(k.config.apiKey),
       model: k.config.model ?? entry.defaultModel,
       healthy: k.healthy,
@@ -84,6 +103,7 @@ export const POST = withDevice(async ({ userId, req }) => {
     accountId?: string;
     region?: string;
     secretAccessKey?: string;
+    baseUrl?: string;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -107,6 +127,18 @@ export const POST = withDevice(async ({ userId, req }) => {
         if (provider === "bedrock") {
           if (body.region?.trim()) config.region = body.region.trim();
           if (body.secretAccessKey?.trim()) config.secretAccessKey = body.secretAccessKey.trim();
+        }
+        if (provider === "custom") {
+          // Any OpenAI-compatible service: its web address, a key and a model -- each connection
+          // its own (they fail over to each other like the keys of any provider).
+          const baseUrl = normalizeBaseUrl(body.baseUrl);
+          if (!baseUrl) return NextResponse.json({ error: "Enter the provider's web address (base URL), like https://api.example.com/v1" }, { status: 400 });
+          const model = body.model?.trim();
+          if (!model) return NextResponse.json({ error: "Enter the model id to use with this provider." }, { status: 400 });
+          config.baseUrlOverride = baseUrl;
+          config.model = model;
+          addProviderKey(db, userId, provider, body.label?.trim() || new URL(baseUrl).hostname, config);
+          break;
         }
         // Every key of a provider shares one model: rotation must not silently switch models.
         const model = body.model?.trim() || listProviderKeys(db, userId, provider)[0]?.config.model;
@@ -132,7 +164,10 @@ export const POST = withDevice(async ({ userId, req }) => {
       case "set-model": {
         const model = body.model?.trim();
         if (!model) return NextResponse.json({ error: "Enter a model id." }, { status: 400 });
-        for (const k of listProviderKeys(db, userId, provider)) editProviderKey(db, userId, k.id, { config: { model } });
+        // A custom connection's model is its own (keyId given); otherwise all keys share one.
+        const targets = provider === "custom" && body.keyId ? [own(body.keyId)].filter((k) => k !== undefined) : listProviderKeys(db, userId, provider);
+        if (!targets.length) return notFound();
+        for (const k of targets) editProviderKey(db, userId, k.id, { config: { model } });
         break;
       }
       case "check-key": {

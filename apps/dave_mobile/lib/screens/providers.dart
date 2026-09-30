@@ -50,7 +50,20 @@ class ProvidersPage extends StatelessWidget {
               child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 header: ListHeader('All providers  ${list.others.length}'),
                 footer: const ListFooter('Tap one to add a key. A provider joins Dave\'s order only when you make it the main AI or a backup.'),
-                children: [for (final p in list.others) _row(context, p, null, () => open(p))],
+                children: [
+                  CupertinoListTile(
+                    key: const ValueKey('add-own-provider'),
+                    leading: Icon(CupertinoIcons.plus_circle_fill, color: Look.of(context).accent),
+                    title: Text('Add your own provider', style: TextStyle(color: Look.of(context).accent)),
+                    subtitle: const Text('Any OpenAI-compatible service: web address, key, model'),
+                    trailing: const CupertinoListTileChevron(),
+                    onTap: () async {
+                      await pushScoped<void>(context, const ProviderPage(provider: 'custom', name: 'Custom (OpenAI-compatible)'));
+                      await reload();
+                    },
+                  ),
+                  for (final p in list.others.where((p) => p.provider != 'custom')) _row(context, p, null, () => open(p)),
+                ],
               ),
             ),
           ];
@@ -146,6 +159,7 @@ class ProviderPage extends StatelessWidget {
                 ],
               ),
             ),
+            if (!p.isCustom)
             SliverToBoxAdapter(
               child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
                 children: [
@@ -161,21 +175,23 @@ class ProviderPage extends StatelessWidget {
             ),
             SliverToBoxAdapter(
               child: CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
-                header: ListHeader('API keys  ${p.keys.length}'),
-                footer: const ListFooter('With more than one key, Dave rotates to the next when one is slow or rate-limited. Keys are stored on your server and never shown in full.'),
+                header: ListHeader(p.isCustom ? 'Your providers  ${p.keys.length}' : 'API keys  ${p.keys.length}'),
+                footer: ListFooter(p.isCustom
+                    ? 'Any service that works like OpenAI\'s API: its web address (base URL), a key and a model. With more than one, Dave moves to the next when one fails. Keys stay on your server.'
+                    : 'With more than one key, Dave rotates to the next when one is slow or rate-limited. Keys are stored on your server and never shown in full.'),
                 children: [
                   for (final k in p.keys)
                     CupertinoListTile(
                       leading: Icon(k.healthy ? CupertinoIcons.checkmark_seal_fill : CupertinoIcons.exclamationmark_circle,
                           color: resolve(context, k.healthy ? CupertinoColors.systemGreen : CupertinoColors.systemOrange)),
                       title: Text('${k.label}${k.isPrimary ? '  ·  first' : ''}'),
-                      subtitle: Text(k.lastError ?? k.maskedKey, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      subtitle: Text(k.lastError ?? (p.isCustom ? '${k.model}  ·  ${k.baseUrl ?? ''}' : k.maskedKey), maxLines: 1, overflow: TextOverflow.ellipsis),
                       trailing: const CupertinoListTileChevron(),
-                      onTap: () => _keyOptions(context, k, act),
+                      onTap: () => _keyOptions(context, k, act, custom: p.isCustom),
                     ),
                   CupertinoListTile(
                     leading: Icon(CupertinoIcons.plus_circle_fill, color: Look.of(context).accent),
-                    title: Text('Add a key', style: TextStyle(color: Look.of(context).accent)),
+                    title: Text(p.isCustom ? 'Add a provider' : 'Add a key', style: TextStyle(color: Look.of(context).accent)),
                     onTap: () => _addKey(context, p, act),
                   ),
                 ],
@@ -185,7 +201,22 @@ class ProviderPage extends StatelessWidget {
         },
       );
 
+  /// Your own OpenAI-compatible provider: a name, its web address, a key and the model, one step each.
+  Future<void> _addCustom(BuildContext context, Future<void> Function(String, [Map<String, Object?>]) act) async {
+    final name = await promptText(context, title: 'Name', message: 'What to call it, e.g. My Groq or Nvidia.', placeholder: 'Name', action: 'Next');
+    if (name == null || !context.mounted) return;
+    final baseUrl = await promptText(context,
+        title: 'Web address', message: 'The base URL from the provider\'s docs, e.g. https://api.example.com/v1', placeholder: 'https://', action: 'Next');
+    if (baseUrl == null || baseUrl.isEmpty || !context.mounted) return;
+    final key = await promptText(context, title: 'API key', message: 'Paste the key from that provider\'s account.', placeholder: 'API key', action: 'Next');
+    if (key == null || key.isEmpty || !context.mounted) return;
+    final model = await promptText(context, title: 'Model', message: 'The model id, exactly as the provider lists it.', placeholder: 'model id', action: 'Add');
+    if (model == null || model.isEmpty || !context.mounted) return;
+    await act('add-key', {'label': name, 'baseUrl': baseUrl, 'apiKey': key, 'model': model});
+  }
+
   Future<void> _addKey(BuildContext context, ProviderState p, Future<void> Function(String, [Map<String, Object?>]) act) async {
+    if (p.isCustom) return _addCustom(context, act);
     final key = await promptText(context, title: 'Add a ${p.name} key', message: 'Paste an API key from your ${p.name} account.', placeholder: 'API key', action: 'Add');
     if (key == null || key.isEmpty || !context.mounted) return;
     final fields = <String, Object?>{'apiKey': key};
@@ -211,14 +242,15 @@ class ProviderPage extends StatelessWidget {
     if (picked != null && picked != p.model) await act('set-model', {'model': picked});
   }
 
-  Future<void> _keyOptions(BuildContext context, ProviderKey k, Future<void> Function(String, [Map<String, Object?>]) act) async {
+  Future<void> _keyOptions(BuildContext context, ProviderKey k, Future<void> Function(String, [Map<String, Object?>]) act, {bool custom = false}) async {
     final choice = await showCupertinoModalPopup<String>(
       context: context,
       builder: (ctx) => CupertinoActionSheet(
         title: Text(k.label),
-        message: Text(k.maskedKey),
+        message: Text(custom ? '${k.baseUrl ?? ''}\n${k.model}  ·  ${k.maskedKey}' : k.maskedKey),
         actions: [
           CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'check'), child: const Text('Test this key')),
+          if (custom) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'model'), child: const Text('Change model')),
           if (!k.isPrimary) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'primary'), child: const Text('Try this key first')),
           CupertinoActionSheetAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, 'remove'), child: const Text('Remove key')),
         ],
@@ -226,6 +258,11 @@ class ProviderPage extends StatelessWidget {
       ),
     );
     if (!context.mounted || choice == null) return;
+    if (choice == 'model') {
+      final model = await promptText(context, title: 'Model', message: 'The model id for ${k.label}.', initial: k.model, placeholder: 'model id');
+      if (model != null && model.isNotEmpty && context.mounted) await act('set-model', {'keyId': k.id, 'model': model});
+      return;
+    }
     if (choice == 'remove' && !await confirmDestructive(context, title: 'Remove this key?', message: 'Dave stops using it straight away.', action: 'Remove')) return;
     await act(switch (choice) { 'check' => 'check-key', 'primary' => 'make-primary-key', _ => 'remove-key' }, {'keyId': k.id});
   }
