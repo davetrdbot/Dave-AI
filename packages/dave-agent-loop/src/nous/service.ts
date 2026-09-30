@@ -3,7 +3,7 @@ import type { DaveDatabase } from "@dave/db";
 import type { Provider } from "@dave/brain";
 import { coloredButton, keyboard, type RichBlock, type TelegramClient } from "@dave/telegram";
 import { createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
-import { getRiskSettings, tradeExecuteWithMarginRetry, type TradeExecutor } from "@dave/trading";
+import { breakevenStop, getRiskSettings, tradeExecuteWithMarginRetry, type TradeExecutor } from "@dave/trading";
 import { knowledgeDelete, knowledgeDraft, knowledgeSave, knowledgeView } from "@dave/knowledge";
 import { logTrade } from "@dave/feedback";
 import { getPrimaryChatId } from "../primary-chat.js";
@@ -522,9 +522,13 @@ export async function applyNousUpdate(deps: NousDeps, updateId: string, now = Da
         else await deps.executor.closePosition(ticket, lots);
         lines.push(`${label}: closed ${lots >= pos.lots ? "all" : `${lots} of ${pos.lots}`} lots`);
       } else if (u.action === "breakeven") {
-        await deps.executor.modifyOrder(ticket, { sl: pos.openPrice });
-        if (trade) trade.sl = pos.openPrice;
-        lines.push(`${label}: stop moved to entry ${pos.openPrice}`);
+        // True breakeven (entry + spread), so a hit closes at 0.00; exactly on the entry if the
+        // trade isn't far enough in profit for that yet (the signal said breakeven).
+        const be = breakevenStop({ side: pos.type, openPrice: pos.openPrice, currentPrice: pos.currentPrice, spread: pos.spread, digits: pos.digits, stopsLevel: pos.stopsLevel });
+        const level = be.ok ? be.level : pos.openPrice;
+        await deps.executor.modifyOrder(ticket, { sl: level });
+        if (trade) trade.sl = level;
+        lines.push(`${label}: stop moved to breakeven ${level}`);
       } else if (u.action === "move_sl") {
         await deps.executor.modifyOrder(ticket, { sl: u.price! });
         if (trade) trade.sl = u.price!;

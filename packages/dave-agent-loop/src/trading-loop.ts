@@ -96,6 +96,14 @@ export function startAutonomousTradingLoop(ownerUserId: string, runCycle: () => 
   return true;
 }
 
+/** An alert wants a scan now (alert-focus): the next poll tick (within ~5s) runs a cycle instead
+ *  of waiting out the interval. A cycle already in flight finishes first. No-op when mode 2 is off. */
+export function runScanSoon(ownerUserId: string): boolean {
+  if (!activeRunners.has(ownerUserId)) return false;
+  lastRunAt.set(ownerUserId, 0);
+  return true;
+}
+
 /** Returns false (no-op) if nothing was running. Deliberately distinct from stopOrPanic("stop")
  * -- this is a clean, intentional "turn autonomous trading off," not an emergency halt. */
 export function stopAutonomousTradingLoop(ownerUserId: string): boolean {

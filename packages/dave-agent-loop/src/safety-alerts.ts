@@ -1,0 +1,139 @@
+import { getLastKnownAccountSnapshot, type EaPosition } from "@dave/ea-bridge";
+import { isForexSymbol, type AlertToggles } from "@dave/trading";
+
+/**
+ * Account and broker safety checks (the trader: "add other safe alert too"), run by the trade
+ * monitor's sweep next to the account-heat check. Each has its own switch in Settings -> Alerts and
+ * goes out through the monitor's notify, so it lands in the Live feed and in Dave's next scan.
+ *
+ *  - spread spike: an open trade's spread jumps to 3x its recent normal -- stops can fire on the
+ *    spread alone, and a new entry now would start deep in the red;
+ *  - margin low: the account's margin level under 200%, and again under 120% (stop-out territory);
+ *  - stop too tight: a stop closer to the price than the spread plus the broker's minimum distance
+ *    -- it can be hit without price really moving;
+ *  - market close: a forex trade still open in the last hour before the Friday close (gaps over
+ *    the weekend jump straight past stops).
+ */
+
+const SPREAD_SAMPLES = 40;
+const SPREAD_MIN_SAMPLES = 10;
+export const SPREAD_SPIKE_X = 3;
+const SPREAD_COOLDOWN_MS = 15 * 60_000;
+export const MARGIN_WARN = 200;
+export const MARGIN_CRITICAL = 120;
+
+interface State {
+  spreads: Map<string, number[]>;
+  spreadToldAt: Map<string, number>;
+  marginLevel: "ok" | "warn" | "critical";
+  tightTold: Set<string>;
+  closeTold: Set<string>;
+}
+const states = new Map<string, State>();
+
+function stateFor(userId: string): State {
+  let s = states.get(userId);
+  if (!s) {
+    s = { spreads: new Map(), spreadToldAt: new Map(), marginLevel: "ok", tightTold: new Set(), closeTold: new Set() };
+    states.set(userId, s);
+  }
+  return s;
+}
+
+function median(xs: number[]): number {
+  const a = [...xs].sort((x, y) => x - y);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+function fmt(n: number, digits?: number): string {
+  return typeof digits === "number" ? n.toFixed(digits) : String(Number(n.toPrecision(6)));
+}
+
+type SafetyToggles = Pick<AlertToggles, "spread_spike" | "margin_low" | "stop_too_tight" | "market_close">;
+
+export function safetyChecks(userId: string, positions: EaPosition[], now: number, toggles: SafetyToggles): string[] {
+  const st = stateFor(userId);
+  const out: string[] = [];
+
+  // Spread: learn each symbol's normal from every sweep, alert on a jump.
+  const seenSymbols = new Set<string>();
+  for (const p of positions) {
+    if (typeof p.spread !== "number" || !(p.spread > 0) || seenSymbols.has(p.symbol)) continue;
+    seenSymbols.add(p.symbol);
+    const hist = st.spreads.get(p.symbol) ?? [];
+    const normal = hist.length >= SPREAD_MIN_SAMPLES ? median(hist) : undefined;
+    const spiking = normal !== undefined && normal > 0 && p.spread >= normal * SPREAD_SPIKE_X;
+    // A spike doesn't become the new normal.
+    if (!spiking) {
+      hist.push(p.spread);
+      if (hist.length > SPREAD_SAMPLES) hist.shift();
+      st.spreads.set(p.symbol, hist);
+    }
+    const last = st.spreadToldAt.get(p.symbol);
+    if (spiking && toggles.spread_spike && (last === undefined || now - last >= SPREAD_COOLDOWN_MS)) {
+      st.spreadToldAt.set(p.symbol, now);
+      const open = positions.filter((q) => q.symbol === p.symbol).map((q) => `#${q.ticket}`).join(", ");
+      out.push(
+        `⚠️ SPREAD SPIKE on ${p.symbol}\n\nThe spread is ${fmt(p.spread, p.digits)} -- ${(p.spread / (normal as number)).toFixed(1)}x its normal ${fmt(normal as number, p.digits)}. Open: ${open}.\n` +
+          `Stops close to price can be hit by the spread alone, and a new entry now starts deep in the red. Self-check: is any stop within a spread of price? Hold off new ${p.symbol} entries until it settles.`
+      );
+    }
+  }
+
+  // Margin level: once on the way down past each line, re-armed when it recovers.
+  const snap = getLastKnownAccountSnapshot(userId);
+  const ml = snap?.marginLevel;
+  if (positions.length > 0 && typeof ml === "number" && ml > 0) {
+    const level = ml < MARGIN_CRITICAL ? "critical" : ml < MARGIN_WARN ? "warn" : "ok";
+    const worse = (level === "critical" && st.marginLevel !== "critical") || (level === "warn" && st.marginLevel === "ok");
+    if (worse && toggles.margin_low) {
+      out.push(
+        level === "critical"
+          ? `🚨 MARGIN CRITICAL\n\nMargin level is ${ml.toFixed(0)}% -- under ${MARGIN_CRITICAL}%. The broker starts closing trades on its own near its stop-out level. Close or cut the weakest trade now; no new trades.`
+          : `⚠️ MARGIN LOW\n\nMargin level is ${ml.toFixed(0)}% -- under ${MARGIN_WARN}%. ${positions.length} trade${positions.length === 1 ? "" : "s"} open. No new trades until it's back up; consider cutting the weakest.`
+      );
+    }
+    // Recovery re-arms with a little room so it doesn't flap on the line.
+    if (level === "ok" && ml >= MARGIN_WARN * 1.25) st.marginLevel = "ok";
+    else if (level === "warn" && st.marginLevel === "critical" && ml >= MARGIN_CRITICAL * 1.25) st.marginLevel = "warn";
+    else if (worse) st.marginLevel = level;
+  } else if (positions.length === 0) st.marginLevel = "ok";
+
+  // Stop too tight: closer than the spread plus the broker's minimum -- once per ticket and stop.
+  for (const p of positions) {
+    if (typeof p.sl !== "number" || !(p.sl > 0) || typeof p.currentPrice !== "number" || typeof p.spread !== "number") continue;
+    const room = Math.abs(p.currentPrice - p.sl);
+    const need = p.spread + (p.stopsLevel ?? 0);
+    const key = `${p.ticket}@${p.sl}`;
+    if (room < need && !st.tightTold.has(key)) {
+      st.tightTold.add(key);
+      if (toggles.stop_too_tight) {
+        out.push(
+          `⚠️ STOP TOO TIGHT: ${p.symbol} #${p.ticket}\n\nThe stop (${fmt(p.sl, p.digits)}) is only ${fmt(room, p.digits)} from price, less than the spread${p.stopsLevel ? " plus the broker's minimum" : ""} (${fmt(need, p.digits)}). ` +
+            `It can be hit by a normal spread flicker, not a real move. Self-check: does the idea still need this stop, or should it sit behind real structure?`
+        );
+      }
+    }
+  }
+
+  // Forex weekend close: the last hour before Friday 22:00 UTC, once per trade per week.
+  const d = new Date(now);
+  if (d.getUTCDay() === 5 && d.getUTCHours() === 21) {
+    const week = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+    const fx = positions.filter((p) => isForexSymbol(p.symbol, null) && !st.closeTold.has(`${p.ticket}:${week}`));
+    for (const p of fx) st.closeTold.add(`${p.ticket}:${week}`);
+    if (fx.length && toggles.market_close) {
+      out.push(
+        `🕘 MARKET CLOSES IN UNDER AN HOUR\n\nForex closes for the weekend at 22:00 UTC and ${fx.map((p) => `${p.symbol} #${p.ticket}`).join(", ")} ${fx.length === 1 ? "is" : "are"} still open. ` +
+          `Monday can open with a gap straight past the stop. Self-check: close, take partial profit, or hold on purpose -- decide now, not after the bell.`
+      );
+    }
+  }
+  return out;
+}
+
+/** Test seam. */
+export function resetSafetyState(): void {
+  states.clear();
+}

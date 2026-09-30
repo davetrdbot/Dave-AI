@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { requestScanRestart } from "@dave/trading";
 
 /**
  * Real bug fixed (user, live: "check I don't think the worker is working... it's not analyzing
@@ -18,6 +19,8 @@ function statePath(userId: string): string {
 }
 
 export function setAutonomousTradingEnabled(userId: string, enabled: boolean): void {
+  // Switching the scan on starts it from the first pair of the main group.
+  if (enabled && !isAutonomousTradingEnabled(userId)) requestScanRestart(userId, "scan switched on");
   const path = statePath(userId);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

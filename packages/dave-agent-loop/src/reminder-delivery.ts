@@ -1,7 +1,6 @@
 import { takeDueReminders, describeFiredReminder, type Reminder } from "@dave/workers";
 import { appendReminderEvent } from "@dave/ea-bridge";
-import { setPendingSymbolOverride } from "./autonomous-tick-state.js";
-import { isAutonomousTradingEnabled } from "./autonomous-trading-state.js";
+import { focusScanOnAlert } from "./alert-focus.js";
 
 /**
  * Fires Dave's due reminders (dave-workers/reminders.ts). Called from the bot's 5-second control
@@ -33,8 +32,10 @@ export function deliverDueReminders(userId: string, send: (text: string) => Prom
     } catch (err) {
       console.error(`[reminders] ${userId}: could not queue phone notification for ${reminder.id}:`, err);
     }
-    if (reminder.symbol && isAutonomousTradingEnabled(userId)) {
-      setPendingSymbolOverride(userId, reminder.symbol, `reminder ${reminder.id} fired: ${reminder.text}`);
+    // Like a level hit or a trade alert: its pair is scanned within seconds, with the reminder on
+    // top of the prompt -- even a pair with an open trade (the trader: "even reminder messages too").
+    if (reminder.symbol) {
+      focusScanOnAlert(userId, reminder.symbol, `REMINDER you set (${reminder.id}) fired: ${reminder.text}${reminder.reason ? ` -- why: ${reminder.reason}` : ""}`, now);
     }
     console.log(`[reminders] ${userId}: fired ${reminder.id} -- ${reminder.text}`);
   }

@@ -33,7 +33,7 @@
 // it -- moved here, to the top, so every real use compiles regardless of where it appears below.
 #define DAVEEA_BARS 1000
 // Reported with every heartbeat so the bot can tell the trader when this file is out of date.
-#define EA_VERSION "3.2"
+#define EA_VERSION "3.3"
 // Docker-mode file bridge (see UseFileBridge) -- defined up here for the same reason.
 #define BRIDGE_DIR "dave_bridge"
 #define BRIDGE_TIMEOUT_MS 5000
@@ -507,7 +507,13 @@ string BuildReportJson()
                    "\"magic\":" + IntegerToString(magic) + "," +
                    "\"byDave\":" + (magic == MagicNumber ? "true" : "false") + "," +
                    "\"comment\":\"" + JsonEscape(PositionGetString(POSITION_COMMENT)) + "\"," +
-                   "\"digits\":" + IntegerToString(SymbolInfoInteger(psym, SYMBOL_DIGITS)) + "}";
+                   "\"digits\":" + IntegerToString(SymbolInfoInteger(psym, SYMBOL_DIGITS)) + "," +
+                   // EA 3.3: the live spread and the broker's minimum stop distance, both in price.
+                   // A stop fires on the other side of the spread, so a "breakeven" stop placed
+                   // exactly on the entry closes a spread's worth in loss -- the bot needs the
+                   // spread to put breakeven where the trade really closes at 0.00.
+                   "\"spread\":" + Px(SymbolInfoDouble(psym, SYMBOL_ASK) - SymbolInfoDouble(psym, SYMBOL_BID), psym) + "," +
+                   "\"stopsLevel\":" + Px(SymbolInfoInteger(psym, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(psym, SYMBOL_POINT), psym) + "}";
      }
 
    string pendingOrders = "";

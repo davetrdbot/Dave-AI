@@ -38,6 +38,9 @@ export interface TickState {
    *  exactly once by the next call to resolveCursorSymbol (see autonomous-tick.ts), whether or not
    *  the requested symbol turns out to still be valid to analyze. */
   pendingSymbolOverride?: { symbol: string; reason: string; requestedAt: number };
+  /** Pairs an alert wants looked at NOW (a marked level hit, a self-aware alert on a trade) --
+   *  taken before the round-robin, newest per pair, oldest pair first. */
+  alertFocus?: { symbol: string; reason: string; requestedAt: number }[];
 }
 
 const DEFAULT_STATE: TickState = { recentDecisions: [], huntSkipCount: 0, huntLastSymbol: null, symbolCursor: 0, scanningFallback: false, primaryLapsCompleted: 0 };
@@ -149,6 +152,48 @@ export function advanceCursor(userId: string, primaryLength: number, fallbackLen
   }
   state.symbolCursor = 0;
   saveTickState(userId, state);
+}
+
+/** Back to the first pair of the main group: position, backup-lap counter and any queued
+ *  "analyze X next" all cleared (the trader's "restart the mode 2 from the first pair"). */
+export function resetScanCursor(userId: string): void {
+  const state = getTickState(userId);
+  state.symbolCursor = 0;
+  state.scanningFallback = false;
+  state.primaryLapsCompleted = 0;
+  delete state.pendingSymbolOverride;
+  saveTickState(userId, state);
+}
+
+/** How long an alert's "look at this pair now" stays valid if the scan is off or busy. */
+export const ALERT_FOCUS_TTL_MS = 30 * 60_000;
+const ALERT_FOCUS_MAX = 6;
+
+/** An alert asks mode 2 to look at its pair on the very next scan (the trader: "the bot just
+ *  marked a level and it didn't do anything"). A newer alert on the same pair replaces the older. */
+export function requestAlertFocus(userId: string, symbol: string, reason: string, now = Date.now()): void {
+  const state = getTickState(userId);
+  const queue = (state.alertFocus ?? []).filter((f) => f.symbol.toUpperCase() !== symbol.toUpperCase() && now - f.requestedAt < ALERT_FOCUS_TTL_MS);
+  queue.push({ symbol, reason: reason.replace(/\s+/g, " ").slice(0, 600), requestedAt: now });
+  state.alertFocus = queue.slice(-ALERT_FOCUS_MAX);
+  saveTickState(userId, state);
+}
+
+/** The pairs still waiting for an alert scan (fresh ones only), without taking them. */
+export function peekAlertFocus(userId: string, now = Date.now()): string[] {
+  return (getTickState(userId).alertFocus ?? []).filter((f) => now - f.requestedAt < ALERT_FOCUS_TTL_MS).map((f) => f.symbol);
+}
+
+/** The oldest still-fresh alert focus, removed as it's taken. Stale ones are dropped. */
+export function takeAlertFocus(userId: string, now = Date.now()): { symbol: string; reason: string; requestedAt: number } | null {
+  const state = getTickState(userId);
+  const queue = (state.alertFocus ?? []).filter((f) => now - f.requestedAt < ALERT_FOCUS_TTL_MS);
+  const next = queue.shift() ?? null;
+  if (next || (state.alertFocus?.length ?? 0) !== queue.length) {
+    state.alertFocus = queue;
+    saveTickState(userId, state);
+  }
+  return next;
 }
 
 /** Persists a real requested-next-symbol override, overwriting any previous one -- called right

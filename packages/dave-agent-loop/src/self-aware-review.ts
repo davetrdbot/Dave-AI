@@ -24,6 +24,9 @@ import { alertKindStats, recordVerdict } from "./alert-outcomes.js";
 
 /** The alerts that deserve a decision. Pure information (tpNear, profitStable...) doesn't. */
 export const REVIEW_KINDS = new Set<MonitorAlertKind>([
+  // In profit for a while: is the plan still valid, should the profit be protected?
+  "profitStable",
+  "quickProfitCheck",
   "loss10m",
   "deepLoss",
   "slDanger",

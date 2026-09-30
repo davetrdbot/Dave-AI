@@ -189,8 +189,12 @@ class _ChatScreenState extends State<ChatScreen> {
           await showError(context, "I didn't catch anything -- try again, a bit closer to the mic.");
           return;
         }
-        _speakNextTurn = true;
-        await _send(text: text);
+        // Dictation, like Claude's: the words land in the box (added to anything already typed),
+        // so they can be checked or fixed before sending. Nothing is sent on its own.
+        final before = _input.text.trimRight();
+        _input.text = before.isEmpty ? text : '$before $text';
+        _input.selection = TextSelection.collapsed(offset: _input.text.length);
+        _focus.requestFocus();
       } catch (e) {
         if (mounted) {
           setState(() => _mic = 'idle');
@@ -1203,7 +1207,7 @@ class _Composer extends StatelessWidget {
                     child: CupertinoTextField(
                       controller: controller,
                       focusNode: focus,
-                      placeholder: mic == 'recording' ? 'Listening... tap the red button to send' : mic == 'transcribing' ? 'Turning your voice into text...' : 'Message Dave',
+                      placeholder: mic == 'recording' ? 'Listening... tap the red button when done' : mic == 'transcribing' ? 'Turning your voice into text...' : 'Message Dave',
                       minLines: 1,
                       maxLines: 6,
                       textCapitalization: TextCapitalization.sentences,
@@ -1218,13 +1222,26 @@ class _Composer extends StatelessWidget {
                     builder: (context, value, _) {
                       final canSend = value.text.trim().isNotEmpty || pictures.isNotEmpty;
                       if (mic == 'recording') {
-                        return _RoundButton(key: const ValueKey('mic-stop'), icon: CupertinoIcons.stop_fill, color: resolve(context, CupertinoColors.systemRed), semantic: 'Stop recording and send', onTap: onMic);
+                        return _RoundButton(key: const ValueKey('mic-stop'), icon: CupertinoIcons.stop_fill, color: resolve(context, CupertinoColors.systemRed), semantic: 'Stop recording', onTap: onMic);
+                      }
+                      // Text in the box: a small mic stays next to Send, to keep dictating.
+                      if (canSend && mic == 'idle' && onMic != null) {
+                        return Row(mainAxisSize: MainAxisSize.min, children: [
+                          CupertinoButton(
+                            key: const ValueKey('mic-small'),
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            minimumSize: const Size(30, 34),
+                            onPressed: onMic,
+                            child: Icon(CupertinoIcons.mic, size: 20, color: blue),
+                          ),
+                          _RoundButton(icon: CupertinoIcons.arrow_up, color: blue, semantic: 'Send', onTap: onSend),
+                        ]);
                       }
                       if (mic == 'transcribing') {
                         return const SizedBox(width: 34, height: 34, child: Center(child: CupertinoActivityIndicator(radius: 9)));
                       }
                       if (!canSend && !working && onMic != null) {
-                        return _RoundButton(key: const ValueKey('mic'), icon: CupertinoIcons.mic_fill, color: blue, semantic: 'Talk to Dave', onTap: onMic);
+                        return _RoundButton(key: const ValueKey('mic'), icon: CupertinoIcons.mic_fill, color: blue, semantic: 'Dictate (Groq Whisper)', onTap: onMic);
                       }
                       if (working && !canSend) {
                         return _RoundButton(icon: CupertinoIcons.stop_fill, color: Look.of(context).down, semantic: 'Stop', onTap: onStop);

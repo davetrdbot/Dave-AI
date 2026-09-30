@@ -13,7 +13,7 @@ import { FIRECRAWL_TOOLS } from "@dave/firecrawl";
 import { PROVIDER_TOOLS } from "@dave/brain";
 import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
-import { PAIR_GROUP_TOOLS, getSelfAwareMode } from "@dave/trading";
+import { PAIR_GROUP_TOOLS, getSelfAwareMode, breakevenStop } from "@dave/trading";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS, BACKGROUND_CHECK_TOOLS, REMINDER_TOOLS, type BackgroundCheck } from "@dave/workers";
 import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
@@ -408,11 +408,11 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
     {
       name: "set_breakeven",
       description:
-        "Move an open trade's stop loss to its entry price (breakeven), optionally a few points past it to cover the spread (`offset`, in price units, in the trade's favour). " +
+        "Move an open trade's stop loss to TRUE breakeven: entry plus the live spread and one point in the trade's favour, so if it's hit the trade closes at 0.00 or a little better, never a spread's worth in loss. `offset` (price units) locks in extra profit on top. " +
         "Only works on a trade that is already in profit beyond that level. Pass `ticket`, or `symbol` to do every open trade on that pair.",
       parameters: {
         type: "object",
-        properties: { ticket: { type: "string" }, symbol: { type: "string" }, offset: { type: "number", description: "extra distance past the entry, in price units; default 0" } },
+        properties: { ticket: { type: "string" }, symbol: { type: "string" }, offset: { type: "number", description: "extra profit to lock beyond true breakeven, in price units; default 0" } },
       },
       execute: async (args: Record<string, unknown>) => {
         const { positions } = getLastKnownState(deps.userId);
@@ -424,10 +424,10 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
         const results = [];
         for (const p of targets) {
           const buy = p.type === "buy";
-          const level = buy ? p.openPrice + offset : p.openPrice - offset;
-          const price = p.currentPrice;
-          if (price === undefined || (buy ? price <= level : price >= level)) {
-            results.push({ ticket: p.ticket, moved: false, why: `not in profit past ${level} yet (now ${price ?? "unknown"})` });
+          const be = breakevenStop({ side: buy ? "buy" : "sell", openPrice: p.openPrice, currentPrice: p.currentPrice, spread: p.spread, digits: p.digits, stopsLevel: p.stopsLevel, offset });
+          const level = be.level;
+          if (!be.ok) {
+            results.push({ ticket: p.ticket, moved: false, why: be.reason });
             continue;
           }
           if (p.sl !== undefined && p.sl !== 0 && (buy ? p.sl >= level : p.sl <= level)) {

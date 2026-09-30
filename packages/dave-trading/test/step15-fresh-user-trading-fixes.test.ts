@@ -77,10 +77,10 @@ async function main() {
   console.log(`    real order sent to the executor: ${JSON.stringify(openedOrder)}`);
 
   console.log("\n[5] An explicit sl/tp the model DOES pass is never overridden by the risk-settings default...\n");
-  const explicitResult = (await tradeExecuteTool.execute({ symbol: "GBPUSD", type: "sell", lots: 0.1, sl: 1.5, tp: 1.3, confidence: 80 }, ctx)) as { ticket: string };
+  const explicitResult = (await tradeExecuteTool.execute({ symbol: "GBPUSD", type: "sell", lots: 0.1, sl: 1.15, tp: 1.0, confidence: 80 }, ctx)) as { ticket: string };
   assert.equal(explicitResult.ticket, "T-1");
-  assert.equal(openedOrder!.sl, 1.5, "an explicit sl must win over the real risk-settings default");
-  assert.equal(openedOrder!.tp, 1.3, "an explicit tp must win over the real risk-settings default");
+  assert.equal(openedOrder!.sl, 1.15, "an explicit sl must win over the real risk-settings default");
+  assert.equal(openedOrder!.tp, 1.0, "an explicit tp must win over the real risk-settings default");
 
   console.log("\n[6] 'off' mode (the real default) genuinely leaves SL/TP unset -- never invents one...\n");
   const OFF_USER = "user-off-1";

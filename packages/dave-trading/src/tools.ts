@@ -221,8 +221,12 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       // Hoisted so the risk-structure check further down can still see a real entry price even
       // when the SL/TP auto-fill block below did not need to run.
       let referencePriceForRisk: number | undefined = order.price;
-      if (order.sl === undefined || order.tp === undefined) {
-        const risk = getRiskSettings(ctx.userId);
+      const risk = getRiskSettings(ctx.userId);
+      // Fixed levels fill in (and replace) only when the model left one out -- as before.
+      const fillLevels = order.sl === undefined || order.tp === undefined;
+      // Always resolved: the exact risk:reward target below needs the real fill price even when
+      // the model wrote both levels itself.
+      {
         // Item 3 real bug fixed (user: "when SL/TP mode is set to Auto, Dave must calculate and
         // set real SL/TP values itself during analysis, every time, no exceptions -- it should
         // NEVER ask the user for SL/TP values when Auto is active"): this block previously only
@@ -235,7 +239,7 @@ export const TRADING_TOOLS: ToolDefinition[] = [
         if (order.sl === undefined && risk.slMode === "auto") {
           throw new AutoModeRequiresComputedValueError("sl", order.symbol);
         }
-        if (order.tp === undefined && risk.tpMode === "auto") {
+        if (order.tp === undefined && risk.tpMode === "auto" && !(getMinRiskReward(ctx.userId) > 0)) {
           throw new AutoModeRequiresComputedValueError("tp", order.symbol);
         }
         // A pending order is measured from its own entry; a market order from the live price it
@@ -267,7 +271,7 @@ export const TRADING_TOOLS: ToolDefinition[] = [
           // numbers; left honestly unset when it cannot be established, exactly as this block
           // already does for a missing quote, rather than guessed.
           const pip = derivePipSize(quote);
-          if (pip !== undefined) {
+          if (pip !== undefined && fillLevels) {
             // A FIXED stop/target is the trader's rule: it wins over any number the model wrote.
             if (risk.slMode === "on" && risk.slValue !== undefined) {
               order.sl = referencePrice - direction * risk.slValue * pip;
@@ -299,6 +303,17 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       // going to the broker.
       {
         const entry = order.type === "buy" || order.type === "sell" ? (referencePriceForRisk ?? order.price) : (order.price ?? referencePriceForRisk);
+        // Exact risk:reward (the trader: "exact R:R, not minimum"): unless the target is fixed in
+        // pips, the take profit goes at exactly the stop's distance times the ratio.
+        const exactRr = getMinRiskReward(ctx.userId);
+        if (entry !== undefined && order.sl !== undefined && !(risk.tpMode === "on" && risk.tpValue !== undefined) && exactRr > 0) {
+          const dir = order.type === "buy" || order.type === "buy_limit" || order.type === "buy_stop" ? 1 : -1;
+          const risked = dir * (entry - order.sl);
+          if (risked > 0) {
+            const decimals = Math.min(8, Math.max(0, (String(entry).split(".")[1] ?? "").length + 1));
+            order.tp = Math.round((entry + dir * risked * exactRr) * 10 ** decimals) / 10 ** decimals;
+          }
+        }
         if (entry !== undefined) {
           const rr = assessRiskRewardForUser(ctx.userId, order, entry);
           if (!rr.ok) throw new BadRiskStructureError(order.symbol, rr.reason ?? "risk structure is invalid");

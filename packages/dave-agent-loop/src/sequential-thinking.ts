@@ -26,7 +26,7 @@ import type { Provider, ToolSpec } from "@dave/brain";
  * pass and has said so by turning the toggle on.
  */
 
-export type ThinkingEffortLevel = "low" | "medium" | "high" | "max";
+export type ThinkingEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** The stages a high/max-effort pass has to cover before it may stop -- a trader's checklist. */
 export const THINKING_STAGES = ["bias", "trigger", "invalidation", "target", "counter", "memory", "scenario", "verdict"] as const;
@@ -49,7 +49,7 @@ export interface EffortProfile {
   minThoughts: number;
   /** Stages that must each appear at least once before it may stop. */
   requiredStages: ThinkingStage[];
-  /** An independent critic reads the whole trace and attacks its weakest point (max only). */
+  /** An independent critic reads the whole trace and attacks its weakest point (X-High and max). */
   critic: boolean;
   timeoutMs: number;
   /** Wall-clock budget for the whole pass -- a scan never waits longer than this for thinking. */
@@ -60,7 +60,10 @@ export const EFFORT_PROFILES: Record<ThinkingEffortLevel, EffortProfile> = {
   low: { maxThoughts: 3, minThoughts: 1, requiredStages: [], critic: false, timeoutMs: 30_000, budgetMs: 90_000 },
   medium: { maxThoughts: 5, minThoughts: 2, requiredStages: [], critic: false, timeoutMs: 30_000, budgetMs: 150_000 },
   high: { maxThoughts: 10, minThoughts: 5, requiredStages: ["bias", "trigger", "invalidation", "target", "counter", "memory", "verdict"], critic: false, timeoutMs: 45_000, budgetMs: 240_000 },
-  max: { maxThoughts: 16, minThoughts: 7, requiredStages: [...THINKING_STAGES], critic: true, timeoutMs: 60_000, budgetMs: 360_000 },
+  // X-High (the trader: "overthinks ... 10 or 11 times or more"): at least 11 thoughts over every
+  // stage, going back over its own steps, then the critic.
+  xhigh: { maxThoughts: 14, minThoughts: 11, requiredStages: [...THINKING_STAGES], critic: true, timeoutMs: 45_000, budgetMs: 420_000 },
+  max: { maxThoughts: 16, minThoughts: 12, requiredStages: [...THINKING_STAGES], critic: true, timeoutMs: 60_000, budgetMs: 480_000 },
 };
 
 export interface SequentialThought {
@@ -219,6 +222,11 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
     const extra: string[] = [];
     if (thoughts.length > 0 && gaps.length && thoughts.length >= maxThoughts - gaps.length) {
       extra.push(`Running out of thoughts -- cover what's still missing now: ${gaps.join(", ")}.`);
+    } else if (thoughts.length > 0 && !gaps.length && thoughts.length < profile.minThoughts) {
+      extra.push(
+        `Keep going: this level thinks at least ${profile.minThoughts} times (${thoughts.length} so far). Go back over an earlier step from a fresh angle -- ` +
+          `re-read the data, question the bias, test the stop and target again -- and revise it (isRevision) if it no longer holds.`
+      );
     }
     const t = await ask(extra);
     if (!t) break;
@@ -233,7 +241,7 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
     if (stillMissing.length) deps.onProgress?.(`Not done yet -- still to cover: ${stillMissing.join(", ")}`);
   }
 
-  // MAX: an independent critic attacks the trace, and the thinker answers once.
+  // X-HIGH / MAX: an independent critic attacks the trace, and the thinker answers once.
   let critique: SequentialThinkingResult["critique"];
   if (profile.critic && thoughts.length && !overBudget()) {
     try {

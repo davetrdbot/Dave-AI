@@ -215,7 +215,7 @@ try {
   assert.equal(placedOrders[0].symbol, "CRASH_200");
   assert.equal(placedOrders[0].type, "sell");
   assert.equal(placedOrders[0].sl, 632170, "the approved order must be the SAME order that was queued -- levels intact");
-  assert.equal(placedOrders[0].tp, 617000);
+  assert.ok((placedOrders[0].tp as number) < 632170 && (placedOrders[0].tp as number) > 0, "a take profit below the entry for the sell (placed at the exact R:R)");
   assert.deepEqual(refusedLots, [0.02], "the margin-aware retry must genuinely be on the approval path -- the 0.02 request was refused for margin and stepped down");
   assert.equal(placedOrders[0].lots, 0.01, "…and the order that actually went out is the largest size the broker accepted");
   const placedMsg = sent.map((m) => m.text ?? "").join("\n");

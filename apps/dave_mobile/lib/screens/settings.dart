@@ -55,7 +55,7 @@ class SettingsScreen extends StatelessWidget {
             child: _menu(context, 'Trading', [
               _MenuRow(CupertinoIcons.chart_bar_alt_fill, 'Trading & markets', 'Scan speed, session, pairs (${group?.name ?? 'none'}), what Dave analyses',
                   () => open('Trading & markets', (c, d, r) => [_TradingSection(bot: d.bot, reload: r), _MarketsSection(s: d.settings, reload: r), const _MarketsLinks()])),
-              _MenuRow(CupertinoIcons.shield_lefthalf_fill, 'Risk', 'Min reward 1:${_num(s.riskReward.value)} · confidence ${s.confidence.value.round()}% · SL, TP, lots, limits',
+              _MenuRow(CupertinoIcons.shield_lefthalf_fill, 'Risk', 'Risk:reward 1:${_num(s.riskReward.value)} · confidence ${s.confidence.value.round()}% · SL, TP, lots, limits',
                   () => open('Risk', (c, d, r) => [
                         RiskModeCard(id: 'stopLoss', title: 'Stop loss', icon: CupertinoIcons.shield, mode: d.settings.stopLoss, onChanged: r),
                         RiskModeCard(id: 'takeProfit', title: 'Take profit', icon: CupertinoIcons.flag, mode: d.settings.takeProfit, onChanged: r),
@@ -360,19 +360,19 @@ class _RiskSection extends StatelessWidget {
     final conf = s.confidence.value.round();
     return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: const ListHeader('Risk'),
-      footer: const ListFooter('Dave skips any setup whose reward is smaller than this multiple of its risk. Below the confidence level he asks you first, unless auto-approve is on.'),
+      footer: const ListFooter('Take profit is placed at exactly this multiple of the stop distance (unless TP is fixed in pips). Below the confidence level he asks you first, unless auto-approve is on.'),
       children: [
         CupertinoListTile(
           leading: const Icon(CupertinoIcons.arrow_up_right_circle),
-          title: const Text('Min reward'),
+          title: const Text('Risk:reward'),
           subtitle: const Text('Tap to type any value, e.g. 1.5'),
           additionalInfo: Text('1:${_num(rr)}'),
           trailing: const CupertinoListTileChevron(),
           onTap: () async {
             final text = await promptText(
               context,
-              title: 'Min reward',
-              message: 'Dave only takes a trade whose target is at least this many times its stop distance. 1 = even money, 2 = twice the risk. Lower means more trades.',
+              title: 'Risk:reward',
+              message: 'Take profit is placed at exactly this many times the stop distance. Buy at 100 with the stop at 98 and 3.5 gives a take profit at 107.',
               initial: _num(rr),
               placeholder: 'e.g. 1.5',
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -1132,7 +1132,8 @@ class _EffortRow extends StatelessWidget {
     'low': 'Up to 3 steps. Quick sanity check.',
     'medium': 'Up to 5 steps. The original.',
     'high': 'Up to 10 steps through a checklist: bias, trigger, stop, target, the case against, your rules & past calls, verdict. Can\'t stop early.',
-    'max': 'Up to 16 steps, plus the "what if I\'m wrong" path, then a sceptical critic attacks the weakest link. Slowest, costs most.',
+    'xhigh': 'Thinks at least 11 times, up to 14: every checklist step, then goes back over its own steps from fresh angles, then a sceptical critic. Slow, costs more.',
+    'max': 'At least 12 steps, up to 16, plus the "what if I\'m wrong" path, then a sceptical critic attacks the weakest link. Slowest, costs most.',
   };
 
   @override
@@ -1146,7 +1147,7 @@ class _EffortRow extends StatelessWidget {
           padding: const EdgeInsets.all(3),
           decoration: BoxDecoration(color: look.chip, borderRadius: BorderRadius.circular(12)),
           child: Row(children: [
-            for (final e in const ['low', 'medium', 'high', 'max'])
+            for (final e in const ['low', 'medium', 'high', 'xhigh', 'max'])
               Expanded(
                 child: GestureDetector(
                   onTap: () => onPick(e),
@@ -1155,7 +1156,7 @@ class _EffortRow extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(color: e == effort ? look.accent : null, borderRadius: BorderRadius.circular(9)),
-                    child: Text(e[0].toUpperCase() + e.substring(1), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: e == effort ? look.tabActiveIcon : null)),
+                    child: Text(e == 'xhigh' ? 'X-High' : e[0].toUpperCase() + e.substring(1), maxLines: 1, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: e == effort ? look.tabActiveIcon : null)),
                   ),
                 ),
               ),

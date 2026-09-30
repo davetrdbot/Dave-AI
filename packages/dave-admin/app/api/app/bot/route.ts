@@ -10,6 +10,7 @@ import {
   MIN_TRADING_LOOP_MINUTES,
   MAX_TRADING_LOOP_MINUTES,
 } from "../../../../server/bot-control";
+import { requestScanRestart } from "@dave/trading";
 import { withDevice } from "../../../../server/require-device";
 
 /**
@@ -46,7 +47,7 @@ export const GET = withDevice(async ({ userId }) => {
 });
 
 export const POST = withDevice(async ({ userId, req }) => {
-  let body: { running?: boolean; executionEnabled?: boolean; intervalMinutes?: number };
+  let body: { running?: boolean; executionEnabled?: boolean; intervalMinutes?: number; restartScan?: boolean };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -63,6 +64,8 @@ export const POST = withDevice(async ({ userId, req }) => {
   }
   if (body.executionEnabled !== undefined) setExecutionEnabled(userId, body.executionEnabled, "app");
   if (body.running !== undefined) setBotRunning(userId, body.running, "app");
+  // "Restart from first pair": the next scan starts from the main group's first pair.
+  if (body.restartScan === true) requestScanRestart(userId, "app button");
 
   const running = isBotRunning(userId);
   return NextResponse.json({
@@ -71,7 +74,9 @@ export const POST = withDevice(async ({ userId, req }) => {
     executionEnabled: isExecutionEnabled(userId),
     intervalMinutes: getIntervalMinutes(userId),
     note:
-      body.running === false
+      body.restartScan === true
+        ? "The next scan starts from the first pair of your main group."
+        : body.running === false
         ? "Scanning stops within about 5 seconds. Open positions are untouched -- close them yourself if that is what you want."
         : body.running === true
           ? "Scanning resumes on the next tick if the loop is armed, or at the next restart if it is not."

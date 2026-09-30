@@ -1,6 +1,6 @@
 import { getLastKnownState, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { getTradeLifecycle } from "@dave/feedback";
-import { recordOutcome, getDeepLossAlertProgress, getSlAlertLevels, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
+import { breakevenStop, recordOutcome, getDeepLossAlertProgress, getSlAlertLevels, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
 import type { DaveDatabase } from "@dave/db";
 import {
   readMonitors,
@@ -23,6 +23,7 @@ import {
 import { outcomeLine, recordTradeClosed } from "./alert-outcomes.js";
 import { reviewTrade, REVIEW_KINDS, type ReviewDeps } from "./self-aware-review.js";
 import { exitRuleFor, describeExitRule, runExitRules, type ExitRule } from "./exit-rules.js";
+import { safetyChecks, resetSafetyState } from "./safety-alerts.js";
 
 /**
  * The runtime half of the Self-Aware Trade Monitor. On its own timer it reads every live open
@@ -41,7 +42,8 @@ const MOMENTUM_WINDOW_MS = 3 * 60_000;
 export interface TradeMonitorSweepDeps {
   db: DaveDatabase;
   userId: string;
-  notify: (text: string) => Promise<void>;
+  /** `symbol`: set on a per-trade alert -- mode 2 looks at that trade on the next scan. */
+  notify: (text: string, about?: { symbol: string }) => Promise<void>;
   /**
    * Real bug fixed (the trader: "breakeven doesn't work"). These deps carried ONLY `notify`, so the
    * breakeven alert could say "enough to move the stop to breakeven" and then, by construction, do
@@ -363,14 +365,19 @@ export function buildTradeMessage(
  */
 async function moveStopToBreakeven(deps: TradeMonitorSweepDeps, m: TradeMonitor): Promise<BreakevenOutcome> {
   if (!deps.executor) return { status: "advice" };
+  // True breakeven: past the entry by the live spread, so a hit closes at 0.00, not -spread.
+  const p = getLastKnownState(deps.userId).positions.find((x) => x.ticket === m.ticket);
+  const be = breakevenStop({ side: m.direction, openPrice: m.openPrice, currentPrice: p?.currentPrice, spread: p?.spread, digits: p?.digits, stopsLevel: p?.stopsLevel });
+  if (!be.ok) return { status: "failed", level: be.level, error: be.reason };
+  if (p?.sl && (m.direction === "buy" ? p.sl >= be.level : p.sl <= be.level)) return { status: "moved", level: p.sl };
   try {
-    await deps.executor.modifyOrder(m.ticket, { sl: m.openPrice });
-    console.log(`[trade-monitor] ${deps.userId}: moved #${m.ticket} (${m.symbol}) stop to breakeven ${m.openPrice}`);
-    return { status: "moved", level: m.openPrice };
+    await deps.executor.modifyOrder(m.ticket, { sl: be.level });
+    console.log(`[trade-monitor] ${deps.userId}: moved #${m.ticket} (${m.symbol}) stop to breakeven ${be.level} (entry ${m.openPrice} + spread)`);
+    return { status: "moved", level: be.level };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error(`[trade-monitor] ${deps.userId}: breakeven move failed for #${m.ticket}:`, err);
-    return { status: "failed", level: m.openPrice, error };
+    return { status: "failed", level: be.level, error };
   }
 }
 
@@ -490,7 +497,7 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
     const price = positions.find((p) => p.ticket === ticket)?.currentPrice;
     const text = buildTradeMessage(deps.userId, list, now, { breakeven, exitRule: exitRuleFor(deps.userId, ticket), price });
     try {
-      await deps.notify(text);
+      await deps.notify(text, { symbol: list[0].monitor.symbol });
     } catch (err) {
       console.error(`[trade-monitor] ${deps.userId}: alerts ${list.map((a) => a.kind).join(",")} for #${ticket} failed to send:`, err);
     }
@@ -506,6 +513,8 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
   // Account heat: the trades together, not one at a time.
   const heat = portfolioHeat(deps.userId, positions, now);
   if (heat && toggles.portfolio) hotHandMessages.push(heat);
+  // Spread spikes, low margin, stops inside the spread, the Friday close.
+  hotHandMessages.push(...safetyChecks(deps.userId, positions, now, toggles));
 
   // Exit rules (exit-rules.ts): close the trades whose armed level was reached.
   try {
@@ -599,4 +608,5 @@ export function portfolioHeat(userId: string, positions: { ticket: string; symbo
 export function resetSweepState(): void {
   feedState.clear();
   heatState.clear();
+  resetSafetyState();
 }

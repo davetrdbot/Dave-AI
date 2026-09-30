@@ -10,7 +10,8 @@ import { advanceSetup, describeSetup, getRiskSettings, listSetups, tradeExecuteW
 export interface SetupSweepDeps {
   userId: string;
   executor: TradeExecutor;
-  notify: (text: string) => Promise<void>;
+  /** `symbol`: the setup's pair -- mode 2 looks at it on the next scan. */
+  notify: (text: string, about?: { symbol: string }) => Promise<void>;
   /** Override for tests. */
   quote?: (symbol: string) => Promise<number | undefined>;
 }
@@ -43,14 +44,14 @@ export async function runSetupSweep(deps: SetupSweepDeps, now = Date.now()): Pro
     const label = `🧩 Setup ${s.symbol}`;
     if (action.kind === "expire") {
       updateSetup(deps.userId, s.id, { status: "expired", outcome: "Expired before it triggered." });
-      await deps.notify(`${label} expired without triggering: ${s.reason}`);
+      await deps.notify(`${label} expired without triggering. The idea: ${s.reason}`, { symbol: s.symbol });
     } else if (action.kind === "cancel") {
       updateSetup(deps.userId, s.id, { status: "cancelled", outcome: action.why });
-      await deps.notify(`${label} cancelled -- ${action.why}. (${s.reason})`);
+      await deps.notify(`${label} cancelled -- ${action.why}. The idea was: ${s.reason}`, { symbol: s.symbol });
     } else if (action.kind === "progress") {
       const hits = [...s.hits, { step: s.stage, at: now, price: price! }];
       const updated = updateSetup(deps.userId, s.id, { stage: action.stage, hits });
-      await deps.notify(`${label}: step ${action.stage}/${s.steps.length} done at ${price}. ${updated ? describeSetup(updated) : ""}`);
+      await deps.notify(`${label}: step ${action.stage}/${s.steps.length} done at ${price}. The idea: ${s.reason}. ${updated ? describeSetup(updated) : ""}`, { symbol: s.symbol });
     } else if (action.kind === "place") {
       const hits = [...s.hits, { step: s.stage, at: now, price: price! }];
       const risk = getRiskSettings(deps.userId);
@@ -66,11 +67,11 @@ export async function runSetupSweep(deps: SetupSweepDeps, now = Date.now()): Pro
           comment: "Dave setup",
         });
         updateSetup(deps.userId, s.id, { stage: s.steps.length, hits, status: "placed", ticket: placed.ticket, outcome: `Placed #${placed.ticket}` });
-        await deps.notify(`${label} triggered -- ${s.order.type.toUpperCase().replace("_", " ")} placed (#${placed.ticket}, ${lots} lots). ${s.reason}`);
+        await deps.notify(`${label} triggered -- ${s.order.type.toUpperCase().replace("_", " ")} placed (#${placed.ticket}, ${lots} lots). The idea: ${s.reason}`, { symbol: s.symbol });
       } catch (err) {
         const why = err instanceof Error ? err.message : String(err);
         updateSetup(deps.userId, s.id, { stage: s.steps.length, hits, status: "failed", outcome: why });
-        await deps.notify(`⚠️ ${label} triggered but MT5 refused the order: ${why}`);
+        await deps.notify(`⚠️ ${label} triggered but MT5 refused the order: ${why}. The idea was: ${s.reason}`, { symbol: s.symbol });
       }
     }
   }

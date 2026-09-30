@@ -56,11 +56,10 @@ async function main() {
   const AUTO_TP_USER = "user-auto-tp-1";
   setRiskMode(AUTO_TP_USER, "tp", "auto");
   const ctxTp: ToolContext = { userId: AUTO_TP_USER, analysis: analysisWithPrice, executor };
-  await assert.rejects(
-    () => tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, sl: 1.095, confidence: 80 }, ctxTp),
-    AutoModeRequiresComputedValueError
-  );
-  console.log("    real rejection confirmed for tpMode='auto' too");
+  // Exact risk:reward: with a stop given, the take profit is computed (never asked of the model).
+  const placedTp = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, sl: 1.095, confidence: 80 }, ctxTp)) as { tp?: number };
+  assert.ok(placedTp.tp !== undefined && placedTp.tp > 1.1002, `TP placed at the exact R:R from the stop (got ${placedTp.tp})`);
+  console.log("    TP auto + a stop: the exact R:R target is placed");
 
   console.log("\n[3] Auto mode never blocks a call where the model DID compute real sl/tp itself...\n");
   const result = (await tradeExecuteTool.execute({ symbol: "EURUSD", type: "buy", lots: 0.1, sl: 1.095, tp: 1.11, confidence: 80 }, ctx)) as { ticket: string };

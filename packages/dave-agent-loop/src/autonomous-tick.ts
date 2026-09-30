@@ -26,6 +26,7 @@ import {
   isWithinSelectedSession,
   ensureGroupsUsable,
   isMarketOpenForSymbol,
+  consumeScanRestart,
   isSlTooTight,
   getSelfPauseEnabled,
   getAnalysisConfig,
@@ -57,6 +58,9 @@ import {
   HUNT_THRESHOLD,
   setPendingSymbolOverride,
   consumePendingSymbolOverride,
+  resetScanCursor,
+  takeAlertFocus,
+  peekAlertFocus,
 } from "./autonomous-tick-state.js";
 import { isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
 import { setSelfPause, getSelfPause, MAX_SELF_PAUSE_MINUTES } from "./self-pause.js";
@@ -632,9 +636,13 @@ function buildTradeAdviceBlock(confidence: ReturnType<typeof getConfidenceSettin
   return `You are a risk taker. Find a setup and take the opportunity -- a scalp or a sniper entry, or a well-placed limit order if you don't see an immediate one. ${autoNote}`;
 }
 
+const ENTRY_ACTIONS = new Set<string>(["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"]);
+
 interface CursorSymbolResult {
   symbol: string;
   usingFallback: boolean;
+  /** This scan was started by an alert, not the rotation. `manage`: the pair has an open trade. */
+  focus?: { reason: string; manage: boolean };
 }
 
 /** Resolves the real symbol for THIS tick from the round-robin cursor, skipping past any symbol
@@ -642,7 +650,7 @@ interface CursorSymbolResult {
  *  (user, live: "whether market is closed that's for forex it shouldn't analyze that even set as
  *  fallback too") -- advancing without spending a decision call on either case, bounded so an
  *  all-closed/all-open list can't spin forever. */
-function resolveCursorSymbol(userId: string, primary: string[], fallback: string[], openSymbols: Set<string>, groupIdFor: (symbol: string, usingFallback: boolean) => string | null): CursorSymbolResult | null {
+function resolveCursorSymbol(userId: string, primary: string[], fallback: string[], openSymbols: Set<string>, groupIdFor: (symbol: string, usingFallback: boolean) => string | null, manageOnly = false): CursorSymbolResult | null {
   // Real requested-next-symbol override (user, live: the model can note "analyze SYMBOL next,
   // because REASON" on any decision, and the round-robin honors that specific symbol on the VERY
   // NEXT cycle). Consumed exactly once regardless of outcome -- a stale/invalid request never
@@ -651,6 +659,39 @@ function resolveCursorSymbol(userId: string, primary: string[], fallback: string
   // exact same real checks (still in the active group, market open, no existing position) a normal
   // round-robin symbol must pass, never skipped for an override. The round-robin cursor itself is
   // left untouched either way -- honoring an override is a one-off substitution, not a cursor jump.
+  // A restart asked for from the app, Telegram, or by switching the scan on: first pair again.
+  const restart = consumeScanRestart(userId);
+  if (restart) {
+    resetScanCursor(userId);
+    const first = primary[0] ?? fallback[0];
+    logTick(userId, `scan restarted from the first pair${first ? ` (${first})` : ""} -- requested by ${restart.source}`);
+    if (first) publishActivity(userId, "loop", "scan_restart", { symbol: first, source: restart.source });
+  }
+  // An alert on a pair (a marked level hit, a self-aware alert on a trade) comes first -- even a
+  // pair outside the active group, and even one with an open trade: that scan manages the trade.
+  const openTickets = new Set(getLastKnownState(userId).positions.map((p) => String(p.ticket)));
+  for (let f = takeAlertFocus(userId); f; f = takeAlertFocus(userId)) {
+    // An alert about a trade that has closed since: nothing left to manage.
+    const tickets = [...f.reason.matchAll(/#(\d{5,})/g)].map((m) => m[1]);
+    if (tickets.length && !tickets.some((t) => openTickets.has(t))) {
+      logTick(userId, `alert focus on ${f.symbol} dropped -- trade #${tickets[0]} is already closed`);
+      continue;
+    }
+    const hours = isMarketOpenForSymbol(f.symbol, null, new Date());
+    if (!hours.open) {
+      logTick(userId, `alert focus on ${f.symbol} skipped -- ${hours.reason}`);
+      continue;
+    }
+    const manage = openSymbols.has(f.symbol.toUpperCase());
+    if (manageOnly && !manage) {
+      logTick(userId, `alert focus on ${f.symbol} skipped -- no room for a new trade right now`);
+      continue;
+    }
+    logTick(userId, `alert focus -- analyzing ${f.symbol} now${manage ? " (open trade: manage it)" : ""}: ${f.reason.slice(0, 160)}`);
+    return { symbol: f.symbol, usingFallback: false, focus: { reason: f.reason, manage } };
+  }
+  // Only here to manage open trades (at max trades / outside the session): no new pair.
+  if (manageOnly) return null;
   const override = consumePendingSymbolOverride(userId);
   if (override) {
     const inPrimary = primary.find((s) => s.toUpperCase() === override.symbol.toUpperCase());
@@ -763,9 +804,17 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   const { userId, db, executor, provider, signal, onSequentialThinkingProgress } = deps;
 
   ensureGroupsUsable(userId);
+  // An alert on an open trade gets its scan even when no new trade may be opened (outside the
+  // session, at max trades, account gate) -- that scan only manages the trade.
+  const openNow = new Set(getLastKnownState(userId).positions.map((p) => p.symbol.toUpperCase()));
+  const tradeAlertWaiting = peekAlertFocus(userId).some((sym) => openNow.has(sym.toUpperCase()));
+  let manageOnly = false;
   if (!isWithinSelectedSession(userId)) {
-    logTick(userId, "no trade -- outside the selected trading session window");
-    return { action: "NONE", notable: false };
+    if (!tradeAlertWaiting) {
+      logTick(userId, "no trade -- outside the selected trading session window");
+      return { action: "NONE", notable: false };
+    }
+    manageOnly = true;
   }
 
   const info = getActiveGroupInfo(userId);
@@ -806,8 +855,11 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // left to the model's own judgment -- checked before the expensive multi-timeframe analysis
   // fetch, so it also saves the EA round-trips.
   if (risk.maxOpenTrades !== undefined && positions.length >= risk.maxOpenTrades) {
-    logTick(userId, `no trade -- at max open trades (${positions.length}/${risk.maxOpenTrades})`);
-    return { action: "NONE", notable: false };
+    if (!tradeAlertWaiting) {
+      logTick(userId, `no trade -- at max open trades (${positions.length}/${risk.maxOpenTrades})`);
+      return { action: "NONE", notable: false };
+    }
+    manageOnly = true;
   }
 
   // Real pre-trade account-awareness gate (prompts/trading.md "Account awareness"): even when the
@@ -820,8 +872,11 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       { maxOpenTrades: risk.maxOpenTrades }
     );
     if (!awareness.ok) {
-      logTick(userId, `no trade -- account awareness gate: ${awareness.reason}`);
-      return { action: "NONE", notable: false };
+      if (!tradeAlertWaiting) {
+        logTick(userId, `no trade -- account awareness gate: ${awareness.reason}`);
+        return { action: "NONE", notable: false };
+      }
+      manageOnly = true;
     }
   }
 
@@ -834,7 +889,11 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   }
 
   const openSymbols = new Set(positions.map((p) => p.symbol.toUpperCase()));
-  const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols, groupIdFor);
+  const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols, groupIdFor, manageOnly);
+  if (!picked && manageOnly) {
+    logTick(userId, "no trade -- no new trades allowed right now, and no alerted open trade to manage");
+    return { action: "NONE", notable: false };
+  }
   if (!picked) {
     logTick(userId, `no trade -- every symbol in the active group already has an open position or a closed market (${[...openSymbols].join(", ") || "none tracked"})`);
     return { action: "NONE", notable: false };
@@ -1053,6 +1112,12 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     tickKnowledge
       ? `WHAT YOU HAVE LEARNED AND SAVED (your own past conclusions -- guidance, not rules: your settings and the trader's instructions outrank them. Apply any whose "use when" fits this symbol right now. If one of them is the reason you keep skipping, say so with ASK rather than skipping silently cycle after cycle):\n${tickKnowledge}`
       : null,
+    picked.focus
+      ? `ALERT -- THIS SCAN WAS STARTED BY IT (act on it now, this is why you're looking at ${symbol}):\n${picked.focus.reason}\n` +
+        (picked.focus.manage
+          ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, tighten it, take a partial, or close it -- via actions/MODIFY/PARTIAL_CLOSE. No new entry on ${symbol} in this scan.`
+          : `If the level/setup is live, take the trade or arm the order now; if it isn't, SKIP with one line saying why.`)
+      : null,
     `SYMBOL: ${symbol}`,
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
     `ACCOUNT: balance=${account?.balance ?? "unknown"} equity=${account?.equity ?? "unknown"} freeMargin=${account?.freeMargin ?? "unknown"} leverage=${account?.leverage ?? "unknown"}`,
@@ -1061,7 +1126,9 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     `CONFIDENCE THRESHOLD: ${confidenceSettings.threshold}%`,
     // The setting the tick used to enforce silently without ever showing it -- see
     // buildDecisionTool's header for why its absence read as "it ignores my setting".
-    `MINIMUM RISK:REWARD: ${minRiskReward}:1 -- a HARD GATE. Any BUY/SELL/pending order whose target pays less than ${minRiskReward}x its stop risk is REFUSED before it reaches the broker. Size your stop and target to genuine levels and check the ratio clears ${minRiskReward}:1; if it can't, the entry is wrong -- SKIP it.`,
+    risk.tpMode === "on"
+      ? `MINIMUM RISK:REWARD: ${minRiskReward}:1 -- a HARD GATE. Any BUY/SELL/pending order whose target pays less than ${minRiskReward}x its stop risk is REFUSED before it reaches the broker. Size your stop and target to genuine levels and check the ratio clears ${minRiskReward}:1; if it can't, the entry is wrong -- SKIP it.`
+      : `RISK:REWARD: exactly 1:${minRiskReward} -- the take profit is placed AUTOMATICALLY at ${minRiskReward}x the stop's distance from the entry. You choose the entry and a stop at a real level; if the ${minRiskReward}x target from that stop isn't realistic, the entry is wrong -- SKIP it.`,
     buildTradeAdviceBlock(confidenceSettings),
     // Real gap fixed (user, live: "it doesn't know the pending orders it just place and the
     // active" / wants position info shown "when it knows that the trade it opened is already
@@ -1376,6 +1443,11 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   await runSideActions(decision);
 
   logTick(userId, `${symbol}: model decided ${decision.action}${decision.confidence !== undefined ? ` (confidence ${decision.confidence}%)` : ""} -- ${decision.reason ?? decision.question ?? "no reason given"}`);
+  // A scan started to manage an open trade never stacks a second entry on the same pair.
+  if (picked.focus?.manage && ENTRY_ACTIONS.has(decision.action) && (decision.symbol ?? symbol).toUpperCase() === symbol.toUpperCase()) {
+    logTick(userId, `${symbol}: alert scan -- a new ${decision.action} on a pair with an open trade is not placed; managing the open trade only`);
+    decision = { ...decision, action: "SKIP", reason: `(new entry not placed -- this scan manages the open ${symbol} trade) ${decision.reason ?? ""}` };
+  }
 
   // Real requested-next-symbol override -- can accompany ANY decision (BUY/SELL/SKIP/etc, not a
   // separate action), persisted right after the real decision is recorded so resolveCursorSymbol
@@ -1396,8 +1468,9 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   }
 
   // The cursor always advances after a real decision, regardless of outcome -- this is what
-  // keeps the loop moving through the whole group instead of getting stuck on one symbol.
-  advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+  // keeps the loop moving through the whole group instead of getting stuck on one symbol. An
+  // alert scan was an extra look, not the rotation's turn: the rotation stays where it was.
+  if (!picked.focus) advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
 
   if (decision.action === "ASK") {
     if (!decision.question) return { action: "NONE", notable: false };
@@ -1502,7 +1575,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     }
     const openPosition = positions.find((p) => p.ticket === decision.ticket);
     if (!openPosition) {
-      logTick(userId, `${symbol}: MODIFY rejected -- ticket #${decision.ticket} isn't a real open position`);
+      logTick(userId, `${symbol}: MODIFY rejected -- ticket #${decision.ticket} isn't a real open position (closed, or never existed)`);
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `MODIFY given an unknown ticket #${decision.ticket}` });
       return { action: "NONE", notable: false };
     }

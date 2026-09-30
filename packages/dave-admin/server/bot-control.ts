@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { requestScanRestart } from "@dave/trading";
 
 /**
  * Start/stop and scan-interval control, readable and writable from the admin process.
@@ -83,6 +84,8 @@ export function setBotRunning(userId: string, running: boolean, source?: Control
   const changed = isBotRunning(userId) !== running;
   writeJsonFile(tradingFlagPath(userId, "autonomous-trading-enabled"), running);
   if (changed && source) appendControlNotice(userId, running ? "trading-started" : "trading-stopped", source);
+  // Switching the scan on starts it from the first pair of the main group.
+  if (changed && running) requestScanRestart(userId, "scan switched on");
 }
 
 /** Whether a normal decision may auto-execute. Defaults TRUE, matching the bot side -- a missing

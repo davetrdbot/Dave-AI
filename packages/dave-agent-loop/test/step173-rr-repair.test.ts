@@ -100,13 +100,13 @@ console.log("[1] SELL with its stop BELOW the entry -> sent back -> corrected ->
   assert.equal(prompts.length, 2, "exactly one retry");
   assert.match(prompts[1], /REFUSED BEFORE REACHING THE BROKER: the stop loss \(1\.09\) is on the wrong side/);
   assert.equal(placedOrders.length, 1, "the corrected trade is placed");
-  assert.deepEqual([placedOrders[0].type, placedOrders[0].sl, placedOrders[0].tp], ["sell", 1.105, 1.08]);
+  assert.deepEqual([placedOrders[0].type, placedOrders[0].sl, placedOrders[0].tp], ["sell", 1.105, 1.09], "TP at exactly the R:R from the stop (exact R:R)");
   assert.equal(outcome.action, "SELL");
   await ea.stop();
 }
 console.log("   ✓\n");
 
-console.log("[2] Still below the floor after the retry -> refused, never placed, honest message");
+console.log("[2] Exact R:R: a target short of the ratio is replaced, not refused -- placed first time");
 {
   const OWNER = "rr-still-bad";
   upsertGroup(OWNER, { id: "g", name: "G", symbols: ["EURUSD"] });
@@ -116,9 +116,10 @@ console.log("[2] Still below the floor after the retry -> refused, never placed,
   const { executor, placedOrders } = makeExecutor();
   const { provider, prompts } = scripted([{ ...base, action: "SELL", sl: 1.11, tp: 1.095 }]);
   const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
-  assert.equal(prompts.length, 2, "one retry, never a loop");
-  assert.equal(placedOrders.length, 0);
-  assert.match(outcome.message ?? "", /even after one correction/);
+  assert.equal(prompts.length, 1, "no retry needed");
+  assert.equal(placedOrders.length, 1);
+  assert.equal(placedOrders[0].tp, 1.08, "10 pips risked from the 1.1000 fill, target exactly 20 pips away");
+  assert.equal(outcome.action, "SELL");
   await ea.stop();
 }
 console.log("   ✓\n");

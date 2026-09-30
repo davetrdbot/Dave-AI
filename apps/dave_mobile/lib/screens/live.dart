@@ -244,6 +244,27 @@ class _LiveScreenState extends State<LiveScreen> {
     }
   }
 
+  /// "Restart from first pair": the next scan starts from the main group's first pair.
+  Future<void> _restartScan() async {
+    final scope = AppScope.of(context);
+    try {
+      final bot = await scope.api.updateBot(restartScan: true);
+      if (!mounted) return;
+      setState(() => _bot = bot);
+      HapticFeedback.mediumImpact();
+      await showCupertinoDialog<void>(
+        context: context,
+        builder: (ctx) => CupertinoAlertDialog(
+          title: const Text('Scan restarted'),
+          content: const Text('The next scan starts from the first pair of your main group.'),
+          actions: [CupertinoDialogAction(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+        ),
+      );
+    } catch (e) {
+      if (mounted) await showError(context, e);
+    }
+  }
+
   /// What Dave is doing right now, read from the newest loop events.
   _Now _now() {
     // Dave paused himself (PAUSE decision): a countdown beats anything else while it lasts.
@@ -353,7 +374,7 @@ class _LiveScreenState extends State<LiveScreen> {
         slivers: [
           CupertinoSliverNavigationBar(largeTitle: const Text('Live'), heroTag: 'nav:Live', trailing: _PeriodButton(key: const ValueKey('live-period'), label: _periodLabel(), onTap: _periodMenu)),
           CupertinoSliverRefreshControl(onRefresh: _load),
-          SliverToBoxAdapter(child: _NowCard(now: now, live: _live, bot: _bot, onRunning: _setRunning)),
+          SliverToBoxAdapter(child: _NowCard(now: now, live: _live, bot: _bot, onRunning: _setRunning, onRestart: _restartScan)),
           if (_error != null)
             SliverToBoxAdapter(
               child: Padding(
@@ -423,11 +444,12 @@ class _Now {
 
 /// The hero: what Dave is doing this second, with the on/off switch.
 class _NowCard extends StatelessWidget {
-  const _NowCard({required this.now, required this.live, required this.bot, required this.onRunning});
+  const _NowCard({required this.now, required this.live, required this.bot, required this.onRunning, required this.onRestart});
   final _Now now;
   final bool live;
   final BotState? bot;
   final void Function(bool) onRunning;
+  final VoidCallback onRestart;
 
   @override
   Widget build(BuildContext context) {
@@ -479,6 +501,22 @@ class _NowCard extends StatelessWidget {
             ]),
           ),
         ),
+        if (bot != null) ...[
+          const SizedBox(height: Space.s2),
+          Center(
+            child: CupertinoButton(
+              key: const Key('restart-scan'),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              minimumSize: const Size(0, 36),
+              onPressed: onRestart,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(CupertinoIcons.arrow_counterclockwise, size: 15, color: ink.withValues(alpha: 0.85)),
+                const SizedBox(width: 6),
+                Text('Restart from first pair', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: ink.withValues(alpha: 0.85))),
+              ]),
+            ),
+          ),
+        ],
       ]),
     );
   }
@@ -580,6 +618,7 @@ class _EventRow extends StatelessWidget {
       'journal' => (CupertinoIcons.book_fill, purple, 'Journal on ${e.text('symbol')}', e.text('opinion')),
       'cycle_start' => (CupertinoIcons.arrow_2_circlepath, grey, 'Scan started', null),
       'cycle_skip' => (CupertinoIcons.pause_circle, grey, 'Scan skipped', e.text('reason')),
+      'scan_restart' => (CupertinoIcons.arrow_counterclockwise, blue, 'Scan restarted from ${e.text('symbol')}', e.text('source')),
       'cycle_end' => e.data['error'] != null
           ? (CupertinoIcons.exclamationmark_triangle_fill, red, 'Scan failed', e.text('error'))
           : (CupertinoIcons.flag_fill, e.text('action') == 'NONE' ? grey : green, e.text('action') == 'NONE' ? 'Scan done · no trade' : 'Scan done · ${e.text('action')} ${e.text('symbol')}',

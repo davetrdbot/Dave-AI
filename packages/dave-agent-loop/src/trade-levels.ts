@@ -35,7 +35,7 @@ export interface TradeLevels {
   /** What the ratio is measured against: tp, or the planned target when TP is off. */
   rrTarget?: number;
   slSource: "fixed" | "model" | "none";
-  tpSource: "fixed" | "model" | "planned" | "none";
+  tpSource: "fixed" | "model" | "planned" | "rr" | "none";
   ratio?: number;
   /** Why the trade can't go ahead as given (plain words, shown to the model and the trader). */
   problem?: string;
@@ -105,6 +105,16 @@ export function resolveTradeLevels(input: {
     out.tp = round(entry + dir * risk.tpValue * pip, entry);
     out.rrTarget = out.tp;
     out.tpSource = "fixed";
+  } else if (out.sl !== undefined && minRiskReward > 0) {
+    // Exact risk:reward (the trader: "exact R:R, not minimum"): the target is placed at exactly the
+    // stop's distance times the ratio. Whatever target the model wrote is replaced.
+    const risked = dir * (entry - out.sl);
+    if (!(risked > 0)) return { ...out, problem: `the stop loss (${out.sl}) is on the wrong side of the ${buy ? "BUY" : "SELL"} entry (${entry})` };
+    out.tp = round(entry + dir * risked * minRiskReward, entry);
+    out.rrTarget = out.tp;
+    out.tpSource = "rr";
+    out.ratio = minRiskReward;
+    return out;
   } else if (risk.tpMode === "auto") {
     if (decision.tp === undefined) return { ...out, problem: "no take profit was given (TP is set to Dave decides)" };
     out.tp = decision.tp;
@@ -151,8 +161,10 @@ export function levelsGuidance(risk: Pick<RiskSettings, "slMode" | "slValue" | "
   if (risk.slMode === "on") parts.push(`your stop is FIXED at ${risk.slValue} pips from the entry (set automatically -- don't give sl)`);
   else if (risk.slMode === "auto") parts.push("you set the stop (sl) where the idea is proven wrong");
   else parts.push("there's no fixed stop rule (SL off) -- still give sl where the idea is proven wrong");
-  if (risk.tpMode === "on") parts.push(`the target is FIXED at ${risk.tpValue} pips (set automatically)`);
-  else if (risk.tpMode === "auto") parts.push("you set the take profit (tp)");
-  else parts.push(`there's no fixed target rule (TP off) -- give tp to place one, or at least name your expected target (target), which the floor is checked on`);
-  return `LEVELS: ${parts.join("; ")}. Market orders are measured from the live price they fill at (ask for a buy, bid for a sell), pending orders from their entry. The target must be at least ${minRiskReward}x as far from the entry as the stop, or the trade is refused.`;
+  if (risk.tpMode === "on") {
+    parts.push(`the target is FIXED at ${risk.tpValue} pips (set automatically)`);
+    return `LEVELS: ${parts.join("; ")}. Market orders are measured from the live price they fill at (ask for a buy, bid for a sell), pending orders from their entry. The target must be at least ${minRiskReward}x as far from the entry as the stop, or the trade is refused.`;
+  }
+  parts.push(`the take profit is set AUTOMATICALLY at exactly 1:${minRiskReward} -- ${minRiskReward}x the stop's distance from the entry -- so any tp you give is replaced; choose the stop so that target is realistic, or skip`);
+  return `LEVELS: ${parts.join("; ")}. Market orders are measured from the live price they fill at (ask for a buy, bid for a sell), pending orders from their entry.`;
 }

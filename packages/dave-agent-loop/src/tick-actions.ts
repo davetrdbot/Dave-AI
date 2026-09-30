@@ -1,5 +1,5 @@
 import type { TradeExecutor } from "@dave/trading";
-import { tradeModify, partialClose, fullClose, deletePendingOrder } from "@dave/trading";
+import { tradeModify, partialClose, fullClose, deletePendingOrder, breakevenStop } from "@dave/trading";
 import { ALL_ANALYSIS_ENDPOINTS } from "@dave/trading";
 
 /**
@@ -35,6 +35,9 @@ export interface TickPositionLike {
   currentPrice?: number;
   sl?: number;
   tp?: number;
+  spread?: number;
+  digits?: number;
+  stopsLevel?: number;
 }
 
 export const ACTIONS_SCHEMA = {
@@ -147,9 +150,9 @@ async function runOne(executor: TradeExecutor, a: TickAction, positions: TickPos
     }
     // BREAKEVEN -- the same guards as the chat's set_breakeven tool.
     const buy = p.type.toLowerCase().startsWith("buy");
-    const level = buy ? p.openPrice + (a.offset ?? 0) : p.openPrice - (a.offset ?? 0);
-    const price = p.currentPrice;
-    if (price === undefined || (buy ? price <= level : price >= level)) return { action: a, ok: false, text: `breakeven #${a.ticket} ${p.symbol}: not in profit past ${level} yet (now ${price ?? "unknown"})` };
+    const be = breakevenStop({ side: buy ? "buy" : "sell", openPrice: p.openPrice, currentPrice: p.currentPrice, spread: p.spread, digits: p.digits, stopsLevel: p.stopsLevel, offset: a.offset });
+    const level = be.level;
+    if (!be.ok) return { action: a, ok: false, text: `breakeven #${a.ticket} ${p.symbol}: ${be.reason}` };
     if (p.sl !== undefined && p.sl !== 0 && (buy ? p.sl >= level : p.sl <= level)) return { action: a, ok: false, text: `breakeven #${a.ticket} ${p.symbol}: stop already at ${p.sl}` };
     await tradeModify(executor, a.ticket, { sl: level });
     return { action: a, ok: true, text: `🛡 #${a.ticket} ${p.symbol}: stop moved to breakeven ${level}` };

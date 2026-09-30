@@ -3,6 +3,7 @@ import { getRiskSettings } from "@dave/trading";
 import { getTodaysWinRateSummary } from "@dave/feedback";
 import { getLastKnownAccountSnapshot } from "@dave/ea-bridge";
 import { stopOrPanic } from "@dave/safety";
+import { publishActivity } from "./activity-bus.js";
 
 /**
  * Item 6 real gap fixed (user's reference pattern: "drawdown cap (auto-pauses trading entirely
@@ -48,9 +49,11 @@ export async function enforceDrawdownLimit(db: DaveDatabase, userId: string, not
   if (notifiedOn.get(userId) === today) return true; // already paused + notified today
   notifiedOn.set(userId, today);
   stopOrPanic(userId, "stop");
-  await notify(
+  const text =
     `🛑 Daily loss limit hit -- down ${result.lossPct!.toFixed(1)}% today (limit ${result.limitPct}%). ` +
-      `Autonomous trading is now paused for real, not just a warning. /start_trading to resume once you're ready.`
-  );
+    `Autonomous trading is now paused for real, not just a warning. /start_trading to resume once you're ready.`;
+  // Also on the Live feed, and so into Dave's own next look at the account.
+  publishActivity(userId, "background", "drawdown", { text });
+  await notify(text);
   return true;
 }

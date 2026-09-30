@@ -40,7 +40,12 @@ export type AlertCategory =
   | "momentum" //     price racing toward the stop (0.5R+ against in ~3 min)
   | "no_stop" //      a trade with no stop loss
   | "portfolio" //    total floating loss / several losers at once
-  | "feed"; //        MT5 stopped reporting -- the monitor is blind
+  | "feed" //         MT5 stopped reporting -- the monitor is blind
+  // Safety checks (the trader: "add other safe alert too").
+  | "spread_spike" // the spread on an open trade jumped to 3x its normal size
+  | "margin_low" //   margin level under 200%, then under 120%
+  | "stop_too_tight" // the stop sits inside spread + the broker's minimum distance
+  | "market_close"; // forex trade still open in the last hour before the weekend close
 
 export const ALERT_CATEGORIES: { id: AlertCategory; label: string }[] = [
   { id: "loss_duration", label: "Loss-duration nudges (5m / 10m in the red)" },
@@ -63,6 +68,10 @@ export const ALERT_CATEGORIES: { id: AlertCategory; label: string }[] = [
   { id: "no_stop", label: "No stop loss on a trade" },
   { id: "portfolio", label: "Account heat (total floating loss, losers together)" },
   { id: "feed", label: "MT5 stopped reporting (monitor blind)" },
+  { id: "spread_spike", label: "Spread spike on an open trade (3x normal)" },
+  { id: "margin_low", label: "Margin level low (under 200%, then 120%)" },
+  { id: "stop_too_tight", label: "Stop too tight (inside the spread)" },
+  { id: "market_close", label: "Market closing with a trade open (Friday)" },
 ];
 
 const VALID = new Set<AlertCategory>(ALERT_CATEGORIES.map((c) => c.id));
@@ -91,6 +100,10 @@ function defaultToggles(): AlertToggles {
     no_stop: true,
     portfolio: true,
     feed: true,
+    spread_spike: true,
+    margin_low: true,
+    stop_too_tight: true,
+    market_close: true,
   };
 }
 

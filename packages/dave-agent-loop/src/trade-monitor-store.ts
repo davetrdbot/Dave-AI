@@ -127,6 +127,8 @@ export const DEEP_LOSS_SL_PROGRESS = 0.5;
 /** Favorable move (in multiples of the entry-to-SL risk) at which the stop should go to breakeven.
  *  1.0 = the trade is up as much as it originally risked -- the classic "lock it in risk-free" point. */
 export const BREAKEVEN_R = 1.0;
+/** After PROFIT_STABLE_MS in profit, breakeven already at this share of 1R. */
+export const EARLY_BREAKEVEN_R = 0.5;
 /** How close to entry (as a fraction of the entry-to-SL risk) still counts as "flat / near breakeven". */
 export const FLAT_BAND_FRACTION = 0.15;
 /** A trade sitting flat near breakeven this long is tying up capital doing nothing. */
@@ -617,10 +619,22 @@ export function advanceMonitor(
     if (pnl > 0 && m.profitStartedAt !== undefined) {
       const inProfitFor = now - m.profitStartedAt;
 
-      // 1. Profit stability -- in profit ~5 min: is the original plan still valid?
+      // 1. Profit stability -- in profit ~5 min: is the original plan still valid? (Dave reviews it
+      //    on the spot -- self-aware-review.ts.) And protect it: the trader, live, "every time a
+      //    trade is in profit for a long time it suddenly turns and hits the SL". A trade green for
+      //    5 min and at least half-way to 1R gets its stop to true breakeven then, not only at 1R.
       if (inProfitFor >= PROFIT_STABLE_MS && !m.alerts.profitStable) {
         m.alerts.profitStable = true;
         alerts.push({ kind: "profitStable", monitor: m });
+        if (price !== undefined && m.sl !== undefined && !m.alerts.breakeven) {
+          const r1 = Math.abs(m.openPrice - (m.initialSl ?? m.sl));
+          const favorable = m.direction === "buy" ? price - m.openPrice : m.openPrice - price;
+          const protectedAlready = m.direction === "buy" ? m.sl >= m.openPrice : m.sl <= m.openPrice;
+          if (r1 > 0 && !protectedAlready && favorable >= r1 * EARLY_BREAKEVEN_R) {
+            m.alerts.breakeven = true;
+            alerts.push({ kind: "breakeven", monitor: m });
+          }
+        }
       }
       // 5. Quick profit check -- a lighter "is this still heading for the original target?" later on.
       if (inProfitFor >= QUICK_PROFIT_CHECK_MS && !m.alerts.quickProfitCheck) {

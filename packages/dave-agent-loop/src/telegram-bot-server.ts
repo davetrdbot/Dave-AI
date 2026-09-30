@@ -2,7 +2,7 @@ import type { Server } from "node:http";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DaveDatabase } from "@dave/db";
-import type { TradeExecutor } from "@dave/trading";
+import { requestScanRestart, type TradeExecutor } from "@dave/trading";
 import { type ContentBlock, type CompletionMessage } from "@dave/brain";
 import { TelegramClient, createTelegramWebhookServer, startUpdateDelivery, writeTelegramStatus, registerDefaultCommandMenu, updateBotDisplayInfo, isDaveCommand, looksLikeSlashCommand, markdownToTelegramHtml, sendSelfDeletingMessage, chunkForTelegram, getActiveIndicator, setActiveIndicator, clearActiveIndicator, withThinkingIndicator, type ActionType, type TelegramUpdate, type TelegramMessage } from "@dave/telegram";
 import { resetConsolidationFailures } from "@dave/memory";
@@ -35,6 +35,7 @@ import { deliverDueReminders } from "./reminder-delivery.js";
 import { setupGaps } from "./setup-gaps.js";
 import { tryHandleMt5Entry } from "./mt5-cloud-flow.js";
 import { publishActivity } from "./activity-bus.js";
+import { focusScanOnAlert } from "./alert-focus.js";
 import { chatEventPublisher, newTurnId, publishFinal } from "./app-chat.js";
 import { tryHandleNousEntry } from "./nous/flow.js";
 import { startNous } from "./nous/service.js";
@@ -1160,6 +1161,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   clearBusy(deps.ownerUserId);
 
   if (isAutonomousTradingEnabled(deps.ownerUserId)) {
+    // A fresh start scans from the first pair of the main group again (the trader: "start from VOL_10").
+    requestScanRestart(deps.ownerUserId, "bot start");
     // Real bug fixed (user, live: three straight "previous autonomous cycle is still running"
     // skips after this exact resume block ran, one full minute apart, with zero real cycles
     // executing -- confirmed via Railway logs on the deploy that shipped this same file). Root
@@ -1220,8 +1223,9 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
   startWatchSweep({
     userId: deps.ownerUserId,
     analysis: createEaAnalysisSource(deps.ownerUserId),
-    notify: async (text) => {
+    notify: async (text, about) => {
       publishActivity(deps.ownerUserId, "background", "level_hit", { text });
+      if (about) focusScanOnAlert(deps.ownerUserId, about.symbol, text);
       const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
       if (chatId === undefined) return;
       await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
@@ -1245,9 +1249,10 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       provider: () => modelConfigProvider(deps.db, deps.ownerUserId, () => undefined, "background"),
       analysis: createEaAnalysisSource(deps.ownerUserId),
     },
-    notify: async (text) => {
+    notify: async (text, about) => {
       // Also in the app's Live tab (the trader: "the self aware messages should be in the live").
       publishActivity(deps.ownerUserId, "background", "self_aware", { text });
+      if (about) focusScanOnAlert(deps.ownerUserId, about.symbol, text);
       const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
       if (chatId === undefined) return;
       await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
@@ -1277,8 +1282,9 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     startSetupSweep({
       userId: deps.ownerUserId,
       executor: deps.executor,
-      notify: async (text) => {
+      notify: async (text, about) => {
         publishActivity(deps.ownerUserId, "background", "setup", { text });
+        if (about) focusScanOnAlert(deps.ownerUserId, about.symbol, text);
         const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
         if (chatId !== undefined) await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);
       },

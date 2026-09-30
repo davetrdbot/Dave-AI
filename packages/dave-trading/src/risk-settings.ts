@@ -251,8 +251,8 @@ export function setSequentialThinkingEnabled(userId: string, enabled: boolean): 
 
 /** How hard the sequential-thinking pass works (the trader: "so it can think like high"). Stored
  *  next to the on/off switch; "medium" is the original 5-step pass. */
-export type ThinkingEffort = "low" | "medium" | "high" | "max";
-export const THINKING_EFFORTS: ThinkingEffort[] = ["low", "medium", "high", "max"];
+export type ThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export const THINKING_EFFORTS: ThinkingEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
 export function getSequentialThinkingEffort(userId: string): ThinkingEffort {
   const path = sequentialThinkingEnabledPath(userId);

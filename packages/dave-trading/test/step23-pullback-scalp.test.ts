@@ -79,7 +79,7 @@ const out = (await tool.execute(
   { symbol: "VOL_80", type: "sell_limit", lots: 0.02, price: 110, sl: 115, tp: 95, confidence: 80, reason: "sell the premium zone", pullback_scalp: { sl: 97, tp2: 112 } },
   { userId: "default", analysis, executor } as never,
 )) as { ticket: string; pullbackScalp?: { placed: boolean; summary: string } };
-assert.deepEqual(sent.map((o) => [o.type, o.price ?? null, o.tp]), [["sell_limit", 110, 95], ["buy", null, 110]]);
+assert.deepEqual(sent.map((o) => [o.type, o.price ?? null, o.tp]), [["sell_limit", 110, 105], ["buy", null, 110]], "the limit's TP at exactly 1:R:R from its stop");
 assert.equal(out.pullbackScalp?.placed, true);
 assert.match(out.pullbackScalp!.summary, /SL 97 -- banking \$20 at a time.*limit 110/);
 console.log("   " + out.pullbackScalp!.summary.replace(/\n/g, "\n   "));

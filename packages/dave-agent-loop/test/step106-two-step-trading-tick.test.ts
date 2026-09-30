@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getMinRiskReward } from "@dave/trading";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -227,7 +228,10 @@ async function main() {
         assert.equal(placed.type, c.expectedMarketType, `${c.action} with entry ${c.entryPassed} already reached/passed by live price ${LIVE} must convert to market ${c.expectedMarketType} (got ${placed.type})`);
         assert.equal(placed.price, undefined, `${c.action} converted to market must not carry the stale pending price`);
         assert.equal(placed.sl, sl, `${c.action} conversion must keep sl exactly as decided`);
-        assert.equal(placed.tp, tp, `${c.action} conversion must keep tp exactly as decided`);
+        // Exact risk:reward: the take profit is placed at exactly R:R times the stop's distance from the fill.
+        const fill = c.expectedMarketType === "buy" ? LIVE + 0.0002 : LIVE;
+        const rr = getMinRiskReward(OWNER);
+        assert.ok(Math.abs(Math.abs((placed.tp as number) - fill) / Math.abs(fill - sl) - rr) < 0.05, `${c.action}: tp ${placed.tp} at exactly 1:${rr} from the fill (model wrote ${tp})`);
         assert.ok(outcome.message?.includes("placed as market"), `trade-placed message must note the conversion (got: "${outcome.message}")`);
         console.log(`    ${c.action} entry=${c.entryPassed} (passed) -> ${placed.type}, sl=${placed.sl}, tp=${placed.tp} -- confirmed`);
         await ea.stop();
@@ -262,7 +266,8 @@ async function main() {
         assert.equal(placed.type, c.action.toLowerCase(), `${c.action} with entry ${c.entryNotPassed} NOT yet reached by live price ${LIVE} must be placed exactly as decided, unconverted (got ${placed.type})`);
         assert.equal(placed.price, c.entryNotPassed, `${c.action} unconverted must keep its real entry price`);
         assert.equal(placed.sl, sl);
-        assert.equal(placed.tp, tp);
+        // Exact risk:reward from the pending entry.
+        assert.ok(Math.abs(Math.abs((placed.tp as number) - c.entryNotPassed) / Math.abs(c.entryNotPassed - sl) - getMinRiskReward(OWNER)) < 0.05, `tp ${placed.tp} at exactly the R:R from the entry (model wrote ${tp})`);
         assert.ok(!outcome.message?.includes("placed as market"), `an unconverted pending order's message must NOT claim a market conversion (got: "${outcome.message}")`);
         console.log(`    ${c.action} entry=${c.entryNotPassed} (not passed) -> ${placed.type} (unconverted) -- confirmed`);
         await ea.stop();

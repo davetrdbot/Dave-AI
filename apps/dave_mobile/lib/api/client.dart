@@ -185,13 +185,14 @@ class DaveApi {
 
   Future<BotState> bot() async => BotState.fromJson(await _send(() => _http.get(_url('/api/app/bot'), headers: _headers)));
 
-  Future<BotState> updateBot({bool? running, bool? executionEnabled, int? intervalMinutes}) async {
+  Future<BotState> updateBot({bool? running, bool? executionEnabled, int? intervalMinutes, bool? restartScan}) async {
     await _send(() => _http.post(_url('/api/app/bot'),
         headers: {..._headers, 'content-type': 'application/json'},
         body: jsonEncode({
           'running': ?running,
           'executionEnabled': ?executionEnabled,
           'intervalMinutes': ?intervalMinutes,
+          'restartScan': ?restartScan,
         })));
     return bot();
   }

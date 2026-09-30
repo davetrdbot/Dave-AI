@@ -30,7 +30,8 @@ export interface WatchSweepDeps {
   analysis: AnalysisSource;
   /** Sends the alert. Kept as a callback so this module never imports a Telegram client, and so a
    *  test can assert exactly what would have been sent. */
-  notify: (text: string) => Promise<void>;
+  /** `symbol`: the pair whose level was hit -- mode 2 looks at it on the next scan. */
+  notify: (text: string, about?: { symbol: string }) => Promise<void>;
 }
 
 interface PriceQuote {
@@ -83,7 +84,7 @@ export async function runWatchSweep(deps: WatchSweepDeps): Promise<BackgroundWat
     if (!triggered) continue;
     fired.push(triggered);
     try {
-      await deps.notify(buildWatchTriggeredMessage(triggered));
+      await deps.notify(buildWatchTriggeredMessage(triggered), { symbol: triggered.symbol });
     } catch (err) {
       console.error(`[watch-sweep] ${deps.userId}: watch ${watch.id} fired but the alert failed to send:`, err);
     }
