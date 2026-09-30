@@ -1,6 +1,7 @@
 import type { Provider, ToolSpec } from "@dave/brain";
 import {
   pendingDueDecisions,
+  lessonsOwed,
   gradeDecision,
   settleDecision,
   describeVerdict,
@@ -86,7 +87,8 @@ export async function settleDueDecisions(opts: { userId: string; analysis: Analy
   const now = opts.now ?? Date.now();
   const due = pendingDueDecisions(userId, now);
   const result: GradingResult = { settled: [], expired: 0, lessons: 0 };
-  if (!due.length) return result;
+  const owed = lessonsOwed(userId, now);
+  if (!due.length && !(opts.provider && owed.length)) return result;
   const rr = Math.min(3, Math.max(1, getMinRiskReward(userId)));
 
   // Too old to grade from the EA's candle depth.
@@ -117,7 +119,11 @@ export async function settleDueDecisions(opts: { userId: string; analysis: Analy
   }
 
   // Lessons for the calls that went wrong.
-  const notable = result.settled.filter((d) => d.verdict === "missed_long" || d.verdict === "missed_short" || d.verdict === "bad_call").slice(0, 6);
+  const fresh = result.settled.filter((d) => d.verdict === "missed_long" || d.verdict === "missed_short" || d.verdict === "bad_call");
+  // Owed ones first (they've waited), then this run's. Every one is marked owed until its lesson
+  // is actually written -- a failed model call no longer loses it for good.
+  for (const d of fresh) settleDecision(userId, d.id, { lessonPending: true }, now);
+  const notable = [...owed.filter((o) => !fresh.some((f) => f.id === o.id)), ...fresh].slice(0, 6);
   if (opts.provider && notable.length) {
     try {
       const user = notable
@@ -139,7 +145,7 @@ export async function settleDueDecisions(opts: { userId: string; analysis: Analy
         const d = notable.find((x) => x.id === it.id);
         if (!d || typeof it.lesson !== "string" || it.lesson.trim().length < 8) continue;
         const lesson = it.lesson.replace(/\s+/g, " ").trim().slice(0, 300);
-        settleDecision(userId, d.id, { lesson, neuron: it.neuron }, now);
+        settleDecision(userId, d.id, { lesson, neuron: it.neuron, lessonPending: false }, d.settledAt ?? now);
         d.lesson = lesson;
         try {
           learnFact(userId, it.neuron || "execution", `${d.symbol}: ${lesson}`, { evidence: `${d.action} ${new Date(d.at).toISOString().slice(0, 16)} -- ${describeVerdict(d)}`, source: "reflection", strength: 2 });

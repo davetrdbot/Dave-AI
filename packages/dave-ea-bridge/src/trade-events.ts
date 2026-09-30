@@ -32,6 +32,8 @@ export type TradeEvent =
       openPrice: number;
       sl?: number;
       tp?: number;
+      /** Opened by Dave (EA 3.x magic-number match); undefined from older EAs. */
+      byDave?: boolean;
     }
   | {
       id: number;
@@ -42,6 +44,8 @@ export type TradeEvent =
       /** Realised P&L when the EA reported it; the last known floating P&L otherwise. */
       pnl?: number;
       reason: EaClosedPosition["reason"];
+      /** Opened by Dave -- see the opened event; undefined when unknown. */
+      byDave?: boolean;
     }
   | {
       /** One of Dave's own reminders firing (see dave-workers/reminders.ts). Rides this same
@@ -114,9 +118,13 @@ export function appendTradeEvents(userId: string, incoming: NewTradeEvent[], now
   const closes = added.filter((e): e is Extract<TradeEvent, { type: "closed" }> => e.type === "closed");
   if (closes.length > 0) {
     const sideOf = new Map(log.events.flatMap((e) => (e.type === "opened" ? [[e.ticket, e.side] as const] : [])));
+    const openedByDave = new Map(log.events.flatMap((e) => (e.type === "opened" && e.byDave !== undefined ? [[e.ticket, e.byDave] as const] : [])));
     appendClosedTrades(
       userId,
-      closes.map((c) => ({ ticket: c.ticket, symbol: c.symbol, side: sideOf.get(c.ticket), pnl: c.pnl, reason: c.reason, closedAt: c.at })),
+      closes.map((c) => {
+        const byDave = c.byDave ?? openedByDave.get(c.ticket);
+        return { ticket: c.ticket, symbol: c.symbol, side: sideOf.get(c.ticket), pnl: c.pnl, reason: c.reason, closedAt: c.at, ...(byDave !== undefined ? { byDave } : {}) };
+      }),
     );
   }
   if (log.events.length > TRADE_EVENT_LOG_CAP) log.events = log.events.slice(-TRADE_EVENT_LOG_CAP);
@@ -132,6 +140,8 @@ export interface ClosedTradeRecord {
   pnl?: number;
   reason: EaClosedPosition["reason"];
   closedAt: number;
+  /** Opened by Dave (EA 3.x); undefined for closes recorded before this was known. */
+  byDave?: boolean;
 }
 
 /**
@@ -196,6 +206,14 @@ export function latestTradeEventId(userId: string): number {
  * every position already open in the terminal would look newly opened. That would greet a
  * freshly paired phone with a burst of "opened" notifications for trades that are hours old.
  */
+/** Dave's OWN call: placed by the EA for Dave, and not a copied signal (Nous trades carry the
+ *  comment "Nous signal"). This is what his self-improvement scores -- never the trader's own or
+ *  copied trades. */
+function ownCall(p: EaPosition): boolean | undefined {
+  if (p.byDave === undefined) return undefined;
+  return p.byDave && !/^nous/i.test(p.comment ?? "");
+}
+
 export function deriveTradeEvents(input: {
   previous: EaPosition[];
   current: EaPosition[];
@@ -205,24 +223,26 @@ export function deriveTradeEvents(input: {
 }): NewTradeEvent[] {
   const out: NewTradeEvent[] = [];
   const prevTickets = new Set(input.previous.map((p) => p.ticket));
+  const prevByDave = new Map(input.previous.flatMap((p) => (p.byDave !== undefined ? [[p.ticket, ownCall(p)!] as const] : [])));
   const currTickets = new Set(input.current.map((p) => p.ticket));
 
   if (!input.isFirstReport) {
     for (const p of input.current) {
       if (prevTickets.has(p.ticket)) continue;
-      out.push({ type: "opened", ticket: p.ticket, symbol: p.symbol, side: p.type, lots: p.lots, openPrice: p.openPrice, sl: p.sl, tp: p.tp });
+      out.push({ type: "opened", ticket: p.ticket, symbol: p.symbol, side: p.type, lots: p.lots, openPrice: p.openPrice, sl: p.sl, tp: p.tp, ...(p.byDave !== undefined ? { byDave: ownCall(p) } : {}) });
     }
   }
 
   // Closes the EA reported explicitly carry the real realised P&L and reason -- prefer them.
   const reported = new Map(input.closedPositions.map((c) => [c.ticket, c]));
   for (const c of input.closedPositions) {
-    out.push({ type: "closed", ticket: c.ticket, symbol: c.symbol, pnl: c.pnl, reason: c.reason });
+    const wasDaves = prevByDave.get(c.ticket);
+    out.push({ type: "closed", ticket: c.ticket, symbol: c.symbol, pnl: c.pnl, reason: c.reason, ...(wasDaves !== undefined ? { byDave: wasDaves } : {}) });
   }
   // Positions that simply vanished without an explicit close report.
   for (const p of input.previous) {
     if (currTickets.has(p.ticket) || reported.has(p.ticket)) continue;
-    out.push({ type: "closed", ticket: p.ticket, symbol: p.symbol, pnl: p.pnl, reason: input.daveClosed.has(p.ticket) ? "dave" : "manual" });
+    out.push({ type: "closed", ticket: p.ticket, symbol: p.symbol, pnl: p.pnl, reason: input.daveClosed.has(p.ticket) ? "dave" : "manual", ...(p.byDave !== undefined ? { byDave: ownCall(p) } : {}) });
   }
   return out;
 }

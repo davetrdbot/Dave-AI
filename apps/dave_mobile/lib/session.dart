@@ -33,9 +33,23 @@ class Session {
   static const _secure = FlutterSecureStorage();
   static final _prefs = SharedPreferencesAsync();
 
+  /// A secure-storage read that can't fail the app: after an uninstall + reinstall, Android can
+  /// restore data that was encrypted with a key the old install took with it, and reading it
+  /// throws. Then the stored login is wiped and the app simply asks to pair again.
+  static Future<String?> _readSecure(String key) async {
+    try {
+      return await _secure.read(key: key);
+    } catch (_) {
+      try {
+        await _secure.deleteAll();
+      } catch (_) {}
+      return null;
+    }
+  }
+
   static Future<Session?> load() async {
     final endpoint = await _prefs.getString(_kEndpoint);
-    final token = await _secure.read(key: _kToken);
+    final token = await _readSecure(_kToken);
     if (endpoint == null || token == null || token.isEmpty) return null;
     final uri = Uri.tryParse(endpoint);
     if (uri == null || uri.host.isEmpty) return null;
@@ -55,7 +69,7 @@ class Session {
   static const _kAccounts = 'dave.accounts';
 
   static Future<List<SavedBot>> accounts() async {
-    final raw = await _secure.read(key: _kAccounts);
+    final raw = await _readSecure(_kAccounts);
     final list = <SavedBot>[];
     if (raw != null) {
       try {

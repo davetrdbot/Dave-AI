@@ -134,7 +134,7 @@ class ProviderPage extends StatelessWidget {
                     ? 'Add a key below before Dave can use ${p.name}.'
                     : p.isPrimary
                         ? 'Dave uses ${p.name} for every answer and trade decision.'
-                        : 'Making it the main AI moves the current main to the first backup, so nothing stops working.'),
+                        : 'Making it the main AI replaces the current one. Your backups stay as you set them.'),
                 children: [
                   CupertinoListTile(
                     leading: Icon(p.isPrimary || p.isBackup ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.circle,

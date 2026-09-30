@@ -141,7 +141,8 @@ r = await call(providerRoute.POST as Handler, "POST", "/api/app/provider", { pro
 assert.equal(r.json.isPrimary, true);
 cfg = brain.getModelConfig(USER);
 assert.equal(cfg.primary, "groq");
-assert.equal(backupsOf(cfg)[0], oldMain, "the old main becomes the first backup");
+assert.ok(!backupsOf(cfg).includes(oldMain), "the old main is NOT made a backup the trader never set");
+assert.deepEqual(backupsOf(cfg), ["deepseek"], "the trader's own backups stay; the new main leaves the backup list");
 await call(providerRoute.POST as Handler, "POST", "/api/app/provider", { provider: "deepseek", action: "remove-backup" });
 assert.ok(!brain.getModelConfig(USER).fallback.includes("deepseek"));
 console.log("   ✓\n");

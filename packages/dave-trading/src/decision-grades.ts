@@ -38,6 +38,8 @@ export interface GradedDecision {
   /** The short lesson, when this one earned one. */
   lesson?: string;
   neuron?: string;
+  /** A lesson is owed but the model call for it failed (busy, rate-limited): retried next run. */
+  lessonPending?: boolean;
 }
 
 export const GRADE_WINDOW_MS = 2 * 3_600_000;
@@ -229,4 +231,19 @@ export function pastCallsBlock(userId: string, symbol: string, nSame = 5, nCross
   }
   lines.push("A run of 'missed' on a pair means your filter is too strict there; a run of 'bad call' means it's too loose. Adjust, don't repeat.");
   return lines.join("\n");
+}
+
+/** Graded calls still owed a lesson (the model was unavailable when they were graded), newest
+ *  first, within `maxAgeMs`. Older ones are given up on. */
+export function lessonsOwed(userId: string, now = Date.now(), maxAgeMs = 24 * 3_600_000): GradedDecision[] {
+  const list = listGradedDecisions(userId);
+  let dropped = false;
+  for (const d of list) {
+    if (d.lessonPending && now - (d.settledAt ?? d.at) > maxAgeMs) {
+      d.lessonPending = false;
+      dropped = true;
+    }
+  }
+  if (dropped) save(userId, list);
+  return list.filter((d) => d.lessonPending && !d.lesson).reverse();
 }

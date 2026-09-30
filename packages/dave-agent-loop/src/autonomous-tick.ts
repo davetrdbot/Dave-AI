@@ -1,7 +1,8 @@
 import type { DaveDatabase } from "@dave/db";
 import type { Provider, ToolSpec } from "@dave/brain";
+import { getModelConfig, listProviderKeys, type ProviderName } from "@dave/brain";
 import type { TradeExecutor, OrderRequest, OrderType, RiskSettings } from "@dave/trading";
-import { getActiveStrategySkillId, isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp, pullbackScalpRoom } from "@dave/trading";
+import { getActiveStrategySkillId, isSymbolAvoided, isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp, pullbackScalpRoom } from "@dave/trading";
 import { getSkill } from "@dave/skills";
 import {
   getRiskSettings,
@@ -70,7 +71,8 @@ import { runSequentialThinking } from "./sequential-thinking.js";
 import { buildClockLine } from "./live-context.js";
 import { loadFrozenSnapshot } from "@dave/memory";
 import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData } from "./symbol-availability.js";
-import { activeAiOutage, clearAiOutage, markAiOutage } from "./ai-outage.js";
+import { activeAiOutage, aiSetupFingerprint, clearAiOutage, markAiOutage } from "./ai-outage.js";
+import { slProgress as directionalSlProgress } from "./trade-monitor-store.js";
 import { selfAwareFeedBlock } from "./self-aware-feed.js";
 import { growthStatus } from "./growth-reflection.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
@@ -371,6 +373,7 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
         "REQUEST_CANDLES fetches one fresh real batch of candles (for the at-risk symbol if a SELF-AWARE ALERT is active below, otherwise for the symbol you're currently analyzing) so you decide with current price action, not stale data -- optional, never required, available on any cycle, at most once; you'll be asked to decide again right after with the candles in hand. " +
         "RUN_SCRIPT runs one real script (needs script) against this symbol's full analysis suite and hands you its actual output before you decide -- use it ONLY when the decision genuinely turns on a number you cannot reliably work out in your head, and never as a routine step; optional, never required, at most once; you'll be asked to decide again right after with the output in hand. " +
+        "Never ASK for anything already in front of you -- an open trade's entry, SL, TP, ticket, lots or P&L are all in OPEN POSITIONS below; to move a stop to breakeven use MODIFY (or the breakeven action) directly. " +
         "SKIP if there's genuinely nothing. ASK for real, specific ambiguity -- and ASK when the SAME blocker (a saved lesson, a setting, an account limit) has now stopped you trading for several cycles in a row: tell the trader plainly which lesson or limit it is, what it keeps stopping, and what they could decide. Say it once; if your recent decisions show you already asked, keep going without repeating it.",
     },
     symbol: { type: "string" },
@@ -766,12 +769,16 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   }
 
   const info = getActiveGroupInfo(userId);
-  const primarySymbols = info.effectiveSymbols;
+  // Pairs Dave's own self-improvement decided to leave alone are never scanned (a pair the trader
+  // pinned as the single active pair is still honoured).
+  const avoided = info.activePairSymbol ? [] : info.effectiveSymbols.filter((sym) => isSymbolAvoided(userId, sym));
+  if (avoided.length) console.log(`[autonomous-tick] ${userId}: leaving ${avoided.join(", ")} alone (self-improvement decided to avoid ${avoided.length === 1 ? "it" : "them"})`);
+  const primarySymbols = info.effectiveSymbols.filter((sym) => !avoided.includes(sym));
   if (primarySymbols.length === 0) {
     logTick(userId, "no trade -- no active pair group or pair configured");
     return { action: "NONE", notable: false };
   }
-  const fallbackSymbols = !info.activePairSymbol ? (info.fallbackGroup?.symbols ?? []) : [];
+  const fallbackSymbols = !info.activePairSymbol ? (info.fallbackGroup?.symbols ?? []).filter((sym) => !isSymbolAvoided(userId, sym)) : [];
   // Real bug fixed (test regression, step12): once a single-pair override is active, the active
   // GROUP's category is irrelevant to the overridden symbol -- pass null so isForexSymbol falls
   // through to pure shape-sniffing instead of trusting a group id that no longer describes what's
@@ -820,7 +827,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
 
   // The AI is down (out of credit, dead key...): don't pull a whole analysis from MT5 only to fail
   // at the model call -- wait until the back-off runs out (ai-outage.ts).
-  const outage = activeAiOutage(userId);
+  const outage = activeAiOutage(userId, Date.now(), currentAiSetup(db, userId));
   if (outage) {
     logTick(userId, `skipped -- ${outage.reason}; trying again in ${Math.max(1, Math.round((outage.retryAt - Date.now()) / 60_000))} min`);
     return { action: "NONE", notable: false };
@@ -949,8 +956,12 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   const positionsProgress = new Map<string, PositionProgress>();
   for (const p of positions) {
     if (p.sl === undefined || p.tp === undefined || p.currentPrice === undefined) continue;
-    const slDenominator = Math.abs(p.sl - p.openPrice);
-    const slProgress = slDenominator === 0 ? 0 : Math.min(1, Math.max(0, Math.abs(p.currentPrice - p.openPrice) / slDenominator));
+    // Directional, like the trade monitor's (trade-monitor-store.ts): only a move AGAINST the trade
+    // counts. The old version measured distance from entry either way, so a trade in profit was
+    // reported "52% toward its SL" (seen live on a winning STORM_500 sell, which confused the model
+    // into asking the trader for details instead of moving the stop to breakeven).
+    const inLoss = p.pnl !== undefined ? p.pnl < 0 : true;
+    const slProgress = inLoss ? (directionalSlProgress({ openPrice: p.openPrice, sl: p.sl }, p.currentPrice) ?? 0) : 0;
     positionsProgress.set(p.ticket, {
       ticket: p.ticket,
       symbol: p.symbol,
@@ -1108,7 +1119,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
         throw new TickAbortedError();
       }
       logTick(userId, `model call for ${symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
-      const o = markAiOutage(userId, err);
+      const o = markAiOutage(userId, err, Date.now(), currentAiSetup(db, userId));
       if (o.isNew) {
         publishActivity(userId, "background", "alert", {
           text: `⚠️ Trading scans are paused: ${o.reason}. I'll stop asking MT5 for analysis and try again on my own every few minutes -- top up or fix the key and I carry on.`,
@@ -1390,6 +1401,13 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
 
   if (decision.action === "ASK") {
     if (!decision.question) return { action: "NONE", notable: false };
+    // A question about data the scan already had (seen live: "what is the entry price for ticket
+    // #... so I can set its stop to breakeven?") never reaches the trader.
+    if (asksForShownTradeData(decision.question) && positions.length > 0) {
+      logTick(userId, `${symbol}: dropped a question about data already in the scan -- "${decision.question.slice(0, 160)}"`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "asked for open-trade data that was already in the scan (entry/SL/TP are listed under OPEN POSITIONS)" });
+      return { action: "NONE", notable: false };
+    }
     // Real bug avoided: the shared PendingQuestion mechanism (ask-user.ts) is designed for the
     // main chat's AgentLoop pause/resume -- a typed reply resumes it by finding the matching
     // tool-call id in THAT conversation's history. A tick-originated question has no such
@@ -1834,6 +1852,10 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // would have repeated on every good setup, so a bot analysing perfectly could never actually
   // trade). Steps the size down until the broker accepts, and tells the trader plainly when the
   // account genuinely can't carry the trade at all. See margin-aware-execute.ts.
+  if (isSymbolAvoided(userId, symbol)) {
+    logTick(userId, `${symbol}: ${action} refused -- this pair is on the leave-alone list from self-improvement`);
+    return { action: "NONE", symbol, notable: false };
+  }
   let placed: Awaited<ReturnType<typeof tradeExecuteWithMarginRetry>>;
   try {
     placed = await tradeExecuteWithMarginRetry(executor, order);
@@ -1970,4 +1992,21 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
         .filter((line): line is string => line !== null)
         .join("\n\n") + reducedSizeNote,
   };
+}
+
+/** The AI setup right now, for the outage back-off (ai-outage.ts). Never throws. */
+function currentAiSetup(db: DaveDatabase, userId: string): string | undefined {
+  try {
+    return aiSetupFingerprint(getModelConfig(userId), (p) => listProviderKeys(db, userId, p as ProviderName).map((k) => ({ id: k.id, model: k.config.model })));
+  } catch {
+    return undefined;
+  }
+}
+
+/** A scan question that only asks for an open trade's own numbers (entry, SL, TP, ticket, lots, P&L). */
+export function asksForShownTradeData(question: string): boolean {
+  const q = question.toLowerCase();
+  const asksNumbers = /\b(entry( price)?|open(ing)? price|stop[- ]?loss|\bsl\b|take[- ]?profit|\btp\b|ticket|lot size|lots|p&l|pnl|trade details|position details)\b/.test(q);
+  const asksForIt = /\b(what is|what's|what are|need|provide|tell me|share|send|confirm|which)\b/.test(q);
+  return asksNumbers && asksForIt;
 }

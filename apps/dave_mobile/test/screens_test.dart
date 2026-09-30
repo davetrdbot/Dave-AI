@@ -591,6 +591,24 @@ void main() {
       }
       expect(find.text('Listen'), findsWidgets, reason: 'replies can be read aloud');
       expect(find.text('Resistance'), findsOneWidget, reason: 'the markdown table in the stored reply');
+      // Long-press a message: Copy, Select text, Read out loud.
+      String? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String?;
+        return null;
+      });
+      await tester.longPress(find.byKey(const ValueKey('message-bubble')).first);
+      await _advance(tester);
+      await _shot(tester, 'message_actions_$mode');
+      expect(find.text('Copy'), findsOneWidget);
+      expect(find.text('Select text'), findsOneWidget);
+      expect(find.text('Read out loud'), findsOneWidget);
+      await tester.tap(find.text('Copy'));
+      await _advance(tester);
+      expect(copied, isNotNull, reason: 'the message went to the clipboard');
+      expect(copied!.contains('**'), isFalse, reason: 'copied as words, not markdown');
+      await tester.pump(const Duration(seconds: 2)); // the "Copied" note goes away
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null);
       await tester.tap(find.text('DeepSeek-V3.2').first);
       await _advance(tester);
       await _shot(tester, 'ai_switcher_$mode');

@@ -14,6 +14,8 @@ interface Outage {
   failures: number;
   retryAt: number;
   reason: string;
+  /** The AI setup that failed (main AI, backups, their keys and models). */
+  setup?: string;
 }
 
 const outages = new Map<string, Outage>();
@@ -28,18 +30,29 @@ export function describeAiFailure(err: unknown): string {
 }
 
 /** Records a failed model call. Returns the outage, `isNew` when this is the first failure. */
-export function markAiOutage(userId: string, err: unknown, now = Date.now()): Outage & { isNew: boolean } {
-  const prev = outages.get(userId);
+export function markAiOutage(userId: string, err: unknown, now = Date.now(), setup?: string): Outage & { isNew: boolean } {
+  let prev = outages.get(userId);
+  if (prev && setup !== undefined && prev.setup !== setup) prev = undefined; // a different AI failed: start the back-off over
   const failures = (prev?.failures ?? 0) + 1;
   const wait = Math.min(FIRST_WAIT_MS * 2 ** (failures - 1), MAX_WAIT_MS);
-  const next: Outage = { since: prev?.since ?? now, failures, retryAt: now + wait, reason: describeAiFailure(err) };
+  const next: Outage = { since: prev?.since ?? now, failures, retryAt: now + wait, reason: describeAiFailure(err), setup };
   outages.set(userId, next);
   return { ...next, isNew: !prev };
 }
 
-/** The outage still holding scans back, if any. */
-export function activeAiOutage(userId: string, now = Date.now()): Outage | undefined {
+/**
+ * The outage still holding scans back, if any. With `setup` (the AI setup now): when the trader has
+ * since changed it -- a new main AI, a backup, a key or a model -- the old pause is dropped at once.
+ * (The trader, live: switched from a dead Claude key to Ollama in the app; chat used Ollama straight
+ * away but scans kept waiting out Claude's back-off and repeating Claude's error for 16 minutes.)
+ */
+export function activeAiOutage(userId: string, now = Date.now(), setup?: string): Outage | undefined {
   const o = outages.get(userId);
+  if (o && setup !== undefined && o.setup !== undefined && o.setup !== setup) {
+    outages.delete(userId);
+    console.log(`[ai-outage] ${userId}: AI changed -- scanning again`);
+    return undefined;
+  }
   return o && now < o.retryAt ? o : undefined;
 }
 
@@ -49,4 +62,10 @@ export function clearAiOutage(userId: string, now = Date.now()): number | undefi
   if (!o) return undefined;
   outages.delete(userId);
   return now - o.since;
+}
+
+/** A short fingerprint of the AI setup: main, backups, and each one's keys and models. */
+export function aiSetupFingerprint(config: { primary: string; fallback: string[] }, keysOf: (provider: string) => { id: string; model?: string }[]): string {
+  const order = [config.primary, ...config.fallback.filter((p) => p !== config.primary)];
+  return order.map((p) => `${p}:${keysOf(p).map((k) => `${k.id}/${k.model ?? ""}`).join(",")}`).join("|");
 }

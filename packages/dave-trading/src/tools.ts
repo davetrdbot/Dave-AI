@@ -1,6 +1,7 @@
 import type { AnalysisSource } from "./analysis-source.js";
 import type { TradeExecutor } from "./trade-executor.js";
 import { findSetup, huntForSetup } from "./find-setup.js";
+import { isSymbolAvoided } from "./growth.js";
 import { tradeExecute, tradeModify, partialClose, fullClose, deletePendingOrder, deleteAllPendingOrders } from "./trade-execute.js";
 import { validateOrder, resolveEntryPrice, isPendingOrderType, type OrderRequest } from "./order-types.js";
 import { enableBreakevenTrailing, disableBreakevenTrailing } from "./breakeven-trailing.js";
@@ -182,6 +183,9 @@ export const TRADING_TOOLS: ToolDefinition[] = [
     execute: async (args, ctx) => {
       const { confidence, reason, pullback_scalp: pullbackArgs, ...rest } = args as Record<string, unknown>;
       const order = rest as unknown as OrderRequest;
+      if (typeof order.symbol === "string" && isSymbolAvoided(ctx.userId, order.symbol)) {
+        throw new Error(`${order.symbol} is on your leave-alone list (your self-improvement decided to avoid it). Tell the trader; they can allow it again in the Growth screen, or you can propose allow_symbol at the next reflection.`);
+      }
       if (isPendingOrderType(order.type) && order.price === undefined) {
         let referencePrice: number | undefined;
         try {

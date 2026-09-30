@@ -188,9 +188,10 @@ export const POST = withDevice(async ({ userId, req }) => {
       case "make-main": {
         if (listProviderKeys(db, userId, provider).length === 0) return NextResponse.json({ error: `Add a ${entry.displayName} key before making it Dave's main AI.` }, { status: 400 });
         const current = getModelConfig(userId);
-        // The old main becomes the first backup, so nothing Dave had working is dropped.
-        const fallback = [current.primary, ...current.fallback].filter((p) => p !== provider);
-        setModelConfig(userId, { primary: provider, fallback: [...new Set(fallback)] });
+        // The new main replaces the old one; the backups stay exactly as the trader set them. (It
+        // used to push the old main into the backups -- the trader: "it keeps showing a backup I
+        // never set".)
+        setModelConfig(userId, { primary: provider, fallback: current.fallback.filter((p) => p !== provider && p !== current.primary) });
         break;
       }
       case "add-backup": {

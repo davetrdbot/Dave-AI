@@ -656,3 +656,15 @@ export function stopCurrentTest(userId: string, now = Date.now()): StrategyVersi
   saveStrategyState(userId, s);
   return v;
 }
+
+/** Pairs the self-improvement loop decided to leave alone (avoid_symbol). Enforced in code: the
+ *  scanner never picks them and a new trade on one is refused -- not just a line in the prompt. */
+export function isSymbolAvoided(userId: string, symbol: string): boolean {
+  try {
+    const s = getStrategyState(userId);
+    const want = symbol.toUpperCase();
+    return s.avoidSymbols.some((a) => a.symbol.toUpperCase() === want);
+  } catch {
+    return false;
+  }
+}

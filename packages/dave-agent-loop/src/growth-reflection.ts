@@ -66,7 +66,9 @@ export function loadGrowthTrades(userId: string): GrowthTrade[] {
     /* no journal is fine */
   }
   return readClosedTradeHistory(userId)
-    .filter((r) => typeof r.pnl === "number")
+    // Only Dave's own calls are his to learn from: trades the trader opened by hand and copied
+    // signals are left out (byDave === false). Closes recorded before the flag existed are kept.
+    .filter((r) => typeof r.pnl === "number" && r.byDave !== false)
     .map((r) => ({ ticket: r.ticket, symbol: r.symbol, side: r.side, pnl: r.pnl as number, closedAt: r.closedAt, reason: r.reason, why: reasons.get(r.ticket)?.slice(0, 300) }))
     .sort((a, b) => a.closedAt - b.closedAt);
 }

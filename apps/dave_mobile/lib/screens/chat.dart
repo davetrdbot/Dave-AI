@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart' show SelectableText;
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
@@ -543,13 +544,23 @@ class _ChatScreenState extends State<ChatScreen> {
 // --- the pieces -------------------------------------------------------------------------------
 
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.fromUser, required this.child, this.caption});
+  const _Bubble({required this.fromUser, required this.child, this.caption, this.text});
   final bool fromUser;
   final Widget child;
   final String? caption;
 
+  /// The message as plain text, for the long-press menu (Copy / Select text / Read out loud).
+  final String? text;
+
   @override
   Widget build(BuildContext context) {
+    final t = text?.trim() ?? '';
+    final bubble = _bubble(context);
+    if (t.isEmpty) return bubble;
+    return GestureDetector(key: const ValueKey('message-bubble'), onLongPress: () => showMessageActions(context, t), child: bubble);
+  }
+
+  Widget _bubble(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
@@ -611,12 +622,13 @@ class _HistoryBubble extends StatelessWidget {
   final ChatHistoryItem item;
   @override
   Widget build(BuildContext context) {
-    if (item.fromUser) return _Bubble(fromUser: true, child: _UserText(_stripContext(item.text), item.pictures));
+    if (item.fromUser) return _Bubble(fromUser: true, text: _stripContext(item.text), child: _UserText(_stripContext(item.text), item.pictures));
     final text = _looksHtml(item.text) ? htmlToMarkdown(item.text) : item.text;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       _Bubble(
         fromUser: false,
         caption: item.tools.isEmpty ? null : 'Used ${item.tools.length} tool${item.tools.length == 1 ? '' : 's'}',
+        text: text,
         child: MarkdownText(text, fontSize: 14.5),
       ),
       if (text.trim().isNotEmpty) _SpeakButton(text: text),
@@ -643,17 +655,21 @@ class _TurnView extends StatelessWidget {
   Widget build(BuildContext context) {
     final children = <Widget>[];
     if (turn.userText.isNotEmpty || turn.pictures > 0) {
-      children.add(_Bubble(fromUser: true, caption: turn.pending ? 'Sending…' : (turn.fromTelegram ? 'via Telegram' : null), child: _UserText(turn.userText, turn.pictures)));
+      children.add(_Bubble(fromUser: true, caption: turn.pending ? 'Sending…' : (turn.fromTelegram ? 'via Telegram' : null), text: turn.userText, child: _UserText(turn.userText, turn.pictures)));
     }
     if (turn.steps.isNotEmpty || (turn.running && !turn.pending)) children.add(_WorkingCard(turn: turn, onCardButton: onCardButton));
     if (turn.notice != null && turn.running) children.add(_Note(turn.notice!));
     final reply = turn.finalText ?? '';
     if (reply.trim().isNotEmpty) {
-      children.add(_Bubble(fromUser: false, caption: turn.tokens == null ? null : '${_compact(turn.tokens!)} tokens', child: MarkdownText(_looksHtml(reply) ? htmlToMarkdown(reply) : reply, fontSize: 14.5)));
+      children.add(_Bubble(
+          fromUser: false,
+          caption: turn.tokens == null ? null : '${_compact(turn.tokens!)} tokens',
+          text: turn.running ? null : (_looksHtml(reply) ? htmlToMarkdown(reply) : reply),
+          child: MarkdownText(_looksHtml(reply) ? htmlToMarkdown(reply) : reply, fontSize: 14.5)));
       if (!turn.running) children.add(_SpeakButton(text: _looksHtml(reply) ? htmlToMarkdown(reply) : reply));
     }
     if (turn.question != null) {
-      children.add(_Bubble(fromUser: false, child: MarkdownText(turn.question!, fontSize: 14.5)));
+      children.add(_Bubble(fromUser: false, text: turn.question, child: MarkdownText(turn.question!, fontSize: 14.5)));
       if (turn.options.isNotEmpty) {
         children.add(
           Padding(
@@ -1258,14 +1274,33 @@ class _ControlsStrip extends StatefulWidget {
   State<_ControlsStrip> createState() => _ControlsStripState();
 }
 
-class _ControlsStripState extends State<_ControlsStrip> {
+class _ControlsStripState extends State<_ControlsStrip> with WidgetsBindingObserver {
   ProviderList? _providers;
   AppSettings? _settings;
+  Timer? _refresh;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    // The AI can be changed elsewhere (Settings, Telegram, the other phone): the chip checks again
+    // every 15 s and whenever the app comes back to the front, so it never shows a stale model.
+    _refresh = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted && TickerMode.valuesOf(context).enabled) _load();
+    });
+  }
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _load();
   }
 
   Future<void> _load() async {
@@ -1447,4 +1482,89 @@ class _SpeakButtonState extends State<_SpeakButton> {
       ),
     );
   }
+}
+
+
+/// Long-press on a message: Copy, Select text, Read out loud (Dave's voice -- ElevenLabs, through
+/// the server's "speak", the same voice as the Listen button).
+Future<void> showMessageActions(BuildContext context, String text) async {
+  HapticFeedback.selectionClick();
+  final plain = _plainText(text);
+  final choice = await showCupertinoModalPopup<String>(
+    context: context,
+    builder: (ctx) => CupertinoActionSheet(
+      message: Text(plain.length > 140 ? '${plain.substring(0, 140)}…' : plain, maxLines: 3, overflow: TextOverflow.ellipsis),
+      actions: [
+        CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'copy'), child: const Text('Copy')),
+        CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'select'), child: const Text('Select text')),
+        CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'speak'), child: const Text('Read out loud')),
+      ],
+      cancelButton: CupertinoActionSheetAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+    ),
+  );
+  if (choice == null || !context.mounted) return;
+  switch (choice) {
+    case 'copy':
+      await Clipboard.setData(ClipboardData(text: plain));
+      if (context.mounted) _toast(context, 'Copied');
+    case 'select':
+      await Navigator.of(context).push(CupertinoPageRoute<void>(builder: (_) => _SelectTextPage(text: plain)));
+    case 'speak':
+      final id = 'msg-${text.hashCode}';
+      if (DaveAudio.playing.value == id) return DaveAudio.stop();
+      _toast(context, 'Reading out loud…');
+      try {
+        final r = await AppScope.of(context).api.voiceAction({'action': 'speak', 'text': plain});
+        await DaveAudio.play('${r['audio']}', id: id);
+      } catch (e) {
+        if (context.mounted) await showError(context, e);
+      }
+  }
+}
+
+/// Markdown marks off, so what's copied or read is the words, not the formatting.
+String _plainText(String s) => s
+    .replaceAll(RegExp(r'\*\*|__|`{1,3}'), '')
+    .replaceAllMapped(RegExp(r'\[([^\]]+)\]\([^)]+\)'), (m) => m[1]!)
+    .replaceAll(RegExp(r'^#{1,6}\s*', multiLine: true), '')
+    .trim();
+
+void _toast(BuildContext context, String text) {
+  final overlay = Overlay.maybeOf(context);
+  if (overlay == null) return;
+  final entry = OverlayEntry(
+    builder: (ctx) => Positioned(
+      bottom: 110,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(color: const Color(0xDD000000), borderRadius: BorderRadius.circular(18)),
+            child: Text(text, style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 13, fontWeight: FontWeight.w600, decoration: TextDecoration.none)),
+          ),
+        ),
+      ),
+    ),
+  );
+  overlay.insert(entry);
+  Future<void>.delayed(const Duration(milliseconds: 1400), entry.remove);
+}
+
+/// The whole message with normal text selection, to copy just part of it.
+class _SelectTextPage extends StatelessWidget {
+  const _SelectTextPage({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => CupertinoPageScaffold(
+        navigationBar: const CupertinoNavigationBar(middle: Text('Select text')),
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: SelectableText(text, style: TextStyle(fontSize: 16, height: 1.45, color: resolve(context, CupertinoColors.label))),
+          ),
+        ),
+      );
 }
