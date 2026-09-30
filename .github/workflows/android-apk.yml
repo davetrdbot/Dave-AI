@@ -73,8 +73,9 @@ jobs:
           name: Dave-apk
           path: ${{ runner.temp }}/Dave.apk
 
+      # Every build gets a download link (the trader installs from the phone): a normal release on
+      # main, a pre-release on any other branch -- same as the iOS workflow.
       - name: Publish release
-        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-build-${{ github.run_number }}
@@ -86,4 +87,5 @@ jobs:
             First time: in the web panel open **Phone App**, tap **Get a pairing code**, then enter
             your server address and the code in the app.
           files: ${{ runner.temp }}/Dave.apk
-          make_latest: true
+          prerelease: ${{ github.ref != 'refs/heads/main' }}
+          make_latest: ${{ github.ref == 'refs/heads/main' }}
