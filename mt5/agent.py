@@ -475,6 +475,16 @@ def latest_log(folder):
     return read_text(files[-1]) if files else ""
 
 
+def experts_log_dir():
+    """The EA's own log. MetaTrader creates it as MQL5/logs under Wine -- on Linux "Logs" is a
+    different (missing) folder, so the EA's errors were never read."""
+    for name in ("logs", "Logs"):
+        path = os.path.join(MT5_DIR, "MQL5", name)
+        if os.path.isdir(path):
+            return path
+    return os.path.join(MT5_DIR, "MQL5", "logs")
+
+
 def login_state():
     """Reads the terminal's own journal (checked against a real run under Wine). The account's lines
     look like "'12345678': authorized on <server> through ..." on success, "'12345678': authorization
@@ -589,7 +599,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/logs":
             return self._json(200, {
                 "terminal": latest_log(os.path.join(MT5_DIR, "logs"))[-4000:],
-                "experts": latest_log(os.path.join(MT5_DIR, "MQL5", "Logs"))[-4000:],
+                "experts": latest_log(experts_log_dir())[-4000:],
             })
         return self._json(404, {"error": "not found"})
 
@@ -690,6 +700,49 @@ def update_waiting():
     return False
 
 
+EA_SILENT_S = 180          # logged in, MetaTrader running, and nothing from the EA this long -> restart
+EA_RESTARTS_PER_HOUR = 3
+ea_restarts = []
+ea_gave_up_at = 0.0
+
+
+def ea_silent():
+    """True when the EA has stopped talking: the terminal is up and logged in, the EA reported
+    before (or had its start-up grace period), and nothing has come through the relay since."""
+    if time.time() - terminal_started_at < EA_SILENT_S:
+        return False
+    with lock:
+        last = relay_stats.get("lastAt")
+    since = max(last or 0, terminal_started_at)
+    if time.time() - since < EA_SILENT_S:
+        return False
+    return login_state()[0] == "logged-in"
+
+
+def restart_silent_ea(state):
+    """The EA froze or was switched off by MetaTrader (a runtime error stops an EA for good).
+    Puts the EA's last log lines in the container log -- so the reason is never lost -- and
+    restarts MetaTrader with the EA, at most EA_RESTARTS_PER_HOUR times an hour."""
+    now = time.time()
+    ea_restarts[:] = [t for t in ea_restarts if now - t < 3600]
+    if len(ea_restarts) >= EA_RESTARTS_PER_HOUR:
+        global ea_gave_up_at
+        if ea_gave_up_at < ea_restarts[0]:  # said once per full window, not every 30 s
+            ea_gave_up_at = now
+            log("the EA keeps going silent -- %d restarts in the last hour, waiting before trying again" % len(ea_restarts))
+        return False
+    tail = [l for l in latest_log(experts_log_dir()).splitlines() if l.strip()][-12:]
+    log("the EA has sent nothing for %d s while MetaTrader is running -- restarting it. Last EA log lines:" % EA_SILENT_S)
+    for line in tail:
+        if not re.search(r"password|token|secret", line, re.I):
+            log("  EA>", line[:240])
+    ea_restarts.append(now)
+    stop_terminal()
+    time.sleep(3)
+    start_terminal(state)
+    return True
+
+
 def supervise():
     """Keeps a configured terminal running -- MT5 under Wine occasionally exits, and a trader
     without a VPS has nobody to notice."""
@@ -704,6 +757,9 @@ def supervise():
                 stop_terminal()
                 time.sleep(3)
                 start_terminal(state)
+                continue
+            if state.get("login") and terminal_running() and ea_silent():
+                restart_silent_ea(state)
                 continue
             if state.get("login") and installed() and os.path.exists(ex5_path()) and not terminal_running():
                 log("terminal not running -- starting it again")

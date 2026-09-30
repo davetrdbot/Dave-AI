@@ -33,7 +33,7 @@
 // it -- moved here, to the top, so every real use compiles regardless of where it appears below.
 #define DAVEEA_BARS 1000
 // Reported with every heartbeat so the bot can tell the trader when this file is out of date.
-#define EA_VERSION "3.0"
+#define EA_VERSION "3.1"
 // Docker-mode file bridge (see UseFileBridge) -- defined up here for the same reason.
 #define BRIDGE_DIR "dave_bridge"
 #define BRIDGE_TIMEOUT_MS 5000
@@ -928,8 +928,7 @@ void PrewarmAnalysisSymbols(string &objs[])
       if(symbol == "") continue;
       ENUM_TIMEFRAMES tf = TimeframeFromString(JsonGetString(objs[i], "timeframe"));
       SymbolSelect(symbol, true);
-      MqlRates warm[];
-      CopyRates(symbol, tf, 0, DAVEEA_BARS, warm); // non-blocking kickoff -- result unused here
+      SeriesReady(symbol, tf); // starts a background load when it isn't there yet -- never waits
      }
   }
 
@@ -1224,6 +1223,70 @@ void SetSymbolInfo(string sym)
    if(g_aPip <= 0) g_aPip = g_aPoint > 0 ? g_aPoint : 0.0001;
   }
 
+// --- Series that are already loaded -------------------------------------------------------------
+// In an EA, reading a symbol/timeframe MT5 hasn't loaded yet makes MT5 WAIT for the download. The
+// cross-market parts of "all" read up to 28 other pairs on every timeframe, which froze the EA for
+// many minutes (live: it stopped reporting and the bot marked it offline until a restart). So a
+// series is only read when it's already there; otherwise a background load starts (an indicator
+// handle, which never blocks) and this answer leaves that piece out.
+string g_warmK[];
+bool SeriesReady(string s, ENUM_TIMEFRAMES tf)
+  {
+   if(s == "") return false;
+   if(SeriesInfoInteger(s, tf, SERIES_SYNCHRONIZED)) return true;
+   string k = s + "|" + IntegerToString((int)tf);
+   for(int i = 0; i < ArraySize(g_warmK); i++) if(g_warmK[i] == k) return false;
+   int n = ArraySize(g_warmK);
+   if(n < 400)
+     {
+      ArrayResize(g_warmK, n + 1); g_warmK[n] = k;
+      iMA(s, tf, 1, 0, MODE_SMA, PRICE_CLOSE); // kept open on purpose: it keeps that history loading/updated
+     }
+   return false;
+  }
+// Previous + present: the last good value of every cross-series read is remembered, so when a
+// series is momentarily not ready the answer uses the previous value instead of waiting or
+// leaving it out -- and the fresh value replaces it the moment it's there.
+// Every answer says which parts are previous data (the freshness label's "previous_data"), so the
+// bot never mistakes a remembered value for a live one.
+string g_prevUsed[];
+void NotePrevious(string label)
+  {
+   string head = StringSubstr(label, 0, StringFind(label, " ("));
+   for(int i = 0; i < ArraySize(g_prevUsed); i++) if(StringFind(g_prevUsed[i], head + " (") == 0 || g_prevUsed[i] == label) return;
+   A_Push(g_prevUsed, label);
+  }
+string TfName(ENUM_TIMEFRAMES tf) { string t = EnumToString(tf); StringReplace(t, "PERIOD_", ""); return t; }
+string g_lastK[];
+double g_lastV[];
+datetime g_lastT[];
+double LastGood(string k, double v, bool fresh, string label = "")
+  {
+   int n = ArraySize(g_lastK), i = 0;
+   for(; i < n; i++) if(g_lastK[i] == k) break;
+   if(fresh && v > 0)
+     {
+      if(i == n) { ArrayResize(g_lastK, n + 1); ArrayResize(g_lastV, n + 1); ArrayResize(g_lastT, n + 1); g_lastK[n] = k; }
+      g_lastV[i] = v; g_lastT[i] = TimeLocal();
+      return v;
+     }
+   if(i == n) return 0;
+   if(label != "") NotePrevious(label + " (" + IntegerToString((long)(TimeLocal() - g_lastT[i]) / 60) + " min old)");
+   return g_lastV[i];
+  }
+string XKey(string f, string s, ENUM_TIMEFRAMES tf, int sh) { return f + "|" + s + "|" + IntegerToString((int)tf) + "|" + IntegerToString(sh); }
+double xGet(string f, string s, ENUM_TIMEFRAMES tf, int sh)
+  {
+   bool r = SeriesReady(s, tf);
+   double v = 0;
+   if(r) v = f == "o" ? iOpen(s, tf, sh) : f == "h" ? iHigh(s, tf, sh) : f == "l" ? iLow(s, tf, sh) : iClose(s, tf, sh);
+   return LastGood(XKey(f, s, tf, sh), v, r, s + " " + TfName(tf));
+  }
+double xOpen(string s, ENUM_TIMEFRAMES tf, int sh)  { return xGet("o", s, tf, sh); }
+double xHigh(string s, ENUM_TIMEFRAMES tf, int sh)  { return xGet("h", s, tf, sh); }
+double xLow(string s, ENUM_TIMEFRAMES tf, int sh)   { return xGet("l", s, tf, sh); }
+double xClose(string s, ENUM_TIMEFRAMES tf, int sh) { return xGet("c", s, tf, sh); }
+
 bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
   {
    string key = sym + "|" + IntegerToString((int)tf);
@@ -1231,7 +1294,7 @@ bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
    g_fromCache = false;
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   int copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
+   int copied = SeriesReady(sym, tf) ? CopyRates(sym, tf, 0, DAVEEA_BARS, rates) : 0;
    if(copied > 60)
      {
       CopySeries(rates, copied);
@@ -1246,8 +1309,9 @@ bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
       return true;
      }
    // Never loaded before: one bounded wait while MT5 downloads it.
-   for(int attempt = 0; attempt < 10 && !SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED); attempt++)
-      Sleep(150);
+   for(int attempt = 0; attempt < 5 && !SeriesReady(sym, tf); attempt++)
+      Sleep(100);
+   if(!SeriesReady(sym, tf)) return false;
    copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
    if(copied <= 60) return false;
    CopySeries(rates, copied);
@@ -1365,8 +1429,9 @@ bool InLocalWindow(int zone, datetime utc, int startH, int endH)
 bool ZoneWindowRange(string sym, int zone, int startH, int endH, double &hi, double &lo, double &openPx, datetime &startUtc)
   {
    MqlRates r[]; ArraySetAsSeries(r, true);
-   int n = CopyRates(sym, PERIOD_M5, 0, 900, r);
    hi = 0; lo = 0; openPx = 0; startUtc = 0;
+   if(!SeriesReady(sym, PERIOD_M5)) return false;
+   int n = CopyRates(sym, PERIOD_M5, 0, 900, r);
    if(n <= 0) return false;
    int found = -1, dayKey = -1;
    for(int i = 0; i < n; i++)
@@ -1410,7 +1475,7 @@ bool A_SymReturn(string base, ENUM_TIMEFRAMES tf, int bars, double &ret)
    ret = 0;
    string nm = ResolvedName(base);
    if(nm == "") return false;
-   double c0 = iClose(nm, tf, 1), cn = iClose(nm, tf, bars + 1);
+   double c0 = xClose(nm, tf, 1), cn = xClose(nm, tf, bars + 1);
    if(c0 <= 0 || cn <= 0) return false;
    ret = (c0 - cn) / cn * 100.0;
    return true;
@@ -1683,7 +1748,16 @@ string A_Meta(string sym, string tfStr)
               Jb("market_likely_closed", closed) + "," + Jb("bars_behind", behind) + "," +
               Jb("limited_history", g_anb < 300) + "," + J("times", "UTC") + "," +
               J("computed_at_utc", A_IsoTime(TimeGMT())) + "," + Ji("broker_utc_offset_min", g_srvOffset / 60) + "," +
-              J("ea_version", EA_VERSION));
+              J("ea_version", EA_VERSION) + A_PreviousNote());
+  }
+string A_PreviousNote()
+  {
+   string items[];
+   if(g_fromCache) A_Push(items, "\"this symbol's own candles (MT5 had not loaded fresh ones)\"");
+   for(int i = 0; i < ArraySize(g_prevUsed); i++) A_Push(items, "\"" + JsonEscape(g_prevUsed[i]) + "\"");
+   if(ArraySize(items) == 0) return "," + Jr("previous_data", "[]");
+   return "," + Jr("previous_data", "[" + A_Join(items) + "]") + "," +
+          J("previous_data_note", "these parts use the LAST GOOD values the EA saw, because that data was not loaded in MT5 yet -- treat them as previous data, not live; everything else is live");
   }
 
 // ============================== the endpoints ==============================
@@ -1813,8 +1887,8 @@ string A_Volatility(string sym)
   }
 
 //--- price ---------------------------------------------------------------
-double A_Hi52(string sym) { double h[]; int n = CopyHigh(sym, PERIOD_W1, 0, 52, h); return n > 0 ? h[ArrayMaximum(h, 0, n)] : 0; }
-double A_Lo52(string sym) { double l[]; int n = CopyLow(sym, PERIOD_W1, 0, 52, l); return n > 0 ? l[ArrayMinimum(l, 0, n)] : 0; }
+double A_Hi52(string sym) { if(!SeriesReady(sym, PERIOD_W1)) return 0; double h[]; int n = CopyHigh(sym, PERIOD_W1, 0, 52, h); return n > 0 ? h[ArrayMaximum(h, 0, n)] : 0; }
+double A_Lo52(string sym) { if(!SeriesReady(sym, PERIOD_W1)) return 0; double l[]; int n = CopyLow(sym, PERIOD_W1, 0, 52, l); return n > 0 ? l[ArrayMinimum(l, 0, n)] : 0; }
 string A_TradeModeName(string sym)
   {
    long m = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
@@ -1833,10 +1907,10 @@ string A_Price(string sym)
    double bid = tk.bid, ask = tk.ask, mid = (bid + ask) / 2.0;
    double spread = ask - bid;
    double last = bid > 0 ? bid : g_aC[0];
-   double dO = iOpen(sym, PERIOD_D1, 0), dH = iHigh(sym, PERIOD_D1, 0), dL = iLow(sym, PERIOD_D1, 0);
-   double pdC = iClose(sym, PERIOD_D1, 1), pdO = iOpen(sym, PERIOD_D1, 1), pdH = iHigh(sym, PERIOD_D1, 1), pdL = iLow(sym, PERIOD_D1, 1);
-   double wH = iHigh(sym, PERIOD_W1, 0), wL = iLow(sym, PERIOD_W1, 0);
-   double mH = iHigh(sym, PERIOD_MN1, 0), mL = iLow(sym, PERIOD_MN1, 0);
+   double dO = xOpen(sym, PERIOD_D1, 0), dH = xHigh(sym, PERIOD_D1, 0), dL = xLow(sym, PERIOD_D1, 0);
+   double pdC = xClose(sym, PERIOD_D1, 1), pdO = xOpen(sym, PERIOD_D1, 1), pdH = xHigh(sym, PERIOD_D1, 1), pdL = xLow(sym, PERIOD_D1, 1);
+   double wH = xHigh(sym, PERIOD_W1, 0), wL = xLow(sym, PERIOD_W1, 0);
+   double mH = xHigh(sym, PERIOD_MN1, 0), mL = xLow(sym, PERIOD_MN1, 0);
    double yH = A_Hi52(sym), yL = A_Lo52(sym);
    int d = g_aDigits;
    string f[];
@@ -2549,8 +2623,8 @@ string A_Ict(string sym, ENUM_TIMEFRAMES tf)
    string amd = (nyH >= 18 || nyH < 2) ? "ACCUMULATION" : nyH < 7 ? "MANIPULATION" : nyH < 17 ? "DISTRIBUTION" : "ROLLOVER";
    string dol = c < eq ? "BSL_ABOVE" : "SSL_BELOW";
    // New day / new week opening gaps: yesterday's close -> today's open, last week's close -> this week's open.
-   double dOpen = iOpen(sym, PERIOD_D1, 0), pdClose = iClose(sym, PERIOD_D1, 1);
-   double wOpen = iOpen(sym, PERIOD_W1, 0), pwClose = iClose(sym, PERIOD_W1, 1);
+   double dOpen = xOpen(sym, PERIOD_D1, 0), pdClose = xClose(sym, PERIOD_D1, 1);
+   double wOpen = xOpen(sym, PERIOD_W1, 0), pwClose = xClose(sym, PERIOD_W1, 1);
    double ndog = (dOpen > 0 && pdClose > 0) ? dOpen - pdClose : 0;
    double nwog = (wOpen > 0 && pwClose > 0) ? wOpen - pwClose : 0;
    string bslArr[], sslArr[];
@@ -2770,12 +2844,12 @@ string A_Session(string sym)
 //--- pivots (from real daily/weekly/monthly candles) -----------------------
 string A_Pivots(string sym)
   {
-   double pdh = iHigh(sym, PERIOD_D1, 1),  pdl = iLow(sym, PERIOD_D1, 1);
-   double pdc = iClose(sym, PERIOD_D1, 1), pdo = iOpen(sym, PERIOD_D1, 1);
-   double pwh = iHigh(sym, PERIOD_W1, 1),  pwl = iLow(sym, PERIOD_W1, 1);
-   double pwc = iClose(sym, PERIOD_W1, 1);
-   double pmh = iHigh(sym, PERIOD_MN1, 1), pml = iLow(sym, PERIOD_MN1, 1);
-   double pmc = iClose(sym, PERIOD_MN1, 1);
+   double pdh = xHigh(sym, PERIOD_D1, 1),  pdl = xLow(sym, PERIOD_D1, 1);
+   double pdc = xClose(sym, PERIOD_D1, 1), pdo = xOpen(sym, PERIOD_D1, 1);
+   double pwh = xHigh(sym, PERIOD_W1, 1),  pwl = xLow(sym, PERIOD_W1, 1);
+   double pwc = xClose(sym, PERIOD_W1, 1);
+   double pmh = xHigh(sym, PERIOD_MN1, 1), pml = xLow(sym, PERIOD_MN1, 1);
+   double pmc = xClose(sym, PERIOD_MN1, 1);
    if(pdh <= 0 || pdl <= 0 || pdc <= 0) { g_aErr = "yesterday's daily candle isn't loaded yet for " + sym; return ""; }
    double rng = pdh - pdl;
    double p  = (pdh + pdl + pdc) / 3.0;
@@ -2929,7 +3003,7 @@ string A_Confluence(int &outScore, string &outDir)
 double A_ADR(string sym, int days)
   {
    MqlRates d[]; ArraySetAsSeries(d, true);
-   int n = CopyRates(sym, PERIOD_D1, 1, days, d);
+   int n = SeriesReady(sym, PERIOD_D1) ? CopyRates(sym, PERIOD_D1, 1, days, d) : 0;
    if(n <= 0) return 0;
    double s = 0; for(int i = 0; i < n; i++) s += d[i].high - d[i].low;
    return s / n;
@@ -2951,7 +3025,7 @@ string A_RiskMetrics(string sym)
    double pipVal  = (tickSz > 0) ? tickVal * (g_aPip / tickSz) : 0;
    double bal = AccountInfoDouble(ACCOUNT_BALANCE);
    double adr = A_ADR(sym, 14), adrP = A_Pips(sym, adr);
-   double todayRange = iHigh(sym, PERIOD_D1, 0) - iLow(sym, PERIOD_D1, 0);
+   double todayRange = xHigh(sym, PERIOD_D1, 0) - xLow(sym, PERIOD_D1, 0);
    double sl2 = atrP * 2.0;
    double vmin = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
    double raw1 = (pipVal > 0 && sl2 > 0) ? (bal * 0.01) / (sl2 * pipVal) : 0;
@@ -3075,10 +3149,19 @@ string A_Elliott()
          if(s * (g_aC[0] - p1) > 0) { wave = 3; impulse = true; dir = up ? "BULL" : "BEAR"; target = p2 + s * w1 * 1.618; invalid = p2; rules = "wave2_ok"; }
          continue;
         }
-      double p3 = px[o+3], p4 = px[o+4];
+      double p3 = px[o+3];
       double w3 = s * (p3 - p2);
+      if(w3 <= 0) continue;
+      if(len == 4)
+        {
+         // Wave 4 in progress (only 4 pivots -- there is no px[o+4]; reading it was an "array out of
+         // range" that made MT5 switch the whole EA off). Valid while price stays clear of wave 1's end.
+         if(s * (g_aC[0] - p1) > 0) { wave = 4; impulse = true; dir = up ? "BULL" : "BEAR"; target = p3 - s * w3 * 0.382; invalid = p1; rules = "wave2_ok,wave4_no_overlap_so_far"; }
+         continue;
+        }
+      double p4 = px[o+4];
       bool r4 = s * (p4 - p1) > 0;           // wave 4 never overlaps wave 1
-      if(w3 <= 0 || !r4) continue;
+      if(!r4) continue;
       if(len == 5)
         {
          if(w3 < w1 && s * (g_aC[0] - p3) <= 0) continue;
@@ -3114,6 +3197,15 @@ bool A_CorrWith(string base, ENUM_TIMEFRAMES tf, int want, double &corr, int &pa
    corr = 0; pairs = 0;
    string nm = ResolvedName(base);
    if(nm == "") return false;
+   string ck = XKey("corr", nm, tf, want);
+   if(!SeriesReady(nm, tf))
+     {
+      // previous answer (stored shifted by +2 so a real 0 or negative correlation is kept)
+      double prev = LastGood(ck, 0, false, nm + " " + TfName(tf)), prevN = LastGood(ck + "|n", 0, false);
+      if(prev <= 0) return false;
+      corr = prev - 2; pairs = (int)prevN;
+      return true;
+     }
    MqlRates r[]; ArraySetAsSeries(r, true);
    int got = CopyRates(nm, tf, 0, want + 60, r);
    if(got < 20) return false;
@@ -3135,6 +3227,7 @@ bool A_CorrWith(string base, ENUM_TIMEFRAMES tf, int want, double &corr, int &pa
    for(int i = 0; i < pairs; i++) { sxy += (x[i]-mx)*(y[i]-my); sxx += (x[i]-mx)*(x[i]-mx); syy += (y[i]-my)*(y[i]-my); }
    if(sxx <= 0 || syy <= 0) return false;
    corr = sxy / MathSqrt(sxx * syy);
+   LastGood(ck, corr + 2, true); LastGood(ck + "|n", pairs, true);
    return true;
   }
 string A_Correlation(string sym, ENUM_TIMEFRAMES tf)
@@ -3323,7 +3416,7 @@ string A_MeanReversion()
 string A_Tape(string sym)
   {
    MqlTick ticks[];
-   int got = CopyTicks(sym, ticks, COPY_TICKS_ALL, 0, 200);
+   int got = SymbolIsSynchronized(sym) ? CopyTicks(sym, ticks, COPY_TICKS_ALL, 0, 200) : 0;
    int upT = 0, dnT = 0; double lastP = 0;
    for(int i = 0; i < got; i++)
      {
@@ -3472,8 +3565,8 @@ string A_MarketProfile()
 string A_Macro(string sym, ENUM_TIMEFRAMES tf)
   {
    double d1 = 0, w1 = 0, dxy = 0, gold = 0, jpy = 0;
-   double dC = iClose(sym, PERIOD_D1, 1), dCp = iClose(sym, PERIOD_D1, 2);
-   double wC = iClose(sym, PERIOD_W1, 1), wCp = iClose(sym, PERIOD_W1, 2);
+   double dC = xClose(sym, PERIOD_D1, 1), dCp = xClose(sym, PERIOD_D1, 2);
+   double wC = xClose(sym, PERIOD_W1, 1), wCp = xClose(sym, PERIOD_W1, 2);
    bool dOk = dC > 0 && dCp > 0, wOk = wC > 0 && wCp > 0;
    if(dOk) d1 = (dC - dCp) / dCp * 100.0;
    if(wOk) w1 = (wC - wCp) / wCp * 100.0;
@@ -3494,6 +3587,35 @@ string A_Macro(string sym, ENUM_TIMEFRAMES tf)
   }
 
 //--- news (MT5's economic calendar, which runs on BROKER SERVER time) -------
+// The calendar is read at most once every 10 minutes (a wider window than any one answer needs)
+// and kept: previous + present, so "news" answers in milliseconds. A read can make the EA wait
+// while MT5 syncs the calendar -- when one took over 3 s, the next try waits an hour.
+MqlCalendarValue g_calVals[];
+datetime g_calAt = 0, g_calRetryAt = 0;
+bool g_calOk = false;
+bool CalendarSnapshot(datetime nowSrv, MqlCalendarValue &out[])
+  {
+   datetime nowLocal = TimeLocal();
+   if((g_calAt == 0 || nowLocal - g_calAt > 600) && nowLocal >= g_calRetryAt)
+     {
+      uint started = GetTickCount();
+      MqlCalendarValue fresh[];
+      if(CalendarValueHistory(fresh, nowSrv - 12 * 3600, nowSrv + 36 * 3600, NULL, NULL))
+        {
+         ArrayFree(g_calVals);
+         ArrayCopy(g_calVals, fresh);
+         g_calOk = true;
+         g_calAt = nowLocal;
+        }
+      if(GetTickCount() - started > 3000) g_calRetryAt = nowLocal + 3600;
+      else if(!g_calOk) g_calRetryAt = nowLocal + 300;
+     }
+   ArrayFree(out);
+   if(g_calOk) ArrayCopy(out, g_calVals);
+   if(g_calOk && nowLocal - g_calAt > 900) NotePrevious("economic calendar (" + IntegerToString((long)(nowLocal - g_calAt) / 60) + " min old)");
+   return g_calOk;
+  }
+
 string A_News(string sym)
   {
    MqlCalendarValue vals[];
@@ -3502,11 +3624,12 @@ string A_News(string sym)
    datetime nowSrv = TimeTradeServer();
    datetime from = nowSrv - 6 * 3600, to = nowSrv + 24 * 3600;
    string items[]; int high = 0; long minsToNext = -1; long minsToNextHigh = -1;
-   bool calOk = CalendarValueHistory(vals, from, to, NULL, NULL);
+   bool calOk = CalendarSnapshot(nowSrv, vals);
    if(calOk)
      {
       for(int i = 0; i < ArraySize(vals) && ArraySize(items) < 15; i++)
         {
+         if(vals[i].time < from || vals[i].time > to) continue;
          MqlCalendarEvent ev;
          if(!CalendarEventById(vals[i].event_id, ev)) continue;
          MqlCalendarCountry co;
@@ -4016,6 +4139,7 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr,
   {
    g_srvOffset = SrvOffset();
    g_aErr = "";
+   ArrayFree(g_prevUsed);
    if(endpoint == "ping")
      {
       AppendResultData(commandId, Obj(J("status", "ok") + "," + J("time", A_IsoTime(TimeGMT())) + "," + J("source", "DaveEA") + "," + J("ea_version", EA_VERSION)));

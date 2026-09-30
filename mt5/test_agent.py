@@ -241,6 +241,32 @@ check(not ok and open(agent.ex5_path()).read() == "// version 2 (pip fix)", "a f
 check(not os.path.exists(agent.ex5_path() + ".bak"), "no leftover backup")
 agent.subprocess.run = _real_run
 
+print("\n[EA went silent] MetaTrader running, logged in, nothing from the EA -> logged + restarted, 3 an hour at most")
+os.makedirs(os.path.join(agent.MT5_DIR, "MQL5", "logs"), exist_ok=True)
+with open(os.path.join(agent.MT5_DIR, "MQL5", "logs", "20260930.log"), "w", encoding="utf-16") as f:
+    f.write("MK\t2\t08:09:57.536\tDaveEA (VOL_10,M1)\tarray out of range in 'DaveEA.mq5' (3123,37)\n")
+check("array out of range" in agent.latest_log(agent.experts_log_dir()), "the EA's own log is found (MQL5/logs, lower case)")
+restarts = []
+_real_stop, _real_start, _real_login = agent.stop_terminal, agent.start_terminal, agent.login_state
+agent.stop_terminal = lambda: None
+agent.start_terminal = lambda st: restarts.append(time.time())
+agent.login_state = lambda: ("logged-in", None)
+agent.terminal_started_at = time.time() - 600
+agent.relay_stats["lastAt"] = time.time() - 30
+check(agent.ea_silent() is False, "reported 30 s ago: not silent")
+agent.relay_stats["lastAt"] = time.time() - 400
+check(agent.ea_silent() is True, "nothing for 400 s: silent")
+agent.login_state = lambda: ("connecting", None)
+check(agent.ea_silent() is False, "not logged in yet: that's the login's problem, not the EA's")
+agent.login_state = lambda: ("logged-in", None)
+_real_sleep = agent.time.sleep
+agent.time.sleep = lambda s: None
+for _ in range(5):
+    agent.restart_silent_ea({"login": "1"})
+check(len(restarts) == 3, "restarted 3 times, then waits (got %d)" % len(restarts))
+agent.time.sleep = _real_sleep
+agent.stop_terminal, agent.start_terminal, agent.login_state = _real_stop, _real_start, _real_login
+
 print()
 if failures:
     print("%d FAILED" % len(failures))

@@ -162,7 +162,7 @@ export interface AccountSnapshot {
 
 /** The EA version this bot ships. An older (or unversioned) EA still works -- the bot just says an
  *  update is available, so the trader gets the corrected data. */
-export const CURRENT_EA_VERSION = "3.0";
+export const CURRENT_EA_VERSION = "3.1";
 
 export function isEaOutdated(version: string | undefined): boolean {
   if (!version) return true;
