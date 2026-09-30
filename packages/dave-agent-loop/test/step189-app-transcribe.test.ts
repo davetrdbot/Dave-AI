@@ -71,6 +71,58 @@ assert.ok(speechVocabularyPrompt(userId).length <= 800, "short enough for Whispe
 console.log(`   prompt: ${call.prompt!.slice(0, 120)}...`);
 console.log("   ✓\n");
 
+console.log("[3] A call in Dave's ElevenLabs voice: what you said -> Dave's full brain -> his voice");
+{
+  const { setTtsProviderKey, setVoiceEnabled, setActiveProvider, setVoiceId } = await import("@dave/notifications");
+  const turns: { text: string; display?: { text: string } }[] = [];
+  const callServer = createServer(
+    createAppChatHandler({
+      userId, db, executor: {} as never, systemPrompt: "x",
+      runTurn: (async (_d: unknown, input: { text: string; display?: { text: string } }) => {
+        turns.push(input);
+        return { status: "done", text: "Done -- **XAUUSD** stop is at breakeven, 2,351.40." };
+      }) as never,
+    })
+  );
+  await new Promise<void>((r2) => callServer.listen(0, r2));
+  const callBase = `http://127.0.0.1:${(callServer.address() as { port: number }).port}/api/app/chat`;
+  // No voice set up yet: the answer still comes back as text, with why there's no audio.
+  let v = await fetch(`${callBase}/voice/turn`, { method: "POST", headers: H, body: JSON.stringify({ audio, name: "call.m4a" }) });
+  let j = (await v.json()) as Record<string, string>;
+  assert.equal(j.heard, "Move my XAUUSD trade to breakeven.");
+  assert.match(j.reply, /stop is at breakeven/);
+  assert.ok(j.voiceError && !j.audio, "no voice yet -- the reason, not a failure");
+  assert.match(turns[0].text, /^\[Voice call -- the trader said:\] Move my XAUUSD trade to breakeven\./, "Dave's full turn gets what was said");
+  assert.match(turns[0].text, /wait for their yes/, "trade changes need a spoken yes");
+  assert.equal(turns[0].display?.text, "🎙 Move my XAUUSD trade to breakeven.", "the chat shows what was said");
+  // With ElevenLabs: the reply comes back as his voice, markdown stripped before it's spoken.
+  setTtsProviderKey(db, userId, "elevenlabs", "el_test_key_1234567890");
+  setVoiceEnabled(db, userId, true);
+  setActiveProvider(db, userId, "elevenlabs");
+  setVoiceId(db, userId, "elevenlabs", "voice-dave");
+  const realFetch = globalThis.fetch;
+  let spokenText = "";
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(input);
+    if (u.startsWith("https://api.elevenlabs.io/v1/text-to-speech/voice-dave")) {
+      spokenText = JSON.parse(String(init?.body)).text;
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  try {
+    v = await realFetch(`${callBase}/voice/turn`, { method: "POST", headers: H, body: JSON.stringify({ audio, name: "call.m4a" }) });
+    j = (await v.json()) as Record<string, string>;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(j.audio, Buffer.from([1, 2, 3, 4]).toString("base64"), "Dave's ElevenLabs voice comes back");
+  assert.equal(j.provider, "elevenlabs");
+  assert.ok(!spokenText.includes("**") && spokenText.includes("XAUUSD"), "markdown stripped before speaking");
+  callServer.close();
+}
+console.log("   ✓\n");
+
 server.close();
 groq.close();
 console.log("=== step189 app transcribe: ALL ASSERTIONS PASSED ===");

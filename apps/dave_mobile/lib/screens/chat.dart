@@ -25,6 +25,7 @@ import 'shell.dart';
 import '../look.dart';
 import 'dave_voice.dart';
 import 'voice.dart';
+import 'eleven_call.dart';
 
 /// Talking to Dave -- the same conversation as Telegram, with every step he takes shown live:
 /// each tool as it starts and finishes, his thinking, the workers he starts, and Nous's cards
@@ -451,13 +452,39 @@ class _ChatScreenState extends State<ChatScreen> {
             : CupertinoButton(
                 key: const ValueKey('chat-live-call'),
                 padding: EdgeInsets.zero,
-                // Talk to Dave live (Gemini Live): a real two-way voice call.
+                // Call Dave: Gemini Live (fastest, Google's voices) or his ElevenLabs voice (full
+                // Dave brain -- every tool -- then ElevenLabs speaks).
                 onPressed: _api == null
                     ? null
                     : () async {
                         HapticFeedback.mediumImpact();
                         await DaveAudio.stop();
-                        if (context.mounted) await LiveCallPage.open(context, _api!);
+                        if (!context.mounted) return;
+                        final how = await showCupertinoModalPopup<String>(
+                          context: context,
+                          builder: (ctx) => CupertinoActionSheet(
+                            title: const Text('Call Dave'),
+                            actions: [
+                              CupertinoActionSheetAction(
+                                key: const ValueKey('call-eleven'),
+                                onPressed: () => Navigator.pop(ctx, 'eleven'),
+                                child: const Text('ElevenLabs voice (full Dave)'),
+                              ),
+                              CupertinoActionSheetAction(
+                                key: const ValueKey('call-gemini'),
+                                onPressed: () => Navigator.pop(ctx, 'gemini'),
+                                child: const Text('Gemini Live (fastest)'),
+                              ),
+                            ],
+                            cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                          ),
+                        );
+                        if (!context.mounted || how == null) return;
+                        if (how == 'eleven') {
+                          await ElevenCallPage.open(context, _api!);
+                        } else {
+                          await LiveCallPage.open(context, _api!);
+                        }
                       },
                 child: Icon(CupertinoIcons.phone_fill, color: Look.of(context).accent),
               ),

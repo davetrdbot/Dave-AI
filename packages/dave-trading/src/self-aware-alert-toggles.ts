@@ -45,7 +45,8 @@ export type AlertCategory =
   | "spread_spike" // the spread on an open trade jumped to 3x its normal size
   | "margin_low" //   margin level under 200%, then under 120%
   | "stop_too_tight" // the stop sits inside spread + the broker's minimum distance
-  | "market_close"; // forex trade still open in the last hour before the weekend close
+  | "market_close" // forex trade still open in the last hour before the weekend close
+  | "pending_stale"; // a pending order still waiting after 10 min -- recheck it
 
 export const ALERT_CATEGORIES: { id: AlertCategory; label: string }[] = [
   { id: "loss_duration", label: "Loss-duration nudges (5m / 10m in the red)" },
@@ -72,6 +73,7 @@ export const ALERT_CATEGORIES: { id: AlertCategory; label: string }[] = [
   { id: "margin_low", label: "Margin level low (under 200%, then 120%)" },
   { id: "stop_too_tight", label: "Stop too tight (inside the spread)" },
   { id: "market_close", label: "Market closing with a trade open (Friday)" },
+  { id: "pending_stale", label: "Pending order waiting 10+ min (recheck it)" },
 ];
 
 const VALID = new Set<AlertCategory>(ALERT_CATEGORIES.map((c) => c.id));
@@ -104,6 +106,7 @@ function defaultToggles(): AlertToggles {
     margin_low: true,
     stop_too_tight: true,
     market_close: true,
+    pending_stale: true,
   };
 }
 

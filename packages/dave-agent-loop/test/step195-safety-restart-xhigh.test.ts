@@ -15,7 +15,7 @@ process.env.DAVE_DATA_ROOT = workDir;
 
 const { publishActivity } = await import("../src/activity-bus.js");
 const { selfAwareFeedBlock } = await import("../src/self-aware-feed.js");
-const { safetyChecks, SPREAD_SPIKE_X } = await import("../src/safety-alerts.js");
+const { safetyChecks, SPREAD_SPIKE_X, stalePendingChecks, PENDING_STALE_MS, PENDING_REPEAT_MS } = await import("../src/safety-alerts.js");
 const { getCursorPosition, advanceCursor, resetScanCursor } = await import("../src/autonomous-tick-state.js");
 const { setAutonomousTradingEnabled } = await import("../src/autonomous-trading-state.js");
 const { runSequentialThinking, EFFORT_PROFILES } = await import("../src/sequential-thinking.js");
@@ -74,6 +74,24 @@ try {
   assert.equal(msgs.length, 1);
   assert.match(msgs[0], /MARKET CLOSES IN UNDER AN HOUR[\s\S]*EURUSD #9/);
   assert.ok(!msgs[0].includes("VOL_10"), "synthetics trade through the weekend");
+  console.log("   ✓\n");
+
+  console.log("[5b] A pending order waiting 10 minutes is rechecked, on its own pair\n");
+  {
+    const P = "pending-user";
+    const order = { ticket: "88", symbol: "BOOM_200", type: "buy_limit" as const, lots: 0.1, price: 1500 };
+    const t = Date.UTC(2026, 8, 30, 10, 0);
+    assert.deepEqual(stalePendingChecks(P, [order], [], t, true), []);
+    assert.deepEqual(stalePendingChecks(P, [order], [], t + PENDING_STALE_MS - 1000, true), [], "not yet");
+    const due = stalePendingChecks(P, [order], [], t + PENDING_STALE_MS, true);
+    assert.equal(due.length, 1);
+    assert.equal(due[0].symbol, "BOOM_200", "goes to mode 2 on its own pair");
+    assert.match(due[0].text, /PENDING ORDER STILL WAITING: BOOM_200 BUY LIMIT 0\.1 lots @ 1500 #88 -- 10 min[\s\S]*Keep it \(say why\), move it[\s\S]*cancel it/);
+    assert.deepEqual(stalePendingChecks(P, [order], [], t + PENDING_STALE_MS + 60_000, true), [], "once, not every sweep");
+    assert.equal(stalePendingChecks(P, [order], [], t + PENDING_STALE_MS + PENDING_REPEAT_MS, true).length, 1, "again after 30 min");
+    assert.deepEqual(stalePendingChecks(P, [], [], t + 2 * PENDING_REPEAT_MS, true), [], "filled or cancelled: forgotten");
+    assert.ok(trading.ALERT_CATEGORIES.some((c: { id: string }) => c.id === "pending_stale"), "has its own switch");
+  }
   console.log("   ✓\n");
 
   console.log("[6] The scan starts from the first pair again when switched on, and from the button\n");

@@ -23,7 +23,7 @@ import {
 import { outcomeLine, recordTradeClosed } from "./alert-outcomes.js";
 import { reviewTrade, REVIEW_KINDS, type ReviewDeps } from "./self-aware-review.js";
 import { exitRuleFor, describeExitRule, runExitRules, type ExitRule } from "./exit-rules.js";
-import { safetyChecks, resetSafetyState } from "./safety-alerts.js";
+import { safetyChecks, stalePendingChecks, resetSafetyState } from "./safety-alerts.js";
 
 /**
  * The runtime half of the Self-Aware Trade Monitor. On its own timer it reads every live open
@@ -515,6 +515,10 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
   if (heat && toggles.portfolio) hotHandMessages.push(heat);
   // Spread spikes, low margin, stops inside the spread, the Friday close.
   hotHandMessages.push(...safetyChecks(deps.userId, positions, now, toggles));
+  // Pending orders waiting 10+ min: each one to mode 2 on its own pair, to be rechecked.
+  for (const p of stalePendingChecks(deps.userId, getLastKnownState(deps.userId).pendingOrders ?? [], positions, now, toggles.pending_stale)) {
+    await deps.notify(p.text, { symbol: p.symbol }).catch((err) => console.error(`[trade-monitor] ${deps.userId}: pending-order alert failed:`, err));
+  }
 
   // Exit rules (exit-rules.ts): close the trades whose armed level was reached.
   try {

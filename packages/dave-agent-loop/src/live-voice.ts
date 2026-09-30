@@ -158,6 +158,22 @@ export async function startLiveSession(
   if (!key) throw new NoGeminiKeyError();
   const model = opts.thinking ? LIVE_MODELS.thinking : LIVE_MODELS.fast;
   const expiresAt = now + 30 * 60_000;
+  const voice = opts.voice && LIVE_VOICES.includes(opts.voice) ? opts.voice : "Charon";
+  const setup = {
+    model: `models/${model}`,
+    generationConfig: {
+      responseModalities: ["AUDIO"],
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+    },
+    systemInstruction: { parts: [{ text: liveSystemInstruction(deps.userId, opts.allowActions !== false) }] },
+    tools: [{ functionDeclarations: liveFunctionDeclarations(deps.registry, opts.allowActions !== false) }],
+    inputAudioTranscription: {},
+    outputAudioTranscription: {},
+    contextWindowCompression: { slidingWindow: {} },
+    // Google closes a live socket every ~10 minutes; the app reconnects with the handle it was
+    // last given (sessionResumptionUpdate) and a fresh token, and the call carries on.
+    sessionResumption: {},
+  };
   // One-use call tokens exist only on v1alpha, and the REST body names the locked setup
   // `bidiGenerateContentSetup` (the SDKs call it liveConnectConstraints -- Google refuses that name).
   const res = await fetchImpl(`${GEMINI}/v1alpha/auth_tokens`, {
@@ -167,36 +183,22 @@ export async function startLiveSession(
       uses: 1,
       expireTime: new Date(expiresAt).toISOString(),
       newSessionExpireTime: new Date(now + 2 * 60_000).toISOString(),
-      bidiGenerateContentSetup: { model: `models/${model}` },
+      // The WHOLE setup goes in the token. Google locks a constrained session to the token's setup
+      // and ignores what the app sends -- with only the model in it, Dave had no instructions and
+      // no tools on the call ("it doesn't know anything about trade, it can't open trade").
+      bidiGenerateContentSetup: setup,
     }),
   });
   const json = (await res.json().catch(() => ({}))) as { name?: string; token?: { name?: string }; error?: { message?: string } };
   if (!res.ok) throw new Error(`Google refused the call: ${json.error?.message ?? `HTTP ${res.status}`}`);
   const token = json.name ?? json.token?.name;
   if (!token) throw new Error("Google didn't return a call token.");
-  const voice = opts.voice && LIVE_VOICES.includes(opts.voice) ? opts.voice : "Charon";
   return {
     url: `${LIVE_WS_URL}?access_token=${encodeURIComponent(token)}`,
     token,
     model,
     expiresAt,
-    setup: {
-      setup: {
-        model: `models/${model}`,
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-        },
-        systemInstruction: { parts: [{ text: liveSystemInstruction(deps.userId, opts.allowActions !== false) }] },
-        tools: [{ functionDeclarations: liveFunctionDeclarations(deps.registry, opts.allowActions !== false) }],
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
-        contextWindowCompression: { slidingWindow: {} },
-        // Google closes a live socket every ~10 minutes; the app reconnects with the handle it was
-        // last given (sessionResumptionUpdate) and a fresh token, and the call carries on.
-        sessionResumption: {},
-      },
-    },
+    setup: { setup },
   };
 }
 

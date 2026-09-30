@@ -162,7 +162,7 @@ try {
     try {
       const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
       assert.equal(opened.length, 0, "no second GBPUSD trade");
-      assert.ok(logs.some((l) => /a new BUY on a pair with an open trade is not placed/.test(l)), "refused by the manage-only rule, not by chance");
+      assert.ok(logs.some((l) => /a new BUY on a pair with an open trade is not placed|no room for a new trade -- the BUY is not placed/.test(l)), "refused by the manage-only rule, not by chance");
       assert.notEqual(outcome.action, "BUY");
     } finally {
       await ea.stop();

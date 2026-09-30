@@ -1,4 +1,4 @@
-import { getLastKnownAccountSnapshot, type EaPosition } from "@dave/ea-bridge";
+import { getLastKnownAccountSnapshot, type EaPosition, type EaPendingOrder } from "@dave/ea-bridge";
 import { isForexSymbol, type AlertToggles } from "@dave/trading";
 
 /**
@@ -133,7 +133,42 @@ export function safetyChecks(userId: string, positions: EaPosition[], now: numbe
   return out;
 }
 
+/** A pending order waiting this long gets rechecked (the trader: "if a pending order has been there
+ *  for like 10 minutes it should recheck"), and again every PENDING_REPEAT_MS while it waits. */
+export const PENDING_STALE_MS = 10 * 60_000;
+export const PENDING_REPEAT_MS = 30 * 60_000;
+const pendingSeen = new Map<string, Map<string, { firstSeen: number; toldAt?: number }>>();
+
+/** Pending orders that have waited too long, one alert each, with its pair so mode 2 rechecks it. */
+export function stalePendingChecks(userId: string, pending: EaPendingOrder[], positions: EaPosition[], now: number, enabled: boolean): { symbol: string; text: string }[] {
+  const seen = pendingSeen.get(userId) ?? new Map<string, { firstSeen: number; toldAt?: number }>();
+  pendingSeen.set(userId, seen);
+  const live = new Set(pending.map((o) => String(o.ticket)));
+  for (const t of [...seen.keys()]) if (!live.has(t)) seen.delete(t);
+  const out: { symbol: string; text: string }[] = [];
+  for (const o of pending) {
+    const rec = seen.get(String(o.ticket)) ?? { firstSeen: now };
+    seen.set(String(o.ticket), rec);
+    const age = now - rec.firstSeen;
+    const due = rec.toldAt === undefined ? age >= PENDING_STALE_MS : now - rec.toldAt >= PENDING_REPEAT_MS;
+    if (!due) continue;
+    rec.toldAt = now;
+    if (!enabled) continue;
+    const price = positions.find((p) => p.symbol === o.symbol && typeof p.currentPrice === "number")?.currentPrice;
+    const mins = Math.round(age / 60_000);
+    out.push({
+      symbol: o.symbol,
+      text:
+        `⏳ PENDING ORDER STILL WAITING: ${o.symbol} ${o.type.toUpperCase().replace("_", " ")} ${o.lots} lots @ ${o.price} #${o.ticket} -- ${mins} min and not filled` +
+        `${price !== undefined ? ` (price now ${price})` : ""}.${o.sl ? ` SL ${o.sl}` : ""}${o.tp ? ` TP ${o.tp}` : ""}${o.comment ? ` Note: ${o.comment}.` : ""}\n` +
+        `Recheck it on fresh candles: is the level and the idea behind it still valid? Keep it (say why), move it to where price will really come, or cancel it (DELETE_TICKET #${o.ticket}).`,
+    });
+  }
+  return out;
+}
+
 /** Test seam. */
 export function resetSafetyState(): void {
   states.clear();
+  pendingSeen.clear();
 }

@@ -595,6 +595,9 @@ abstract class LiveAudio {
 
 /// The phone's mic (16 kHz PCM, echo cancelled -- Dave mustn't hear himself on the speaker) and
 /// speaker (Gemini's 24 kHz PCM, fed as it arrives).
+/// How loud the trader must speak (0..1, see pcmLevel) to cut in while Dave is talking.
+const double bargeInLevel = 0.45;
+
 class PhoneAudio implements LiveAudio {
   AudioRecorder? _rec;
   StreamSubscription<Uint8List>? _mic;
@@ -623,14 +626,21 @@ class PhoneAudio implements LiveAudio {
         echoCancel: true,
         noiseSuppress: true,
         autoGain: true,
+        // Media, not a phone call (the trader: "use media speaker not call speaker"): in
+        // communication mode Android routes the whole app into the call path -- call volume,
+        // call speaker. Normal mode keeps Dave on the media speaker and media volume.
         androidConfig: AndroidRecordConfig(
-          audioSource: AndroidAudioSource.voiceCommunication,
-          audioManagerMode: AudioManagerMode.modeInCommunication,
-          speakerphone: true,
+          audioSource: AndroidAudioSource.voiceRecognition,
+          audioManagerMode: AudioManagerMode.modeNormal,
         ),
       ),
     );
-    _mic = stream.listen(onChunk);
+    // Media playback isn't echo-cancelled like a call, so while Dave is talking only clearly
+    // louder speech (the trader cutting in) gets through -- otherwise he'd hear himself.
+    _mic = stream.listen((chunk) {
+      if (playing && pcmLevel(chunk) < bargeInLevel) return;
+      onChunk(chunk);
+    });
   }
 
   @override

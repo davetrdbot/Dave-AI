@@ -91,7 +91,7 @@ const s = JSON.parse(raw) as { url: string; token: string; model: string; setup:
 assert.equal(tokenCalls[0].key, "AIzaTestKey1234567890");
 assert.match(tokenCalls[0].url, /\/v1alpha\/auth_tokens$/);
 assert.equal(tokenCalls[0].body.uses, 1);
-assert.deepEqual(tokenCalls[0].body.bidiGenerateContentSetup, { model: `models/${LIVE_MODELS.thinking}` });
+assert.deepEqual(tokenCalls[0].body.bidiGenerateContentSetup, s.setup.setup, "the token locks Dave's whole setup (instructions + tools) -- Google ignores the app's own");
 assert.equal(s.model, LIVE_MODELS.thinking);
 assert.equal(s.token, "auth_tokens/one-use-token");
 assert.match(s.url, /^wss:\/\/.*BidiGenerateContentConstrained\?access_token=auth_tokens%2Fone-use-token$/);

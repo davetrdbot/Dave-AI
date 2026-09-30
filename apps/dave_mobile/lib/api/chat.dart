@@ -194,6 +194,11 @@ class ChatApi {
     return body['turnId'] as String? ?? '';
   }
 
+  /// One exchange of an ElevenLabs call: what the trader said (recorded audio) in, Dave's answer
+  /// out -- as text and, when his voice is set up, as audio (base64).
+  Future<Map<String, dynamic>> voiceTurn(List<int> audio, {String name = 'voice.m4a'}) =>
+      _post('voice/turn', {'audio': base64Encode(audio), 'name': name}, timeout: const Duration(seconds: 180));
+
   /// The trader's voice as text (Groq Whisper on the bot, primed with their pairs and trading words).
   Future<String> transcribe(List<int> audio, {String name = 'voice.m4a'}) async {
     final body = await _post('transcribe', {'audio': base64Encode(audio), 'name': name}, timeout: const Duration(seconds: 90));

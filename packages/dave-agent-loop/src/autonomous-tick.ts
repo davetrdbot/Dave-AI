@@ -652,7 +652,7 @@ interface CursorSymbolResult {
  *  (user, live: "whether market is closed that's for forex it shouldn't analyze that even set as
  *  fallback too") -- advancing without spending a decision call on either case, bounded so an
  *  all-closed/all-open list can't spin forever. */
-function resolveCursorSymbol(userId: string, primary: string[], fallback: string[], openSymbols: Set<string>, groupIdFor: (symbol: string, usingFallback: boolean) => string | null, manageOnly = false): CursorSymbolResult | null {
+function resolveCursorSymbol(userId: string, primary: string[], fallback: string[], openSymbols: Set<string>, groupIdFor: (symbol: string, usingFallback: boolean) => string | null, manageOnly = false, pendingSymbols: Set<string> = new Set()): CursorSymbolResult | null {
   // Real requested-next-symbol override (user, live: the model can note "analyze SYMBOL next,
   // because REASON" on any decision, and the round-robin honors that specific symbol on the VERY
   // NEXT cycle). Consumed exactly once regardless of outcome -- a stale/invalid request never
@@ -685,7 +685,7 @@ function resolveCursorSymbol(userId: string, primary: string[], fallback: string
       continue;
     }
     const manage = openSymbols.has(f.symbol.toUpperCase());
-    if (manageOnly && !manage) {
+    if (manageOnly && !manage && !pendingSymbols.has(f.symbol.toUpperCase())) {
       logTick(userId, `alert focus on ${f.symbol} skipped -- no room for a new trade right now`);
       continue;
     }
@@ -809,6 +809,8 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // An alert on an open trade gets its scan even when no new trade may be opened (outside the
   // session, at max trades, account gate) -- that scan only manages the trade.
   const openNow = new Set(getLastKnownState(userId).positions.map((p) => p.symbol.toUpperCase()));
+  // (a pending order waiting on its pair counts: its recheck can cancel or move it, never add one)
+  for (const o of getLastKnownState(userId).pendingOrders ?? []) openNow.add(o.symbol.toUpperCase());
   const tradeAlertWaiting = peekAlertFocus(userId).some((sym) => openNow.has(sym.toUpperCase()));
   let manageOnly = false;
   if (!isWithinSelectedSession(userId)) {
@@ -891,7 +893,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   }
 
   const openSymbols = new Set(positions.map((p) => p.symbol.toUpperCase()));
-  const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols, groupIdFor, manageOnly);
+  const picked = resolveCursorSymbol(userId, primarySymbols, fallbackSymbols, openSymbols, groupIdFor, manageOnly, new Set(pendingOrders.map((o) => o.symbol.toUpperCase())));
   if (!picked && manageOnly) {
     logTick(userId, "no trade -- no new trades allowed right now, and no alerted open trade to manage");
     return { action: "NONE", notable: false };
@@ -1125,7 +1127,9 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
         }. The full multi-timeframe analysis for ${symbol} is below.\n` +
         (picked.focus.manage
           ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, tighten it, take a partial, or close it -- via actions/MODIFY/PARTIAL_CLOSE. No new entry on ${symbol} in this scan.`
-          : `If the level/setup is live, take the trade or arm the order now; if it isn't, SKIP with one line saying why.`)
+          : pendingOrders.some((o) => o.symbol.toUpperCase() === symbol.toUpperCase())
+            ? `You have a pending order on ${symbol} (above). Recheck it on this fresh analysis: keep it (say in one line why the level and idea still hold), cancel it with DELETE_TICKET, or cancel and place it where price will really come. Never stack a second pending order on the same idea.`
+            : `If the level/setup is live, take the trade or arm the order now; if it isn't, SKIP with one line saying why.`)
       : null,
     `SYMBOL: ${symbol}`,
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
@@ -1455,6 +1459,11 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
 
   logTick(userId, `${symbol}: model decided ${decision.action}${decision.confidence !== undefined ? ` (confidence ${decision.confidence}%)` : ""} -- ${decision.reason ?? decision.question ?? "no reason given"}`);
   // A scan started to manage an open trade never stacks a second entry on the same pair.
+  // Nor does a scan that only got through to manage (at max trades / outside the session).
+  if (manageOnly && ENTRY_ACTIONS.has(decision.action)) {
+    logTick(userId, `${symbol}: alert scan with no room for a new trade -- the ${decision.action} is not placed`);
+    decision = { ...decision, action: "SKIP", reason: `(new entry not placed -- no room for a new trade right now) ${decision.reason ?? ""}` };
+  }
   if (picked.focus?.manage && ENTRY_ACTIONS.has(decision.action) && (decision.symbol ?? symbol).toUpperCase() === symbol.toUpperCase()) {
     logTick(userId, `${symbol}: alert scan -- a new ${decision.action} on a pair with an open trade is not placed; managing the open trade only`);
     decision = { ...decision, action: "SKIP", reason: `(new entry not placed -- this scan manages the open ${symbol} trade) ${decision.reason ?? ""}` };

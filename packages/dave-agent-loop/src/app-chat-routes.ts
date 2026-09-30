@@ -8,6 +8,7 @@ import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, appRegistry
 import { dispatchCallback } from "./command-router.js";
 import { ANSWERED_EARLIER, loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
 import { startLiveSession, runLiveTool, NoGeminiKeyError } from "./live-voice.js";
+import { getVoiceSettings, synthesizeSpeechWithStoredKeys } from "@dave/notifications";
 import type { ToolRegistry } from "./tool-registry.js";
 import { getBusyState, getAutonomousBusyState } from "./busy-state.js";
 import { abortTurn, isTurnRunning } from "./turn-abort.js";
@@ -30,6 +31,8 @@ import { nousDepsFor, placeNousSignal, skipNousSignal, applyNousUpdate, skipNous
  *   POST stop               stop whatever Dave is doing right now
  *   POST action             {callback, messageId?} -- a card button from the app (Nous, trade approvals, ...)
  *   POST transcribe         {audio: base64, name?} -> {text} -- the trader's voice, via Groq Whisper
+ *   POST voice/turn         {audio: base64, name?} -> {heard, reply, audio?, contentType?} -- one turn of
+ *                           an ElevenLabs call: Whisper -> Dave's full brain -> ElevenLabs/Fish voice
  *   POST live/start         {thinking?, voice?} -> a one-use Gemini Live token + session setup (live-voice.ts)
  *   POST live/tool          {name, args} -> the tool's answer, for Gemini (trade actions need confirmed: true)
  *   POST live/end           {transcript: [{who, text}], seconds} -> saved into the shared conversation
@@ -238,6 +241,66 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
           return;
         }
         send(res, 502, { error: `Couldn't turn that into text: ${err instanceof Error ? err.message.replace(/gsk_[A-Za-z0-9]+/g, "[key]") : String(err)}`.slice(0, 300) });
+      }
+      return;
+    }
+    if (method === "POST" && path === "voice/turn") {
+      // Calling Dave with his ElevenLabs voice (the trader: "call dave via elevenlabs -- the LLM
+      // talks, ElevenLabs speaks"): what the trader said -> Groq Whisper -> a normal app turn
+      // (Dave's full brain: every tool, his memory, his trade rules -- he sees and acts on trades)
+      // -> his chosen voice. One round trip per exchange; the app listens again after he speaks.
+      const body = await readJson(req);
+      const audio = Buffer.from(String(body.audio ?? ""), "base64");
+      if (audio.byteLength < 500) {
+        send(res, 200, { heard: "", reply: "" });
+        return;
+      }
+      const name = typeof body.name === "string" && /\.(m4a|mp3|wav|ogg|webm|aac|flac|mp4)$/i.test(body.name) ? body.name : "voice.m4a";
+      let heard: string;
+      try {
+        heard = (await transcribeAudioBytesWithKeyFailover(deps.db, userId, audio, name, { model: "whisper-large-v3", prompt: speechVocabularyPrompt(userId), language: "en" })).text.trim();
+      } catch (err) {
+        if (err instanceof NoGroqKeyError) {
+          send(res, 409, { error: "Add a Groq key first (Settings > Dave's voice > Speech to text) -- it's what turns your voice into text." });
+          return;
+        }
+        send(res, 502, { error: `Couldn't hear that: ${err instanceof Error ? err.message.replace(/gsk_[A-Za-z0-9]+/g, "[key]") : String(err)}`.slice(0, 300) });
+        return;
+      }
+      // Whisper's stock output for silence / room noise -- not something the trader said.
+      if (!heard || /^(thank you\.?|thanks for watching[.!]?|you|\.+|bye\.?)$/i.test(heard)) {
+        send(res, 200, { heard: "", reply: "" });
+        return;
+      }
+      const busy = stateOf(userId);
+      let reply: string;
+      if (busy.busy) {
+        reply = `Give me a moment, I'm still on ${busy.task ?? "something"}.`;
+      } else {
+        const result = await runTurn(deps, {
+          text:
+            `[Voice call -- the trader said:] ${heard}\n\n(This is a live voice call and your answer is read aloud: short, natural spoken sentences, ` +
+            `no tables, lists or markdown, only the key numbers. It came through speech-to-text, so if a number, pair or instruction may have been misheard, ` +
+            `say what you understood and ask. Before you open, close or change a trade from this call, say exactly what you'll do and wait for their yes -- ` +
+            `unless this message IS that yes to what you just proposed.)`,
+          display: { text: `🎙 ${heard}`, files: [] },
+        });
+        reply = !result
+          ? "I couldn't finish that one."
+          : result.status === "done"
+            ? result.text || "Done."
+            : result.status === "awaiting_user"
+              ? result.question.question
+              : "I stopped before finishing.";
+      }
+      const spoken = reply.replace(/```[\s\S]*?```/g, " ").replace(/<[^>]+>/g, " ").replace(/[*_#>`|]/g, " ").replace(/\[(.*?)\]\((.*?)\)/g, "$1").replace(/\s+/g, " ").trim().slice(0, 2500);
+      try {
+        if (!getVoiceSettings(deps.db, userId).enabled) throw new Error("Dave's voice is switched off -- turn it on in Settings > Dave's voice.");
+        const r = await synthesizeSpeechWithStoredKeys(deps.db, userId, spoken);
+        send(res, 200, { heard, reply, audio: r.audio.toString("base64"), contentType: r.contentType, provider: r.provider });
+      } catch (err) {
+        // No voice (no key, quota): the answer still comes back as text for the screen.
+        send(res, 200, { heard, reply, voiceError: (err instanceof Error ? err.message : String(err)).slice(0, 300) });
       }
       return;
     }
