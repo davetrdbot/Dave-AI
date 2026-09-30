@@ -272,6 +272,27 @@ check(len(restarts) == 3, "restarted 3 times, then waits (got %d)" % len(restart
 agent.time.sleep = _real_sleep
 agent.stop_terminal, agent.start_terminal, agent.login_state = _real_stop, _real_start, _real_login
 
+print("\n[old files] logs older than a week, bridge leftovers and the tester cache are removed; recent ones stay")
+old_log = os.path.join(agent.MT5_DIR, "logs", "20200101.log")
+new_log = os.path.join(agent.MT5_DIR, "logs", "29990101.log")
+os.makedirs(os.path.dirname(old_log), exist_ok=True)
+for path in (old_log, new_log):
+    open(path, "w").close()
+os.utime(old_log, (time.time() - 30 * 86400, time.time() - 30 * 86400))
+os.makedirs(agent.BRIDGE_DIR, exist_ok=True)
+stale = os.path.join(agent.BRIDGE_DIR, "req_old.json")
+fresh = os.path.join(agent.BRIDGE_DIR, "req_new.json")
+for path in (stale, fresh):
+    open(path, "w").close()
+os.utime(stale, (time.time() - 7200, time.time() - 7200))
+cache = os.path.join(agent.MT5_DIR, "Tester", "Agent-127.0.0.1-3000", "cache")
+os.makedirs(cache, exist_ok=True)
+agent.clean_old_files()
+check(not os.path.exists(old_log) and os.path.exists(new_log), "a month-old journal is deleted, today's is kept")
+check(not os.path.exists(stale) and os.path.exists(fresh), "a bridge leftover from hours ago is deleted, a live one is kept")
+check(not os.path.exists(cache), "the strategy tester cache is cleared")
+os.remove(fresh)
+
 print()
 if failures:
     print("%d FAILED" % len(failures))

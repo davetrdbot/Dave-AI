@@ -361,8 +361,43 @@ def stop_terminal():
     terminal_proc = None
 
 
+LOG_KEEP_DAYS = 7
+
+
+def clean_old_files():
+    """Disk housekeeping on every start: MetaTrader writes a new journal every day and never
+    deletes one; the file bridge can leave a request/answer behind if MT5 dies mid-exchange; the
+    strategy tester keeps a cache. Old ones go (logs older than a week, bridge leftovers older
+    than an hour, the tester cache). Trading history and settings are never touched."""
+    removed = 0
+    now = time.time()
+    for folder in (os.path.join(MT5_DIR, "logs"), experts_log_dir()):
+        for path in glob.glob(os.path.join(folder, "*.log")):
+            if re.fullmatch(r"\d{8}\.log", os.path.basename(path)) and now - os.path.getmtime(path) > LOG_KEEP_DAYS * 86400:
+                try:
+                    os.remove(path); removed += 1
+                except OSError:
+                    pass
+    for path in glob.glob(os.path.join(BRIDGE_DIR, "re[qs]_*.json*")):
+        try:
+            if now - os.path.getmtime(path) > 3600:
+                os.remove(path); removed += 1
+        except OSError:
+            pass
+    for cache in glob.glob(os.path.join(MT5_DIR, "Tester", "*", "cache")) + [os.path.join(MT5_DIR, "Tester", "cache")]:
+        if os.path.isdir(cache):
+            shutil.rmtree(cache, ignore_errors=True); removed += 1
+    if removed:
+        log("cleaned up %d old file(s)/folder(s) (old logs, bridge leftovers, tester cache)" % removed)
+    return removed
+
+
 def start_terminal(state):
     global terminal_proc, terminal_started_at
+    try:
+        clean_old_files()
+    except Exception as e:  # housekeeping must never stop MT5 from starting
+        log("cleanup skipped:", e)
     if not state.get("serverAccess") and not HOST_PORT.match(state.get("server", "")):
         access, _, _ = resolve_server(state["server"])
         if access:
@@ -755,9 +790,13 @@ def restart_silent_ea(state):
 def supervise():
     """Keeps a configured terminal running -- MT5 under Wine occasionally exits, and a trader
     without a VPS has nobody to notice."""
+    last_clean = time.time()
     while True:
         time.sleep(30)
         try:
+            if time.time() - last_clean > 86400:  # the container can run for weeks without a restart
+                last_clean = time.time()
+                clean_old_files()
             state = load_state()
             if state.get("login") and terminal_running() and update_waiting():
                 global last_update_restart

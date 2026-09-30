@@ -190,6 +190,7 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   for(int i = 0; i < ArraySize(g_warmH); i++) IndicatorRelease(g_warmH[i]);
   }
 
 //+------------------------------------------------------------------+
@@ -1240,6 +1241,7 @@ void SetSymbolInfo(string sym)
 // Background loads are started a few per request, not all at once: the container has little
 // memory, and asking MT5 for dozens of histories at the same moment got MetaTrader killed.
 string g_warmK[];
+int g_warmH[];
 int g_warmBudget = 4;
 bool SeriesReady(string s, ENUM_TIMEFRAMES tf)
   {
@@ -1250,11 +1252,28 @@ bool SeriesReady(string s, ENUM_TIMEFRAMES tf)
    int n = ArraySize(g_warmK);
    if(n < 400 && g_warmBudget > 0)
      {
+      int h = iMA(s, tf, 1, 0, MODE_SMA, PRICE_CLOSE); // starts the download without waiting
+      if(h == INVALID_HANDLE) return false;
       g_warmBudget--;
-      ArrayResize(g_warmK, n + 1); g_warmK[n] = k;
-      iMA(s, tf, 1, 0, MODE_SMA, PRICE_CLOSE); // kept open on purpose: it keeps that history loading/updated
+      ArrayResize(g_warmK, n + 1); ArrayResize(g_warmH, n + 1);
+      g_warmK[n] = k; g_warmH[n] = h;
      }
    return false;
+  }
+
+// Memory: a background load is let go as soon as its history has arrived. Held forever, every
+// pair/timeframe ever touched stayed loaded and memory crept up all day; let go, MT5 drops a
+// series nobody reads (and the next read that needs it loads it again). Called once per request.
+void ReleaseLoadedSeries()
+  {
+   for(int i = ArraySize(g_warmK) - 1; i >= 0; i--)
+     {
+      if(BarsCalculated(g_warmH[i]) <= 0) continue; // still downloading
+      IndicatorRelease(g_warmH[i]);
+      int last = ArraySize(g_warmK) - 1;
+      g_warmK[i] = g_warmK[last]; g_warmH[i] = g_warmH[last];
+      ArrayResize(g_warmK, last); ArrayResize(g_warmH, last);
+     }
   }
 // Previous + present: the last good value of every cross-series read is remembered, so when a
 // series is momentarily not ready the answer uses the previous value instead of waiting or
@@ -4153,6 +4172,7 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr,
    g_aErr = "";
    ArrayFree(g_prevUsed);
    g_warmBudget = 4;
+   ReleaseLoadedSeries();
    if(endpoint == "ping")
      {
       AppendResultData(commandId, Obj(J("status", "ok") + "," + J("time", A_IsoTime(TimeGMT())) + "," + J("source", "DaveEA") + "," + J("ea_version", EA_VERSION)));
