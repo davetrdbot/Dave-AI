@@ -161,6 +161,7 @@ export type ProviderName =
   | "arliai"
   | "nanogpt"
   | "atlascloud"
+  | "githubmodels"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {
