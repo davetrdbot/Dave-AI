@@ -187,6 +187,7 @@ try {
       assert.match(prompt, /SYMBOL: USDJPY/, "the level's pair, not EURUSD (first in the rotation)");
       assert.match(prompt, /LEVEL HIT: USDJPY reached 150\.00/);
       assert.match(prompt, /take the trade or arm the order now/);
+      assert.match(prompt, /THIS PAIR RIGHT NOW: price [\s\S]*open trades on USDJPY: none; pending orders on USDJPY: none/);
       assert.equal(getCursorPosition(OWNER).symbolCursor, 0, "EURUSD is still next in the rotation");
     } finally {
       await ea.stop();
@@ -211,7 +212,7 @@ try {
       const prompt = lastPrompt(calls);
       assert.match(prompt, /SYMBOL: EURUSD/, "the closed trade's pair is not scanned for it");
       assert.ok(!/SELF-AWARE ALERTS[\s\S]*up 1R -- move to breakeven/.test(prompt), "the closed trade's alert is not in the feed");
-      assert.match(prompt, /ALREADY CLOSED[^\n]*#1237942718/);
+      assert.ok(!prompt.includes("1237942718"), "a EURUSD scan carries nothing about the closed GBPUSD trade (one thing per scan)");
       assert.ok(logs.some((l) => /alert focus on GBPUSD dropped -- trade #1237942718 is already closed/.test(l)));
     } finally {
       await ea.stop();
@@ -219,7 +220,29 @@ try {
   }
   console.log("   ✓\n");
 
-  console.log("[5] Mode 2 off: an alert queues nothing\n");
+  console.log("[5] A rotation scan carries only its own pair -- other pairs' alerts and calls stay out\n");
+  {
+    const OWNER = "alert-alone";
+    upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD", "USDJPY"] });
+    setActiveGroup(OWNER, "majors");
+    const ea = startSimulatedEa(OWNER, { EURUSD: { bid: 1.08, ask: 1.0802 } });
+    publishActivity(OWNER, "background", "level_hit", { text: "LEVEL HIT: USDJPY reached 150.00 (marked: sell the retest)" });
+    publishActivity(OWNER, "background", "level_hit", { text: "LEVEL HIT: EURUSD reached 1.0800 (marked: buy the sweep)" });
+    const { executor } = executorSpy();
+    const { provider, calls } = mockToolProvider([{ action: "SKIP", reason: "nothing" }]);
+    try {
+      await runAutonomousTick({ userId: OWNER, db, executor, provider });
+      const prompt = lastPrompt(calls);
+      assert.match(prompt, /SYMBOL: EURUSD/);
+      assert.match(prompt, /EURUSD reached 1\.0800/, "this pair's own alert is there");
+      assert.ok(!prompt.includes("USDJPY reached"), "another pair's alert is not");
+    } finally {
+      await ea.stop();
+    }
+  }
+  console.log("   ✓\n");
+
+  console.log("[6] Mode 2 off: an alert queues nothing\n");
   setAutonomousTradingEnabled("alert-off", false);
   assert.equal(focusScanOnAlert("alert-off", "EURUSD", "x"), false);
   console.log("   ✓\n");

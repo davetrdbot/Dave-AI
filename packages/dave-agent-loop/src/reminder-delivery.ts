@@ -1,5 +1,6 @@
 import { takeDueReminders, describeFiredReminder, type Reminder } from "@dave/workers";
 import { appendReminderEvent } from "@dave/ea-bridge";
+import { getActiveGroupInfo } from "@dave/trading";
 import { focusScanOnAlert } from "./alert-focus.js";
 
 /**
@@ -34,10 +35,22 @@ export function deliverDueReminders(userId: string, send: (text: string) => Prom
     }
     // Like a level hit or a trade alert: its pair is scanned within seconds, with the reminder on
     // top of the prompt -- even a pair with an open trade (the trader: "even reminder messages too").
-    if (reminder.symbol) {
-      focusScanOnAlert(userId, reminder.symbol, `REMINDER you set (${reminder.id}) fired: ${reminder.text}${reminder.reason ? ` -- why: ${reminder.reason}` : ""}`, now);
+    // A reminder that didn't name its pair: the pair it mentions (from the active and backup groups).
+    const symbol = reminder.symbol ?? pairMentioned(userId, `${reminder.text} ${reminder.reason ?? ""}`);
+    if (symbol) {
+      focusScanOnAlert(userId, symbol, `REMINDER you set (${reminder.id}) fired: ${reminder.text}${reminder.reason ? ` -- why: ${reminder.reason}` : ""}`, now);
     }
     console.log(`[reminders] ${userId}: fired ${reminder.id} -- ${reminder.text}`);
   }
   return due;
+}
+
+function pairMentioned(userId: string, text: string): string | undefined {
+  try {
+    const info = getActiveGroupInfo(userId);
+    const pairs = [...info.effectiveSymbols, ...(info.fallbackGroup?.symbols ?? [])].sort((a, b) => b.length - a.length);
+    return pairs.find((p) => new RegExp(`\\b${p.replace(/[^A-Za-z0-9_]/g, "")}\\b`, "i").test(text));
+  } catch {
+    return undefined;
+  }
 }

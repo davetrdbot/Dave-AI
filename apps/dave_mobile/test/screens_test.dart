@@ -739,7 +739,7 @@ void main() {
       await _shot(tester, 'settings_behaviour_$mode');
       expect(find.byKey(const ValueKey('thinking-effort')), findsOneWidget, reason: 'the effort picker shows while deeper thinking is on');
       expect(find.text('Draw my trades'), findsOneWidget, reason: 'the switch for auto-drawn trades');
-      expect(find.textContaining('Up to 10 steps through a checklist'), findsOneWidget);
+      expect(find.textContaining('Up to 14 steps through a checklist'), findsOneWidget);
       await back();
 
       for (var i = 0; i < 6 && find.text('Alerts & notifications').hitTestable().evaluate().isEmpty; i++) {

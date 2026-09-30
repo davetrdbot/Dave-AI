@@ -40,10 +40,14 @@ const TICKET = /#(\d{5,})/g;
  *  An alert about a trade that has since closed is left out, and the recently closed tickets are
  *  named as closed (seen live: Dave kept trying to move #1237942718 to breakeven in scan after scan
  *  after it had closed -- the alerts about it were still in this block). */
-export function selfAwareFeedBlock(userId: string, windowMs?: number, now = Date.now()): string | null {
+export function selfAwareFeedBlock(userId: string, windowMs?: number, now = Date.now(), only?: { symbol?: string; exclude?: string }): string | null {
   const open = new Set(getLastKnownState(userId).positions.map((p) => String(p.ticket)));
   const closedNow = new Set<string>();
   const items = recentSelfAwareAlerts(userId, windowMs, MAX_ALERTS * 2, now)
+    // One thing per scan: only alerts about this pair (a word match on its name), and not the
+    // alert that started this scan (it's already on top of the prompt).
+    .filter((i) => !only?.symbol || new RegExp(`\\b${only.symbol.replace(/[^A-Za-z0-9_]/g, "")}\\b`, "i").test(i.text))
+    .filter((i) => !only?.exclude || i.text !== only.exclude.replace(/\s+/g, " ").slice(0, 400))
     .filter((i) => {
       const tickets = [...i.text.matchAll(TICKET)].map((m) => m[1]);
       if (!tickets.length || tickets.some((t) => open.has(t))) return true;
@@ -53,7 +57,7 @@ export function selfAwareFeedBlock(userId: string, windowMs?: number, now = Date
     .slice(-MAX_ALERTS);
   const window = windowMs ?? 60 * 60_000;
   const recentlyClosed = readClosedTradeHistory(userId)
-    .filter((c) => now - c.closedAt <= window && !open.has(String(c.ticket)))
+    .filter((c) => now - c.closedAt <= window && !open.has(String(c.ticket)) && (!only?.symbol || c.symbol.toUpperCase() === only.symbol.toUpperCase()))
     .slice(-8);
   for (const c of recentlyClosed) closedNow.add(String(c.ticket));
   if (!items.length && !closedNow.size) return null;

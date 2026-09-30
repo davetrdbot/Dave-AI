@@ -137,15 +137,17 @@ function safeTickKnowledgeIndex(userId: string): string | undefined {
 
 /** Dave's reminders for the cycle: pending ones, and ones that fired recently and still wait on
  *  him. Same fail-safe contract as the knowledge loader -- a bad store costs the cycle nothing. */
-export function buildTickRemindersLine(userId: string, now = Date.now()): string | null {
+export function buildTickRemindersLine(userId: string, now = Date.now(), symbol?: string): string | null {
   try {
-    const reminders = listReminders(userId, { includeFired: true }, now);
+    // With a symbol: only that pair's reminders and general ones (no pair) -- another pair's
+    // reminder gets its own scan when it fires.
+    const reminders = listReminders(userId, { includeFired: true }, now).filter((r) => !symbol || !r.symbol || r.symbol.toUpperCase() === symbol.toUpperCase());
     if (reminders.length === 0) return null;
     const fired = reminders.filter((r) => r.status === "fired");
     const pending = reminders.filter((r) => r.status === "pending");
     const parts = ["YOUR REMINDERS (notes you set for yourself -- set more with setReminder, remove with deleteReminderIds):"];
     if (fired.length > 0) {
-      parts.push(`Fired and waiting on you -- act on each now if it still applies (it may be about another symbol: use requestedNextSymbol), then put its id in deleteReminderIds:`, ...fired.map((r) => formatReminderLine(r, now)));
+      parts.push(`Fired and waiting on you -- act on each now if it still applies, then put its id in deleteReminderIds:`, ...fired.map((r) => formatReminderLine(r, now)));
     }
     if (pending.length > 0) parts.push("Pending:", ...pending.map((r) => formatReminderLine(r, now)));
     return parts.join("\n");
@@ -1047,7 +1049,9 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // pulls its REAL original placement reason from the real trade journal by ticket (never a
   // placeholder), matching exactly how getTradeLifecycle/journal-agent.ts already read a stored
   // trade's reason by ticket elsewhere in this codebase.
-  const dangerPosition = [...positionsProgress.values()].filter((pp) => pp.slProgress >= SL_DANGER_THRESHOLD).sort((a, b) => b.slProgress - a.slProgress)[0] ?? null;
+  // One thing per scan (the trader: "it should send individually"): only THIS pair's trade -- a
+  // trade on another pair gets its own alert scan from the monitor.
+  const dangerPosition = [...positionsProgress.values()].filter((pp) => pp.slProgress >= SL_DANGER_THRESHOLD && pp.symbol.toUpperCase() === symbol.toUpperCase()).sort((a, b) => b.slProgress - a.slProgress)[0] ?? null;
   let selfAwareAlertLine: string | null = null;
   if (dangerPosition) {
     const lifecycle = getTradeLifecycle(db, userId, { ticket: dangerPosition.ticket });
@@ -1114,6 +1118,11 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       : null,
     picked.focus
       ? `ALERT -- THIS SCAN WAS STARTED BY IT (act on it now, this is why you're looking at ${symbol}):\n${picked.focus.reason}\n` +
+        `THIS PAIR RIGHT NOW: price ${JSON.stringify(priceInfo ?? {})}; open trades on ${symbol}: ${
+          positions.filter((p) => p.symbol.toUpperCase() === symbol.toUpperCase()).map((p) => `${p.type.toUpperCase()} ${p.lots} @ ${p.openPrice}${p.sl !== undefined ? ` SL ${p.sl}` : ""}${p.tp !== undefined ? ` TP ${p.tp}` : ""} pnl=${p.pnl ?? "?"} #${p.ticket}`).join("; ") || "none"
+        }; pending orders on ${symbol}: ${
+          pendingOrders.filter((o) => o.symbol.toUpperCase() === symbol.toUpperCase()).map((o) => `${o.type} @ ${o.price} #${o.ticket}`).join("; ") || "none"
+        }. The full multi-timeframe analysis for ${symbol} is below.\n` +
         (picked.focus.manage
           ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, tighten it, take a partial, or close it -- via actions/MODIFY/PARTIAL_CLOSE. No new entry on ${symbol} in this scan.`
           : `If the level/setup is live, take the trade or arm the order now; if it isn't, SKIP with one line saying why.`)
@@ -1153,10 +1162,12 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     mtfConfluenceLine,
     basketRiskLine,
     spreadNewsRiskLine,
-    formatRecentDecisions(userId),
-    buildTickRemindersLine(userId),
+    // One thing per scan: only this pair's own history, reminders and alerts -- never a log of
+    // other pairs' decisions or alerts (each of those gets a scan of its own).
+    formatRecentDecisions(userId, symbol),
+    buildTickRemindersLine(userId, Date.now(), symbol),
     selfAwareAlertLine,
-    selfAwareFeedBlock(userId),
+    selfAwareFeedBlock(userId, undefined, Date.now(), { symbol, exclude: picked.focus?.reason }),
     safeGrowthBlock(userId),
     safePastCalls(userId, symbol),
     activeStrategySkillLine,

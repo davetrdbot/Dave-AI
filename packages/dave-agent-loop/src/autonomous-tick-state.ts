@@ -73,8 +73,10 @@ export function recordTickDecision(userId: string, record: TickDecisionRecord): 
 
 /** Formats the real rolling decisions as short context text for the next tick's prompt --
  *  bounded, always fresh, never a growing transcript. Empty string when there's nothing yet. */
-export function formatRecentDecisions(userId: string): string {
-  const { recentDecisions } = getTickState(userId);
+export function formatRecentDecisions(userId: string, symbol?: string): string {
+  const all = getTickState(userId).recentDecisions;
+  // With a symbol: only that pair's own recent calls (one thing per scan).
+  const recentDecisions = symbol ? all.filter((d) => d.symbol.toUpperCase() === symbol.toUpperCase()) : all;
   if (recentDecisions.length === 0) return "";
   const lines = recentDecisions.map((d) => `- ${d.symbol} ${d.action}: ${d.reason}`);
   return `\nRECENT DECISIONS (last ${recentDecisions.length}):\n${lines.join("\n")}`;

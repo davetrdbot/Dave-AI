@@ -29,14 +29,23 @@ import type { Provider, ToolSpec } from "@dave/brain";
 export type ThinkingEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** The stages a high/max-effort pass has to cover before it may stop -- a trader's checklist. */
-export const THINKING_STAGES = ["bias", "trigger", "invalidation", "target", "counter", "memory", "scenario", "verdict"] as const;
+export const THINKING_STAGES = ["bias", "spike", "trigger", "sniper", "scalp", "invalidation", "target", "edge", "counter", "memory", "scenario", "verdict"] as const;
 export type ThinkingStage = (typeof THINKING_STAGES)[number];
+
+/** Every pass looks at these, whatever the level (the trader: "in each sequential thinking add the
+ *  spike aspect, scalping, sniper and the advantage aspect"). */
+export const FOCUS_FOUR: ThinkingStage[] = ["spike", "sniper", "scalp", "edge"];
 
 const STAGE_HELP: Record<ThinkingStage, string> = {
   bias: "higher-timeframe bias -- which way the bigger picture leans, and how strongly",
+  // The trader's four (spike, scalping, sniper, advantage) -- part of every pass.
+  spike: "the spike -- on Boom/Crash/Storm/synthetics: where the next spike is likely, which way it fires, and is this trade WITH it or exposed to it; on forex: a news/volatility spike that could hit the stop",
   trigger: "the entry trigger on the lower timeframe -- is it actually there right now, or hoped for",
+  sniper: "the sniper entry -- the exact level (order block, sweep, range edge, spike ignition) where the entry risks least; is price there NOW, or is it a limit order",
+  scalp: "the scalp -- is there a quick, high-probability move to grab on M1/M5 right now, how big, and the tight exit",
   invalidation: "where the idea is wrong -- the stop from structure, not from a number",
-  target: "where price is genuinely likely to reach, and whether the R:R clears the floor",
+  target: "where price is genuinely likely to reach, and whether the exact R:R target is realistic",
+  edge: "the advantage -- what edge this trade has over a coin flip (spike direction, confluence, liquidity, structure), and whether it is strong enough to take",
   counter: "the strongest case AGAINST this trade -- argue it like you'd lose money if you ignore it",
   memory: "your own rules, strategy card, brain facts and past graded calls on this pair -- do any of them say no",
   scenario: "the alternative path -- what price does if you're wrong, and what you'd see first",
@@ -57,13 +66,14 @@ export interface EffortProfile {
 }
 
 export const EFFORT_PROFILES: Record<ThinkingEffortLevel, EffortProfile> = {
-  low: { maxThoughts: 3, minThoughts: 1, requiredStages: [], critic: false, timeoutMs: 30_000, budgetMs: 90_000 },
-  medium: { maxThoughts: 5, minThoughts: 2, requiredStages: [], critic: false, timeoutMs: 30_000, budgetMs: 150_000 },
-  high: { maxThoughts: 10, minThoughts: 5, requiredStages: ["bias", "trigger", "invalidation", "target", "counter", "memory", "verdict"], critic: false, timeoutMs: 45_000, budgetMs: 240_000 },
+  // Low/medium: the spike/sniper/scalp/advantage four as a checklist to keep in view (FOCUS_FOUR).
+  low: { maxThoughts: 4, minThoughts: 1, requiredStages: [], critic: false, timeoutMs: 30_000, budgetMs: 120_000 },
+  medium: { maxThoughts: 6, minThoughts: 2, requiredStages: [], critic: false, timeoutMs: 30_000, budgetMs: 180_000 },
+  high: { maxThoughts: 14, minThoughts: 8, requiredStages: ["bias", "spike", "trigger", "sniper", "scalp", "invalidation", "target", "edge", "counter", "memory", "verdict"], critic: false, timeoutMs: 45_000, budgetMs: 360_000 },
   // X-High (the trader: "overthinks ... 10 or 11 times or more"): at least 11 thoughts over every
   // stage, going back over its own steps, then the critic.
-  xhigh: { maxThoughts: 14, minThoughts: 11, requiredStages: [...THINKING_STAGES], critic: true, timeoutMs: 45_000, budgetMs: 420_000 },
-  max: { maxThoughts: 16, minThoughts: 12, requiredStages: [...THINKING_STAGES], critic: true, timeoutMs: 60_000, budgetMs: 480_000 },
+  xhigh: { maxThoughts: 16, minThoughts: 13, requiredStages: [...THINKING_STAGES], critic: true, timeoutMs: 45_000, budgetMs: 540_000 },
+  max: { maxThoughts: 18, minThoughts: 14, requiredStages: [...THINKING_STAGES], critic: true, timeoutMs: 60_000, budgetMs: 660_000 },
 };
 
 export interface SequentialThought {
@@ -185,7 +195,9 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
       ...deps.contextLines,
       "",
       `Before you finalize this trade decision, reason through it step by step (${effort} effort) -- call ${THOUGHT_TOOL_NAME} with your next real thought.`,
-      staged ? `Your checklist (cover every one; tag each thought with its stage):\n${profile.requiredStages.map((st) => `- ${st}: ${STAGE_HELP[st]}`).join("\n")}` : "",
+      staged
+        ? `Your checklist (cover every one; tag each thought with its stage):\n${profile.requiredStages.map((st) => `- ${st}: ${STAGE_HELP[st]}`).join("\n")}`
+        : `Keep these four in view and cover them in your thoughts:\n${FOCUS_FOUR.map((st) => `- ${st}: ${STAGE_HELP[st]}`).join("\n")}`,
       rendered.length > 0 ? `THOUGHTS SO FAR:\n${rendered.join("\n")}` : "This is your first thought -- start with the single most important real question this setup raises.",
       ...extra,
       `You have used ${thoughts.length}/${maxThoughts} thoughts. Once you're genuinely ready to decide, set nextThoughtNeeded to false.`,

@@ -23,7 +23,7 @@ import { withLiveContext } from "./live-context.js";
 export const LIVE_MODELS = { fast: "gemini-3.8-live", thinking: "gemini-3.8-live-extended-thinking" } as const;
 export const LIVE_VOICES = ["Puck", "Charon", "Kore", "Fenrir", "Aoede", "Orus", "Leda", "Zephyr"];
 const GEMINI = "https://generativelanguage.googleapis.com";
-export const LIVE_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained";
+export const LIVE_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
 
 /** Read-only tools: free to call. */
 const READ_TOOLS = [
@@ -158,14 +158,16 @@ export async function startLiveSession(
   if (!key) throw new NoGeminiKeyError();
   const model = opts.thinking ? LIVE_MODELS.thinking : LIVE_MODELS.fast;
   const expiresAt = now + 30 * 60_000;
-  const res = await fetchImpl(`${GEMINI}/v1beta/auth_tokens`, {
+  // One-use call tokens exist only on v1alpha, and the REST body names the locked setup
+  // `bidiGenerateContentSetup` (the SDKs call it liveConnectConstraints -- Google refuses that name).
+  const res = await fetchImpl(`${GEMINI}/v1alpha/auth_tokens`, {
     method: "POST",
     headers: { "x-goog-api-key": key, "content-type": "application/json" },
     body: JSON.stringify({
       uses: 1,
       expireTime: new Date(expiresAt).toISOString(),
       newSessionExpireTime: new Date(now + 2 * 60_000).toISOString(),
-      liveConnectConstraints: { model: `models/${model}` },
+      bidiGenerateContentSetup: { model: `models/${model}` },
     }),
   });
   const json = (await res.json().catch(() => ({}))) as { name?: string; token?: { name?: string }; error?: { message?: string } };

@@ -1129,11 +1129,11 @@ class _EffortRow extends StatelessWidget {
   final void Function(String) onPick;
 
   static const _about = {
-    'low': 'Up to 3 steps. Quick sanity check.',
-    'medium': 'Up to 5 steps. The original.',
-    'high': 'Up to 10 steps through a checklist: bias, trigger, stop, target, the case against, your rules & past calls, verdict. Can\'t stop early.',
-    'xhigh': 'Thinks at least 11 times, up to 14: every checklist step, then goes back over its own steps from fresh angles, then a sceptical critic. Slow, costs more.',
-    'max': 'At least 12 steps, up to 16, plus the "what if I\'m wrong" path, then a sceptical critic attacks the weakest link. Slowest, costs most.',
+    'low': 'Up to 4 steps. Quick check, always looking at the spike, sniper entry, scalp and the edge.',
+    'medium': 'Up to 6 steps, with the spike, sniper entry, scalp and the edge in view.',
+    'high': 'Up to 14 steps through a checklist: bias, spike, trigger, sniper entry, scalp, stop, target, the edge, the case against, your rules & past calls, verdict. Can\'t stop early.',
+    'xhigh': 'Thinks at least 13 times, up to 16: every checklist step, the what-if path, then goes back over its own steps from fresh angles, then a sceptical critic. Slow, costs more.',
+    'max': 'At least 14 steps, up to 18: everything X-High does, with the most room to think. Slowest, costs most.',
   };
 
   @override

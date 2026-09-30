@@ -218,6 +218,10 @@ try {
     // = |1.1908-1.2000|/0.0100 = 0.0092/0.0100 = 0.92, comfortably clear of SL_DANGER_THRESHOLD
     // (0.89) on both sides of any floating-point rounding.
     await seedOpenPosition(OWNER, { ticket: "700", symbol: "GBPUSD", type: "buy", lots: 0.1, openPrice: 1.2, sl: 1.19, tp: 1.22, currentPrice: 1.1908 });
+    // One thing per scan: a trade's SL alert shows in ITS pair's scan -- the monitor's alert on it
+    // starts that scan (alert-focus).
+    const { requestAlertFocus } = await import("../src/autonomous-tick-state.js");
+    requestAlertFocus(OWNER, "GBPUSD", "TRADE ALERT GBPUSD #700 nearing its stop");
     const endpointCalls: Record<string, number> = {};
     const ea = startSimulatedEa(OWNER, endpointCalls);
     const { provider, calls } = mockToolProvider([{ action: "SKIP", reason: "just observing the alert this tick" }]);
