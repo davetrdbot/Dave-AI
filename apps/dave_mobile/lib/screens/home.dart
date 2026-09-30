@@ -444,7 +444,7 @@ class _OpenTrades extends StatelessWidget {
     }
     return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: ListHeader(header),
-      footer: const ListFooter('Tap a trade to change its SL / TP.'),
+      footer: const ListFooter('Swipe a trade left to close it. Tap it to change its SL / TP.'),
       children: [for (final p in d.positions) _PositionTile(p: p, onChanged: onChanged)],
     );
   }
@@ -482,23 +482,24 @@ class _PositionTile extends StatelessWidget {
       if (p.sl != null) 'SL ${formatPrice(p.sl!)}',
       if (p.tp != null) 'TP ${formatPrice(p.tp!)}',
     ].join('  ·  ');
-    return CupertinoListTile(
-      onTap: () async {
-        final changed = await showTradeSheet(context,
-            ticket: p.ticket, symbol: p.symbol, kind: 'position', isBuy: p.isBuy, lots: p.lots, entry: p.openPrice, current: p.currentPrice, sl: p.sl, tp: p.tp, pnl: p.pnl, onClose: () => _close(context));
-        if (changed) await onChanged();
-      },
-      leading: Icon(p.isBuy ? CupertinoIcons.arrow_up_right : CupertinoIcons.arrow_down_right, color: resolve(context, CupertinoColors.secondaryLabel)),
-      title: Text('${p.symbol}  ${p.isBuy ? 'Buy' : 'Sell'}'),
-      subtitle: Text(levels),
-      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-        Text(
+    return _SwipeAction(
+      key: ValueKey('swipe-${p.ticket}'),
+      label: 'Close',
+      onAction: () => _close(context),
+      child: CupertinoListTile(
+        onTap: () async {
+          final changed = await showTradeSheet(context,
+              ticket: p.ticket, symbol: p.symbol, kind: 'position', isBuy: p.isBuy, lots: p.lots, entry: p.openPrice, current: p.currentPrice, sl: p.sl, tp: p.tp, pnl: p.pnl, onClose: () => _close(context));
+          if (changed) await onChanged();
+        },
+        leading: Icon(p.isBuy ? CupertinoIcons.arrow_up_right : CupertinoIcons.arrow_down_right, color: resolve(context, CupertinoColors.secondaryLabel)),
+        title: Text('${p.symbol}  ${p.isBuy ? 'Buy' : 'Sell'}'),
+        subtitle: Text(levels),
+        trailing: Text(
           p.pnl == null ? '--' : formatMoney(p.pnl!, signed: true),
           style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: pnlColor(context, p.pnl), fontFeatures: const [FontFeature.tabularFigures()]),
         ),
-        const SizedBox(width: Space.s2),
-        _RowAction(key: ValueKey('close-${p.ticket}'), label: 'Close', onPressed: () => _close(context)),
-      ]),
+      ),
     );
   }
 }
@@ -513,20 +514,63 @@ Future<void> _showSent(BuildContext context, String title, bool online, String o
       ),
     );
 
-/// A small red button right on a trade row, so closing never hides behind a tap.
-class _RowAction extends StatelessWidget {
-  const _RowAction({super.key, required this.label, required this.onPressed});
+/// iOS-style swipe: slide a row left and a red button appears behind it (Close for a trade,
+/// Cancel for a pending order). Tapping the button runs the action, which still asks first.
+class _SwipeAction extends StatefulWidget {
+  const _SwipeAction({super.key, required this.label, required this.onAction, required this.child});
   final String label;
-  final VoidCallback onPressed;
+  final Future<bool> Function() onAction;
+  final Widget child;
 
   @override
-  Widget build(BuildContext context) => CupertinoButton(
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        minimumSize: const Size(44, 30),
-        color: resolve(context, CupertinoColors.systemRed).withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(15),
-        onPressed: onPressed,
-        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: resolve(context, CupertinoColors.systemRed))),
+  State<_SwipeAction> createState() => _SwipeActionState();
+}
+
+class _SwipeActionState extends State<_SwipeAction> with SingleTickerProviderStateMixin {
+  static const _width = 92.0;
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 220));
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  void _settle() => _c.animateTo(_c.value > 0.4 ? 1 : 0, curve: Curves.easeOutCubic);
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragUpdate: (d) => _c.value = (_c.value - d.primaryDelta! / _width).clamp(0.0, 1.0),
+        onHorizontalDragEnd: (_) => _settle(),
+        child: ClipRect(
+          child: Stack(children: [
+            Positioned.fill(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: SizedBox(
+                  width: _width,
+                  child: CupertinoButton(
+                    key: ValueKey('swipe-action-${widget.label}'),
+                    padding: EdgeInsets.zero,
+                    borderRadius: BorderRadius.zero,
+                    color: resolve(context, CupertinoColors.systemRed),
+                    onPressed: () async {
+                      await _c.animateTo(0, curve: Curves.easeOutCubic);
+                      await widget.onAction();
+                    },
+                    child: Text(widget.label, style: const TextStyle(color: Color(0xFFFFFFFF), fontWeight: FontWeight.w600)),
+                  ),
+                ),
+              ),
+            ),
+            AnimatedBuilder(
+              animation: _c,
+              builder: (context, child) => Transform.translate(offset: Offset(-_width * _c.value, 0), child: child),
+              child: ColoredBox(color: resolve(context, CupertinoColors.secondarySystemGroupedBackground), child: widget.child),
+            ),
+          ]),
+        ),
       );
 }
 
@@ -557,18 +601,23 @@ class _PendingOrders extends StatelessWidget {
         header: ListHeader('PENDING ORDERS  ${orders.length}'),
         children: [
           for (final o in orders)
-            CupertinoListTile(
-              leading: Icon(CupertinoIcons.clock, color: resolve(context, CupertinoColors.secondaryLabel)),
-              title: Text('${o.symbol}  ${o.label}'),
-              subtitle: Text('${o.lots} lots at ${formatPrice(o.price)}\n'
-                  'SL ${o.sl == null ? 'none' : formatPrice(o.sl!)}  ·  TP ${o.tp == null ? 'none' : formatPrice(o.tp!)}'),
-              trailing: _RowAction(key: ValueKey('cancel-${o.ticket}'), label: 'Cancel', onPressed: () => _cancel(context, o)),
-              onTap: () async {
-                final changed = await showTradeSheet(context,
-                    ticket: o.ticket, symbol: o.symbol, kind: o.label, isBuy: o.type.toLowerCase().startsWith('buy'), lots: o.lots, entry: o.price, sl: o.sl, tp: o.tp,
-                    onClose: () => _cancel(context, o));
-                if (changed) await onChanged();
-              },
+            _SwipeAction(
+              key: ValueKey('swipe-${o.ticket}'),
+              label: 'Cancel',
+              onAction: () => _cancel(context, o),
+              child: CupertinoListTile(
+                leading: Icon(CupertinoIcons.clock, color: resolve(context, CupertinoColors.secondaryLabel)),
+                title: Text('${o.symbol}  ${o.label}'),
+                subtitle: Text('${o.lots} lots at ${formatPrice(o.price)}\n'
+                    'SL ${o.sl == null ? 'none' : formatPrice(o.sl!)}  ·  TP ${o.tp == null ? 'none' : formatPrice(o.tp!)}'),
+                trailing: const CupertinoListTileChevron(),
+                onTap: () async {
+                  final changed = await showTradeSheet(context,
+                      ticket: o.ticket, symbol: o.symbol, kind: o.label, isBuy: o.type.toLowerCase().startsWith('buy'), lots: o.lots, entry: o.price, sl: o.sl, tp: o.tp,
+                      onClose: () => _cancel(context, o));
+                  if (changed) await onChanged();
+                },
+              ),
             ),
         ],
       );

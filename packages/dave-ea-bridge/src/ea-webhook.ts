@@ -162,7 +162,7 @@ export interface AccountSnapshot {
 
 /** The EA version this bot ships. An older (or unversioned) EA still works -- the bot just says an
  *  update is available, so the trader gets the corrected data. */
-export const CURRENT_EA_VERSION = "3.1";
+export const CURRENT_EA_VERSION = "3.2";
 
 export function isEaOutdated(version: string | undefined): boolean {
   if (!version) return true;
@@ -594,6 +594,15 @@ export function createEaWebhookServer(handlers: EaReportHandlers = {}): Server {
       handlers.onConnect?.(userId);
     }
     markSeen(userId);
+
+    // EA 3.2+: a tiny poll every second between full reports -- it only asks for queued commands,
+    // so a job reaches the EA within about a second instead of on the next heartbeat. It carries
+    // no positions, so it never touches the saved state.
+    if ((report as { type?: string }).type === "poll") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ commands: drainQueue(userId) }));
+      return;
+    }
 
     // Checked BEFORE the save below creates the file -- afterwards it always exists.
     // The first report from a NEW EA version also starts fresh: EA 3.0 reports big ticket numbers

@@ -33,7 +33,7 @@
 // it -- moved here, to the top, so every real use compiles regardless of where it appears below.
 #define DAVEEA_BARS 1000
 // Reported with every heartbeat so the bot can tell the trader when this file is out of date.
-#define EA_VERSION "3.1"
+#define EA_VERSION "3.2"
 // Docker-mode file bridge (see UseFileBridge) -- defined up here for the same reason.
 #define BRIDGE_DIR "dave_bridge"
 #define BRIDGE_TIMEOUT_MS 5000
@@ -72,6 +72,7 @@ CTrade trade;
 // mirrors it into a real mutable global so a "set_push_interval" command can change the EA's
 // actual push/heartbeat cadence live, without requiring a recompile or restart.
 int g_pushIntervalSeconds = 1;
+uint g_lastFullAt = 0; // when the last FULL report went (the 1 s timer sends light polls in between)
 
 //+------------------------------------------------------------------+
 //| Broker symbol resolver -- ported from the reference DAVE.mq5.     |
@@ -182,7 +183,7 @@ int OnInit()
    Print("Dave EA starting. Webhook: ", WebhookURL, ", magic=", MagicNumber,
          ", phone push ", TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED) ? "on" : "off (no MetaQuotes ID)");
    g_pushIntervalSeconds = PushSeconds;
-   EventSetTimer(g_pushIntervalSeconds);
+   EventSetTimer(1); // a light poll every second; the full report every PushSeconds (see OnTimer)
    return(INIT_SUCCEEDED);
   }
 
@@ -274,7 +275,14 @@ void OnTimer()
    // Drain before the (much heavier) report push so a queued reasoning part always goes out on
    // schedule even when the webhook call is slow.
    DrainPushQueue();
-   PushReportAndExecuteCommands();
+   // Speed (the trader: a full analysis took 30 s -- "should be 2 sec"): the maths takes ms; the
+   // time was two heartbeats of waiting -- one to pick the job up, one to send the answer back.
+   // Now a tiny "anything for me?" poll goes every second between full reports, and answers go
+   // back the moment they are computed instead of on the next heartbeat.
+   bool full = g_lastFullAt == 0 || GetTickCount() - g_lastFullAt >= (uint)g_pushIntervalSeconds * 1000;
+   PushReportAndExecuteCommands(!full);
+   for(int k = 0; k < 5 && g_pendingResultsJson != ""; k++)
+      PushReportAndExecuteCommands(false);
   }
 
 // Real, light addition (open-trade/price monitoring cadence, faster than any timer): -1 means
@@ -303,9 +311,11 @@ void OnTick()
 //| Build one JSON report of real account/position/pending state,    |
 //| POST it, and execute whatever commands come back in the response |
 //+------------------------------------------------------------------+
-void PushReportAndExecuteCommands()
+// light = the tiny poll (no positions/account, no results) -- only asks for queued commands.
+void PushReportAndExecuteCommands(bool light = false)
   {
-   string body = BuildReportJson();
+   string body = light ? "{\"type\":\"poll\",\"eaVersion\":\"" + EA_VERSION + "\"}" : BuildReportJson();
+   if(!light) g_lastFullAt = GetTickCount();
 
    char post[];
    // UTF-8, so a trade note or symbol with any character reaches the bot exactly as written.
@@ -1056,9 +1066,7 @@ void ExecuteOneCommand(string obj)
       // than the default itself made no sense.
       if(seconds < 1) seconds = 1;
       if(seconds > 300) seconds = 300;
-      EventKillTimer();
-      g_pushIntervalSeconds = seconds;
-      EventSetTimer(g_pushIntervalSeconds);
+      g_pushIntervalSeconds = seconds; // the full-report cadence; the 1 s poll timer stays
       AppendResult(id, true, "push interval set to " + IntegerToString(g_pushIntervalSeconds) + "s", "");
      }
    else if(action == "market_watch")

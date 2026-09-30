@@ -610,6 +610,15 @@ void main() {
       // Closing a trade asks first, and names the trade.
       await tester.dragUntilVisible(find.textContaining('XAUUSD  Buy'), find.byType(CustomScrollView).first, const Offset(0, -200));
       await _advance(tester);
+      // Swiping a trade left reveals its red Close button; tapping it asks before closing.
+      await tester.drag(find.textContaining('XAUUSD  Buy'), const Offset(-200, 0));
+      await _advance(tester);
+      await _shot(tester, 'swipe_close_$mode');
+      await tester.tap(find.byKey(const ValueKey('swipe-action-Close')).last);
+      await _advance(tester);
+      expect(find.text('Close XAUUSD buy?'), findsOneWidget, reason: 'the swipe Close still confirms first');
+      await tester.tap(find.text('Cancel').last);
+      await _advance(tester);
       await tester.tap(find.textContaining('XAUUSD  Buy'));
       await _advance(tester);
       // Tapping a trade opens its card: SL and TP edited in place, breakeven, close.
