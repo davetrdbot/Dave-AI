@@ -162,6 +162,7 @@ export type ProviderName =
   | "nanogpt"
   | "atlascloud"
   | "githubmodels"
+  | "gwarden"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {

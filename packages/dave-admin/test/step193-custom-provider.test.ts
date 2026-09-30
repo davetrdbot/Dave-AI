@@ -116,7 +116,7 @@ try {
   console.log("[4] The new catalog providers are in the app's list\n");
   r = await call(providersRoute.GET as Handler, "GET", "/api/app/providers");
   const ids = JSON.stringify(r.json);
-  for (const id of ["chutes", "featherless", "requesty", "vercelgateway", "ollamacloud", "atlascloud", "zenmux", "nanogpt", "githubmodels"]) assert.ok(ids.includes(`"${id}"`), `${id} listed`);
+  for (const id of ["chutes", "featherless", "requesty", "vercelgateway", "ollamacloud", "atlascloud", "zenmux", "nanogpt", "githubmodels", "gwarden"]) assert.ok(ids.includes(`"${id}"`), `${id} listed`);
   assert.equal(brain.PROVIDER_CATALOG.custom.displayName, "Custom (OpenAI-compatible)");
   console.log("   ✓\n");
 
