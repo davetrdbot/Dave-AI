@@ -625,7 +625,7 @@ void main() {
       await _advance(tester);
       await _shot(tester, 'close_confirm_$mode');
       expect(find.text('Close trade'), findsWidgets);
-      await tester.tap(find.text('Cancel'));
+      await tester.tap(find.text('Cancel').last); // the dialog's, not a pending order's Cancel button
       await _advance(tester);
       await tester.tapAt(const Offset(20, 40)); // dismiss the card
       await _advance(tester);
@@ -692,7 +692,8 @@ void main() {
       expect(find.text('5 min'), findsOneWidget);
       await open('Pair groups');
       await _shot(tester, 'pair_groups_$mode');
-      expect(find.text('Synthetic'), findsOneWidget);
+      expect(find.text('Synthetic'), findsNWidgets(2), reason: 'shown as the main group and in the list');
+      expect(find.text('Backup group'), findsOneWidget, reason: 'the backup group has its own clear row');
       await back();
       await open('What Dave analyses');
       await _shot(tester, 'analysis_scope_$mode');

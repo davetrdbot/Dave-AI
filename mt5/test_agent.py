@@ -113,6 +113,7 @@ check(agent.relay_stats.get("phonePush") is True, "the EA's own report of phone 
 print("[2] config: start-up ini + EA preset in MetaTrader's format")
 state = {"login": "12345678", "password": "p@ss", "server": "Deriv-Demo", "webhookUrl": BOT + "/hooks/ea/abc", "token": "abc",
          "symbol": "VOL_80", "period": "M5", "marketWatch": ["VOL_80", "BOOM_100", "EURUSD"], "inputs": {"PushSeconds": 7, "EnablePush": False, "UseFileBridge": False, "Evil\nKey": 1}}
+agent.MAX_PAIR_CHARTS = 30  # the charts option on; off by default (memory)
 agent.write_config(state)
 ini = agent.read_text(os.path.join(agent.MT5_DIR, "Config", "dave-startup.ini"))
 preset = agent.read_text(os.path.join(agent.MT5_DIR, "MQL5", "Presets", "dave.set"))
@@ -133,6 +134,10 @@ check("period_type=0" in agent.read_text(os.path.join(prof, charts[0])) and "per
 agent.write_config({**state, "marketWatch": ["GBPUSD"]})
 check(len(os.listdir(prof)) == 1, "a new list replaces the old charts instead of piling up")
 check("MarketWatch" not in preset, "Market Watch is MT5's, not an EA input")
+check("MaxBars=5000" in ini, "each chart keeps 5000 bars, not MetaTrader's 100000 (memory)")
+agent.MAX_PAIR_CHARTS = 0
+agent.write_config(state)
+check(len(os.listdir(prof)) == 0, "by default no extra charts (memory) -- the EA puts the pairs in Market Watch")
 
 print("[2b] broker server name -> its real address (MT5 alone would fall back to MetaQuotes-Demo)")
 access, sugg, err = agent.resolve_server("Headway-Demo")

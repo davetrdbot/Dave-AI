@@ -502,8 +502,24 @@ async function handleTradingControlCommand(deps: TelegramBotServerDeps, client: 
 function logCycle(userId: string, reason: string): void {
   console.log(`[autonomous-tick] ${userId}: ${reason}`);
   recordCycleOutcome(userId, reason);
-  if (reason.startsWith("skipped")) publishActivity(userId, "loop", "cycle_skip", { reason: reason.replace(/^skipped -- /, "") });
+  if (reason.startsWith("skipped")) publishSkipOnce(userId, reason.replace(/^skipped -- /, ""));
   else if (!reason.startsWith("decision:")) publishActivity(userId, "loop", "log", { text: reason });
+}
+
+/** The trader, live: Live showed "Scan skipped -- EA is not connected" every 2 minutes, all night.
+ *  A skip reaches Live only when its reason CHANGES (numbers like "asked 3m ago" don't count as a
+ *  change); the server log above still has every one. The next real scan says it's back. */
+const lastSkipShown = new Map<string, string>();
+export function publishSkipOnce(userId: string, reason: string): void {
+  const key = reason.replace(/\d+/g, "#");
+  if (lastSkipShown.get(userId) === key) return;
+  lastSkipShown.set(userId, key);
+  publishActivity(userId, "loop", "cycle_skip", { reason });
+}
+export function noteScanResumed(userId: string): void {
+  if (!lastSkipShown.has(userId)) return;
+  lastSkipShown.delete(userId);
+  publishActivity(userId, "loop", "log", { text: "Back to scanning" });
 }
 
 /** See the real bug this fixes at its one call site below (getPendingQuestion gate). */
@@ -632,6 +648,7 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
   // into its own provider.generate() call.
   const tickAbortController = beginTurn(deps.ownerUserId);
   const cycleStarted = Date.now();
+  noteScanResumed(deps.ownerUserId);
   publishActivity(deps.ownerUserId, "loop", "cycle_start", {});
   try {
     const outcome = await runAutonomousTick({

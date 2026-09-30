@@ -245,7 +245,20 @@ assert.equal(loggedClose && "reason" in loggedClose ? loggedClose.reason : undef
 // A close Dave genuinely made (a ticket the app never touched) keeps its "dave" label.
 handle(USER, { positions: [], closedPositions: [{ ticket: "7777", symbol: "EURUSD", pnl: 3, reason: "dave" }] }, [{ ...open9001, ticket: "7777", symbol: "EURUSD" }]);
 assert.equal(closedSeen[1]?.reason, "dave", "Dave's own close is still Dave's");
-console.log("   ✓ close queued in the EA's command queue; stale ticket refused");
+// A pending order is cancelled with the EA's own delete_pending command.
+writeFileSync(
+  join(stateDir, "last-known-state.json"),
+  JSON.stringify({ positions: [], pendingOrders: [{ ticket: "5005", symbol: "VOL_10", type: "buy_limit", lots: 0.5, price: 6000 }] })
+);
+const queuedBefore = eaBridge.peekQueue(USER).length;
+r = await call(tradesRoute.POST as Handler, "POST", "/api/app/trades", { action: "cancel", ticket: "4004" });
+assert.equal(r.status, 404, "an order that isn't pending is refused");
+r = await call(tradesRoute.POST as Handler, "POST", "/api/app/trades", { action: "cancel", ticket: "5005" });
+assert.equal(r.status, 200);
+assert.equal(typeof r.json.eaConnected, "boolean", "the app is told whether MT5 is online to act on it");
+const cancelCmd = eaBridge.peekQueue(USER).slice(queuedBefore)[0] as { action: string; ticket: string };
+assert.deepEqual({ action: cancelCmd.action, ticket: cancelCmd.ticket }, { action: "delete_pending", ticket: "5005" });
+console.log("   ✓ close queued in the EA's command queue; stale ticket refused; pending order cancelled via delete_pending");
 console.log("   ✓ a phone close is attributed to the trader, not to Dave; Dave's own closes unchanged\n");
 
 // ---------------------------------------------------------------------------

@@ -296,7 +296,11 @@ class DaveApi {
   Future<void> updateSkill(String id, String content) => _skillAction({'action': 'update', 'skillId': id, 'content': content});
 
   /// Queues a close with the EA. It is confirmed by the EA's next report, not by this call.
-  Future<void> closeTrade(String ticket) => _post('/api/app/trades', {'action': 'close', 'ticket': ticket});
+  /// Returns whether MT5 is online right now to carry it out.
+  Future<bool> closeTrade(String ticket) async => (await _post('/api/app/trades', {'action': 'close', 'ticket': ticket}))['eaConnected'] != false;
+
+  /// Queues the cancel of a pending order (buy/sell limit or stop). Returns whether MT5 is online.
+  Future<bool> cancelOrder(String ticket) async => (await _post('/api/app/trades', {'action': 'cancel', 'ticket': ticket}))['eaConnected'] != false;
 
   /// Sets SL and/or TP on an open trade or a pending order. A price sets it, null removes it,
   /// leaving a side out keeps it. Queued with the EA like a close.

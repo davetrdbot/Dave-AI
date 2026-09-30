@@ -376,18 +376,58 @@ class PairGroupsPage extends StatelessWidget {
           final groups = _list(d['groups']);
           final active = d['activeGroupId'];
           final fallback = d['fallbackGroupId'];
+          final rounds = d['fallbackAfterRounds'] ?? 3;
+          String nameOf(Object? id) => '${groups.firstWhere((g) => g['id'] == id, orElse: () => const {'name': 'None'})['name']}';
+
+          Future<void> pickBackup() async {
+            final choice = await showCupertinoModalPopup<String>(
+              context: context,
+              builder: (ctx) => CupertinoActionSheet(
+                title: const Text('Backup group'),
+                message: Text('Dave checks these pairs after $rounds full rounds of your main group with no trade.'),
+                actions: [
+                  CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'none'), child: Text(fallback == null ? 'None (current)' : 'None')),
+                  for (final g in groups)
+                    if (g['id'] != active)
+                      CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, '${g['id']}'), child: Text(g['id'] == fallback ? '${g['name']} (current)' : '${g['name']}')),
+                ],
+                cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ),
+            );
+            if (choice == null || !context.mounted) return;
+            await act({'action': 'fallback', 'id': choice});
+          }
+
           return [
             SliverToBoxAdapter(
               child: _section(context,
+                  header: 'Main and backup',
+                  footer: 'Dave hunts the main group. After $rounds full rounds of it with no trade, he checks the backup group once, then goes back to the main group.',
+                  children: [
+                    CupertinoListTile(
+                      title: const Text('Main group'),
+                      additionalInfo: Text(active == null ? 'None' : nameOf(active)),
+                    ),
+                    CupertinoListTile(
+                      key: const ValueKey('pick-backup'),
+                      title: const Text('Backup group'),
+                      additionalInfo: Text(fallback == null ? 'None' : nameOf(fallback)),
+                      trailing: const CupertinoListTileChevron(),
+                      onTap: pickBackup,
+                    ),
+                  ]),
+            ),
+            SliverToBoxAdapter(
+              child: _section(context,
                   header: 'Groups',
-                  footer: 'Tap a group to make Dave hunt it. The fallback group is used when the active one has nothing open to trade.',
+                  footer: 'Tap a group to make it the main group.',
                   children: [
                     for (final g in groups)
                       CupertinoListTile(
                         leading: Icon(g['id'] == active ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.circle, color: g['id'] == active ? Look.of(context).accent : null),
                         title: Text('${g['name']}'),
                         subtitle: Text(
-                          [if (g['id'] == fallback) 'Fallback', ((g['symbols'] as List?) ?? const []).join(', ')].join(' · '),
+                          [if (g['id'] == active) 'Main', if (g['id'] == fallback) 'Backup', ((g['symbols'] as List?) ?? const []).join(', ')].join(' · '),
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -401,7 +441,7 @@ class PairGroupsPage extends StatelessWidget {
                                 title: Text('${g['name']}'),
                                 actions: [
                                   CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'edit'), child: const Text('Edit symbols')),
-                                  if (g['id'] != fallback) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'fallback'), child: const Text('Use as fallback')),
+                                  if (g['id'] != fallback && g['id'] != active) CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'fallback'), child: const Text('Use as backup')),
                                   CupertinoActionSheetAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, 'delete'), child: const Text('Delete group')),
                                 ],
                                 cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),

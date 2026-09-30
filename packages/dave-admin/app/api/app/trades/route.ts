@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
-import { enqueueCommand, getLastKnownState, recordAppClose } from "@dave/ea-bridge";
+import { enqueueCommand, getEaConnectionStatus, getLastKnownState, recordAppClose } from "@dave/ea-bridge";
 import { withDevice } from "../../../../server/require-device";
 
 /**
- * Close an open position from the phone.
+ * Close an open position, or cancel a pending order, from the phone.
  *
  * The EA command queue is a file both processes share, so the close is queued exactly like one
  * Dave queues himself and goes out on the EA's next heartbeat. The response means "sent", not
@@ -21,7 +21,7 @@ export const POST = withDevice(async ({ userId, req }) => {
   } catch {
     return NextResponse.json({ error: "Expected a JSON body." }, { status: 400 });
   }
-  if (body.action !== "close" && body.action !== "modify") return NextResponse.json({ error: "action must be close or modify." }, { status: 400 });
+  if (body.action !== "close" && body.action !== "modify" && body.action !== "cancel") return NextResponse.json({ error: "action must be close, cancel or modify." }, { status: 400 });
   const ticket = typeof body.ticket === "string" || typeof body.ticket === "number" ? String(body.ticket) : "";
   if (!ticket) return NextResponse.json({ error: "ticket is required." }, { status: 400 });
 
@@ -41,6 +41,15 @@ export const POST = withDevice(async ({ userId, req }) => {
     return NextResponse.json({ ok: true, queued: { commandId, ticket, symbol: target.symbol } });
   }
 
+  if (body.action === "cancel") {
+    // Cancel a pending order (buy/sell limit or stop) -- the EA's own delete_pending command.
+    const order = getLastKnownState(userId).pendingOrders.find((o) => o.ticket === ticket);
+    if (!order) return NextResponse.json({ error: "That pending order is no longer there." }, { status: 404 });
+    const commandId = randomBytes(8).toString("hex");
+    enqueueCommand(userId, { id: commandId, action: "delete_pending", ticket });
+    return NextResponse.json({ ok: true, queued: { commandId, ticket, symbol: order.symbol }, eaConnected: getEaConnectionStatus(userId).connected });
+  }
+
   const open = getLastKnownState(userId).positions.find((p) => p.ticket === ticket);
   if (!open) return NextResponse.json({ error: "That trade is no longer open." }, { status: 404 });
 
@@ -48,5 +57,5 @@ export const POST = withDevice(async ({ userId, req }) => {
   // Recorded first, so the close is attributed to the trader -- not to Dave -- when it lands.
   recordAppClose(userId, ticket);
   enqueueCommand(userId, { id: commandId, action: "close", ticket });
-  return NextResponse.json({ ok: true, queued: { commandId, ticket, symbol: open.symbol } });
+  return NextResponse.json({ ok: true, queued: { commandId, ticket, symbol: open.symbol }, eaConnected: getEaConnectionStatus(userId).connected });
 });

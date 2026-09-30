@@ -220,17 +220,25 @@ PROFILE = "Dave"
 CHR_PERIODS = {"M1": (0, 1), "M5": (0, 5), "M15": (0, 15), "M30": (0, 30), "H1": (1, 1), "H4": (1, 4), "D1": (2, 1)}
 
 
+# Memory: a Railway container (1 GB on a friend's plan) sat at 0.87 GB idle with a chart per pair,
+# and MetaTrader was killed for memory the moment a full analysis ran -- "MT5 keeps crashing". The
+# EA puts the pairs in Market Watch itself (its market_watch command), so extra charts are off
+# unless MT5_PAIR_CHARTS asks for them, and each chart keeps MAX_BARS bars (the EA needs ~1000;
+# MetaTrader's default is 100000).
+MAX_PAIR_CHARTS = int(os.environ.get("MT5_PAIR_CHARTS", "0") or 0)
+MAX_BARS = int(os.environ.get("MT5_MAX_BARS", "5000") or 5000)
+
+
 def write_profile(state):
-    """MetaTrader's own chart profile "Dave": one chart per Market Watch pair. Opening a chart puts
-    its pair in Market Watch, so MT5 itself starts with every pair loaded and on screen -- not just
-    the EA's chart. The EA's chart comes from [StartUp] on top of these."""
+    """MetaTrader's own chart profile "Dave": a chart per Market Watch pair, up to MAX_PAIR_CHARTS
+    (none by default -- see above). The EA's chart comes from [StartUp] on top of these."""
     folder = os.path.join(MT5_DIR, "MQL5", "Profiles", "Charts", PROFILE)
     os.makedirs(folder, exist_ok=True)
     for name in os.listdir(folder):
         if name.lower().endswith(".chr"):
             os.remove(os.path.join(folder, name))
     unit, size = CHR_PERIODS.get(state.get("period", "M1"), (0, 1))
-    pairs = [p for p in (state.get("marketWatch") or []) if p != state.get("symbol")]
+    pairs = [p for p in (state.get("marketWatch") or []) if p != state.get("symbol")][:max(0, MAX_PAIR_CHARTS)]
     for i, sym in enumerate(pairs, 1):
         write_utf16(os.path.join(folder, "chart%02d.chr" % i), "\n".join([
             "<chart>", "id=%d" % (133000000000000000 + i), "symbol=%s" % sym,
@@ -321,6 +329,7 @@ def write_config(state):
         "Profile=0",
         "[Charts]",
         "ProfileLast=%s" % PROFILE,
+        "MaxBars=%d" % MAX_BARS,
         "[StartUp]",
         "Expert=%s" % EA_REL,
         "ExpertParameters=dave.set",

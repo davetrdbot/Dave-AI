@@ -22,7 +22,7 @@ export interface MemoryExtraToolDefinition {
 export const MEMORY_EXTRA_TOOLS: MemoryExtraToolDefinition[] = [
   {
     name: "session_search",
-    description: "Search real past session content by keyword.",
+    description: "Search everything said in past conversations by words (any order, e.g. \"gold stop loss\" finds \"the stop loss on gold\"). Returns the best 10 matches, each with its date and a snippet.",
     parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
     execute: async (args, ctx) => searchSessions(ctx.actorId, args.query as string),
   },

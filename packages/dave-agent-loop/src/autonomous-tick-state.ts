@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { publishActivity } from "./activity-bus.js";
+import { PRIMARY_LAPS_BEFORE_FALLBACK } from "@dave/trading";
 
 /**
  * Real, small, bounded continuity for the autonomous tick -- modeled directly on the user's own
@@ -108,7 +109,7 @@ export function clearHuntState(userId: string): void {
  * time. The cursor advances on EVERY real decision (BUY/SELL/SKIP/ASK alike), so the loop always
  * visits its next symbol next time, never gets stuck re-asking about the one it just decided on.
  */
-export const PRIMARY_LAPS_BEFORE_FALLBACK = 3;
+export { PRIMARY_LAPS_BEFORE_FALLBACK };
 
 /** Which list is active right now, and the index within it -- caller resolves this against the
  *  real current primary/fallback symbol arrays (group membership can change between ticks). */

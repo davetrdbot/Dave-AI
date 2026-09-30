@@ -1229,7 +1229,10 @@ void SetSymbolInfo(string sym)
 // many minutes (live: it stopped reporting and the bot marked it offline until a restart). So a
 // series is only read when it's already there; otherwise a background load starts (an indicator
 // handle, which never blocks) and this answer leaves that piece out.
+// Background loads are started a few per request, not all at once: the container has little
+// memory, and asking MT5 for dozens of histories at the same moment got MetaTrader killed.
 string g_warmK[];
+int g_warmBudget = 4;
 bool SeriesReady(string s, ENUM_TIMEFRAMES tf)
   {
    if(s == "") return false;
@@ -1237,8 +1240,9 @@ bool SeriesReady(string s, ENUM_TIMEFRAMES tf)
    string k = s + "|" + IntegerToString((int)tf);
    for(int i = 0; i < ArraySize(g_warmK); i++) if(g_warmK[i] == k) return false;
    int n = ArraySize(g_warmK);
-   if(n < 400)
+   if(n < 400 && g_warmBudget > 0)
      {
+      g_warmBudget--;
       ArrayResize(g_warmK, n + 1); g_warmK[n] = k;
       iMA(s, tf, 1, 0, MODE_SMA, PRICE_CLOSE); // kept open on purpose: it keeps that history loading/updated
      }
@@ -4140,6 +4144,7 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr,
    g_srvOffset = SrvOffset();
    g_aErr = "";
    ArrayFree(g_prevUsed);
+   g_warmBudget = 4;
    if(endpoint == "ping")
      {
       AppendResultData(commandId, Obj(J("status", "ok") + "," + J("time", A_IsoTime(TimeGMT())) + "," + J("source", "DaveEA") + "," + J("ea_version", EA_VERSION)));

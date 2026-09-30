@@ -43,7 +43,7 @@ class HomeScreen extends StatelessWidget {
           SliverToBoxAdapter(child: _BalanceCard(d: d)),
           SliverToBoxAdapter(child: _TradingCard(bot: data.bot, eaConnected: d.eaConnected, onChanged: reload)),
           SliverToBoxAdapter(child: _OpenTrades(d: d, onChanged: reload)),
-          if (d.pendingOrders.isNotEmpty) SliverToBoxAdapter(child: _PendingOrders(orders: d.pendingOrders)),
+          if (d.pendingOrders.isNotEmpty) SliverToBoxAdapter(child: _PendingOrders(orders: d.pendingOrders, onChanged: reload)),
           SliverToBoxAdapter(child: PerformanceCard(trades: d.trades)),
           SliverToBoxAdapter(child: _Results(d: d)),
         ];
@@ -444,7 +444,7 @@ class _OpenTrades extends StatelessWidget {
     }
     return CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
       header: ListHeader(header),
-      footer: const ListFooter('Tap a trade to change its SL / TP or close it.'),
+      footer: const ListFooter('Tap a trade to change its SL / TP.'),
       children: [for (final p in d.positions) _PositionTile(p: p, onChanged: onChanged)],
     );
   }
@@ -467,16 +467,10 @@ class _PositionTile extends StatelessWidget {
     );
     if (!ok || !context.mounted) return false;
     HapticFeedback.mediumImpact();
-    final sent = await runAction(context, (api) => api.closeTrade(p.ticket));
+    var online = true;
+    final sent = await runAction(context, (api) async => online = await api.closeTrade(p.ticket));
     if (!sent || !context.mounted) return false;
-    await showCupertinoDialog<void>(
-      context: context,
-      builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Close sent'),
-        content: const Text('MT5 closes it on its next check-in, usually within seconds. You will get a notification when it is done.'),
-        actions: [CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
-      ),
-    );
+    await _showSent(context, 'Close sent', online, 'MT5 closes it on its next check-in, usually within seconds. You will get a notification when it is done.');
     await onChanged();
     return true;
   }
@@ -497,17 +491,66 @@ class _PositionTile extends StatelessWidget {
       leading: Icon(p.isBuy ? CupertinoIcons.arrow_up_right : CupertinoIcons.arrow_down_right, color: resolve(context, CupertinoColors.secondaryLabel)),
       title: Text('${p.symbol}  ${p.isBuy ? 'Buy' : 'Sell'}'),
       subtitle: Text(levels),
-      trailing: Text(
-        p.pnl == null ? '--' : formatMoney(p.pnl!, signed: true),
-        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: pnlColor(context, p.pnl), fontFeatures: const [FontFeature.tabularFigures()]),
-      ),
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(
+          p.pnl == null ? '--' : formatMoney(p.pnl!, signed: true),
+          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: pnlColor(context, p.pnl), fontFeatures: const [FontFeature.tabularFigures()]),
+        ),
+        const SizedBox(width: Space.s2),
+        _RowAction(key: ValueKey('close-${p.ticket}'), label: 'Close', onPressed: () => _close(context)),
+      ]),
     );
   }
 }
 
+/// "Sent" for a close or cancel -- and, when MT5 is offline, says so instead of implying it's done.
+Future<void> _showSent(BuildContext context, String title, bool online, String onlineText) => showCupertinoDialog<void>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text(online ? title : '$title -- MT5 is offline'),
+        content: Text(online ? onlineText : 'MT5 is not connected right now, so it will go through as soon as MT5 reconnects.'),
+        actions: [CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
+
+/// A small red button right on a trade row, so closing never hides behind a tap.
+class _RowAction extends StatelessWidget {
+  const _RowAction({super.key, required this.label, required this.onPressed});
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => CupertinoButton(
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        minimumSize: const Size(44, 30),
+        color: resolve(context, CupertinoColors.systemRed).withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(15),
+        onPressed: onPressed,
+        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: resolve(context, CupertinoColors.systemRed))),
+      );
+}
+
 class _PendingOrders extends StatelessWidget {
-  const _PendingOrders({required this.orders});
+  const _PendingOrders({required this.orders, required this.onChanged});
   final List<PendingOrder> orders;
+  final Future<void> Function() onChanged;
+
+  Future<bool> _cancel(BuildContext context, PendingOrder o) async {
+    final ok = await confirmDestructive(
+      context,
+      title: 'Cancel ${o.symbol} ${o.label}?',
+      message: '${o.lots} lots at ${formatPrice(o.price)}. The order is removed; nothing was opened yet.',
+      action: 'Cancel order',
+    );
+    if (!ok || !context.mounted) return false;
+    HapticFeedback.mediumImpact();
+    var online = true;
+    final sent = await runAction(context, (api) async => online = await api.cancelOrder(o.ticket));
+    if (!sent || !context.mounted) return false;
+    await _showSent(context, 'Cancel sent', online, 'MT5 removes it on its next check-in, usually within seconds.');
+    await onChanged();
+    return true;
+  }
 
   @override
   Widget build(BuildContext context) => CupertinoListSection.insetGrouped(backgroundColor: const Color(0x00000000), decoration: glassDecoration(context, radius: 14), separatorColor: resolve(context, CupertinoColors.separator).withValues(alpha: 0.4), 
@@ -519,9 +562,13 @@ class _PendingOrders extends StatelessWidget {
               title: Text('${o.symbol}  ${o.label}'),
               subtitle: Text('${o.lots} lots at ${formatPrice(o.price)}\n'
                   'SL ${o.sl == null ? 'none' : formatPrice(o.sl!)}  ·  TP ${o.tp == null ? 'none' : formatPrice(o.tp!)}'),
-              trailing: const CupertinoListTileChevron(),
-              onTap: () => showTradeSheet(context,
-                  ticket: o.ticket, symbol: o.symbol, kind: o.label, isBuy: o.type.toLowerCase().startsWith('buy'), lots: o.lots, entry: o.price, sl: o.sl, tp: o.tp),
+              trailing: _RowAction(key: ValueKey('cancel-${o.ticket}'), label: 'Cancel', onPressed: () => _cancel(context, o)),
+              onTap: () async {
+                final changed = await showTradeSheet(context,
+                    ticket: o.ticket, symbol: o.symbol, kind: o.label, isBuy: o.type.toLowerCase().startsWith('buy'), lots: o.lots, entry: o.price, sl: o.sl, tp: o.tp,
+                    onClose: () => _cancel(context, o));
+                if (changed) await onChanged();
+              },
             ),
         ],
       );

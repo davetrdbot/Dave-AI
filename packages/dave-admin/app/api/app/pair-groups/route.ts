@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { deleteGroup, getActiveGroupInfo, listGroups, setActiveGroup, setFallbackGroup, upsertGroup } from "@dave/trading";
+import { PRIMARY_LAPS_BEFORE_FALLBACK, clearFallbackGroup, deleteGroup, getActiveGroupInfo, listGroups, setActiveGroup, setFallbackGroup, upsertGroup } from "@dave/trading";
 import { withDevice } from "../../../../server/require-device";
 
 /**
@@ -14,6 +14,8 @@ function view(userId: string) {
     groups: listGroups(userId),
     activeGroupId: info.activeGroup?.id ?? null,
     fallbackGroupId: info.fallbackGroup?.id ?? null,
+    // When Dave switches to the backup group -- shown to the trader as it really works.
+    fallbackAfterRounds: PRIMARY_LAPS_BEFORE_FALLBACK,
   };
 }
 
@@ -46,7 +48,9 @@ export const POST = withDevice(async ({ userId, req }) => {
         setActiveGroup(userId, String(body.id ?? ""));
         break;
       case "fallback":
-        setFallbackGroup(userId, String(body.id ?? ""));
+        // No id (or "none") turns the backup group off.
+        if (!body.id || body.id === "none") clearFallbackGroup(userId);
+        else setFallbackGroup(userId, String(body.id));
         break;
       default:
         return NextResponse.json({ error: "action must be save, delete, activate or fallback." }, { status: 400 });

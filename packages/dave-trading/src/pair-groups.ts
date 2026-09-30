@@ -137,6 +137,20 @@ export function setActiveGroup(userId: string, groupId: string): void {
   appendSettingsLogEntry(userId, "activePairGroup", oldGroupId, groupId);
 }
 
+/** Stored as the fallback id when the trader turned the backup group OFF on purpose -- so the
+ *  default "fallback" group isn't quietly put back by ensureGroupsUsable. */
+export const NO_FALLBACK_GROUP = "none";
+
+/** Full rounds of the main group with no trade before the autonomous loop scans the backup group
+ *  (then it goes back to the main group). */
+export const PRIMARY_LAPS_BEFORE_FALLBACK = 3;
+
+export function clearFallbackGroup(userId: string): void {
+  const state = readState(userId);
+  state.fallbackGroupId = NO_FALLBACK_GROUP;
+  saveState(userId, state);
+}
+
 export function setFallbackGroup(userId: string, groupId: string): void {
   const state = readState(userId);
   if (!state.groups.some((g) => g.id === groupId)) throw new UnknownGroupError(groupId);
@@ -268,7 +282,7 @@ export function ensureGroupsUsable(userId: string): GroupState {
   if (!next.activeGroupId || !next.groups.some((g) => g.id === next.activeGroupId)) {
     next = { ...next, activeGroupId: next.groups.some((g) => g.id === "synthetic") ? "synthetic" : (next.groups[0]?.id ?? null) };
   }
-  if (!next.fallbackGroupId || !next.groups.some((g) => g.id === next.fallbackGroupId)) {
+  if (next.fallbackGroupId !== NO_FALLBACK_GROUP && (!next.fallbackGroupId || !next.groups.some((g) => g.id === next.fallbackGroupId))) {
     next = { ...next, fallbackGroupId: next.groups.some((g) => g.id === "fallback") ? "fallback" : null };
   }
   if (next !== state) saveState(userId, next);

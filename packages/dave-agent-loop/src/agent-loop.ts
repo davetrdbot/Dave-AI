@@ -154,6 +154,27 @@ function raceExecution<T>(promise: Promise<T>, signal: AbortSignal | undefined):
   });
 }
 
+/** Identical calls that may fail before the next identical one is refused (see the loop guard). */
+export const REPEAT_FAILURE_LIMIT = 2;
+
+/** Arguments as a key: the same inputs in any key order are the same call. */
+function stableArgs(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableArgs).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map((k) => `${k}:${stableArgs((value as Record<string, unknown>)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/** A tool that answered with a failure instead of throwing ({ ok: false } or { error }). */
+function failureOf(output: unknown): string | null {
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const o = output as Record<string, unknown>;
+  if (typeof o.error === "string" && o.error) return typeof o.message === "string" ? `${o.error}: ${o.message}` : o.error;
+  if (o.ok === false) return typeof o.message === "string" ? o.message : typeof o.reason === "string" ? o.reason : "failed";
+  return null;
+}
+
 export class AgentLoop {
   constructor(
     private readonly provider: Provider,
@@ -232,6 +253,11 @@ export class AgentLoop {
       return { status: "aborted", reason, history, steps, tokenUsage };
     };
 
+    // Loop guard (from Hermes): the same tool with the same inputs failing again and again. After
+    // two failures the next identical call isn't run -- Dave is told to stop retrying and explain
+    // to the trader what didn't work and why, instead of looping or going quiet.
+    const failedCalls = new Map<string, { count: number; lastError: string }>();
+
     try {
       for (let i = 0; i < maxSteps; i++) {
         // Real cancel/deadline check -- BEFORE starting a new provider call, so a turn that's
@@ -293,6 +319,23 @@ export class AgentLoop {
           // cancel the tool's own underlying operation (most tools have no cancellation hook at
           // all), but it genuinely stops THIS LOOP from waiting on it past the same deadline/
           // cancel that already bounds model calls.
+          const callKey = `${call.name} ${stableArgs(call.arguments)}`;
+          const priorFailures = failedCalls.get(callKey);
+          if (priorFailures && priorFailures.count >= REPEAT_FAILURE_LIMIT) {
+            const output = {
+              error: "not_retried",
+              message:
+                `This exact ${call.name} call already failed ${priorFailures.count} times in this reply (last error: ${priorFailures.lastError}). ` +
+                "It was not run again. Don't retry it. Tell the user plainly what didn't work, why (the error above, in simple words), and what they can do about it.",
+            };
+            const step: AgentStep = { toolName: call.name, arguments: call.arguments, result: output, isError: true };
+            steps.push(step);
+            opts.onStep?.(step);
+            emit({ type: "tool_end", id: call.id, name: call.name, result: output, isError: true, ms: 0 });
+            history.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(output) });
+            continue;
+          }
+
           emit({ type: "tool_start", id: call.id, name: call.name, args: call.arguments });
           const startedAt = Date.now();
           const outcome = await raceExecution(this.registry.execute(call.name, call.arguments), combinedSignal);
@@ -308,6 +351,8 @@ export class AgentLoop {
           } else {
             output = outcome.value;
           }
+          const failure = isError ? (output as { error: string }).error : failureOf(output);
+          if (failure) failedCalls.set(callKey, { count: (priorFailures?.count ?? 0) + 1, lastError: failure.slice(0, 300) });
           const step: AgentStep = { toolName: call.name, arguments: call.arguments, result: output, isError };
           steps.push(step);
           opts.onStep?.(step);

@@ -201,7 +201,7 @@ class _TradeSheetState extends State<_TradeSheet> {
                         final closed = await widget.onClose!();
                         if (closed && context.mounted) Navigator.of(context).pop(true);
                       },
-                child: Text(widget.kind == 'position' ? 'Close trade' : 'Delete order', style: TextStyle(color: look.down, fontWeight: FontWeight.w600)),
+                child: Text(widget.kind == 'position' ? 'Close trade' : 'Cancel order', style: TextStyle(color: look.down, fontWeight: FontWeight.w600)),
               ),
             Padding(
               padding: const EdgeInsets.only(top: 6),
