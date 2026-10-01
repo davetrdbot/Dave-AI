@@ -11,7 +11,7 @@ import { consultJournal } from "../journal-agent.js";
 import { readPost } from "./parse.js";
 import { buildImageContentBlock } from "@dave/vision";
 import { planPlacement, rewardToRisk, type Placement } from "./plan.js";
-import { advanceNousTrade } from "./manager.js";
+import { advanceNousTrade, trailLevelFor } from "./manager.js";
 import { checkTelegramReachable, startNousListener, type NousPost } from "./userbot.js";
 import { publishActivity } from "../activity-bus.js";
 import {
@@ -77,8 +77,14 @@ export async function startNous(deps: NousDeps): Promise<void> {
 /** (Re)starts reading channels -- after login, after the chat list changes, and at boot. */
 export async function ensureNousListening(userId: string): Promise<boolean> {
   const deps = running.get(userId);
-  if (!deps || !getNousLogin(userId)) return false;
+  if (!deps) return false;
+  if (!getNousLogin(userId)) {
+    console.log(`[nous] ${userId}: copy trading is off -- no Telegram login yet (Settings → Copy trading)`);
+    return false;
+  }
   await startNousListener(userId, (post) => void onNousPost(deps, post).catch((err) => console.error(`[nous] ${userId}: post failed:`, err)));
+  const config = getNousConfig(userId);
+  console.log(`[nous] ${userId}: listening to ${config.chats.length} chat(s)${config.chats.length ? ` (${config.chats.map((c) => c.title).join(", ")})` : " -- pick a channel in Settings → Copy trading"}; auto-approve ${config.autoApprove ? "on" : "off"}`);
   return true;
 }
 
@@ -146,7 +152,12 @@ export async function onNousPost(deps: NousDeps, post: NousPost, now = Date.now(
     replyingTo: repliedTo ? describeTrade(repliedTo) : undefined,
     quote: priceTool(deps),
   });
+  console.log(`[nous] ${userId}: ${post.chatTitle}: "${(post.text || "(picture)").replace(/\s+/g, " ").slice(0, 60)}" -> ${read ? (read.kind === "update" ? `update ${read.update.action}` : read.kind) : "skipped"}`);
   if (!read) return;
+  if (read.kind === "note") {
+    await onNousNote(deps, post, read.note, read.symbol, repliedTo ? [repliedTo] : fromChannel);
+    return;
+  }
   if (read.kind === "update") {
     await onNousUpdate(deps, post, read.update, repliedTo ? [repliedTo] : fromChannel, now);
     return;
@@ -226,7 +237,8 @@ export async function placeNousSignal(deps: NousDeps, signalId: string, now = Da
       lots,
       price: plan.price,
       sl: parsed.sl,
-      tp: parsed.tp1,
+      // "TP 3 : OPEN": no broker target -- the stop is trailed TP by TP instead (manager.ts).
+      tp: parsed.tpOpen ? undefined : parsed.tp1,
       comment: "Nous signal",
       pushMessage: `Nous: ${parsed.symbol} ${parsed.side.toUpperCase()} from ${signal.chatTitle}`,
     });
@@ -253,6 +265,9 @@ export async function placeNousSignal(deps: NousDeps, signalId: string, now = Da
     sl: parsed.sl,
     tp1: parsed.tp1,
     tp2: parsed.tp2,
+    tps: [parsed.tp1, parsed.tp2, parsed.tp3].filter((x): x is number => x !== undefined),
+    tpOpen: parsed.tpOpen,
+    tpHits: 0,
     reason: parsed.reason,
     chatTitle: signal.chatTitle,
     chatId: signal.chatId,
@@ -283,9 +298,10 @@ export async function placeNousSignal(deps: NousDeps, signalId: string, now = Da
     ["Order", plan.note],
     ["Lots", String(placedLots)],
     ["Stop loss", String(parsed.sl)],
-    ["Take profit", `${parsed.tp1} (TP1)`],
+    ["Take profit", parsed.tpOpen ? `none at the broker -- last target OPEN` : `${parsed.tp1} (TP1)`],
   ];
-  if (parsed.tp2 !== undefined) rows.push(["Then", `stop → entry, target → ${parsed.tp2} (TP2)`]);
+  if (parsed.tpOpen) rows.push(["Targets", `${trade.tps!.map((t, i) => `TP${i + 1} ${t}`).join(" · ")} · then OPEN`], ["Plan", "TP1 → stop to breakeven, TP2 → stop to TP1, and so on"]);
+  else if (parsed.tp2 !== undefined) rows.push(["Then", `stop → entry, target → ${parsed.tp2} (TP2)`]);
   await send(deps, [heading(`✅ Placed ${parsed.symbol} ${parsed.side.toUpperCase()}`), { type: "table", cells: rows }, footer(`From ${signal.chatTitle} · ${lagosTime(now)} · reason saved to Dave's knowledge`)]);
   return `Placed #${ticket}`;
 }
@@ -319,8 +335,12 @@ export async function manageNousTrades(deps: NousDeps, now = Date.now()): Promis
     trade.filled = true;
     trade.lastPnl = pos.pnl;
     for (const action of advanceNousTrade(trade, pos, account, now)) {
-      if (action.kind === "moveToBreakeven") {
+      if (action.kind === "trail") {
+        const line = await trailStop(deps, trade, pos, action.tpNumber);
+        await reply(deps, `🎯 ${trade.symbol} ${trade.side.toUpperCase()} #${trade.ticket} reached TP${action.tpNumber} (${trade.tps?.[action.tpNumber - 1]}) -- ${line}`);
+      } else if (action.kind === "moveToBreakeven") {
         try {
+          trade.tpHits = Math.max(trade.tpHits ?? 0, 1);
           await deps.executor.modifyOrder(trade.ticket, { sl: action.sl, tp: action.tp });
           await reply(deps, `🎯 ${trade.symbol} ${trade.side.toUpperCase()} #${trade.ticket} reached TP1 -- stop moved to entry (${action.sl}), now riding to TP2 (${action.tp}). Risk-free from here.`);
         } catch (err) {
@@ -404,7 +424,7 @@ function saveSetupKnowledge(userId: string, signal: NousSignal, trade: NousTrade
       useWhen: `Seeing a similar ${p.side} setup on ${p.symbol} or another pair${p.reason ? `: ${p.reason.slice(0, 160)}` : ""}`,
       content: [
         `Copied from ${signal.chatTitle}, posted ${lagosTime(signal.postedAt)}.`,
-        `${p.symbol} ${p.side.toUpperCase()} -- entry ${trade.entry}, SL ${p.sl}, TP1 ${p.tp1}${p.tp2 !== undefined ? `, TP2 ${p.tp2}` : ""} (R:R to TP1 about 1:${rewardToRisk(trade.entry, p.sl, p.tp1).toFixed(1)}).`,
+        `${p.symbol} ${p.side.toUpperCase()} -- entry ${trade.entry}${p.zone ? ` (their zone ${p.zone[0]}-${p.zone[1]})` : ""}, SL ${p.sl}, TP1 ${p.tp1}${p.tp2 !== undefined ? `, TP2 ${p.tp2}` : ""}${p.tp3 !== undefined ? `, TP3 ${p.tp3}` : ""}${p.tpOpen ? ", last TP open" : ""} (R:R to TP1 about 1:${rewardToRisk(trade.entry, p.sl, p.tp1).toFixed(1)}).`,
         `The provider's reason: ${p.reason || "(none given)"}`,
       ].join("\n"),
     });
@@ -417,7 +437,8 @@ function saveSetupKnowledge(userId: string, signal: NousSignal, trade: NousTrade
 // ---- Follow-ups from the provider ("close now", "SL to BE", "SL to 2345", "cancel the limit") ----
 
 export function describeTrade(t: NousTrade): string {
-  return `${t.symbol} ${t.side.toUpperCase()} #${t.ticket}, entry ${t.entry}, SL ${t.sl}, TP ${t.stage === "tp2" ? t.tp2 : t.tp1}${t.filled ? "" : " (pending, not filled yet)"}`;
+  const targets = t.tpOpen ? `TPs ${(t.tps ?? [t.tp1]).join(" / ")} then OPEN (${t.tpHits ?? 0} hit so far)` : `TP ${t.stage === "tp2" ? t.tp2 : t.tp1}`;
+  return `${t.symbol} ${t.side.toUpperCase()} #${t.ticket}, entry ${t.entry}, SL ${t.sl}, ${targets}${t.filled ? "" : " (pending, not filled yet)"}`;
 }
 
 function describeAction(u: NousUpdate["update"]): string {
@@ -434,6 +455,8 @@ function describeAction(u: NousUpdate["update"]): string {
       return `move the take profit to ${u.price}`;
     case "cancel":
       return "cancel the pending order";
+    case "tp_hit":
+      return `TP${u.tpNumber ?? 1} hit -- trail the stop (${(u.tpNumber ?? 1) <= 1 ? "breakeven" : `to TP${(u.tpNumber ?? 1) - 1}`})`;
   }
 }
 
@@ -441,6 +464,7 @@ function describeAction(u: NousUpdate["update"]): string {
 export function pickUpdateTargets(update: NousUpdate["update"], candidates: NousTrade[]): NousTrade[] {
   let pool = update.symbol ? candidates.filter((t) => t.symbol === update.symbol) : candidates;
   if (update.action === "cancel") pool = pool.filter((t) => !t.filled);
+  if (update.action === "tp_hit") pool = pool.filter((t) => t.filled);
   if (!pool.length) return [];
   if (update.all || candidates.length === 1) return pool;
   return [pool.reduce((a, b) => (b.placedAt > a.placedAt ? b : a))];
@@ -461,7 +485,9 @@ async function onNousUpdate(deps: NousDeps, post: NousPost, update: NousUpdate["
     status: "awaiting",
   };
   saveNousUpdate(deps.userId, record);
-  if (getNousConfig(deps.userId).autoApprove) {
+  // "HIT TP 1" only ever tightens the stop of a trade already taken -- no card, it's done at once
+  // (the trader: "i shouldn't analyze or do anything").
+  if (getNousConfig(deps.userId).autoApprove || update.action === "tp_hit") {
     await applyNousUpdate(deps, record.id, now);
     return;
   }
@@ -521,11 +547,28 @@ export async function applyNousUpdate(deps: NousDeps, updateId: string, now = Da
         if (lots >= pos.lots) await deps.executor.closePosition(ticket);
         else await deps.executor.closePosition(ticket, lots);
         lines.push(`${label}: closed ${lots >= pos.lots ? "all" : `${lots} of ${pos.lots}`} lots`);
+      } else if (u.action === "tp_hit") {
+        const n = u.tpNumber ?? 1;
+        if (trade && (trade.tpHits ?? 0) >= n) {
+          lines.push(`${label}: TP${n} already handled -- stop is at ${trade.sl}`);
+          continue;
+        }
+        if (!trade) {
+          lines.push(`${label}: not a copied trade`);
+          continue;
+        }
+        trade.tpHits = n;
+        if (!trade.tpOpen && n === 1 && trade.stage === "tp1" && trade.tp2 !== undefined) {
+          // TP1 at the broker with a TP2 to go: same as the automatic move -- breakeven, ride to TP2.
+          trade.stage = "tp2";
+          await deps.executor.modifyOrder(ticket, { sl: breakevenLevel(pos), tp: trade.tp2 });
+          trade.sl = breakevenLevel(pos);
+          lines.push(`${label}: stop to breakeven ${trade.sl}, target → TP2 ${trade.tp2}`);
+        } else {
+          lines.push(`${label}: ${await trailStop(deps, trade, pos, n)}`);
+        }
       } else if (u.action === "breakeven") {
-        // True breakeven (entry + spread), so a hit closes at 0.00; exactly on the entry if the
-        // trade isn't far enough in profit for that yet (the signal said breakeven).
-        const be = breakevenStop({ side: pos.type, openPrice: pos.openPrice, currentPrice: pos.currentPrice, spread: pos.spread, digits: pos.digits, stopsLevel: pos.stopsLevel });
-        const level = be.ok ? be.level : pos.openPrice;
+        const level = breakevenLevel(pos);
         await deps.executor.modifyOrder(ticket, { sl: level });
         if (trade) trade.sl = level;
         lines.push(`${label}: stop moved to breakeven ${level}`);
@@ -568,6 +611,60 @@ async function clearUpdateButtons(deps: NousDeps, record: NousUpdate): Promise<v
   await deps.client.editMessageReplyMarkup({ chat_id: chatId, message_id: record.cardMessageId, reply_markup: { inline_keyboard: [] } }).catch(() => undefined);
 }
 
+type LivePos = ReturnType<typeof getLastKnownState>["positions"][number];
+
+/** True breakeven (entry + spread), so a hit closes at 0.00; exactly on the entry if the trade isn't
+ *  far enough in profit for that yet (the signal said breakeven). */
+function breakevenLevel(pos: LivePos): number {
+  const be = breakevenStop({ side: pos.type, openPrice: pos.openPrice, currentPrice: pos.currentPrice, spread: pos.spread, digits: pos.digits, stopsLevel: pos.stopsLevel });
+  return be.ok ? be.level : pos.openPrice;
+}
+
+/** Target `tpNumber` hit: the stop goes to breakeven (TP1) or the previous target (TP2 -> TP1...).
+ *  Only ever tightens; returns one line for the trader. */
+async function trailStop(deps: NousDeps, trade: NousTrade, pos: LivePos, tpNumber: number): Promise<string> {
+  const dir = trade.side === "buy" ? 1 : -1;
+  const level = trailLevelFor(trade, tpNumber) ?? breakevenLevel(pos);
+  const what = tpNumber <= 1 ? "breakeven" : `TP${tpNumber - 1}`;
+  const current = pos.sl ?? trade.sl;
+  if (current !== undefined && current > 0 && dir * (level - current) <= 0) return `stop already at ${current} (at or past ${what}) -- left as is`;
+  if (pos.currentPrice !== undefined && dir * (pos.currentPrice - level) <= 0) return `price ${pos.currentPrice} is back behind ${what} ${level} -- stop not moved`;
+  try {
+    await deps.executor.modifyOrder(trade.ticket, { sl: level });
+    trade.sl = level;
+    return `stop moved to ${what} (${level}). Profit locked from here.`;
+  } catch (err) {
+    return `⚠️ MT5 refused moving the stop to ${level}: ${err instanceof Error ? err.message : String(err)}. Move it by hand if you can.`;
+  }
+}
+
+/** The provider explaining why they took a copied trade -- kept with that trade and in Dave's knowledge. */
+async function onNousNote(deps: NousDeps, post: NousPost, note: string, symbol: string | undefined, candidates: NousTrade[]): Promise<void> {
+  const pool = symbol ? candidates.filter((t) => t.symbol === symbol) : candidates;
+  if (!pool.length) return;
+  const target = pool.reduce((a, b) => (b.placedAt > a.placedAt ? b : a));
+  const trades = listNousTrades(deps.userId);
+  const trade = trades.find((t) => t.ticket === target.ticket);
+  if (!trade) return;
+  trade.reason = trade.reason ? `${trade.reason}\n${note}` : note;
+  if (trade.knowledgeId) {
+    try {
+      const entry = knowledgeView(deps.userId, trade.knowledgeId);
+      knowledgeDelete(deps.userId, trade.knowledgeId);
+      const draft = knowledgeDraft(deps.userId, {
+        title: entry.title,
+        useWhen: entry.useWhen,
+        content: `${entry.content}\n\nThe provider's reason (posted ${lagosTime(post.postedAt)}): ${note}`,
+      });
+      trade.knowledgeId = knowledgeSave(deps.userId, draft.id).id;
+    } catch {
+      // Edited or removed by hand -- the reason still lives on the trade.
+    }
+  }
+  saveNousTrades(deps.userId, trades);
+  await reply(deps, `📘 ${post.chatTitle} explained ${trade.symbol} ${trade.side.toUpperCase()} #${trade.ticket}: "${note.slice(0, 300)}" -- saved to Dave's knowledge.`);
+}
+
 // ---- Message helpers ----
 
 const heading = (text: string): RichBlock => ({ type: "heading", text, size: 2 });
@@ -583,6 +680,7 @@ function signalCard(signal: NousSignal, price: number, userId: string, plan: Pla
     ["Stop loss", String(p.sl)],
     ["TP1 (target)", String(p.tp1)],
     ["TP2 (after breakeven)", p.tp2 !== undefined ? String(p.tp2) : "--"],
+    ...(p.tp3 !== undefined || p.tpOpen ? [["TP3", p.tp3 !== undefined ? String(p.tp3) : "OPEN"]] : []),
     ["Price now", String(price)],
     ["R:R to TP1", `1:${rewardToRisk(entry, p.sl, p.tp1).toFixed(1)}`],
     ["Lots", String(nousLots(userId))],

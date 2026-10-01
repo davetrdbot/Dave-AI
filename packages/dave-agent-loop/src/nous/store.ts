@@ -39,14 +39,19 @@ export interface ParsedSignal {
   orderKind: SignalOrderKind;
   /** Single entry price; a range is reduced to its midpoint by the parser. */
   entry?: number;
+  /** The provider's entry zone ("BUY NOW IN ZONE 4155.50-4148.50"), low first. */
+  zone?: [number, number];
   sl: number;
   tp1: number;
   tp2?: number;
+  tp3?: number;
+  /** "TP 3 : OPEN" -- the last target is left open: no broker TP, the stop is trailed TP by TP. */
+  tpOpen?: boolean;
   /** The provider's own reason for the trade, in their words (may be empty). */
   reason: string;
 }
 
-export type UpdateAction = "close" | "close_partial" | "breakeven" | "move_sl" | "move_tp" | "cancel";
+export type UpdateAction = "close" | "close_partial" | "breakeven" | "move_sl" | "move_tp" | "cancel" | "tp_hit";
 
 /** A provider's follow-up about a trade they already gave ("close now", "SL to BE"). */
 export interface ParsedUpdate {
@@ -56,6 +61,8 @@ export interface ParsedUpdate {
   price?: number;
   /** Part to close for close_partial (0-1). */
   fraction?: number;
+  /** For tp_hit: which target the provider says was hit (1 = TP1). */
+  tpNumber?: number;
   /** "close all" -- every copied trade from the channel, not just the latest. */
   all: boolean;
 }
@@ -100,6 +107,12 @@ export interface NousTrade {
   sl: number;
   tp1: number;
   tp2?: number;
+  /** Every numeric target the provider gave, in order (TP1, TP2, TP3...). */
+  tps?: number[];
+  /** The last target is "OPEN": no broker TP; each TP reached trails the stop (TP1 -> breakeven, TP2 -> TP1...). */
+  tpOpen?: boolean;
+  /** How many targets have been reached and acted on (by price or by the channel's "HIT TP" post). */
+  tpHits?: number;
   reason: string;
   chatTitle: string;
   /** The channel it came from -- a follow-up post from the same channel can act on it. */

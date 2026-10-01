@@ -30,7 +30,14 @@ export interface AccountView {
   freeMargin?: number;
 }
 
-export type NousAction = { kind: "moveToBreakeven"; sl: number; tp: number } | { kind: "askValidity"; why: string };
+/** "trail": target number `tpNumber` was reached on a trade whose last TP is open -- the stop goes to
+ *  `sl` (undefined = true breakeven: TP1 reached). */
+export type NousAction = { kind: "moveToBreakeven"; sl: number; tp: number } | { kind: "trail"; tpNumber: number; sl?: number } | { kind: "askValidity"; why: string };
+
+/** Where the stop goes once target `tpNumber` is hit: TP1 -> breakeven (undefined), TP2 -> TP1, TP3 -> TP2. */
+export function trailLevelFor(trade: NousTrade, tpNumber: number): number | undefined {
+  return tpNumber <= 1 ? undefined : trade.tps?.[tpNumber - 2];
+}
 
 /** Margin level under 200%, or less than a quarter of the balance left free. */
 export function marginStretched(a: AccountView | undefined): boolean {
@@ -46,7 +53,21 @@ export function advanceNousTrade(trade: NousTrade, pos: LivePosition, account: A
   const entry = pos.openPrice || trade.entry;
   const price = pos.currentPrice;
 
-  if (trade.stage === "tp1" && trade.tp2 !== undefined && price !== undefined) {
+  // The trader's channel: "HIT TP 1 -- who wanna hold set BE", then the same at TP2 (stop to TP1).
+  // With the last target open there's no broker TP; each target price reached trails the stop one
+  // step -- the backup for when the channel's own "HIT TP" post is late or never comes.
+  if (trade.tpOpen && trade.tps?.length && price !== undefined) {
+    const hits = trade.tpHits ?? 0;
+    const next = trade.tps[hits];
+    if (next !== undefined && dir * (price - next) >= 0) {
+      trade.tpHits = hits + 1;
+      trade.losingSince = undefined;
+      actions.push({ kind: "trail", tpNumber: hits + 1, sl: trailLevelFor(trade, hits + 1) });
+      return actions;
+    }
+  }
+
+  if (!trade.tpOpen && trade.stage === "tp1" && trade.tp2 !== undefined && price !== undefined) {
     const span = Math.abs(trade.tp1 - entry);
     const progress = span > 0 ? (dir * (price - entry)) / span : 0;
     if (progress >= NEAR_TP1) {

@@ -13,13 +13,16 @@ import type { ParsedSignal, ParsedUpdate, SignalOrderKind, SignalSide, UpdateAct
 const SIGNAL_WORDS = /\b(buy|sell|long|short)\b/i;
 const UPDATE_WORDS = /\b(close|closed|closing|exit|breakeven|break even|be|sl|stop|tp|cancel|delete|remove|secure|partial|partials|trail|move)\b/i;
 
-/** Cheap gate before spending a model call. `hasOpenTrades`: updates only matter when something
- *  from this channel is open or pending. A picture always gets a look. */
+/** Cheap gate before spending a model call. A picture always gets a look. While a trade copied from this channel is open,
+ *  every post is read -- the levels, "HIT TP 1", or the provider's reason can come in any words
+ *  (the trader: "when a message comes it should send to the bot so the bot can decide whether to
+ *  skip"). */
 export function worthReading(text: string, hasImage: boolean, hasOpenTrades: boolean): boolean {
   if (hasImage) return true;
   const numbers = (text.match(/\d+(?:[.,]\d+)?/g) ?? []).length;
   if (SIGNAL_WORDS.test(text) && numbers >= 2) return true;
-  return hasOpenTrades && UPDATE_WORDS.test(text);
+  if (hasOpenTrades) return text.trim().length >= 2;
+  return false;
 }
 
 /** Kept for callers that only care about new signals. */
@@ -36,9 +39,9 @@ const REPORT = {
     properties: {
       kind: {
         type: "string",
-        enum: ["signal", "update", "none"],
+        enum: ["signal", "update", "note", "none"],
         description:
-          "'signal' ONLY for a NEW trade with a stop loss and at least one take profit. 'update' for an instruction about a trade already given (close, partial close, move SL to breakeven / a price, move TP, cancel a pending order). 'none' for results ('TP1 hit', '+50 pips'), analysis without a trade, promotions, chatter.",
+          "'signal' ONLY for a NEW trade with a stop loss and at least one take profit (a bare 'GOLD BUY NOW' with no levels is 'none' -- the full post with SL/TPs follows and is the signal). 'update' for an instruction or result about a trade already given (close, partial close, move SL to breakeven / a price, move TP, cancel a pending order, 'HIT TP 1' = tp_hit). 'note' for the provider explaining WHY they took a copied trade (structure, zone, news, the idea) -- put it in `reason`. 'none' for promotions, chatter, greetings, results of trades not listed.",
       },
       symbol: {
         type: "string",
@@ -51,12 +54,15 @@ const REPORT = {
       sl: { type: "number", description: "Stop loss PRICE." },
       tp1: { type: "number", description: "First take profit PRICE." },
       tp2: { type: "number", description: "Second take profit PRICE, if given." },
+      tp3: { type: "number", description: "Third take profit PRICE, if given as a number." },
+      tpOpen: { type: "boolean", description: "true when the last target is left open ('TP 3 : OPEN', 'TP3 open', 'let it run')." },
       reason: { type: "string", description: "The provider's reason for the trade, in their own words (structure, zone, news...). Empty if none given." },
       action: {
         type: "string",
-        enum: ["close", "close_partial", "breakeven", "move_sl", "move_tp", "cancel"],
-        description: "For kind 'update': close = close it now; close_partial = take part off; breakeven = move SL to entry; move_sl / move_tp = to `price`; cancel = delete a pending order that hasn't filled.",
+        enum: ["close", "close_partial", "breakeven", "move_sl", "move_tp", "cancel", "tp_hit"],
+        description: "For kind 'update': close = close it now; close_partial = take part off; breakeven = move SL to entry; move_sl / move_tp = to `price`; cancel = delete a pending order that hasn't filled; tp_hit = the provider says a target was hit ('HIT TP 1 ✅ +50 PIPS') -- set tpNumber. A 'TP hit' post that also says 'set BE' is still tp_hit.",
       },
+      tpNumber: { type: "number", description: "For tp_hit: which target was hit (1, 2, 3...)." },
       price: { type: "number", description: "For move_sl / move_tp: the new level." },
       fraction: { type: "number", description: "For close_partial: the part to close, 0-1 (half = 0.5). Default 0.5." },
       all: { type: "boolean", description: "For an update: true when it clearly means every open trade from this channel ('close all')." },
@@ -73,11 +79,13 @@ const GET_PRICE = {
 const SYSTEM = [
   "You read posts from trading signal channels on Telegram (text and/or a screenshot of a signal) and report them with report_post.",
   "Be strict: only a NEW trade with a stop loss and at least one take profit is a 'signal'. Prices are the numbers in the post -- never invent or guess a level.",
+  "Many channels post 'GOLD BUY NOW' first, then a second post with the zone, TP1/TP2/TP3 and SL: the first is 'none', the second is the 'signal' with every level. 'TP 3 : OPEN' means tpOpen true.",
+  "'HIT TP 1' / 'TP2 done ✅' about a listed trade is an update with action tp_hit and tpNumber. The provider explaining why they took a listed trade is a 'note'.",
   "Levels given in pips: call get_price for the symbol, then convert from the entry (or the live price for 'now') using the pip size: XAUUSD 0.1, XAGUSD 0.01, JPY pairs 0.01, other forex pairs 0.0001. For indices, crypto and synthetics, points are price units (1 point = 1.0). If you can't convert confidently, report 'none'.",
   "An 'update' is only about a trade the channel already gave; the trades Nous copied from this channel are listed with the post.",
 ].join("\n");
 
-export type ParsedPost = { kind: "signal"; signal: ParsedSignal } | { kind: "update"; update: ParsedUpdate } | undefined;
+export type ParsedPost = { kind: "signal"; signal: ParsedSignal } | { kind: "update"; update: ParsedUpdate } | { kind: "note"; note: string; symbol?: string } | undefined;
 
 export interface ReadPostInput {
   text: string;
@@ -157,7 +165,7 @@ export function normalizeSymbol(s: string): string {
 }
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : typeof v === "string" && Number(v) > 0 ? Number(v) : undefined);
-const UPDATE_ACTIONS: UpdateAction[] = ["close", "close_partial", "breakeven", "move_sl", "move_tp", "cancel"];
+const UPDATE_ACTIONS: UpdateAction[] = ["close", "close_partial", "breakeven", "move_sl", "move_tp", "cancel", "tp_hit"];
 
 /** Plain-code check of what the model reported. */
 export function normalizePost(a: Record<string, unknown>): ParsedPost {
@@ -170,9 +178,17 @@ export function normalizePost(a: Record<string, unknown>): ParsedPost {
     if (!action) return undefined;
     const price = num(a.price);
     if ((action === "move_sl" || action === "move_tp") && price === undefined) return undefined;
+    const tpNumber = typeof a.tpNumber === "number" ? Math.round(a.tpNumber) : Number(a.tpNumber);
+    if (action === "tp_hit" && !(tpNumber >= 1 && tpNumber <= 6)) return undefined;
     const f = typeof a.fraction === "number" && a.fraction > 0 && a.fraction < 1 ? a.fraction : 0.5;
     const symbol = typeof a.symbol === "string" && a.symbol.trim() ? normalizeSymbol(a.symbol) : undefined;
-    return { kind: "update", update: { action, symbol, price, fraction: action === "close_partial" ? f : undefined, all: a.all === true } };
+    return { kind: "update", update: { action, symbol, price, fraction: action === "close_partial" ? f : undefined, tpNumber: action === "tp_hit" ? tpNumber : undefined, all: a.all === true } };
+  }
+  if (a.kind === "note") {
+    const note = typeof a.reason === "string" ? a.reason.trim().slice(0, 1500) : "";
+    if (note.length < 8) return undefined;
+    const symbol = typeof a.symbol === "string" && a.symbol.trim() ? normalizeSymbol(a.symbol) : undefined;
+    return { kind: "note", note, symbol };
   }
   return undefined;
 }
@@ -185,22 +201,29 @@ export function normalizeSignal(a: Record<string, unknown>): ParsedSignal | unde
   const orderKind: SignalOrderKind = a.orderKind === "limit" || a.orderKind === "stop" ? a.orderKind : "market";
   const sl = num(a.sl);
   const tp1 = num(a.tp1);
-  if (!/^[A-Z0-9_.#+-]{2,32}$/.test(symbol) || !side || sl === undefined || tp1 === undefined) return undefined;
+  const reason = typeof a.reason === "string" ? a.reason.trim().slice(0, 1500) : "";
+  if (!/^[A-Z0-9_.#+-]{2,32}$/.test(symbol) || !side) return undefined;
   const lo = num(a.entryLow);
   const hi = num(a.entryHigh);
   const entry = lo !== undefined && hi !== undefined ? (lo + hi) / 2 : (lo ?? hi);
+  if (sl === undefined || tp1 === undefined) return undefined;
   const dir = side === "buy" ? 1 : -1;
   if (!(dir * (tp1 - sl) > 0)) return undefined; // TP and SL on the wrong sides for this direction
   let tp2 = num(a.tp2);
   if (tp2 !== undefined && !(dir * (tp2 - tp1) > 0)) tp2 = undefined; // TP2 must be beyond TP1
+  let tp3 = num(a.tp3);
+  if (tp3 !== undefined && !(dir * (tp3 - (tp2 ?? tp1)) > 0)) tp3 = undefined;
   return {
     symbol,
     side,
     orderKind: entry === undefined ? "market" : orderKind,
     entry,
+    zone: lo !== undefined && hi !== undefined && lo !== hi ? [Math.min(lo, hi), Math.max(lo, hi)] : undefined,
     sl,
     tp1,
     tp2,
-    reason: typeof a.reason === "string" ? a.reason.trim().slice(0, 1500) : "",
+    tp3,
+    tpOpen: a.tpOpen === true || undefined,
+    reason,
   };
 }

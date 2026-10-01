@@ -46,6 +46,11 @@ export function planPlacement(signal: ParsedSignal, livePrice: number, postedAt:
     return { ok: true, type: `${side}_stop`, price: signal.entry, entry: signal.entry, note: `${side} stop at ${signal.entry} (price ${livePrice})` };
   }
 
+  // Price inside the provider's own entry zone: that IS the entry they gave -- in at market.
+  if (signal.zone && livePrice >= signal.zone[0] && livePrice <= signal.zone[1]) {
+    return { ok: true, type: side, entry: livePrice, note: `market ${side} at ~${livePrice} (inside their zone ${signal.zone[0]}-${signal.zone[1]})` };
+  }
+
   // Going in at market: only while price is still near the signalled entry.
   const travelled = (dir * (livePrice - entry)) / Math.abs(tp1 - entry);
   if (travelled > PASSED_FRACTION) {
