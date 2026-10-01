@@ -1,4 +1,5 @@
 import { getLastKnownState, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
+import { ownerTag } from "./trade-owner.js";
 import { getTradeLifecycle } from "@dave/feedback";
 import { breakevenStop, recordOutcome, getDeepLossAlertProgress, getSlAlertLevels, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
 import type { DaveDatabase } from "@dave/db";
@@ -80,6 +81,13 @@ function reasonFor(db: DaveDatabase, userId: string, ticket: string): string {
 }
 
 /** The cached reason when it is genuinely known, otherwise a fresh journal lookup. */
+/** A trade the trader opened by hand (or a copied signal) says so in every alert -- it's not Dave's idea. */
+function withOwner(p: { byDave?: boolean; comment?: string }, reason: string): string {
+  const tag = ownerTag(p);
+  if (!tag) return reason;
+  return reason === REASON_NOT_RECORDED || !reason ? tag : `${tag} -- ${reason}`;
+}
+
 function realReasonOrRetry(deps: TradeMonitorSweepDeps, cached: string | undefined, ticket: string): string {
   if (cached && cached !== REASON_NOT_RECORDED) return cached;
   return reasonFor(deps.db, deps.userId, ticket);
@@ -186,7 +194,7 @@ function withExitHint(a: MonitorAlert, body: string, rule?: ExitRule): string {
   if (!CHOP_KINDS.has(a.kind)) return body;
   const m = a.monitor;
   const swing = m.bestPnl !== undefined && m.worstPnl !== undefined ? ` Its range so far: best ${money(m.bestPnl)}, worst ${money(m.worstPnl)}.` : "";
-  return `${body}\n\n🛟 No exit rule on it.${swing} Option: set_exit_rule to close it automatically if it recovers (breakeven or a small profit) and/or cut it at a fixed loss -- instead of watching it chop.`;
+  return `${body}\n\n🛟 No exit rule on it.${swing} (Dave never arms one on his own -- only if the trader asks.)`;
 }
 
 function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutcome): string {
@@ -435,7 +443,7 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
       // "(reason not recorded)" and this line then served that cached miss forever, never asking the
       // journal again. A placeholder is a cache MISS, not a value: re-query until a real reason
       // exists, then it sticks.
-      reason: realReasonOrRetry(deps, byTicket.get(p.ticket)?.reason, p.ticket),
+      reason: withOwner(p, realReasonOrRetry(deps, byTicket.get(p.ticket)?.reason, p.ticket)),
     };
     const { monitor, alerts } = advanceMonitor(byTicket.get(p.ticket), obs, now, deepLossThreshold, slLadder);
     next.push(monitor);

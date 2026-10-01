@@ -10,7 +10,7 @@ import { getRiskSettings } from "./risk-settings.js";
 import { getSettingsLog } from "./settings-log.js";
 import { derivePipSize } from "./pip-size.js";
 import { assessRiskRewardForUser, getMinRiskReward, setMinRiskReward } from "./risk-reward-guard.js";
-import { isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp, type LimitType } from "./pullback-scalp.js";
+import { isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp, getPullbackMode, type LimitType } from "./pullback-scalp.js";
 import { getDeepLossAlertPercent, setDeepLossAlertPercent } from "./deep-loss-alert-store.js";
 import { getAlertToggles, setAlertToggle, ALERT_CATEGORIES, type AlertCategory } from "./self-aware-alert-toggles.js";
 import { createWatch, listActiveWatches, cancelWatch, type WatchKind } from "./background-watch.js";
@@ -328,8 +328,10 @@ export const TRADING_TOOLS: ToolDefinition[] = [
       }
       const result = await tradeExecute(ctx.executor, order);
       // Optional: only when Dave asked for it with this limit.
-      const wantsScalp = pullbackArgs !== undefined && pullbackArgs !== null && typeof pullbackArgs === "object";
-      const pullbackScalp = wantsScalp && isLimitType(order.type) && order.price !== undefined ? await pullbackForLimit(ctx, order, pullbackArgs, result.ticket) : undefined;
+      // Pullback mode on: every limit gets its pullback scalp, asked for or not.
+      const scalpArgs = pullbackArgs === false ? undefined : pullbackArgs !== undefined && pullbackArgs !== null && typeof pullbackArgs === "object" ? pullbackArgs : getPullbackMode(ctx.userId) ? {} : undefined;
+      const wantsScalp = scalpArgs !== undefined;
+      const pullbackScalp = wantsScalp && isLimitType(order.type) && order.price !== undefined ? await pullbackForLimit(ctx, order, scalpArgs, result.ticket) : undefined;
       return { ...result, confidence, ...(pullbackScalp ? { pullbackScalp } : {}) };
     },
   },

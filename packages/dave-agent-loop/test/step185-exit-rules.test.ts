@@ -73,7 +73,7 @@ assert.equal(((await listRules.execute()) as { rules: unknown[] }).rules.length,
 const monitor = { ticket: "104", symbol: "XAUUSD", direction: "buy", openPrice: 2650, reason: "sweep of the low", openedAt: Date.now() - 20 * 60_000, state: "losing", history: [], alerts: {}, lastPnl: -3, bestPnl: 2.1, worstPnl: -7.4, updatedAt: Date.now() } as never;
 const range = buildMonitorAlert({ kind: "range", monitor }, Date.now());
 assert.match(range, /No exit rule on it\. Its range so far: best \+2\.10, worst -7\.40/);
-assert.match(range, /set_exit_rule/);
+assert.match(range, /Dave never arms one on his own/);
 await setRule.execute({ ticket: "104", closeAtProfit: 2 });
 assert.match(buildMonitorAlert({ kind: "range", monitor }, Date.now(), undefined, listExitRules(U)[0]), /Exit rule armed: closes at \+2/);
 assert.doesNotMatch(buildMonitorAlert({ kind: "tpNear", monitor }, Date.now()), /exit rule/i, "profit-side alerts don't nag");

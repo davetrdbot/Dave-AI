@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { OrderRequest } from "./order-types.js";
 import type { TradeExecutor } from "./trade-executor.js";
 import { ABSOLUTE_MIN_LOTS, tradeExecuteWithMarginRetry } from "./margin-aware-execute.js";
@@ -180,4 +182,31 @@ export function describePullbackScalp(symbol: string, placed: PlacedPullbackScal
 
 function round(n: number): number {
   return Math.round(n * 1e5) / 1e5;
+}
+
+/**
+ * Pullback mode (the trader: "in this mode if the bot places any pending orders -- if it places a
+ * sell limit on that pair it places a buy in that pair"). On: EVERY buy/sell limit Dave places gets
+ * the pullback scalp automatically (a BUY at market under a SELL LIMIT, a SELL over a BUY LIMIT),
+ * whether or not he asked for one -- same plan, same room/margin checks. Off (default): only when he
+ * asks for it on the trade.
+ */
+function pullbackModePath(userId: string): string {
+  return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "pullback-mode.json");
+}
+
+export function getPullbackMode(userId: string): boolean {
+  const p = pullbackModePath(userId);
+  if (!existsSync(p)) return false;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) === true;
+  } catch {
+    return false;
+  }
+}
+
+export function setPullbackMode(userId: string, on: boolean): void {
+  const p = pullbackModePath(userId);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(on), "utf8");
 }

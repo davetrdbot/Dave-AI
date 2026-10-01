@@ -4,7 +4,7 @@ import { createGrowthTools } from "./growth-tools.js";
 import { createTodoTool } from "./todos.js";
 import { createExitRuleTools } from "./exit-rules.js";
 import { createSelfAwareStatsTool } from "./alert-outcomes.js";
-import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness, pullbackScalpRoom } from "@dave/trading";
+import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness, pullbackScalpRoom, getPullbackMode, isLimitType } from "@dave/trading";
 import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, MT5_CLOUD_TOOLS, createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
@@ -117,12 +117,13 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
           // The optional pullback scalp adds two positions: dropped (the limit still goes in) when
           // the account has no room for them.
           let scalpBlocked: string | undefined;
-          if (args.pullback_scalp && accountSnapshot) {
+          const modeScalp = getPullbackMode(deps.userId) && isLimitType(String(args.type ?? ""));
+          if ((args.pullback_scalp || modeScalp) && accountSnapshot) {
             const room = pullbackScalpRoom(accountSnapshot, getLastKnownState(deps.userId).positions.length, getRiskSettings(deps.userId).maxOpenTrades);
             if (!room.ok) {
               scalpBlocked = `No pullback scalp: ${room.reason}.`;
-              args = { ...args };
-              delete args.pullback_scalp;
+              // false = "no scalp" even with pullback mode on.
+              args = { ...args, pullback_scalp: false };
             }
           }
           const result = (await tool.execute(args)) as Record<string, unknown>;

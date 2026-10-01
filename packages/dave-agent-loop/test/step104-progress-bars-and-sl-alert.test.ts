@@ -157,7 +157,7 @@ try {
       console.log(`    real expected TP bar: "${expectedTpBar}", real expected SL bar: "${expectedSlBar}"`);
       assert.ok(userContent.includes(`Progress to TP: ${expectedTpBar}`), "the real context must contain the real, correctly-computed TP progress bar");
       assert.ok(userContent.includes(`Progress to SL: ${expectedSlBar}`), "the real context must contain the real, correctly-computed SL progress bar");
-      assert.ok(userContent.includes("#500"), "the progress bars must be attached to the real ticket's own line");
+      assert.ok(userContent.includes("ticket 500"), "the progress bars must be attached to the real ticket's own line");
       console.log("    confirmed: real progress-bar text for a fully-specified open position reached the model's real context");
     } finally {
       await ea.stop();
@@ -184,7 +184,7 @@ try {
       const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
       assert.equal(outcome.action, "NONE", "no crash -- the tick must complete cleanly even with a bar-ineligible position open");
       const userContent = calls[0].messages.find((m) => m.role === "user")!.content as string;
-      assert.ok(userContent.includes("#600"), "the position itself must still be reported");
+      assert.ok(userContent.includes("ticket 600"), "the position itself must still be reported");
       assert.ok(!userContent.includes("Progress to TP") && !userContent.includes("Progress to SL"), "a position missing currentPrice must NOT get a fabricated bar");
       console.log("    confirmed: a position missing sl/tp/currentPrice is reported with no fabricated progress bar, no crash");
     } finally {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getMinRiskReward } from "@dave/trading";
+import { getMinRiskReward, setPullbackMode } from "@dave/trading";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -270,6 +270,24 @@ async function main() {
         assert.ok(Math.abs(Math.abs((placed.tp as number) - c.entryNotPassed) / Math.abs(c.entryNotPassed - sl) - getMinRiskReward(OWNER)) < 0.05, `tp ${placed.tp} at exactly the R:R from the entry (model wrote ${tp})`);
         assert.ok(!outcome.message?.includes("placed as market"), `an unconverted pending order's message must NOT claim a market conversion (got: "${outcome.message}")`);
         console.log(`    ${c.action} entry=${c.entryNotPassed} (not passed) -> ${placed.type} (unconverted) -- confirmed`);
+        await ea.stop();
+      }
+
+      // Pullback mode on (the trader: "if it places a sell limit on that pair it places a buy"): the
+      // BUY_LIMIT that didn't ask for a scalp gets one anyway.
+      if (c.action === "BUY_LIMIT") {
+        const OWNER = `user-pullback-mode-${c.action.toLowerCase()}`;
+        upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD"] });
+        setActiveGroup(OWNER, "majors");
+        setPullbackMode(OWNER, true);
+        const ea = startSimulatedEa(OWNER, { bid: LIVE, ask: LIVE + 0.0002, atr: 0.001 });
+        const { executor, placedOrders } = makeExecutor();
+        const { provider } = makeProvider({ tickDecision: { action: c.action, symbol: "EURUSD", entry: c.entryNotPassed, confidence: 80, reason: "pullback mode", lots: 0.1, sl: 1.09, tp: 1.12 } });
+        await runAutonomousTick({ userId: OWNER, db, executor, provider });
+        assert.equal(placedOrders.length, 2, "pullback mode: the limit AND its scalp");
+        assert.equal(placedOrders[1].type, "sell", "a SELL at market riding down into the BUY LIMIT");
+        assert.equal(placedOrders[1].tp, c.entryNotPassed);
+        console.log("    pullback mode: BUY_LIMIT -> SELL scalp at market, automatically -- confirmed");
         await ea.stop();
       }
     }

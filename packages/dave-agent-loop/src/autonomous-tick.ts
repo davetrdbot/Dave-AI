@@ -2,7 +2,7 @@ import type { DaveDatabase } from "@dave/db";
 import type { Provider, ToolSpec } from "@dave/brain";
 import { getModelConfig, listProviderKeys, type ProviderName } from "@dave/brain";
 import type { TradeExecutor, OrderRequest, OrderType, RiskSettings } from "@dave/trading";
-import { getActiveStrategySkillId, isSymbolAvoided, isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp, pullbackScalpRoom } from "@dave/trading";
+import { getActiveStrategySkillId, getPullbackMode, isSymbolAvoided, isLimitType, planPullbackScalp, placePullbackScalp, describePullbackScalp, pullbackScalpRoom } from "@dave/trading";
 import { getSkill } from "@dave/skills";
 import {
   getRiskSettings,
@@ -84,6 +84,7 @@ import { growthStatus } from "./growth-reflection.js";
 import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 import { holdOrClose, protectInstead } from "./hold-to-plan.js";
+import { ownerTag } from "./trade-owner.js";
 import { tradeDrawing } from "./setup-drawing.js";
 import { getAutoDrawTrades } from "@dave/trading";
 import { resolveTradeLevels, levelsGuidance, exitPrice, type TradeLevels, type TradeAction as LevelAction } from "./trade-levels.js";
@@ -512,7 +513,8 @@ function coerceDecision(obj: Record<string, unknown>): TickDecision {
     strategyTag: typeof obj.strategyTag === "string" ? obj.strategyTag : undefined,
     question: typeof obj.question === "string" ? obj.question : undefined,
     options: Array.isArray(obj.options) ? obj.options.map(String) : undefined,
-    ticket: typeof obj.ticket === "string" ? obj.ticket : undefined,
+    // "#1240932484" (seen live: MODIFY rejected as "ticket ##1240932484 isn't open") -> "1240932484".
+    ticket: typeof obj.ticket === "string" || typeof obj.ticket === "number" ? String(obj.ticket).replace(/^\s*#+/, "").trim() || undefined : undefined,
     closeLots: typeof obj.closeLots === "number" ? obj.closeLots : undefined,
     pullbackScalp:
       obj.pullbackScalp && typeof obj.pullbackScalp === "object"
@@ -615,7 +617,7 @@ You are never idle. A SKIP is never empty: if there is no trade here right now, 
 
 You may ASK a single genuine question only for real, specific ambiguity you cannot resolve yourself. Prefer deciding over asking.
 
-DELETE_TICKET closes an existing open position or cancels an existing pending order you no longer want -- use it with a real ticket from OPEN POSITIONS/PENDING ORDERS below. PARTIAL_CLOSE takes some profit/reduces risk on part of an existing position (needs ticket + closeLots) without closing it entirely. MODIFY adjusts SL and/or TP on an existing open position (needs ticket) without closing anything -- pass newSl/newTp as a number to set it, null to explicitly remove it, or omit either to leave it unchanged. PAUSE stops you from opening ANY new trade for a short while (1-5 minutes, your call) when you judge there's already enough real open exposure -- you can still ASK, DELETE_TICKET, PARTIAL_CLOSE, or MODIFY while paused, just not open something new.
+DELETE_TICKET cancels an existing pending order you no longer want -- use it with a real ticket from PENDING ORDERS below; you never close an open position (only its stop, its target or the trader does). PARTIAL_CLOSE is refused the same way. MODIFY adjusts SL and/or TP on an existing open position (needs ticket) without closing anything -- pass newSl/newTp as a number to set it, null to explicitly remove it, or omit either to leave it unchanged. PAUSE stops you from opening ANY new trade for a short while (1-5 minutes, your call) when you judge there's already enough real open exposure -- you can still ASK, DELETE_TICKET, PARTIAL_CLOSE, or MODIFY while paused, just not open something new.
 
 CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest opinion before you commit -- entirely optional, never required. Journal has its own access to trade history and analysis tools; it reviews and comments, it never places or modifies a trade itself. Use it when a setup is genuinely borderline and a second read would help, not as a default detour. After Journal answers, you'll be asked to decide again with its opinion in hand.
 
@@ -1045,13 +1047,14 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   const positionsSummary = positions.length
     ? positions
         .map((p) => {
-          const base = `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.openPrice}${p.sl !== undefined ? ` SL ${p.sl}` : ""}${p.tp !== undefined ? ` TP ${p.tp}` : ""} pnl=${p.pnl ?? "?"} #${p.ticket}`;
+          const owner = ownerTag(p);
+          const base = `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.openPrice}${p.sl !== undefined && p.sl !== 0 ? ` SL ${p.sl}` : " NO SL"}${p.tp !== undefined && p.tp !== 0 ? ` TP ${p.tp}` : ""} pnl=${p.pnl ?? "?"} ticket ${p.ticket}${owner ? ` [${owner}]` : ""}`;
           const progress = positionsProgress.get(p.ticket);
           return progress ? `${base} | Progress to TP: ${progress.tpBar} | Progress to SL: ${progress.slBar}` : base;
         })
         .join("; ")
     : "none";
-  const pendingSummary = pendingOrders.length ? pendingOrders.map((p) => `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.price} #${p.ticket}`).join("; ") : "none";
+  const pendingSummary = pendingOrders.length ? pendingOrders.map((p) => `${p.symbol} ${p.type.toUpperCase()} ${p.lots} lots @ ${p.price} ticket ${p.ticket}${ownerTag(p) ? ` [${ownerTag(p)}]` : ""}`).join("; ") : "none";
 
   // Real self-aware SL-danger alert (user's own exact stated bar, now 50%+): ANY open position
   // account-wide at/beyond SL_DANGER_THRESHOLD, not just the current round-robin symbol's own
@@ -2048,6 +2051,8 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // waiting (not one converted to market above). Never allowed to undo the limit: any problem is
   // reported and the limit stands.
   let pullbackNote: string | null = null;
+  // Pullback mode on: every limit gets its pullback scalp, asked for or not (pullback-scalp.ts).
+  if (!decision.pullbackScalp && isLimitType(order.type) && getPullbackMode(userId)) decision.pullbackScalp = {};
   const room = decision.pullbackScalp ? pullbackScalpRoom(account ?? undefined, positions.length, risk.maxOpenTrades) : { ok: true };
   if (decision.pullbackScalp && !room.ok) {
     logTick(userId, `${symbol}: pullback scalp skipped -- ${room.reason}`);

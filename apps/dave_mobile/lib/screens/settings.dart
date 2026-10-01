@@ -618,6 +618,7 @@ class _BehaviourSection extends StatelessWidget {
           _toggle(context, 'telegramSilent', CupertinoIcons.bell_slash, 'Silence Telegram', s.telegramSilent ? 'Off in Telegram; app only' : 'Dave also messages on Telegram', s.telegramSilent),
           _toggle(context, 'autoDrawTrades', CupertinoIcons.scribble, 'Draw my trades', 'Each new trade drawn in chat', s.autoDrawTrades),
           _toggle(context, 'selfPause', CupertinoIcons.pause_circle, 'Self-pause', 'Dave may pause himself in bad conditions', s.selfPause),
+          _toggle(context, 'pullbackMode', CupertinoIcons.arrow_2_squarepath, 'Pullback mode', s.pullbackMode ? 'Every limit also opens the opposite trade at market, riding the pullback into it' : 'Off: a pullback trade only when Dave asks for one', s.pullbackMode),
           _toggle(context, 'twoStepTrading', CupertinoIcons.person_2, 'Two-step trading', 'A second AI reviews every trade first', s.twoStepTrading),
           _toggle(context, 'sequentialThinking', CupertinoIcons.list_number, 'Deeper thinking', 'Step-by-step trade decisions; slower, costs more', s.sequentialThinking),
           if (s.sequentialThinking) _EffortRow(effort: s.sequentialThinkingEffort, onPick: (e) => _set(context, 'sequentialThinkingEffort', e, reload)),

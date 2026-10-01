@@ -16,6 +16,8 @@ import {
   getSequentialThinkingEnabled,
   getSequentialThinkingEffort,
   getThinkOnAlertScans,
+  getPullbackMode,
+  setPullbackMode,
   setThinkOnAlertScans,
   setSequentialThinkingEffort,
   THINKING_EFFORTS,
@@ -114,6 +116,7 @@ export function readAppSettings(userId: string) {
       sequentialThinking: getSequentialThinkingEnabled(userId),
       sequentialThinkingEffort: getSequentialThinkingEffort(userId),
       thinkOnAlertScans: getThinkOnAlertScans(userId),
+      pullbackMode: getPullbackMode(userId),
       memoryWriteApproval: getWriteApprovalSetting(userId),
       telegramSilent: getTelegramSilence().silent,
       autoDrawTrades: getAutoDrawTrades(userId),
@@ -214,6 +217,9 @@ export function applyAppSetting(userId: string, id: string, value: unknown): voi
     case "sequentialThinkingEffort":
       if (!THINKING_EFFORTS.includes(value as ThinkingEffort)) throw new InvalidSettingError(`Thinking effort must be one of ${THINKING_EFFORTS.join(", ")}.`);
       setSequentialThinkingEffort(userId, value as ThinkingEffort);
+      return;
+    case "pullbackMode":
+      setPullbackMode(userId, bool(value, "Pullback mode"));
       return;
     case "thinkOnAlertScans":
       setThinkOnAlertScans(userId, bool(value, "Think on alert scans"));

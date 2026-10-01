@@ -76,6 +76,16 @@ try {
   assert.equal(takeAlertFocus(U)?.symbol, "VOL_10");
   console.log("   ✓\n");
 
+  console.log("[6] Who opened it, and '#' tickets\n");
+  const { ownerTag, tradeOwner } = await import("../src/trade-owner.js");
+  assert.equal(tradeOwner({ byDave: false }), "trader");
+  assert.match(ownerTag({ byDave: false }), /OPENED BY THE TRADER BY HAND/);
+  assert.equal(ownerTag({ byDave: true }), "", "Dave's own trade carries no tag");
+  assert.match(ownerTag({ byDave: true, comment: "Nous signal" }), /COPIED SIGNAL/);
+  const { coerceTickActions } = await import("../src/tick-actions.js");
+  assert.deepEqual(coerceTickActions([{ type: "BREAKEVEN", ticket: "##1240932484" }]), [{ type: "BREAKEVEN", ticket: "1240932484", offset: undefined }]);
+  console.log("   ✓\n");
+
   console.log("=== step197: ALL ASSERTIONS PASSED ===");
 } finally {
   rmSync(workDir, { recursive: true, force: true });

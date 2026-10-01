@@ -138,9 +138,9 @@ try {
     try {
       await runAutonomousTick({ userId: OWNER, db, executor, provider });
       const userMessage = calls[0].messages.find((m) => m.role === "user")!.content as string;
-      assert.ok(userMessage.includes("#777"), "the real open position's ticket must be in the model's own context");
+      assert.ok(userMessage.includes("ticket 777"), "the real open position's ticket must be in the model's own context");
       assert.ok(userMessage.includes("GBPUSD"), "the real open position's symbol must be in the model's own context");
-      assert.ok(userMessage.includes("#778"), "the real pending order's ticket must be in the model's own context");
+      assert.ok(userMessage.includes("ticket 778"), "the real pending order's ticket must be in the model's own context");
       console.log("    confirmed: real open position and pending order details reached the model's context");
     } finally {
       await ea.stop();

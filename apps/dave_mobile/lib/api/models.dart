@@ -385,6 +385,7 @@ class AppSettings {
     required this.sequentialThinking,
     this.sequentialThinkingEffort = 'medium',
     this.thinkOnAlertScans = false,
+    this.pullbackMode = false,
     required this.memoryWriteApproval,
     this.telegramSilent = false,
     this.autoDrawTrades = true,
@@ -419,6 +420,8 @@ class AppSettings {
 
   /// Whether scans started by an alert / reminder / marked level also run the thinking pass.
   final bool thinkOnAlertScans;
+  /// Every buy/sell limit Dave places also opens the opposite market scalp riding into it.
+  final bool pullbackMode;
   final bool memoryWriteApproval;
 
   /// Telegram silent mode: nothing goes to the Telegram bot; Dave talks in the app only.
@@ -464,6 +467,7 @@ class AppSettings {
       sequentialThinking: b['sequentialThinking'] == true,
       sequentialThinkingEffort: b['sequentialThinkingEffort'] as String? ?? 'medium',
       thinkOnAlertScans: b['thinkOnAlertScans'] == true,
+      pullbackMode: b['pullbackMode'] == true,
       memoryWriteApproval: b['memoryWriteApproval'] == true,
       telegramSilent: b['telegramSilent'] == true,
       autoDrawTrades: b['autoDrawTrades'] != false,

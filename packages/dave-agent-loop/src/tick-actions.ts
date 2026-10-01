@@ -80,7 +80,7 @@ export function coerceTickActions(raw: unknown): TickAction[] | undefined {
     if (!item || typeof item !== "object") continue;
     const a = item as Record<string, unknown>;
     const type = String(a.type ?? "").toUpperCase();
-    const ticket = a.ticket === undefined || a.ticket === null ? "" : String(a.ticket).replace(/^#/, "").trim();
+    const ticket = a.ticket === undefined || a.ticket === null ? "" : String(a.ticket).replace(/^\s*#+/, "").trim();
     if (type === "BREAKEVEN" && ticket) out.push({ type, ticket, offset: typeof a.offset === "number" && a.offset > 0 ? a.offset : undefined });
     else if (type === "MODIFY" && ticket) {
       const sl = typeof a.sl === "number" ? a.sl : "sl" in a && a.sl === null ? null : undefined;
