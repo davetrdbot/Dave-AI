@@ -405,7 +405,7 @@ try {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
     await new Promise<void>((resolve, reject) => {
-      const body = JSON.stringify({ type: "heartbeat", account: "1", balance: 1000, positions: [{ ticket: "T-DEL-8", symbol: "GBPUSD", type: "buy", lots: 0.1, openPrice: 1.27 }], pendingOrders: [] });
+      const body = JSON.stringify({ type: "heartbeat", account: "1", balance: 1000, positions: [], pendingOrders: [{ ticket: "T-DEL-8", symbol: "GBPUSD", type: "buy_limit", lots: 0.1, price: 1.27 }] });
       const req = request({ hostname: "127.0.0.1", port, path: webhook.path, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => { res.on("data", () => {}); res.on("end", () => resolve()); });
       req.on("error", reject); req.write(body); req.end();
     });

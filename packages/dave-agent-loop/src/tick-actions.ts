@@ -146,8 +146,10 @@ async function runOne(executor: TradeExecutor, a: TickAction, positions: TickPos
     }
     if (!p) return { action: a, ok: false, text: `${a.type} #${a.ticket}: no such open trade` };
     if (a.type === "PARTIAL_CLOSE") {
-      const r = await partialClose(executor, a.ticket, a.lots);
-      return { action: a, ok: true, text: `✂️ #${a.ticket} ${p.symbol}: closed ${a.lots} lots (${r.remainingLots} left)` };
+      // Dave never cuts a trade, not even part of it (hold-to-plan.ts): a winner is protected instead.
+      const hold = holdOrClose(p);
+      const note = !hold.close && hold.inProfit ? ` -- ${await protectInstead(executor, p)}` : "";
+      return { action: a, ok: false, text: `held whole, not part-closed: ${hold.close ? "" : hold.why}${note}` };
     }
     if (a.type === "MODIFY") {
       await tradeModify(executor, a.ticket, { sl: a.sl, tp: a.tp });

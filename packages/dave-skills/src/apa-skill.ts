@@ -17,7 +17,7 @@ Pure price action: structure, key levels, liquidity, confirmation. Indicators ar
 2. **A key level from one of the 7 models**, the one CLOSEST to the latest BOS, and still FRESH (unmitigated -- price hasn't returned to it). Draw it on candle BODIES (wicks ignored); a line chart makes A, V and QM levels obvious.
 3. **Liquidity.** Equal highs/lows, swing points, a leg of price just before the level. "If you can't see the liquidity, you are the liquidity." The level is best when liquidity sits right in front of it. Equal highs/lows still un-swept INSIDE the zone = more liquidity to come -- wait for it.
 4. **Confirmation on M15/M5** once price taps the level: a CHoCH (break of the last M5/M15 swing), a CLOSE beyond it, or a clear rejection candle (pin bar, engulfing).
-5. **Refine and plan.** Entering on the CHoCH candle itself usually means a wide stop and only ~1:2. Refine: the order block (last opposite candle) that caused the CHoCH on M15/M5 -- skip ones already mitigated, take the first fresh one -- and put the LIMIT a few pips inside it. Stop a few pips beyond the key level / the refined swing. TP1 at 1:3 or the first obvious liquidity (bank 50%, stop to breakeven), the rest to the higher-timeframe liquidity (1:8 to 1:17 are normal for refined entries).
+5. **Refine and plan.** Entering on the CHoCH candle itself usually means a wide stop and only ~1:2. Refine: the order block (last opposite candle) that caused the CHoCH on M15/M5 -- skip ones already mitigated, take the first fresh one -- and put the LIMIT a few pips inside it. Stop a few pips beyond the key level / the refined swing. TP1 at 1:3 or the first obvious liquidity (stop to breakeven), the rest to the higher-timeframe liquidity (1:8 to 1:17 are normal for refined entries).
 
 ## The 7 entry models
 
@@ -33,7 +33,7 @@ Pure price action: structure, key levels, liquidity, confirmation. Indicators ar
 
 **6. RBS -- resistance becomes support (buy).** Mirror: resistance broken to the upside, retest from above, M5 bullish CHoCH (a close above the last M5 high) -> BUY. SL below the level. TP: the higher-timeframe highs.
 
-**7. QM -- Quasimodo (early reversal).** QM sell: an uptrend, then the FIRST break of a swing low (CHoCH). Price builds liquidity, takes it, and returns to the LEFT SHOULDER -- the high before the high that failed -- drawn as a horizontal level. M5 confirmation -> SELL; SL above the shoulder. QM buy: the mirror at the end of a downtrend -- first break of a swing high, back to the left-shoulder low -> BUY; SL below it. Catches reversals at the extreme (1:10+ is common) -- bank 50% at 1:3.
+**7. QM -- Quasimodo (early reversal).** QM sell: an uptrend, then the FIRST break of a swing low (CHoCH). Price builds liquidity, takes it, and returns to the LEFT SHOULDER -- the high before the high that failed -- drawn as a horizontal level. M5 confirmation -> SELL; SL above the shoulder. QM buy: the mirror at the end of a downtrend -- first break of a swing high, back to the left-shoulder low -> BUY; SL below it. Catches reversals at the extreme (1:10+ is common) -- stop to breakeven at 1:3.
 
 ## Running it with your tools -- what to do at each stage
 The setup unfolds over hours; your job is to have the right order or alert waiting at each stage, never to forget a level.
@@ -44,11 +44,8 @@ The setup unfolds over hours; your job is to have the right order or alert waiti
 - **Pending order sitting 10+ minutes, or the story changed** (the level got mitigated without you, structure broke the other way) -- recheck it: keep, move to the next fresh level, or cancel. Never two orders on the same idea.
 - **Show it**: \`draw_setup\` with the strategy name and the numbered story (BOS, level, liquidity, sweep, CHoCH, entry, SL, TP).
 
-## The pullback confirmation trade (the trader's own)
-After the CHoCH confirms, price usually pulls back to the refined level before the real move. TRADE THAT PULLBACK -- it is the confirmation entry, with the tightest stop. As soon as it is in profit by a clear push (about 1R, or the first liquidity taken), move the stop to TRUE breakeven (\`set_breakeven\`) -- from there the trade is free and you let it run to the target. If price never pulls back, the setup ran without you; mark the next level instead of chasing.
-
 ## Management
-- 50% off at 1:3 (or at the first liquidity), stop to breakeven, the rest to the higher-timeframe liquidity.
+- At 1:3 (or the first liquidity taken) the stop goes to breakeven; the trade runs to its target. You never close or part-close it yourself.
 - The stop is the invalidation. No early fear-close -- price tests the level and leaves; that drawdown is normal.
 - A trade that goes straight to profit after a refined entry is the signature of a valid setup; one that reverses at once usually means the level or the refinement was wrong -- note it for the lesson, don't widen anything.
 
@@ -68,7 +65,7 @@ export function seedApaSkill(userId: string): Skill {
   if (!existing) {
     return createSkill(userId, {
       name: APA_SKILL_NAME,
-      description: "Advanced Price Action: OCL buy/sell, resistance A, support V, SBR, RBS, QM -- HTF level + liquidity sweep + M5/M15 CHoCH, refined order-block limit, SL beyond the level, 50% at 1:3, rest to HTF liquidity; when to mark levels, set reminders, place limits and setups; the pullback trade to breakeven.",
+      description: "Advanced Price Action: OCL buy/sell, resistance A, support V, SBR, RBS, QM -- HTF level + liquidity sweep + M5/M15 CHoCH, refined order-block limit, SL beyond the level, breakeven at 1:3, target the HTF liquidity; when to mark levels, set reminders, place limits and setups.",
       content: APA_SKILL_CONTENT,
       source: "built-in",
     });

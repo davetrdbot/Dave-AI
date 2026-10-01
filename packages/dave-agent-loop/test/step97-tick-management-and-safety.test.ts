@@ -147,7 +147,7 @@ try {
     }
   }
 
-  console.log("\n[3] DELETE_TICKET on a real open position closes it; on a real pending order deletes it...\n");
+  console.log("\n[3] DELETE_TICKET on a real open position is refused -- Dave never closes trades (the trader: 'it just like killing trades')...\n");
   {
     const OWNER = "user-mgmt-3";
     upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD"] });
@@ -175,16 +175,16 @@ try {
     const { provider } = mockToolProvider([{ action: "DELETE_TICKET", ticket: "500", reason: "closing manually" }]);
     try {
       const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
-      assert.equal(outcome.action, "DELETE_TICKET");
-      assert.deepEqual(closedTickets, ["500"], "a ticket that's a real open position must go through fullClose");
+      assert.equal(outcome.action, "NONE");
+      assert.deepEqual(closedTickets, [], "an open trade is never closed by Dave");
       assert.deepEqual(deletedTickets, [], "must not touch deletePendingOrder for an open position's ticket");
-      console.log(`    confirmed: DELETE_TICKET on an open position closed it -- ${outcome.message}`);
+      console.log("    confirmed: DELETE_TICKET on an open position was held, not closed");
     } finally {
       await ea.stop();
     }
   }
 
-  console.log("\n[4] PARTIAL_CLOSE calls the real partialClose function with the model's real ticket and lots...\n");
+  console.log("\n[4] PARTIAL_CLOSE is refused -- Dave never cuts a trade, not even part of it...\n");
   {
     const OWNER = "user-mgmt-4";
     upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD"] });
@@ -199,9 +199,9 @@ try {
     const { provider } = mockToolProvider([{ action: "PARTIAL_CLOSE", ticket: "600", closeLots: 0.03, reason: "taking partial profit" }]);
     try {
       const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
-      assert.equal(outcome.action, "PARTIAL_CLOSE");
-      assert.deepEqual(partials, [{ ticket: "600", lots: 0.03 }]);
-      console.log(`    confirmed: PARTIAL_CLOSE fired with the real ticket/lots -- ${outcome.message}`);
+      assert.equal(outcome.action, "NONE");
+      assert.deepEqual(partials, []);
+      console.log("    confirmed: PARTIAL_CLOSE did not close anything");
     } finally {
       await ea.stop();
     }

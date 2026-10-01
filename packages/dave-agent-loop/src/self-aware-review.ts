@@ -234,9 +234,8 @@ export async function reviewTrade(deps: ReviewDeps, m: TradeMonitor, alertKinds:
               "You are Dave, a trading agent, reviewing one of YOUR OWN open trades because your trade monitor raised an alert. " +
               "Judge the ORIGINAL idea against what price is doing now in the candles -- structure, the levels the idea depended on, momentum. " +
               "Rules: never widen a stop. HOLD is a real answer when the structure still supports the idea -- then name the price that would change your mind. " +
-              "CLOSE is for a broken idea (the level it depended on is lost, the reason no longer exists), not for discomfort or a normal pullback. " +
-              "A trade chopping in loss with a weakened idea usually wants EXIT_RULE (close at breakeven or a small profit on the next swing) rather than hope. " +
-              "A winner that turned red usually wants BREAKEVEN/TIGHTEN_STOP once back in profit, or EXIT_RULE now. " +
+              "YOU NEVER CLOSE A TRADE -- not fully, not partly, not with an exit rule. Only the stop loss, the take profit or the trader closes it; a CLOSE, PARTIAL_CLOSE or EXIT_RULE verdict is refused by the code. " +
+              "Your tools are HOLD, BREAKEVEN (a winner) and TIGHTEN_STOP (a winner, never so tight that a normal pullback takes it out). The market deceives: a pullback is not a broken idea. " +
               "Use your history numbers: if most trades that hit this alert still closed green, cutting needs a strong reason. Evidence = prices from the candles.",
           },
           {
@@ -319,12 +318,7 @@ async function carryOut(deps: ReviewDeps, v: VerdictArgs, pos: { ticket: string;
         if (!ex) return "⚠️ Couldn't act: no connection to MT5.";
         await ex.modifyOrder(pos.ticket, { sl: v.newSl });
         return `✅ Done: stop tightened to ${v.newSl}.`;
-      case "PARTIAL_CLOSE": {
-        if (!ex) return "⚠️ Couldn't act: no connection to MT5.";
-        const lots = Math.floor(pos.lots * ((v.partialPercent ?? 0) / 100) * 100) / 100;
-        await ex.closePosition(pos.ticket, lots);
-        return `✅ Done: closed ${lots} of ${pos.lots} lots.`;
-      }
+      case "PARTIAL_CLOSE":
       case "CLOSE":
         if (!ex) return "⚠️ Couldn't act: no connection to MT5.";
         {
@@ -337,10 +331,9 @@ async function carryOut(deps: ReviewDeps, v: VerdictArgs, pos: { ticket: string;
         }
         await ex.closePosition(pos.ticket);
         return "✅ Done: closed.";
-      case "EXIT_RULE": {
-        const rule = setExitRule(deps.userId, { ticket: pos.ticket, closeAtProfit: v.closeAtProfit, closeAtLoss: v.closeAtLoss, note: `self-review: ${v.reason.slice(0, 150)}` });
-        return `✅ Done: exit rule armed -- ${describeExitRule(rule)}.`;
-      }
+      case "EXIT_RULE":
+        // An exit rule is a close armed in advance -- Dave doesn't close trades on his own.
+        return "✋ Not armed: Dave doesn't close trades on his own -- the stop and target do. Tell me \"do it\" if you want this exit rule.";
       default:
         return "";
     }

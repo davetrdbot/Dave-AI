@@ -31,7 +31,7 @@ try {
   const boom = { ticket: "1238463957", symbol: "BOOM_200", type: "sell", openPrice: 1000, sl: 1010, tp: 965, currentPrice: 1007.6, spread: 0.2, digits: 1 };
   const v = holdOrClose(boom);
   assert.equal(v.close, false);
-  assert.match((v as { why: string }).why, /hasn't hit its stop \(1010\)/);
+  assert.match((v as { why: string }).why, /stays open -- Dave doesn't close trades; the stop \(1010\)/);
   console.log("   ✓\n");
 
   console.log("[2] A winner isn't closed early -- its stop goes to true breakeven instead\n");
@@ -44,17 +44,21 @@ try {
   assert.match(await protectInstead(executor, { ...win, sl: 998 }), /already protects/);
   console.log("   ✓\n");
 
-  console.log("[3] Near target (85%+), no stop, or no live price: closing is allowed\n");
-  assert.equal(holdOrClose({ ...boom, currentPrice: 969 }).close, true, "31 of 35 to target");
-  assert.equal(holdOrClose({ ...boom, sl: undefined }).close, true);
-  assert.equal(holdOrClose({ ...boom, currentPrice: undefined }).close, true);
+  console.log("[3] 'I don't like it killing trades': near target, no stop, no live price -- still never closed\n");
+  assert.equal(holdOrClose({ ...boom, currentPrice: 969 }).close, false, "31 of 35 to target: the TP does it");
+  assert.equal(holdOrClose({ ...boom, sl: undefined }).close, false);
+  assert.equal(holdOrClose({ ...boom, currentPrice: undefined }).close, false);
+  calls.length = 0;
+  const partial = await runTickActions(executor, [{ type: "PARTIAL_CLOSE", ticket: "2", lots: 0.05 }] as never, [win] as never, []);
+  assert.equal(calls.filter((c) => c.kind === "close").length, 0, "no partial either");
+  assert.match(partial[0].text, /held whole, not part-closed/);
   console.log("   ✓\n");
 
   console.log("[4] A scan's CLOSE action on it is held, and says why\n");
   calls.length = 0;
   const results = await runTickActions(executor, [{ type: "CLOSE", ticket: "1238463957" }] as never, [boom] as never, []);
   assert.equal(calls.filter((c) => c.kind === "close").length, 0, "nothing closed");
-  assert.match(results[0].text, /held, not closed: #1238463957 BOOM_200 hasn't hit its stop/);
+  assert.match(results[0].text, /held, not closed: #1238463957 BOOM_200 stays open/);
   console.log("   ✓\n");
 
   console.log("[5] A pending order's recheck is never dropped as 'closed'\n");

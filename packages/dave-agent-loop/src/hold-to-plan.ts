@@ -1,19 +1,17 @@
 import { breakevenStop, tradeModify, type TradeExecutor } from "@dave/trading";
 
 /**
- * Hold to the plan (the trader: "the AI was scared and he closed it while the thing was actually
- * profitable ... the market is deceiving sometimes"). Seen live: BOOM_200 closed at -0.76R, stop
- * not hit, "premise invalid" -- a fear exit on a move the stop was placed to survive.
+ * Dave never kills a trade (the trader: "the bot just like killing trades ... I don't like it").
+ * Seen live before this: BOOM_200 closed at -0.76R, stop not hit, "premise invalid" -- and price then
+ * ran to the take profit; and winners cut early "near target" or part-closed "to bank something".
  *
- * When Dave closes a trade ON HIS OWN (a scan, an action, a self-review) before its stop:
- *  - losing, stop still ahead: not closed -- the stop IS the invalidation the plan priced in;
- *  - in profit: not closed -- the stop goes to true breakeven instead (it can't turn into a loss,
- *    and it keeps its chance to run to target);
- *  - within reach of target (85%+ of the way), or no stop at all, or no live price: closing is fine.
- * Partial closes, exit rules he armed in advance, and anything the trader asks for are untouched.
+ * When Dave decides ON HIS OWN (a scan, an action, a self-review) to close or part-close an open
+ * trade, it is never done:
+ *  - in profit: the stop goes to true breakeven instead -- it can't lose, and it still runs to target;
+ *  - losing: it stays open -- the stop IS the invalidation the plan priced in.
+ * Only the stop loss, the take profit, or the trader closes a trade. Deleting an unfilled pending
+ * order is not a close and still works; so does anything the trader asks for in chat.
  */
-
-export const NEAR_TARGET = 0.85;
 
 export interface HoldPosition {
   ticket: string;
@@ -32,20 +30,15 @@ export type HoldVerdict = { close: true } | { close: false; inProfit: boolean; w
 
 export function holdOrClose(p: HoldPosition): HoldVerdict {
   const price = p.currentPrice;
-  if (typeof price !== "number" || !(price > 0) || typeof p.sl !== "number" || !(p.sl > 0)) return { close: true };
   const dir = p.type.toLowerCase().startsWith("sell") ? -1 : 1;
-  const move = dir * (price - p.openPrice);
-  if (typeof p.tp === "number" && p.tp > 0) {
-    const toTarget = dir * (p.tp - p.openPrice);
-    if (toTarget > 0 && move / toTarget >= NEAR_TARGET) return { close: true };
-  }
-  if (move > 0) {
-    return { close: false, inProfit: true, why: `#${p.ticket} ${p.symbol} is in profit -- not closed out of caution; the stop goes to breakeven so it can't lose and can still run to target` };
+  const inProfit = typeof price === "number" && price > 0 && dir * (price - p.openPrice) > 0;
+  if (inProfit) {
+    return { close: false, inProfit: true, why: `#${p.ticket} ${p.symbol} is in profit -- Dave doesn't close trades; the stop goes to breakeven so it can't lose and still runs to its target` };
   }
   return {
     close: false,
     inProfit: false,
-    why: `#${p.ticket} ${p.symbol} hasn't hit its stop (${p.sl}) -- the stop is where the idea is wrong; markets fake out before the real move, so it stays open`,
+    why: `#${p.ticket} ${p.symbol} stays open -- Dave doesn't close trades; ${typeof p.sl === "number" && p.sl > 0 ? `the stop (${p.sl}) is where the idea is wrong` : "set a stop with MODIFY if it has none"}, and markets fake out before the real move`,
   };
 }
 

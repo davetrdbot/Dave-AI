@@ -375,8 +375,8 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
       enum: DECISION_ACTIONS,
       description:
         "BUY/SELL are market orders. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders -- include entry. " +
-        "DELETE_TICKET closes an existing open position or removes an existing pending order (needs ticket). " +
-        "PARTIAL_CLOSE closes part of an existing open position (needs ticket and closeLots). " +
+        "DELETE_TICKET removes an existing pending order (needs ticket) -- it NEVER closes an open trade: you don't close trades, the stop and target do (a close order on an open trade is refused; a winner gets breakeven instead). " +
+        "PARTIAL_CLOSE is refused too -- you never cut a trade, not even part of it. " +
         "MODIFY adjusts SL/TP on an existing open position (needs ticket; optional newSl/newTp -- pass a number to set it, null to explicitly remove it, or omit to leave it unchanged). " +
         "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
@@ -621,7 +621,7 @@ CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest o
 
 REQUEST_CANDLES gets you one fresh real batch of candle data for the symbol you're analyzing right now before you finalize your decision -- entirely optional, never required, available on any cycle, at most once. After the candles come back, you'll be asked to decide again with them in hand -- do not request candles a second time.
 
-You can also do SEVERAL things in one scan with the optional "actions" list on the decision tool: move a winner to breakeven, tighten another trade's stop, take a partial -- all together, alongside your main action -- and/or ask for several fresh reads at once (candles, volatility, momentum, zones... on any symbol/timeframe). Reads come back together and you decide once more with them. Use it when it genuinely saves a cycle, not as a routine step.
+You can also do SEVERAL things in one scan with the optional "actions" list on the decision tool: move a winner to breakeven, tighten another trade's stop -- all together, alongside your main action -- and/or ask for several fresh reads at once (candles, volatility, momentum, zones... on any symbol/timeframe). Reads come back together and you decide once more with them. Use it when it genuinely saves a cycle, not as a routine step.
 
 RUN_SCRIPT runs one real script (bash/python/node) and hands you its genuine output before you finalize -- entirely optional, never required, at most once per cycle. This symbol's full analysis suite is written into the sandbox as market.json, so your script reads real numbers rather than you eyeballing them. Reach for it ONLY when the decision genuinely hinges on something you cannot work out reliably in your head -- a risk:reward or position-size calculation you want exact, a spread or ratio across the timeframes below, a level derived from a real series. Do NOT use it as a routine step before every trade: it costs a real round trip on a live cycle, and nearly every decision here is already answerable from the suite in front of you. These symbols are synthetic pairs that exist only in this terminal and on no public API, so never have a script try to fetch their price from the internet -- everything you need is in market.json. After the output comes back you'll be asked to decide again -- do not run a second script.
 
@@ -1070,7 +1070,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       userId,
       `SELF-AWARE ALERT: ticket #${dangerPosition.ticket} (${dangerPosition.symbol}) is at ${Math.round(dangerPosition.slProgress * 100)}% progress toward its SL`
     );
-    selfAwareAlertLine = `SELF-AWARE ALERT: Ticket #${dangerPosition.ticket} (${dangerPosition.symbol}) is at ${Math.round(dangerPosition.slProgress * 100)}% real progress toward its SL -- genuinely close to being stopped out. Original real reason when this trade was placed: "${originalReason}". You may REQUEST_CANDLES for ${dangerPosition.symbol} for one fresh look before deciding, or act now with MODIFY/DELETE_TICKET/PARTIAL_CLOSE/SKIP.`;
+    selfAwareAlertLine = `SELF-AWARE ALERT: Ticket #${dangerPosition.ticket} (${dangerPosition.symbol}) is at ${Math.round(dangerPosition.slProgress * 100)}% real progress toward its SL -- genuinely close to being stopped out. Original real reason when this trade was placed: "${originalReason}". You may REQUEST_CANDLES for ${dangerPosition.symbol} for one fresh look before deciding. You never close it -- the stop is its invalidation; hold, or MODIFY to protect it if it's in profit.`;
   }
 
   const selfPause = getSelfPause(userId);
@@ -1134,7 +1134,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
           pendingOrders.filter((o) => o.symbol.toUpperCase() === symbol.toUpperCase()).map((o) => `${o.type} @ ${o.price} #${o.ticket}`).join("; ") || "none"
         }. The full multi-timeframe analysis for ${symbol} is below.\n` +
         (picked.focus.manage
-          ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, tighten it, or take a partial -- via actions/MODIFY/PARTIAL_CLOSE. The market deceives: its stop is its invalidation, so no closing before the stop out of fear (a close order before the stop is held anyway). No new entry on ${symbol} in this scan.`
+          ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, or tighten it -- via actions/MODIFY. You NEVER close or part-close a trade: only its stop, its target or the trader closes it (the code refuses a close). The market deceives. No new entry on ${symbol} in this scan.`
           : pendingOrders.some((o) => o.symbol.toUpperCase() === symbol.toUpperCase())
             ? `You have a pending order on ${symbol} (above). Recheck it on this fresh analysis: keep it (say in one line why the level and idea still hold), cancel it with DELETE_TICKET, or cancel and place it where price will really come. Never stack a second pending order on the same idea.`
             : `If the level/setup is live, take the trade now; if price isn't there yet, arm a limit on the level. SKIP only for a reason on your skip list (no level in reach, structure broke against it, stop can't fit, a hard gate).`)
@@ -1593,14 +1593,17 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "PARTIAL_CLOSE needs both a ticket and closeLots" });
       return { action: "NONE", notable: false };
     }
-    const closeResult = await partialClose(executor, decision.ticket, decision.closeLots);
-    recordTickDecision(userId, { ts: Date.now(), symbol, action: "PARTIAL_CLOSE", reason });
-    return {
-      action: "PARTIAL_CLOSE",
-      symbol,
-      notable: true,
-      message: `✂️ Partially closed ${decision.closeLots} lots on ticket #${decision.ticket} (${closeResult.remainingLots} lots remain)\n💡 ${summarizeReason(reason || "no reason given")}`,
-    };
+    // Dave never cuts a trade, not even part of it (hold-to-plan.ts): a winner is protected instead.
+    const pos = positions.find((p) => p.ticket === decision.ticket);
+    if (!pos) {
+      logTick(userId, `${symbol}: PARTIAL_CLOSE rejected -- ticket #${decision.ticket} isn't open`);
+      return { action: "NONE", notable: false };
+    }
+    const hold = holdOrClose(pos);
+    const protectedNote = !hold.close && hold.inProfit ? ` -- ${await protectInstead(executor, pos).catch((e) => `couldn't protect it: ${e instanceof Error ? e.message : String(e)}`)}` : "";
+    logTick(userId, `${symbol}: partial close not done -- ${hold.close ? "" : hold.why}${protectedNote}`);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `held #${decision.ticket} whole instead of part-closing${protectedNote}: ${reason}` });
+    return { action: "NONE", notable: false };
   }
 
   // Real MODIFY action (user, live: adjust SL/TP on an existing open position without closing
