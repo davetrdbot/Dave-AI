@@ -71,9 +71,11 @@ const result1 = await runSequentialThinking({
   onProgress: (text) => progress.push(text),
 });
 console.log(`    thoughts: ${result1.thoughts.length}, summary: "${result1.summary.slice(0, 140)}..."`);
-assert.equal(result1.thoughts.length, 3, "must stop exactly when the model sets nextThoughtNeeded: false, not run to the cap");
-assert.equal(result1.thoughts[2].nextThoughtNeeded, false);
-assert.equal(progress.length, 3, "onProgress must fire once per real thought");
+// Since 1 Oct every level must cover spike / sniper / scalp / edge + the verdict (the trader: "it
+// sometimes refuses to think about a point -- make it important"): untagged thoughts can't stop it
+// early, so a lazy 3-thought stop is overruled and the pass runs on to the medium cap.
+assert.ok(result1.thoughts.length > 3, "a stop before the mandatory steps are covered is overruled");
+assert.ok(progress.some((p) => p.startsWith("Not done yet -- still to cover:")), "and it says what's missing");
 assert.ok(progress[0].includes("Thought 1/3"), "progress text must be a real, readable per-thought update");
 assert.ok(result1.summary.includes("SEQUENTIAL THINKING TRACE"), "the summary must be clearly labeled for the decision prompt it gets appended to");
 assert.ok(result1.summary.includes("sweep"), "the real thought content must be genuinely present in the summary, not paraphrased away");

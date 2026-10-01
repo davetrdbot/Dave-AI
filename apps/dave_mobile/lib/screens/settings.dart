@@ -8,6 +8,7 @@ import '../app_scope.dart';
 import '../push/push_service.dart';
 import '../session.dart';
 import 'dave_voice.dart';
+import 'thinking_steps.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/pickers.dart';
@@ -620,6 +621,17 @@ class _BehaviourSection extends StatelessWidget {
           _toggle(context, 'twoStepTrading', CupertinoIcons.person_2, 'Two-step trading', 'A second AI reviews every trade first', s.twoStepTrading),
           _toggle(context, 'sequentialThinking', CupertinoIcons.list_number, 'Deeper thinking', 'Step-by-step trade decisions; slower, costs more', s.sequentialThinking),
           if (s.sequentialThinking) _EffortRow(effort: s.sequentialThinkingEffort, onPick: (e) => _set(context, 'sequentialThinkingEffort', e, reload)),
+          if (s.sequentialThinking)
+            CupertinoListTile(
+              key: const ValueKey('thinking-steps'),
+              leading: const Icon(CupertinoIcons.tag),
+              title: const Text('Thinking steps'),
+              subtitle: const Text('Turn steps on or off, delete, add your own'),
+              trailing: const CupertinoListTileChevron(),
+              onTap: () => Navigator.of(context).push(CupertinoPageRoute<void>(builder: (_) => const ThinkingStepsPage())),
+            ),
+          if (s.sequentialThinking)
+            _toggle(context, 'thinkOnAlertScans', CupertinoIcons.bell, 'Think on alert scans', s.thinkOnAlertScans ? 'Alerts and reminders get the full thinking pass' : 'Alerts and reminders go straight to a decision', s.thinkOnAlertScans),
           _toggle(context, 'autoApproval', CupertinoIcons.slider_horizontal_3, 'Let Dave change limits', 'Approves his own limit changes without asking', s.autoApproval),
           _toggle(context, 'memoryWriteApproval', CupertinoIcons.lock_shield, 'Approve memory writes', 'Dave asks before saving to memory', s.memoryWriteApproval),
         ],

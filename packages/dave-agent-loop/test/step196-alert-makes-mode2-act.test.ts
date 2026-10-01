@@ -186,7 +186,7 @@ try {
       const prompt = lastPrompt(calls);
       assert.match(prompt, /SYMBOL: USDJPY/, "the level's pair, not EURUSD (first in the rotation)");
       assert.match(prompt, /LEVEL HIT: USDJPY reached 150\.00/);
-      assert.match(prompt, /take the trade or arm the order now/);
+      assert.match(prompt, /take the trade now; if price isn't there yet, arm a limit on the level/);
       assert.match(prompt, /THIS PAIR RIGHT NOW: price [\s\S]*open trades on USDJPY: none; pending orders on USDJPY: none/);
       assert.equal(getCursorPosition(OWNER).symbolCursor, 0, "EURUSD is still next in the rotation");
     } finally {

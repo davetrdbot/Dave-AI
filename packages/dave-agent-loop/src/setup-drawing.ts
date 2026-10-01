@@ -76,12 +76,38 @@ export function parseDrawing(args: Record<string, unknown>): SetupDrawing {
       .map((x) => ({ fromIndex: n(x.fromIndex)!, fromPrice: n(x.fromPrice)!, toIndex: n(x.toIndex)!, toPrice: n(x.toPrice)!, label: s(x.label, 40) }))
       .filter((x) => [x.fromIndex, x.fromPrice, x.toIndex, x.toPrice].every((v) => v !== undefined))
       .slice(0, 8),
-    notes: arr(args.notes)
-      .map((x) => ({ index: n(x.index)!, price: n(x.price)!, text: s(x.text, 60)! }))
-      .filter((x) => x.index !== undefined && x.price !== undefined && !!x.text)
-      .slice(0, 10),
-    caption: s(args.caption, 240),
+    // The story steps go on the chart as numbered notes (1, 2, 3...) -- the picture reads in order.
+    notes: [
+      ...storySteps(args).map((st, i) => ({ index: st.index, price: st.price, text: `${i + 1} ${st.label}` })),
+      ...arr(args.notes)
+        .map((x) => ({ index: n(x.index)!, price: n(x.price)!, text: s(x.text, 60)! }))
+        .filter((x) => x.index !== undefined && x.price !== undefined && !!x.text),
+    ].slice(0, 12),
+    caption: drawingCaption(args),
   };
+}
+
+interface StoryStep {
+  index: number;
+  price: number;
+  label: string;
+  why?: string;
+}
+
+function storySteps(args: Record<string, unknown>): StoryStep[] {
+  return arr(args.story)
+    .map((x) => ({ index: n(x.index)!, price: n(x.price)!, label: s(x.label, 34)!, why: s(x.why, 140) }))
+    .filter((x) => x.index !== undefined && x.price !== undefined && !!x.label)
+    .slice(0, 9);
+}
+
+/** The strategy in words under the picture: what the setup is, then the numbered steps and why. */
+function drawingCaption(args: Record<string, unknown>): string | undefined {
+  const strategy = s(args.strategy, 300);
+  const steps = storySteps(args).map((st, i) => `${i + 1}. ${st.label}${st.why ? ` -- ${st.why}` : ""}`);
+  const caption = s(args.caption, 240);
+  const text = [strategy, ...steps, caption].filter(Boolean).join("\n");
+  return text ? text.slice(0, 1000) : undefined;
 }
 
 /**
@@ -268,6 +294,10 @@ export async function renderDrawingPng(d: SetupDrawing): Promise<Buffer> {
 
 export const DRAW_SETUP_TOOL_DESCRIPTION =
   "Draw a picture of a setup and send it to the trader -- small candles, entry/SL/TP lines, zones, arrows and short notes -- like sketching on a chart. " +
+  "TEACH THE STRATEGY ON THE CHART, don't just label things: fill `strategy` (the model by name -- e.g. 'APA OCL buy', 'Resistance A sell', 'QM buy', 'sweep-and-reverse spike' -- and why it works here, 1-2 sentences) " +
+  "and `story`: the setup in order, each step pinned to the candle where it happens, with why it matters -- e.g. 1 BOS (bias is up), 2 OCL key level (the open-close line nearest the BOS, fresh), " +
+  "3 Sell-side liquidity (early buyers' stops), 4 Sweep (liquidity taken), 5 CHoCH M5 (confirmation), 6 Entry (refined order block), then the SL beyond the level and the TP at the opposite liquidity with its R:R. " +
+  "Draw the expected path with an arrow. A trader who has never heard of the strategy should understand the trade from the picture alone. " +
   "Use it whenever the trader asks you to draw, show or illustrate something (\"draw what you mean\", \"show me the setup\"), and whenever a picture explains a setup better than words: " +
   "the sweep-then-reversal you're waiting for, where a limit sits, what a Setup's steps look like. Candles can be the real recent ones (from get_candles) or illustrative -- " +
   "keep them few (8-30) and mark the ones you EXPECT with projected: true. Use real prices for lines and zones. Put an arrow for the move you expect and a note or two, not a paragraph. " +
@@ -299,6 +329,16 @@ export const DRAW_SETUP_PARAMETERS = {
       items: { type: "object", required: ["fromIndex", "fromPrice", "toIndex", "toPrice"], properties: { fromIndex: { type: "number" }, fromPrice: { type: "number" }, toIndex: { type: "number" }, toPrice: { type: "number" }, label: { type: "string" } } },
     },
     notes: { type: "array", items: { type: "object", required: ["index", "price", "text"], properties: { index: { type: "number" }, price: { type: "number" }, text: { type: "string" } } } },
-    caption: { type: "string", description: "One line under the picture." },
+    strategy: { type: "string", description: "The strategy by name and why it applies here -- 1-2 sentences, shown under the picture." },
+    story: {
+      type: "array",
+      description: "The setup's steps IN ORDER (BOS -> key level -> liquidity -> sweep -> confirmation -> entry -> target), each on the candle/price where it happens. Shown as 1, 2, 3... on the chart, explained under it.",
+      items: {
+        type: "object",
+        required: ["index", "price", "label"],
+        properties: { index: { type: "number", description: "candle index" }, price: { type: "number" }, label: { type: "string", description: "2-4 words, e.g. 'Sweep of lows'" }, why: { type: "string", description: "why this step matters, one short clause" } },
+      },
+    },
+    caption: { type: "string", description: "One more line under the picture, optional." },
   },
 };

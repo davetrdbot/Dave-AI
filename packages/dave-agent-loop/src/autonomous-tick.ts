@@ -27,6 +27,8 @@ import {
   ensureGroupsUsable,
   isMarketOpenForSymbol,
   consumeScanRestart,
+  getThinkOnAlertScans,
+  getEnabledThinkingStages,
   isSlTooTight,
   getSelfPauseEnabled,
   getAnalysisConfig,
@@ -607,6 +609,8 @@ THE SPIKE RULE (the trader's own): entries go on spike levels -- the price a spi
 
 SETUPS: when the right entry needs price to do something first (sweep the high THEN come back to the level; break the range THEN retest it), don't just walk away -- arm it with setup_create (steps in order, cancelIf for the move that kills the idea, the order with SL/TP). It runs on its own against the live price and places the order the moment the last step happens. Check setup_list first so you don't arm duplicates.
 
+CLEAN SETUP = TAKE IT: bias clear + price at (or a limit on) a real key level + liquidity swept or right behind it + a trigger (CHoCH/rejection, or the level itself for a limit) -> trade, at your scale's size, no further conditions. "No ignition yet", "overbought", "deep premium", "R:R can't be met" (the TP is set at your exact R:R automatically) and "not perfect" are NOT reasons to skip. The only skip reasons: no key level within reach, structure broke against the idea on closed candles, the stop can't fit, a hard gate.
+
 You are never idle. A SKIP is never empty: if there is no trade here right now, stage the next one -- a limit at the level your analysis supports, or a setReminder (with the idea as the reason) for the candle close or session the setup is waiting on. Say in your reason what you staged. A bare SKIP is only for a symbol with genuinely nothing forming.
 
 You may ASK a single genuine question only for real, specific ambiguity you cannot resolve yourself. Prefer deciding over asking.
@@ -621,7 +625,7 @@ You can also do SEVERAL things in one scan with the optional "actions" list on t
 
 RUN_SCRIPT runs one real script (bash/python/node) and hands you its genuine output before you finalize -- entirely optional, never required, at most once per cycle. This symbol's full analysis suite is written into the sandbox as market.json, so your script reads real numbers rather than you eyeballing them. Reach for it ONLY when the decision genuinely hinges on something you cannot work out reliably in your head -- a risk:reward or position-size calculation you want exact, a spread or ratio across the timeframes below, a level derived from a real series. Do NOT use it as a routine step before every trade: it costs a real round trip on a live cycle, and nearly every decision here is already answerable from the suite in front of you. These symbols are synthetic pairs that exist only in this terminal and on no public API, so never have a script try to fetch their price from the internet -- everything you need is in market.json. After the output comes back you'll be asked to decide again -- do not run a second script.
 
-If a SELF-AWARE ALERT appears below, one of your real open positions is genuinely close to hitting its SL -- REQUEST_CANDLES there fetches for that at-risk symbol instead. After the candles come back, act directly with MODIFY (tighten/loosen/adjust), DELETE_TICKET (cut it now), PARTIAL_CLOSE, or SKIP if it genuinely still looks fine. Do not be quick to close: the market often fakes out before the real move. Cut an open trade only when the reason for it is genuinely broken (name the evidence), never just because it is red or pulled back -- the stop is already where the idea is wrong.
+If a SELF-AWARE ALERT appears below, one of your real open positions is genuinely close to hitting its SL -- REQUEST_CANDLES there fetches for that at-risk symbol instead. After the candles come back, act directly with MODIFY (tighten / move to breakeven), PARTIAL_CLOSE, or SKIP to hold it -- the stop is its invalidation, so no early fear-close (a close before the stop is held anyway). Do not be quick to close: the market often fakes out before the real move. Cut an open trade only when the reason for it is genuinely broken (name the evidence), never just because it is red or pulled back -- the stop is already where the idea is wrong.
 
 You may also set requestedNextSymbol (with a real requestedNextReason) on ANY decision to ask that a specific symbol be analyzed next cycle instead of the mechanical round-robin order -- e.g. to follow up on a trade you just took, or to check back once a candle you're watching closes. Optional, never required.
 
@@ -1133,7 +1137,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
           ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, tighten it, or take a partial -- via actions/MODIFY/PARTIAL_CLOSE. The market deceives: its stop is its invalidation, so no closing before the stop out of fear (a close order before the stop is held anyway). No new entry on ${symbol} in this scan.`
           : pendingOrders.some((o) => o.symbol.toUpperCase() === symbol.toUpperCase())
             ? `You have a pending order on ${symbol} (above). Recheck it on this fresh analysis: keep it (say in one line why the level and idea still hold), cancel it with DELETE_TICKET, or cancel and place it where price will really come. Never stack a second pending order on the same idea.`
-            : `If the level/setup is live, take the trade or arm the order now; if it isn't, SKIP with one line saying why.`)
+            : `If the level/setup is live, take the trade now; if price isn't there yet, arm a limit on the level. SKIP only for a reason on your skip list (no level in reach, structure broke against it, stop can't fit, a hard gate).`)
       : null,
     `SYMBOL: ${symbol}`,
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
@@ -1232,7 +1236,11 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // cost/latency tradeoff (see sequential-thinking.ts's own header comment): up to
   // MAX_SEQUENTIAL_THOUGHTS extra real model calls before the decision itself, so this only runs
   // when the user has explicitly turned it on (getSequentialThinkingEnabled, OFF by default).
-  if (getSequentialThinkingEnabled(userId)) {
+  // Scans started by an alert / reminder / marked level act fast on the one thing that fired --
+  // no thinking pass unless the trader switched it on for them (thinking-stages.ts).
+  const skipThinkingForAlert = !!picked.focus && !getThinkOnAlertScans(userId);
+  if (skipThinkingForAlert && getSequentialThinkingEnabled(userId)) logTick(userId, `${symbol}: alert scan -- straight to the decision (thinking on alert scans is off)`);
+  if (getSequentialThinkingEnabled(userId) && !skipThinkingForAlert) {
     logTick(userId, `${symbol}: sequential thinking (${getSequentialThinkingEffort(userId)} effort) -- running a bounded reasoning pass before deciding`);
     const effort = getSequentialThinkingEffort(userId);
     const { thoughts, summary } = await runSequentialThinking({
@@ -1240,6 +1248,8 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       systemPrompt: buildSystemPrompt(),
       contextLines,
       effort,
+      // The trader's own steps -- every enabled one is mandatory.
+      stages: getEnabledThinkingStages(userId).map((st) => ({ id: st.id, help: st.help })),
       onProgress: (text: string) => {
         publishActivity(userId, "loop", "thought", { symbol, text }, { agent: "thinking" });
         onSequentialThinkingProgress?.(text);

@@ -44,7 +44,7 @@ import { startSetupSweep } from "./setup-sweep.js";
 import { autoSaveMemory } from "./memory-autosave.js";
 import { resumeUnfinishedTodos } from "./todos.js";
 import { speechVocabularyPrompt } from "./speech-vocabulary.js";
-import { seedStructureTargetsSkill } from "@dave/skills";
+import { seedStructureTargetsSkill, seedApaSkill } from "@dave/skills";
 
 /** How often the bot picks up trading changes made from the app or web panel. */
 const CONTROL_WATCH_MS = 5_000;
@@ -1266,6 +1266,12 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
     seedStructureTargetsSkill(deps.ownerUserId);
   } catch (err) {
     console.error(`[skills] couldn't add the structure-targets skill:`, err);
+  }
+  // The APA strategy (the trader's video): seven price-action entry models, ready to switch on.
+  try {
+    seedApaSkill(deps.ownerUserId);
+  } catch (err) {
+    console.error(`[skills] couldn't add the APA skill:`, err);
   }
   if (deps.executor) {
     // The pullback scalp's loop: bank $20, in again at the entry, done at the limit.

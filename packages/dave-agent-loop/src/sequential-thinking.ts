@@ -30,13 +30,14 @@ export type ThinkingEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** The stages a high/max-effort pass has to cover before it may stop -- a trader's checklist. */
 export const THINKING_STAGES = ["bias", "spike", "trigger", "sniper", "scalp", "invalidation", "target", "edge", "counter", "memory", "scenario", "verdict"] as const;
-export type ThinkingStage = (typeof THINKING_STAGES)[number];
+/** A step id: a built-in one, or one the trader added (thinking-stages.ts in @dave/trading). */
+export type ThinkingStage = string;
 
 /** Every pass looks at these, whatever the level (the trader: "in each sequential thinking add the
  *  spike aspect, scalping, sniper and the advantage aspect"). */
 export const FOCUS_FOUR: ThinkingStage[] = ["spike", "sniper", "scalp", "edge"];
 
-const STAGE_HELP: Record<ThinkingStage, string> = {
+const STAGE_HELP: Record<string, string> = {
   bias: "higher-timeframe bias -- which way the bigger picture leans, and how strongly",
   // The trader's four (spike, scalping, sniper, advantage) -- part of every pass.
   spike: "the spike -- on Boom/Crash/Storm/synthetics: where the next spike is likely, which way it fires, and is this trade WITH it or exposed to it; on forex: a news/volatility spike that could hit the stop",
@@ -104,7 +105,7 @@ const CRITIC_TOOL_NAME = "submit_critique";
 /** Kept for callers that used the old constant: the medium profile's cap. */
 export const MAX_SEQUENTIAL_THOUGHTS = EFFORT_PROFILES.medium.maxThoughts;
 
-function buildThoughtTool(staged: boolean): ToolSpec {
+function buildThoughtTool(staged: boolean, stageIds: string[] = [...THINKING_STAGES]): ToolSpec {
   const properties: Record<string, unknown> = {
     thought: { type: "string", description: "This step's real, specific reasoning with numbers from the data -- not a restatement of the last one." },
     thoughtNumber: { type: "number", description: "1-indexed position of this thought." },
@@ -113,7 +114,7 @@ function buildThoughtTool(staged: boolean): ToolSpec {
     isRevision: { type: "boolean", description: "true if this thought revises an earlier one instead of building forward" },
     revisesThought: { type: "number", description: "required when isRevision is true -- which earlier thoughtNumber this reconsiders" },
   };
-  if (staged) properties.stage = { type: "string", enum: [...THINKING_STAGES], description: "which part of the checklist this thought covers" };
+  if (staged) properties.stage = { type: "string", enum: stageIds, description: "which step of the checklist this thought covers" };
   return {
     name: THOUGHT_TOOL_NAME,
     description:
@@ -156,6 +157,10 @@ export interface RunSequentialThinkingDeps {
   onProgress?: (text: string) => void;
   /** How hard to think. Defaults to medium (the original pass). */
   effort?: ThinkingEffortLevel;
+  /** The trader's enabled thinking steps (id + what to answer). Default: the built-in list. Every
+   *  one given is mandatory at high/X-High/max; low/medium must cover the spike/sniper/scalp/edge
+   *  four, the trader's own added steps, and the verdict. */
+  stages?: { id: string; help: string }[];
   /** Overrides of the effort profile (tests). */
   maxThoughts?: number;
   timeoutMs?: number;
@@ -177,14 +182,24 @@ export interface RunSequentialThinkingDeps {
  */
 export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Promise<SequentialThinkingResult> {
   const effort = deps.effort ?? "medium";
-  const profile = EFFORT_PROFILES[effort];
+  const base = EFFORT_PROFILES[effort];
+  const stageList = deps.stages?.length ? deps.stages : THINKING_STAGES.map((id) => ({ id, help: STAGE_HELP[id] }));
+  const helpOf = new Map(stageList.map((st) => [st.id, st.help]));
+  const builtIn = new Set<string>(THINKING_STAGES);
+  // Every step is important (the trader: "it sometimes refuses to think about a point"): the deep
+  // levels cover all of them; the light ones the four + the trader's own steps + the verdict.
+  const requiredStages =
+    base.requiredStages.length > 0
+      ? stageList.map((st) => st.id)
+      : stageList.map((st) => st.id).filter((id) => FOCUS_FOUR.includes(id) || !builtIn.has(id) || id === "verdict");
+  const profile = { ...base, requiredStages, maxThoughts: Math.max(base.maxThoughts, requiredStages.length + 1) };
   const maxThoughts = deps.maxThoughts ?? profile.maxThoughts;
   const timeoutMs = deps.timeoutMs ?? profile.timeoutMs;
   const now = deps.now ?? Date.now;
   const started = now();
   const staged = profile.requiredStages.length > 0;
   const thoughts: SequentialThought[] = [];
-  const tool = buildThoughtTool(staged);
+  const tool = buildThoughtTool(staged, stageList.map((st) => st.id));
   const covered = () => new Set(thoughts.map((t) => t.stage).filter(Boolean) as ThinkingStage[]);
   const missing = () => profile.requiredStages.filter((st) => !covered().has(st));
   const overBudget = () => now() - started > profile.budgetMs;
@@ -196,8 +211,8 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
       "",
       `Before you finalize this trade decision, reason through it step by step (${effort} effort) -- call ${THOUGHT_TOOL_NAME} with your next real thought.`,
       staged
-        ? `Your checklist (cover every one; tag each thought with its stage):\n${profile.requiredStages.map((st) => `- ${st}: ${STAGE_HELP[st]}`).join("\n")}`
-        : `Keep these four in view and cover them in your thoughts:\n${FOCUS_FOUR.map((st) => `- ${st}: ${STAGE_HELP[st]}`).join("\n")}`,
+        ? `Your checklist -- EVERY step is mandatory, one real thought each, tagged with its stage; you can't finish until all are covered, and "not relevant" is not an answer (say what it shows for THIS setup):\n${profile.requiredStages.map((st) => `- ${st}: ${helpOf.get(st) ?? STAGE_HELP[st] ?? st}`).join("\n")}`
+        : "",
       rendered.length > 0 ? `THOUGHTS SO FAR:\n${rendered.join("\n")}` : "This is your first thought -- start with the single most important real question this setup raises.",
       ...extra,
       `You have used ${thoughts.length}/${maxThoughts} thoughts. Once you're genuinely ready to decide, set nextThoughtNeeded to false.`,
@@ -216,7 +231,7 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
     const call = genResult.toolCalls?.find((c) => c.name === THOUGHT_TOOL_NAME);
     if (!call) return null;
     const args = call.arguments as Record<string, unknown>;
-    const stage = typeof args.stage === "string" && (THINKING_STAGES as readonly string[]).includes(args.stage) ? (args.stage as ThinkingStage) : undefined;
+    const stage = typeof args.stage === "string" && helpOf.has(args.stage) ? (args.stage as ThinkingStage) : undefined;
     const t: SequentialThought = {
       thought: typeof args.thought === "string" ? args.thought : "",
       thoughtNumber: thoughts.length + 1,

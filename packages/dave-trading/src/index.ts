@@ -6,6 +6,7 @@ export * from "./pending-risk-entry.js";
 export * from "./pending-trailing-entry.js";
 export * from "./pair-groups.js";
 export * from "./scan-restart.js";
+export * from "./thinking-stages.js";
 export * from "./breakeven-trailing.js";
 export * from "./breakeven-level.js";
 export * from "./trade-executor.js";

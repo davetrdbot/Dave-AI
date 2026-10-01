@@ -5,3 +5,4 @@ export * from "./jsonl-install.js";
 export * from "./tools.js";
 export * from "./internal-tool-docs.js";
 export * from "./structure-targets-skill.js";
+export * from "./apa-skill.js";

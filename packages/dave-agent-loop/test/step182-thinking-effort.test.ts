@@ -23,27 +23,27 @@ function lazyModel(stages: string[], critic?: { weakestPoint: string; holds: boo
   return { provider, prompts, calls: () => n };
 }
 
-console.log("[1] low/medium stay light");
+console.log("[1] low/medium stay light -- but must still cover spike, sniper, scalp, the edge and the verdict");
 {
-  const m = lazyModel(["bias"]);
+  const m = lazyModel(["spike", "sniper", "scalp", "edge", "verdict"]);
   const r = await runSequentialThinking({ provider: m.provider, systemPrompt: "s", contextLines: ["ctx"], effort: "low" });
-  assert.equal(r.thoughts.length, 2, "stops when the model says so");
-  assert.ok(!m.prompts[0].includes("Your checklist"));
-  assert.match(m.prompts[0], /Keep these four in view[\s\S]*spike[\s\S]*sniper[\s\S]*scalp[\s\S]*edge: the advantage/, "even low thinks about spike, sniper, scalp and the advantage");
+  assert.deepEqual(r.thoughts.map((t) => t.stage), ["spike", "sniper", "scalp", "edge", "verdict"], "can't stop until the four + verdict are covered");
+  assert.ok(!m.prompts[0].includes("bias:"), "light levels don't carry the whole checklist");
+  assert.match(m.prompts[0], /Your checklist -- EVERY step is mandatory[\s\S]*spike[\s\S]*sniper[\s\S]*scalp[\s\S]*edge: the advantage/, "even low thinks about spike, sniper, scalp and the advantage");
 }
 console.log("   ✓\n");
 
 console.log("[2] high: can't stop until every checklist stage is covered, and must argue against itself");
 {
-  const order = ["bias", "spike", "trigger", "sniper", "scalp", "invalidation", "target", "edge", "counter", "memory", "verdict"];
+  const order = ["bias", "spike", "trigger", "sniper", "scalp", "invalidation", "target", "edge", "counter", "memory", "scenario", "verdict"];
   const m = lazyModel(order);
   const progress: string[] = [];
   const r = await runSequentialThinking({ provider: m.provider, systemPrompt: "s", contextLines: ["ctx"], effort: "high", onProgress: (t) => progress.push(t) });
-  assert.deepEqual(r.thoughts.map((t) => t.stage), order, "kept going past the lazy stop until all 11 stages (spike, sniper, scalp and edge included) were covered");
+  assert.deepEqual(r.thoughts.map((t) => t.stage), order, "kept going past the lazy stop until every step (spike, sniper, scalp and edge included) was covered");
   assert.equal(r.missedStages.length, 0);
   assert.match(m.prompts[0], /Your checklist[\s\S]*counter: the strongest case AGAINST this trade/);
   assert.ok(progress.some((p) => p.startsWith("Not done yet -- still to cover:")));
-  assert.match(r.summary, /high effort, 11 step\(s\)/);
+  assert.match(r.summary, /high effort, 12 step\(s\)/);
   assert.match(m.prompts[0], /spike: the spike[\s\S]*sniper: the sniper entry[\s\S]*scalp: the scalp[\s\S]*edge: the advantage/);
   assert.ok(r.thoughts.length <= EFFORT_PROFILES.high.maxThoughts);
 }

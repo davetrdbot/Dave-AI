@@ -274,6 +274,10 @@ class DaveApi {
   Future<Map<String, dynamic>> growthAction(Map<String, Object?> body) => _post('/api/app/growth', body);
   Future<Map<String, dynamic>> mcp() => _send(() => _http.get(_url('/api/app/mcp'), headers: _headers));
   Future<Map<String, dynamic>> mcpAction(Map<String, Object?> body) => _post('/api/app/mcp', body);
+  /// The steps of Dave's thinking pass: switch on/off, delete, add your own, reset.
+  Future<Map<String, dynamic>> thinkingStages() => _send(() => _http.get(_url('/api/app/thinking-stages'), headers: _headers));
+  Future<Map<String, dynamic>> thinkingStagesAction(Map<String, Object?> body) => _post('/api/app/thinking-stages', body);
+
   Future<Map<String, dynamic>> analysisScope() => _send(() => _http.get(_url('/api/app/analysis-scope'), headers: _headers));
   Future<Map<String, dynamic>> analysisScopeAction(Map<String, Object?> body) => _post('/api/app/analysis-scope', body);
 
