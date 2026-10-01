@@ -49,14 +49,13 @@ console.log("[2] high: can't stop until every checklist stage is covered, and mu
 }
 console.log("   ✓\n");
 
-console.log("[3] high: a model stuck on one stage is bounded, and the gap is reported honestly");
+console.log("[3] high: a model that keeps tagging one stage still gets every step, in order (each thought is assigned its step)");
 {
-  const m = lazyModel(["bias"]);
+  const m = lazyModel(["verdict"]);
   const r = await runSequentialThinking({ provider: m.provider, systemPrompt: "s", contextLines: ["ctx"], effort: "high" });
-  assert.equal(r.thoughts.length, EFFORT_PROFILES.high.maxThoughts);
-  assert.ok(r.missedStages.includes("counter"));
-  assert.match(r.summary, /never reached: .*counter/);
-  assert.match(m.prompts[m.prompts.length - 1], /Running out of thoughts -- cover what's still missing now/);
+  assert.equal(r.missedStages.length, 0, "seen live: 'verdict' eight times while sniper/scalp/edge/memory were never thought -- not any more");
+  assert.deepEqual(r.thoughts.map((t) => t.stage), ["bias", "spike", "trigger", "sniper", "scalp", "invalidation", "target", "edge", "counter", "memory", "scenario", "verdict"]);
+  assert.match(m.prompts[3], /THIS THOUGHT IS STEP "sniper"/);
 }
 console.log("   ✓\n");
 

@@ -16,6 +16,7 @@ import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/app_scope.dart';
 import 'package:dave_mobile/screens/extras.dart';
 import 'package:dave_mobile/screens/growth.dart';
+import 'package:dave_mobile/screens/thinking_steps.dart';
 import 'package:dave_mobile/screens/history.dart';
 import 'package:dave_mobile/screens/voice.dart';
 import 'package:dave_mobile/screens/dave_voice.dart';
@@ -218,6 +219,11 @@ http.Client _fakeServer() => MockClient((req) async {
             'trades': trades,
             'truncated': false,
           };
+        case '/api/app/thinking-stages':
+          return http.Response(jsonEncode({'stages': [
+            {'id': 'bias', 'label': 'Bias', 'help': 'higher-timeframe bias', 'enabled': true, 'builtIn': true},
+            {'id': 'news', 'label': 'News', 'help': 'news due in the next hour', 'enabled': false, 'builtIn': false},
+          ]}), 200);
         case '/api/app/growth':
           body = jsonDecode(File('test/fixtures/growth.json').readAsStringSync());
         case '/api/app/dashboard':
@@ -1052,6 +1058,21 @@ void main() {
       await _shot(tester, 'dave_voice_picker_$mode');
       expect(find.text('Dave (my clone)'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('thinking steps screen renders ($mode)', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.reset);
+      tester.platformDispatcher.platformBrightnessTestValue = brightness;
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final api = DaveApi(base: Uri.parse('https://dave-bot-production.up.railway.app'), token: 't', client: _fakeServer(), streamClient: _fakeChatStream);
+      final look = brightness == Brightness.dark ? Look.midnightLime : Look.pearl;
+      await tester.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const ThinkingStepsPage()), look: look));
+      await _advance(tester);
+      await _shot(tester, 'thinking_steps_$mode');
+      expect(find.text('Bias'), findsOneWidget);
+      expect(find.text('News'), findsOneWidget);
     });
 
     testWidgets('growth screen renders ($mode)', (tester) async {

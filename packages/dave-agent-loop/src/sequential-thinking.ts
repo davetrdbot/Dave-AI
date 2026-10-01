@@ -206,6 +206,9 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
 
   const ask = async (extra: string[]): Promise<SequentialThought | null> => {
     const rendered = thoughts.map(renderThought);
+    // The step this thought must cover is assigned, in order -- seen live: the model tagged eight
+    // thoughts in a row "verdict" while sniper, scalp, edge, memory and growth were never thought.
+    const assigned = staged ? missing()[0] : undefined;
     const userPrompt = [
       ...deps.contextLines,
       "",
@@ -215,6 +218,9 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
         : "",
       rendered.length > 0 ? `THOUGHTS SO FAR:\n${rendered.join("\n")}` : "This is your first thought -- start with the single most important real question this setup raises.",
       ...extra,
+      assigned
+        ? `THIS THOUGHT IS STEP "${assigned}": ${helpOf.get(assigned) ?? STAGE_HELP[assigned] ?? assigned}. Answer exactly that for THIS setup, with numbers from the data -- not the verdict, not a repeat of an earlier step.`
+        : "",
       `You have used ${thoughts.length}/${maxThoughts} thoughts. Once you're genuinely ready to decide, set nextThoughtNeeded to false.`,
     ]
       .filter(Boolean)
@@ -231,7 +237,7 @@ export async function runSequentialThinking(deps: RunSequentialThinkingDeps): Pr
     const call = genResult.toolCalls?.find((c) => c.name === THOUGHT_TOOL_NAME);
     if (!call) return null;
     const args = call.arguments as Record<string, unknown>;
-    const stage = typeof args.stage === "string" && helpOf.has(args.stage) ? (args.stage as ThinkingStage) : undefined;
+    const stage = assigned ?? (typeof args.stage === "string" && helpOf.has(args.stage) ? (args.stage as ThinkingStage) : undefined);
     const t: SequentialThought = {
       thought: typeof args.thought === "string" ? args.thought : "",
       thoughtNumber: thoughts.length + 1,

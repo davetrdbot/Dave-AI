@@ -65,6 +65,7 @@ try {
   console.log("[3] The APA skill is on every account, with all seven entry models\n");
   const skill = skills.seedApaSkill(U) as { name: string; content: string };
   for (const m of ["OCL buy", "OCL sell", "Resistance \"A\"", "Support \"V\"", "SBR", "RBS", "QM"]) assert.ok(skill.content.includes(m), m);
+  for (const m of ["`mark_level`", "`set_reminder`", "`setup_create`", "`BUY_LIMIT`", "`SELL_LIMIT`", "`set_breakeven`", "TRADE THAT PULLBACK", "LEFT SHOULDER", "SECOND BOS", "CLOSE below the last M5 low", "already mitigated"]) assert.ok(skill.content.includes(m), `the skill says: ${m}`);
   assert.equal((skills.seedApaSkill(U) as { name: string }).name, skill.name, "seeding twice keeps one");
   assert.equal(skills.listSkills(U).filter((s: { name: string }) => s.name === skill.name).length, 1);
   console.log("   ✓\n");
