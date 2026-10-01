@@ -20,7 +20,7 @@ const UPDATE_WORDS = /\b(close|closed|closing|exit|breakeven|break even|be|sl|st
 export function worthReading(text: string, hasImage: boolean, hasOpenTrades: boolean): boolean {
   if (hasImage) return true;
   const numbers = (text.match(/\d+(?:[.,]\d+)?/g) ?? []).length;
-  if (SIGNAL_WORDS.test(text) && numbers >= 2) return true;
+  if (SIGNAL_WORDS.test(text) && (numbers >= 2 || /\bnow\b/i.test(text))) return true;
   if (hasOpenTrades) return text.trim().length >= 2;
   return false;
 }
@@ -41,7 +41,7 @@ const REPORT = {
         type: "string",
         enum: ["signal", "update", "note", "none"],
         description:
-          "'signal' ONLY for a NEW trade with a stop loss and at least one take profit (a bare 'GOLD BUY NOW' with no levels is 'none' -- the full post with SL/TPs follows and is the signal). 'update' for an instruction or result about a trade already given (close, partial close, move SL to breakeven / a price, move TP, cancel a pending order, 'HIT TP 1' = tp_hit). 'note' for the provider explaining WHY they took a copied trade (structure, zone, news, the idea) -- put it in `reason`. 'none' for promotions, chatter, greetings, results of trades not listed.",
+          "'signal' for a NEW trade with a stop loss and at least one take profit, OR an instant call like 'GOLD BUY NOW' / 'SELL XAUUSD NOW' with no levels (report symbol + side only -- the levels come in a later post), OR the levels (SL/TPs) for a copied trade listed as 'waiting for SL/TP' (report every level, same symbol and side). 'update' for an instruction or result about a trade already given (close, partial close, move SL to breakeven / a price, move TP, cancel a pending order, 'HIT TP 1' = tp_hit). 'note' for the provider explaining WHY they took a copied trade (structure, zone, news, the idea) -- put it in `reason`. 'none' for promotions, chatter, greetings, results of trades not listed.",
       },
       symbol: {
         type: "string",
@@ -78,8 +78,8 @@ const GET_PRICE = {
 
 const SYSTEM = [
   "You read posts from trading signal channels on Telegram (text and/or a screenshot of a signal) and report them with report_post.",
-  "Be strict: only a NEW trade with a stop loss and at least one take profit is a 'signal'. Prices are the numbers in the post -- never invent or guess a level.",
-  "Many channels post 'GOLD BUY NOW' first, then a second post with the zone, TP1/TP2/TP3 and SL: the first is 'none', the second is the 'signal' with every level. 'TP 3 : OPEN' means tpOpen true.",
+  "Be strict: a 'signal' is a NEW trade with a stop loss and at least one take profit, or an instant 'BUY NOW' / 'SELL NOW' call with no numbers (report only symbol + side). Prices are the numbers in the post -- never invent or guess a level.",
+  "Many channels post 'GOLD BUY NOW' first, then a second post with the zone, TP1/TP2/TP3 and SL. The first is an instant 'signal' (symbol + side only); the second, when the copied trade is listed as 'waiting for SL/TP', is a 'signal' with every level. 'TP 3 : OPEN' means tpOpen true.",
   "'HIT TP 1' / 'TP2 done ✅' about a listed trade is an update with action tp_hit and tpNumber. The provider explaining why they took a listed trade is a 'note'.",
   "Levels given in pips: call get_price for the symbol, then convert from the entry (or the live price for 'now') using the pip size: XAUUSD 0.1, XAGUSD 0.01, JPY pairs 0.01, other forex pairs 0.0001. For indices, crypto and synthetics, points are price units (1 point = 1.0). If you can't convert confidently, report 'none'.",
   "An 'update' is only about a trade the channel already gave; the trades Nous copied from this channel are listed with the post.",
@@ -206,6 +206,8 @@ export function normalizeSignal(a: Record<string, unknown>): ParsedSignal | unde
   const lo = num(a.entryLow);
   const hi = num(a.entryHigh);
   const entry = lo !== undefined && hi !== undefined ? (lo + hi) / 2 : (lo ?? hi);
+  // "GOLD BUY NOW": no stop, no target, no price -- in at market at once; the levels follow.
+  if (sl === undefined && tp1 === undefined && entry === undefined) return { symbol, side, orderKind: "market", reason };
   if (sl === undefined || tp1 === undefined) return undefined;
   const dir = side === "buy" ? 1 : -1;
   if (!(dir * (tp1 - sl) > 0)) return undefined; // TP and SL on the wrong sides for this direction

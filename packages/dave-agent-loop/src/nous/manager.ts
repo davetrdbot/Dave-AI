@@ -67,7 +67,7 @@ export function advanceNousTrade(trade: NousTrade, pos: LivePosition, account: A
     }
   }
 
-  if (!trade.tpOpen && trade.stage === "tp1" && trade.tp2 !== undefined && price !== undefined) {
+  if (!trade.tpOpen && trade.stage === "tp1" && trade.tp1 !== undefined && trade.tp2 !== undefined && price !== undefined) {
     const span = Math.abs(trade.tp1 - entry);
     const progress = span > 0 ? (dir * (price - entry)) / span : 0;
     if (progress >= NEAR_TP1) {

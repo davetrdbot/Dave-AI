@@ -41,14 +41,20 @@ export interface ParsedSignal {
   entry?: number;
   /** The provider's entry zone ("BUY NOW IN ZONE 4155.50-4148.50"), low first. */
   zone?: [number, number];
-  sl: number;
-  tp1: number;
+  /** Undefined on an instant "GOLD BUY NOW" call: the levels follow in the channel's next post. */
+  sl?: number;
+  tp1?: number;
   tp2?: number;
   tp3?: number;
   /** "TP 3 : OPEN" -- the last target is left open: no broker TP, the stop is trailed TP by TP. */
   tpOpen?: boolean;
   /** The provider's own reason for the trade, in their words (may be empty). */
   reason: string;
+}
+
+/** An instant "BUY NOW" call -- no stop or target yet (the trader wants it in at once). */
+export function isBareSignal(s: ParsedSignal): boolean {
+  return s.sl === undefined || s.tp1 === undefined;
 }
 
 export type UpdateAction = "close" | "close_partial" | "breakeven" | "move_sl" | "move_tp" | "cancel" | "tp_hit";
@@ -104,9 +110,14 @@ export interface NousTrade {
   side: SignalSide;
   lots: number;
   entry: number;
-  sl: number;
-  tp1: number;
+  /** Undefined until the channel posts the levels for an instant "BUY NOW" call. */
+  sl?: number;
+  tp1?: number;
   tp2?: number;
+  /** Placed from an instant call; the channel's next post with SL/TP for this pair sets them. */
+  awaitingLevels?: boolean;
+  /** The trader was told the levels are late (once). */
+  levelsNudged?: boolean;
   /** Every numeric target the provider gave, in order (TP1, TP2, TP3...). */
   tps?: number[];
   /** The last target is "OPEN": no broker TP; each TP reached trails the stop (TP1 -> breakeven, TP2 -> TP1...). */

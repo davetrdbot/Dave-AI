@@ -29,6 +29,10 @@ export function planPlacement(signal: ParsedSignal, livePrice: number, postedAt:
 
   const dir = signal.side === "buy" ? 1 : -1;
   const { sl, tp1 } = signal;
+  // "GOLD BUY NOW": straight in at market -- the stop and targets arrive in the channel's next post.
+  if (sl === undefined || tp1 === undefined) {
+    return { ok: true, type: signal.side, entry: livePrice, note: `market ${signal.side} at ~${livePrice} -- SL/TP to follow from the channel` };
+  }
   if (!(dir * (tp1 - sl) > 0)) return { ok: false, reason: `the levels don't make sense for a ${signal.side} (SL ${sl}, TP1 ${tp1})` };
   if (dir * (livePrice - sl) <= 0) return { ok: false, reason: `price ${livePrice} is already past the stop loss ${sl}` };
   if (dir * (livePrice - tp1) >= 0) return { ok: false, reason: `price ${livePrice} already reached TP1 ${tp1} -- the move happened without us` };
@@ -60,7 +64,8 @@ export function planPlacement(signal: ParsedSignal, livePrice: number, postedAt:
 }
 
 /** Risk:reward to TP1 from where the trade actually goes in. */
-export function rewardToRisk(entry: number, sl: number, tp1: number): number {
+export function rewardToRisk(entry: number, sl: number | undefined, tp1: number | undefined): number {
+  if (sl === undefined || tp1 === undefined) return 0;
   const risk = Math.abs(entry - sl);
   return risk > 0 ? Math.abs(tp1 - entry) / risk : 0;
 }
