@@ -85,7 +85,7 @@ import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 import { holdOrClose, protectInstead } from "./hold-to-plan.js";
 import { ownerTag } from "./trade-owner.js";
-import { describeApa } from "./apa-structure.js";
+import { describeApa, describeApaCoordination } from "./apa-structure.js";
 import { tradeDrawing } from "./setup-drawing.js";
 import { getAutoDrawTrades } from "@dave/trading";
 import { resolveTradeLevels, levelsGuidance, exitPrice, type TradeLevels, type TradeAction as LevelAction } from "./trade-levels.js";
@@ -1125,19 +1125,24 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   const tickKnowledge = safeTickKnowledgeIndex(userId);
 
   // The APA structure read for this pair, from raw candles (apa-structure.ts): H4 / H1 / M15.
-  const apaLines: string[] = [];
+  // W1 = the weekly cycle's constant timeframe (the book: Weekly -> H4 -> M30 -> M5), D1 = the
+  // daily FTA, H4/H1/M15 the situational ones.
+  const APA_TFS = ["W1", "D1", "H4", "H1", "M15"] as const;
+  const apaSets: { tf: string; bars: Parameters<typeof describeApa>[1] }[] = [];
   await Promise.all(
-    (["H4", "H1", "M15"] as const).map(async (tf) => {
+    APA_TFS.map(async (tf) => {
       try {
         const { bars } = parseCandles(await analysis.get<unknown>("candles", symbol, tf, { timeoutMs: 20_000 }));
-        const line = describeApa(tf, bars);
-        if (line) apaLines.push(line);
+        if (bars.length) apaSets.push({ tf, bars });
       } catch {
         // No candles for this timeframe right now -- the rest of the read still stands.
       }
     })
   );
-  apaLines.sort((a, b) => ["H4", "H1", "M15"].indexOf(a.slice(0, a.indexOf(":"))) - ["H4", "H1", "M15"].indexOf(b.slice(0, b.indexOf(":"))));
+  apaSets.sort((a, b) => APA_TFS.indexOf(a.tf as (typeof APA_TFS)[number]) - APA_TFS.indexOf(b.tf as (typeof APA_TFS)[number]));
+  const apaLines = apaSets.map((x) => describeApa(x.tf, x.bars)).filter((l): l is string => !!l);
+  const coordination = describeApaCoordination(apaSets);
+  if (coordination) apaLines.push(coordination);
   const contextLines = [
     clockLine,
     tickMemory ? `WHAT YOU REMEMBER (already known -- treat as standing instructions):\n${tickMemory}` : null,

@@ -10,7 +10,7 @@ export const APA_SKILL_NAME = "APA -- Advanced Price Action (7 entry models)";
 
 export const APA_SKILL_CONTENT = `# APA -- Advanced Price Action (Lowkey Forex Trader)
 
-This is THE strategy. Follow it step by step; never improvise a different setup (a "possible pullback", an indicator signal) and call it APA. Every scan carries an **APA STRUCTURE** block computed from the candles -- trend, last BOS, VALIDATION and INVALIDATION points, SHIFT / TRANSITION / RECLAIM, liquidity sweeps, equal highs/lows, and the FRESH (unconsumed) zones: Type 1 engulfing AOLs, FVGs, order blocks. Read the setup from THAT block. RSI, MACD, Ichimoku, Bollinger and the other endpoints are background only -- never the reason for an APA trade.
+This is THE strategy. Follow it step by step; never improvise a different setup (a "possible pullback", an indicator signal) and call it APA. Every scan carries an **APA STRUCTURE** block computed from the W1, D1, H4, H1 and M15 candles -- per timeframe: trend, last BOS, VALIDATION and INVALIDATION points, SHIFT / TRANSITION / RECLAIM, liquidity sweeps, equal highs/lows, LIQUIDITY ENGINEERING (swept level, FMD, CHoCH confirmed or not), flip zones, and the FRESH (unconsumed) zones: Type 1 engulfing AOLs, FVGs, order blocks; plus COORDINATION (do two timeframes agree?) and the FTA in the way. Read the setup from THAT block. RSI, MACD, Ichimoku, Bollinger and the other endpoints are background only -- never the reason for an APA trade.
 
 ## 1. The core idea: liquidity
 Price moves to fill orders. It travels from one **area of liquidity (AOL)** to the next. Trade only from AOLs -- outside them there is no order flow and no edge.

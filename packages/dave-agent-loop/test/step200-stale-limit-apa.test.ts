@@ -54,5 +54,31 @@ assert.match(line, /VALIDATION .*INVALIDATION/);
 console.log(`   ${line}`);
 console.log("   ✓");
 
+console.log("[4] Liquidity engineering: sell-side swept by a thrust candle, FMD, then a CHoCH up");
+const { describeApaCoordination } = await import("../src/apa-structure.js");
+const le: typeof bars = [];
+const path = [110, 106, 108, 104, 107, 103, 106, 101.5, 105, 102, 109, 107, 112];
+let tt = 0;
+for (let i = 1; i < path.length; i++) for (let k = 0; k < 3; k++) {
+  const o = path[i - 1] + ((path[i] - path[i - 1]) * k) / 3, c = path[i - 1] + ((path[i] - path[i - 1]) * (k + 1)) / 3;
+  le.push({ t: tt++, o, c, h: Math.max(o, c) + 0.2, l: Math.min(o, c) - 0.2 });
+}
+// A thrust candle: wick under the 101.5 low, close back above it.
+le.splice(28, 0, { t: 28.5, o: 102.2, h: 102.6, l: 100.4, c: 102.3 });
+le.forEach((b, i) => (b.t = i));
+const leRead = readApa(le)!;
+assert.ok(leRead.engineering, "engineering found");
+assert.equal(leRead.engineering!.side, "bullish");
+assert.ok(leRead.engineering!.fmd <= 100.4 + 1e-9, "FMD = the sweep's extreme");
+assert.match(describeApa("M15", le)!, /LIQUIDITY ENGINEERING bullish: .* FMD 100\.4/);
+console.log("   ✓");
+
+console.log("[5] Coordination: two timeframes must agree, else NOT COORDINATED");
+const up = Array.from({ length: 60 }, (_, i) => { const base = 100 + i * 0.5 + (i % 6 < 3 ? (i % 6) : 6 - (i % 6)) * 1.2; return { t: i, o: base, c: base + 0.3, h: base + 0.6, l: base - 0.4 }; });
+const coord = describeApaCoordination([{ tf: "H4", bars: up }, { tf: "H1", bars: up }]);
+assert.match(coord ?? "", /COORDINATION: (BULLISH|NOT COORDINATED)/);
+console.log(`   ${coord}`);
+console.log("   ✓");
+
 console.log("=== step200: ALL ASSERTIONS PASSED ===");
 process.exit(0);

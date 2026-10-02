@@ -280,7 +280,7 @@ try {
       const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
       console.log(`    real outcome: ${JSON.stringify(outcome)}`);
       assert.equal(decisionCalls, 2, "the decision tool must be invoked exactly twice: once to get REQUEST_CANDLES, once more for the real final decision");
-      assert.equal(endpointCalls["candles"], 4, "the candles endpoint: 3 for the APA structure read (H4/H1/M15) + exactly one REQUEST_CANDLES -- never a loop");
+      assert.equal(endpointCalls["candles"], 6, "the candles endpoint: 5 for the APA structure read (W1/D1/H4/H1/M15) + exactly one REQUEST_CANDLES -- never a loop");
       assert.equal(outcome.action, "MODIFY", "the real final decision (MODIFY) made after reviewing the fresh candles must be honored");
       console.log(`    confirmed: ${decisionCalls} decision calls, candles endpoint hit ${endpointCalls["candles"]}x, final outcome=${outcome.action}`);
     } finally {

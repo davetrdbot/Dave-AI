@@ -47,6 +47,11 @@ export interface ApaRead {
   equalHighs?: number;
   equalLows?: number;
   zones: Zone[];
+  /** Liquidity engineering: a level swept by a thrust candle, its furthest-most deviation (the
+   *  stop goes beyond it), and whether a change of character back the other way followed. */
+  engineering?: { side: "bullish" | "bearish"; level: number; fmd: number; choch: boolean; at: number };
+  /** Flip zones: a level touched 2+ times, then closed through -- it now works the other way. */
+  flips: { side: "bullish" | "bearish"; level: number; touches: number }[];
   lastClose: number;
 }
 
@@ -187,7 +192,40 @@ export function readApa(bars: Bar[]): ApaRead | undefined {
   }
   void lastHigh;
   void lastLow;
-  return { trend, lastBos, shift, reclaim, validation, invalidation, sweeps: sweeps.slice(-3), equalHighs: eq(highs), equalLows: eq(lows), zones, lastClose };
+
+  // Liquidity engineering: the latest sweep (thrust candle through the level, close back inside),
+  // its FMD (the extreme reached from the sweep onward), and a CHoCH = a close beyond the last swing
+  // on the other side, after the sweep.
+  let engineering: ApaRead["engineering"];
+  const lastSweep = sweeps[sweeps.length - 1];
+  if (lastSweep) {
+    const bullish = lastSweep.side === "sell-side";
+    const after = bars.slice(lastSweep.at);
+    const fmd = bullish ? Math.min(...after.map((b) => b.l)) : Math.max(...after.map((b) => b.h));
+    const opp = sw.filter((x) => x.i < lastSweep.at && x.kind === (bullish ? "high" : "low")).pop();
+    const choch = !!opp && bars.slice(lastSweep.at + 1).some((b) => (bullish ? b.c > opp.price : b.c < opp.price));
+    engineering = { side: bullish ? "bullish" : "bearish", level: lastSweep.level, fmd, choch, at: lastSweep.at };
+  }
+
+  // Flip zones: swing levels touched 2+ times (within tolerance) and later CLOSED through.
+  const flips: ApaRead["flips"] = [];
+  const levelTol = avgRange * 0.3;
+  for (const kind of ["high", "low"] as const) {
+    const list = sw.filter((x) => x.kind === kind);
+    const used = new Set<number>();
+    for (let a = 0; a < list.length; a++) {
+      if (used.has(a)) continue;
+      const group = list.filter((x, b) => b >= a && Math.abs(x.price - list[a].price) <= levelTol);
+      if (group.length < 2) continue;
+      list.forEach((x, b) => group.includes(x) && used.add(b));
+      const level = group.reduce((t, x) => t + x.price, 0) / group.length;
+      const lastTouch = Math.max(...group.map((x) => x.i));
+      const broke = bars.slice(lastTouch + 1).some((b) => (kind === "high" ? b.c > level + levelTol : b.c < level - levelTol));
+      if (broke) flips.push({ side: kind === "high" ? "bullish" : "bearish", level, touches: group.length });
+    }
+  }
+
+  return { trend, lastBos, shift, reclaim, validation, invalidation, sweeps: sweeps.slice(-3), equalHighs: eq(highs), equalLows: eq(lows), zones, engineering, flips: flips.slice(-2), lastClose };
 }
 
 const fmt = (n: number) => +n.toPrecision(8);
@@ -212,7 +250,31 @@ export function describeApa(tf: string, bars: Bar[]): string | undefined {
     .sort((a, b) => Math.abs((a.low + a.high) / 2 - r.lastClose) - Math.abs((b.low + b.high) / 2 - r.lastClose))
     .slice(0, 4);
   if (fresh.length) parts.push(`FRESH zones: ${fresh.map((z) => `${z.side} ${z.kind === "engulfing_aol" ? "Type-1 engulfing AOL" : z.kind.toUpperCase()} ${fmt(z.low)}-${fmt(z.high)}`).join("; ")}`);
+  if (r.engineering) parts.push(`LIQUIDITY ENGINEERING ${r.engineering.side}: ${fmt(r.engineering.level)} swept by a thrust candle ${ago(n, r.engineering.at)}, FMD ${fmt(r.engineering.fmd)} (stop goes beyond it), CHoCH ${r.engineering.choch ? "CONFIRMED" : "not yet"}`);
+  if (r.flips.length) parts.push(`flip zones: ${r.flips.map((f) => `${fmt(f.level)} (${f.touches} touches, broken -> now ${f.side === "bullish" ? "support" : "resistance"})`).join("; ")}`);
   const used = r.zones.filter((z) => z.consumed).length;
   if (used) parts.push(`${used} older zone(s) already consumed (50%+ traded) -- not points of interest`);
+  return parts.join(" | ");
+}
+
+/** Across timeframes (highest first): do at least two agree (the book's coordination rule), and the
+ *  FTAs -- a higher timeframe's fresh zone of the OPPOSITE side standing between price and the move. */
+export function describeApaCoordination(byTf: { tf: string; bars: Bar[] }[]): string | undefined {
+  const reads = byTf.map((x) => ({ tf: x.tf, r: readApa(x.bars) })).filter((x): x is { tf: string; r: ApaRead } => !!x.r);
+  if (reads.length < 2) return undefined;
+  const bull = reads.filter((x) => x.r.trend === "bullish").map((x) => x.tf);
+  const bear = reads.filter((x) => x.r.trend === "bearish").map((x) => x.tf);
+  const bias = bull.length >= 2 && bull.length > bear.length ? "BULLISH" : bear.length >= 2 && bear.length > bull.length ? "BEARISH" : "NOT COORDINATED";
+  const parts = [`COORDINATION: ${bias}${bull.length ? ` (bullish: ${bull.join(", ")})` : ""}${bear.length ? ` (bearish: ${bear.join(", ")})` : ""}${bias === "NOT COORDINATED" ? " -- fewer than two timeframes agree: no trade from this alone" : ""}`];
+  if (bias !== "NOT COORDINATED") {
+    const price = reads[reads.length - 1].r.lastClose;
+    const against = bias === "BULLISH" ? "bearish" : "bullish";
+    const ftas = reads
+      .slice(0, -1)
+      .flatMap((x) => x.r.zones.filter((z) => !z.consumed && z.side === against && (bias === "BULLISH" ? z.low > price : z.high < price)).map((z) => ({ tf: x.tf, z })))
+      .sort((a, b) => Math.abs((a.z.low + a.z.high) / 2 - price) - Math.abs((b.z.low + b.z.high) / 2 - price))
+      .slice(0, 2);
+    if (ftas.length) parts.push(`FTA (first trouble area -- take or lock profit there): ${ftas.map((f) => `${f.tf} ${f.z.side} ${f.z.kind === "engulfing_aol" ? "AOL" : f.z.kind.toUpperCase()} ${fmt(f.z.low)}-${fmt(f.z.high)}`).join("; ")}`);
+  }
   return parts.join(" | ");
 }
