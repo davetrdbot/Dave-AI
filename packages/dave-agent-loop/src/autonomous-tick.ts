@@ -85,6 +85,7 @@ import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 import { holdOrClose, protectInstead } from "./hold-to-plan.js";
 import { ownerTag } from "./trade-owner.js";
+import { describeApa } from "./apa-structure.js";
 import { tradeDrawing } from "./setup-drawing.js";
 import { getAutoDrawTrades } from "@dave/trading";
 import { resolveTradeLevels, levelsGuidance, exitPrice, type TradeLevels, type TradeAction as LevelAction } from "./trade-levels.js";
@@ -1123,6 +1124,20 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   const tickMemory = safeTickMemory(userId);
   const tickKnowledge = safeTickKnowledgeIndex(userId);
 
+  // The APA structure read for this pair, from raw candles (apa-structure.ts): H4 / H1 / M15.
+  const apaLines: string[] = [];
+  await Promise.all(
+    (["H4", "H1", "M15"] as const).map(async (tf) => {
+      try {
+        const { bars } = parseCandles(await analysis.get<unknown>("candles", symbol, tf, { timeoutMs: 20_000 }));
+        const line = describeApa(tf, bars);
+        if (line) apaLines.push(line);
+      } catch {
+        // No candles for this timeframe right now -- the rest of the read still stands.
+      }
+    })
+  );
+  apaLines.sort((a, b) => ["H4", "H1", "M15"].indexOf(a.slice(0, a.indexOf(":"))) - ["H4", "H1", "M15"].indexOf(b.slice(0, b.indexOf(":"))));
   const contextLines = [
     clockLine,
     tickMemory ? `WHAT YOU REMEMBER (already known -- treat as standing instructions):\n${tickMemory}` : null,
@@ -1161,6 +1176,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     // maxOpenTrades ceiling above.
     `OPEN POSITIONS (${positions.length}${risk.maxOpenTrades !== undefined ? `/${risk.maxOpenTrades} max` : ""}): ${positionsSummary}`,
     `PENDING ORDERS: ${pendingSummary}`,
+    ...(apaLines.length ? [`APA STRUCTURE for ${symbol} (computed from the candles -- THIS is what your APA strategy reads; the other indicator endpoints are background only):\n${apaLines.map((l) => `- ${l}`).join("\n")}`] : []),
     selfPause
       ? `SELF-PAUSE ACTIVE until ${new Date(selfPause.pausedUntil).toISOString()} (${selfPause.reason}) -- you may still ASK, DELETE_TICKET, or PARTIAL_CLOSE, but you may NOT open a new BUY/SELL/pending order until this expires.`
       : null,
@@ -1603,10 +1619,14 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       return { action: "NONE", notable: false };
     }
     const hold = holdOrClose(pos);
-    const protectedNote = !hold.close && hold.inProfit ? ` -- ${await protectInstead(executor, pos).catch((e) => `couldn't protect it: ${e instanceof Error ? e.message : String(e)}`)}` : "";
-    logTick(userId, `${symbol}: partial close not done -- ${hold.close ? "" : hold.why}${protectedNote}`);
-    recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `held #${decision.ticket} whole instead of part-closing${protectedNote}: ${reason}` });
-    return { action: "NONE", notable: false };
+    if (!hold.close) {
+      logTick(userId, `${symbol}: partial close not done -- ${hold.why}`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `held #${decision.ticket} whole (losing -- the stop decides): ${reason}` });
+      return { action: "NONE", notable: false };
+    }
+    const closeResult = await partialClose(executor, decision.ticket, decision.closeLots);
+    recordTickDecision(userId, { ts: Date.now(), symbol, action: "PARTIAL_CLOSE", reason });
+    return { action: "PARTIAL_CLOSE", symbol, notable: true, message: `✂️ Banked ${decision.closeLots} lots in profit on ticket ${decision.ticket} (${closeResult.remainingLots} lots remain)\n💡 ${summarizeReason(reason || "no reason given")}` };
   }
 
   // Real MODIFY action (user, live: adjust SL/TP on an existing open position without closing

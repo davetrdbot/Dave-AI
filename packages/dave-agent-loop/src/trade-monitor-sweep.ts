@@ -1,4 +1,4 @@
-import { getLastKnownState, getLastKnownAccountSnapshot } from "@dave/ea-bridge";
+import { getLastKnownState, getLastKnownAccountSnapshot, createEaAnalysisSource } from "@dave/ea-bridge";
 import { ownerTag } from "./trade-owner.js";
 import { getTradeLifecycle } from "@dave/feedback";
 import { breakevenStop, recordOutcome, getDeepLossAlertProgress, getSlAlertLevels, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
@@ -24,7 +24,7 @@ import {
 import { outcomeLine, recordTradeClosed } from "./alert-outcomes.js";
 import { reviewTrade, REVIEW_KINDS, type ReviewDeps } from "./self-aware-review.js";
 import { exitRuleFor, describeExitRule, runExitRules, type ExitRule } from "./exit-rules.js";
-import { safetyChecks, stalePendingChecks, resetSafetyState } from "./safety-alerts.js";
+import { safetyChecks, stalePendingChecks, staleLimitChecks, resetSafetyState } from "./safety-alerts.js";
 
 /**
  * The runtime half of the Self-Aware Trade Monitor. On its own timer it reads every live open
@@ -45,6 +45,8 @@ export interface TradeMonitorSweepDeps {
   userId: string;
   /** `symbol`: set on a per-trade alert -- mode 2 looks at that trade on the next scan. */
   notify: (text: string, about?: { symbol: string }) => Promise<void>;
+  /** Test seam: the live price for the stale-limit check (the EA is asked otherwise). */
+  limitPrice?: (symbol: string) => Promise<number | undefined>;
   /**
    * Real bug fixed (the trader: "breakeven doesn't work"). These deps carried ONLY `notify`, so the
    * breakeven alert could say "enough to move the stop to breakeven" and then, by construction, do
@@ -86,6 +88,58 @@ function withOwner(p: { byDave?: boolean; comment?: string }, reason: string): s
   const tag = ownerTag(p);
   if (!tag) return reason;
   return reason === REASON_NOT_RECORDED || !reason ? tag : `${tag} -- ${reason}`;
+}
+
+/** Once a trade has run PROFIT_LOCK_START_R in its favour, its stop follows HALF of the best run:
+ *  a +20 that turns can give back at most about half, never the whole thing and the stop. Only ever
+ *  tightens, in steps of PROFIT_LOCK_STEP_R, and never inside the spread / broker distance. */
+export const PROFIT_LOCK_START_R = 0.5;
+export const PROFIT_LOCK_KEEP = 0.5;
+export const PROFIT_LOCK_STEP_R = 0.1;
+const lockRefused = new Map<string, number>();
+async function lockProfit(deps: TradeMonitorSweepDeps, m: { ticket: string; symbol: string; direction: "buy" | "sell"; openPrice: number; initialSl?: number; sl?: number; mfeR?: number }, p: { currentPrice?: number; sl?: number; spread?: number; stopsLevel?: number; digits?: number }): Promise<void> {
+  if (!deps.executor || p.currentPrice === undefined || m.mfeR === undefined || m.mfeR < PROFIT_LOCK_START_R) return;
+  const r1 = m.initialSl !== undefined ? Math.abs(m.openPrice - m.initialSl) : 0;
+  if (!(r1 > 0)) return;
+  const dir = m.direction === "buy" ? 1 : -1;
+  const raw = m.openPrice + dir * m.mfeR * r1 * PROFIT_LOCK_KEEP;
+  const level = p.digits !== undefined ? +raw.toFixed(p.digits) : raw;
+  const stops = [p.sl, m.sl].filter((x): x is number => typeof x === "number" && x > 0);
+  const cur = stops.length ? (dir === 1 ? Math.max(...stops) : Math.min(...stops)) : undefined;
+  if (cur !== undefined && dir * (level - cur) < r1 * PROFIT_LOCK_STEP_R) return; // not a real improvement
+  const room = (p.spread ?? 0) + (p.stopsLevel ?? 0);
+  if (dir * (p.currentPrice - level) <= room) return; // would sit inside the spread -- wait
+  // A broker that refused this exact level will keep refusing it -- tried once, not every sweep.
+  const failKey = `${deps.userId}:${m.ticket}`;
+  if (lockRefused.get(failKey) === level) return;
+  try {
+    await deps.executor.modifyOrder(m.ticket, { sl: level });
+  } catch (err) {
+    lockRefused.set(failKey, level);
+    throw err;
+  }
+  m.sl = level;
+  await deps.notify(`🔒 PROFIT LOCKED: ${m.symbol} ${m.direction.toUpperCase()} (ticket ${m.ticket}) ran +${m.mfeR.toFixed(1)}R at best -- stop moved to ${level}, keeping half of that run. It can no longer turn into a loss.`).catch(() => undefined);
+}
+
+/** Live mid price for a symbol from the EA (stale-limit check); undefined when the EA is slow. */
+const quoteCache = new Map<string, { at: number; price?: number }>();
+async function quoteFor(userId: string, symbol: string): Promise<number | undefined> {
+  const key = `${userId}:${symbol}`;
+  const hit = quoteCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.price;
+  let price: number | undefined;
+  try {
+    const q = await Promise.race([
+      createEaAnalysisSource(userId).get<{ bid?: number; ask?: number; close?: number }>("price", symbol),
+      new Promise<undefined>((r) => setTimeout(() => r(undefined), 15_000).unref()),
+    ]);
+    price = q ? (q.bid !== undefined && q.ask !== undefined ? (q.bid + q.ask) / 2 : (q.bid ?? q.ask ?? q.close)) : undefined;
+  } catch {
+    price = undefined;
+  }
+  quoteCache.set(key, { at: Date.now(), price });
+  return price;
 }
 
 function realReasonOrRetry(deps: TradeMonitorSweepDeps, cached: string | undefined, ticket: string): string {
@@ -427,6 +481,7 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
   const toggles = getAlertToggles(deps.userId);
 
   // Advance each currently-open position.
+  const lockQueue: { m: Parameters<typeof lockProfit>[1]; p: Parameters<typeof lockProfit>[2] }[] = [];
   for (const p of positions) {
     const obs: PositionObservation = {
       ticket: p.ticket,
@@ -447,6 +502,7 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
     };
     const { monitor, alerts } = advanceMonitor(byTicket.get(p.ticket), obs, now, deepLossThreshold, slLadder);
     next.push(monitor);
+    lockQueue.push({ m: monitor, p });
     byTicket.delete(p.ticket);
     fired.push(...alerts);
   }
@@ -518,6 +574,10 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
   }
   if (deps.awaitReviews) await Promise.all(reviews);
 
+  // Profit lock (the trader: "in profit for a long time, then it hit SL -- from 20 to 0.38"). After
+  // the breakeven moves above, so it only ever tightens past them.
+  for (const { m, p } of lockQueue) await lockProfit(deps, m, p).catch((err) => console.error(`[trade-monitor] ${deps.userId}: profit lock #${m.ticket} failed:`, err));
+
   // Account heat: the trades together, not one at a time.
   const heat = portfolioHeat(deps.userId, positions, now);
   if (heat && toggles.portfolio) hotHandMessages.push(heat);
@@ -526,6 +586,20 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
   // Pending orders waiting 10+ min: each one to mode 2 on its own pair, to be rechecked.
   for (const p of stalePendingChecks(deps.userId, getLastKnownState(deps.userId).pendingOrders ?? [], positions, now, toggles.pending_stale)) {
     await deps.notify(p.text, { symbol: p.symbol }).catch((err) => console.error(`[trade-monitor] ${deps.userId}: pending-order alert failed:`, err));
+  }
+
+  // Stale limits: price ran away from a BUY/SELL LIMIT without touching it -> mode 2 decides
+  // whether to take it at market (every 5 minutes per order, fresh numbers each time).
+  const limits = (getLastKnownState(deps.userId).pendingOrders ?? []).filter((o) => o.type === "buy_limit" || o.type === "sell_limit");
+  if (limits.length) {
+    const prices = new Map<string, number>();
+    for (const sym of new Set(limits.map((o) => o.symbol))) {
+      const p = positions.find((x) => x.symbol === sym && typeof x.currentPrice === "number")?.currentPrice ?? (deps.limitPrice ? await deps.limitPrice(sym) : await quoteFor(deps.userId, sym));
+      if (p !== undefined) prices.set(sym, p);
+    }
+    for (const a of staleLimitChecks(deps.userId, limits, (s) => prices.get(s), (t) => { const r = reasonFor(deps.db, deps.userId, t); return r === REASON_NOT_RECORDED ? "(no reason recorded)" : r; }, now, toggles.pending_stale)) {
+      await deps.notify(a.text, { symbol: a.symbol }).catch((err) => console.error(`[trade-monitor] ${deps.userId}: stale-limit alert failed:`, err));
+    }
   }
 
   // Exit rules (exit-rules.ts): close the trades whose armed level was reached.

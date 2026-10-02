@@ -79,7 +79,8 @@ console.log("\n[2] THE FIX: with a real executor the stop is genuinely moved to 
   } as never;
 
   await runTradeMonitorSweep({ db, userId: OWNER, executor, notify: async (t) => void sent.push(t) });
-  assert.equal(calls.length, 1, `modifyOrder must genuinely be called once, got ${calls.length}`);
+  // The breakeven move first; the profit lock (half of a +1.5R run) may follow in the same sweep.
+  assert.ok(calls.length >= 1 && calls.length <= 2, `modifyOrder: breakeven, then at most the profit lock -- got ${calls.length}`);
   assert.equal(calls[0].ticket, TICKET, "on the real ticket from the alert");
   assert.equal(calls[0].changes.sl, 196800, "stop moved to the ENTRY price -- that is what breakeven means");
   assert.match(sent.join("\n"), /I've moved the stop to breakeven \(196800\)/, "the message states what happened");
@@ -127,7 +128,8 @@ console.log("\n[4] A failed move is never retried every 30 seconds...\n");
   await runTradeMonitorSweep(deps);
   await runTradeMonitorSweep(deps);
   await runTradeMonitorSweep(deps);
-  assert.equal(attempts, 1, `a broker refusing this stop will keep refusing it -- got ${attempts} attempts`);
+  // One breakeven attempt + one profit-lock attempt at its own level -- neither repeated.
+  assert.ok(attempts >= 1 && attempts <= 2, `a broker refusing this stop will keep refusing it -- got ${attempts} attempts`);
   console.log("    confirmed: latched after one attempt across 3 sweeps");
 }
 

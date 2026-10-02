@@ -32,9 +32,9 @@ export function holdOrClose(p: HoldPosition): HoldVerdict {
   const price = p.currentPrice;
   const dir = p.type.toLowerCase().startsWith("sell") ? -1 : 1;
   const inProfit = typeof price === "number" && price > 0 && dir * (price - p.openPrice) > 0;
-  if (inProfit) {
-    return { close: false, inProfit: true, why: `#${p.ticket} ${p.symbol} is in profit -- Dave doesn't close trades; the stop goes to breakeven so it can't lose and still runs to its target` };
-  }
+  // The trader (2 Oct): "it's not compulsory it must hit TP -- sometimes it should close a trade
+  // when in profit". A winner may be banked; only a losing trade is held to its stop.
+  if (inProfit) return { close: true };
   return {
     close: false,
     inProfit: false,

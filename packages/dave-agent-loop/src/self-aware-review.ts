@@ -151,7 +151,10 @@ export function checkVerdict(
       const rightSide = pos.type === "buy" ? n < price : n > price;
       if (!rightSide) return { act: false, problem: `a stop at ${n} would be on the wrong side of price ${price}` };
       const tighter = sl === undefined || (pos.type === "buy" ? n > sl : n < sl);
-      if (!tighter) return { act: false, problem: `${n} would WIDEN the stop (now ${sl}) -- never` };
+      // The trader: "when the self-aware alert hits on the SL it can extend the SL" -- allowed once
+      // the idea is still valid, to the real invalidation (FMD), but never past double the stop's
+      // current distance from the entry.
+      if (!tighter && sl !== undefined && Math.abs(n - pos.openPrice) > 2 * Math.abs(sl - pos.openPrice)) return { act: false, problem: `${n} would more than double the stop's distance -- too far` };
       return { act: mode === "act" };
     }
     case "PARTIAL_CLOSE": {
@@ -161,9 +164,12 @@ export function checkVerdict(
       if (lots < 0.01 || lots >= pos.lots) return { act: false, problem: `${pos.lots} lots can't be split at ${pct}%` };
       return { act: mode === "act" };
     }
-    case "CLOSE":
-      if (v.thesis !== "broken") return { act: false, problem: "a full close on my own needs the idea judged broken -- so this stays a suggestion" };
+    case "CLOSE": {
+      // Banking a winner is allowed; a loser is held to its stop anyway (hold-to-plan.ts).
+      const green = price !== undefined && (pos.type === "buy" ? price > pos.openPrice : price < pos.openPrice);
+      if (!green && v.thesis !== "broken") return { act: false, problem: "a losing trade stays open to its stop -- so this stays a suggestion" };
       return { act: mode === "act" };
+    }
     case "EXIT_RULE":
       if (typeof v.closeAtProfit !== "number" && typeof v.closeAtLoss !== "number") return { act: false, problem: "no exit levels given" };
       return { act: mode === "act" };
@@ -233,9 +239,9 @@ export async function reviewTrade(deps: ReviewDeps, m: TradeMonitor, alertKinds:
             content:
               "You are Dave, a trading agent, reviewing one of YOUR OWN open trades because your trade monitor raised an alert. " +
               "Judge the ORIGINAL idea against what price is doing now in the candles -- structure, the levels the idea depended on, momentum. " +
-              "Rules: never widen a stop. HOLD is a real answer when the structure still supports the idea -- then name the price that would change your mind. " +
-              "YOU NEVER CLOSE A TRADE -- not fully, not partly, not with an exit rule. Only the stop loss, the take profit or the trader closes it; a CLOSE, PARTIAL_CLOSE or EXIT_RULE verdict is refused by the code. " +
-              "Your tools are HOLD, BREAKEVEN (a winner) and TIGHTEN_STOP (a winner, never so tight that a normal pullback takes it out). The market deceives: a pullback is not a broken idea. " +
+              "Rules: you may extend (widen) a stop ONCE when the alert is about the stop and the idea is still valid -- to the real invalidation point (the furthest-most deviation), never past double its distance. HOLD is a real answer when the structure still supports the idea -- then name the price that would change your mind. " +
+              "A LOSING trade is never closed -- the stop is its invalidation. A trade IN PROFIT may be closed (CLOSE) when the move is done: it reached an FTA / opposing area of liquidity, momentum died, or it is giving the profit back -- bank it rather than let a winner turn into a loss. " +
+              "Your tools: HOLD, BREAKEVEN, TIGHTEN_STOP (lock profit, or extend the stop once on a stop alert), CLOSE (winners only). The market deceives: a pullback is not a broken idea. " +
               "Use your history numbers: if most trades that hit this alert still closed green, cutting needs a strong reason. Evidence = prices from the candles.",
           },
           {
@@ -329,8 +335,13 @@ async function carryOut(deps: ReviewDeps, v: VerdictArgs, pos: { ticket: string;
             return `✋ Held, not closed: ${hold.why}.${note}`;
           }
         }
+        if (v.verdict === "PARTIAL_CLOSE") {
+          const lots = Math.floor(pos.lots * ((v.partialPercent ?? 0) / 100) * 100) / 100;
+          await ex.closePosition(pos.ticket, lots);
+          return `✅ Done: banked ${lots} of ${pos.lots} lots.`;
+        }
         await ex.closePosition(pos.ticket);
-        return "✅ Done: closed.";
+        return "✅ Done: closed in profit.";
       case "EXIT_RULE":
         // An exit rule is a close armed in advance -- Dave doesn't close trades on his own.
         return "✋ Not armed: Dave doesn't close trades on his own -- the stop and target do. Tell me \"do it\" if you want this exit rule.";

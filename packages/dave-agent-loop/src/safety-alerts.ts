@@ -171,4 +171,65 @@ export function stalePendingChecks(userId: string, pending: EaPendingOrder[], po
 export function resetSafetyState(): void {
   states.clear();
   pendingSeen.clear();
+  limitSeen.clear();
+}
+
+/**
+ * STALE LIMIT REMINDER (the trader's spec). A BUY LIMIT with price above it, a SELL LIMIT with
+ * price below it, never touched since it was placed, and price moving AWAY from it: price ran
+ * without us. One reminder per order every 5 minutes, each with fresh numbers; stops the moment the
+ * order is gone or price touches the level.
+ */
+export const STALE_LIMIT_EVERY_MS = 5 * 60_000;
+const limitSeen = new Map<string, Map<string, { firstSeen: number; firstGap: number; touched: boolean; toldAt?: number; lastGap?: number }>>();
+
+export function staleLimitChecks(
+  userId: string,
+  pending: EaPendingOrder[],
+  priceOf: (symbol: string) => number | undefined,
+  reasonOf: (ticket: string) => string,
+  now: number,
+  enabled = true
+): { symbol: string; text: string }[] {
+  const seen = limitSeen.get(userId) ?? new Map();
+  limitSeen.set(userId, seen);
+  const live = new Set(pending.map((o) => String(o.ticket)));
+  for (const t of [...seen.keys()]) if (!live.has(t)) seen.delete(t);
+  const out: { symbol: string; text: string }[] = [];
+  for (const o of pending) {
+    if (o.type !== "buy_limit" && o.type !== "sell_limit") continue;
+    const price = priceOf(o.symbol);
+    if (price === undefined || !(price > 0)) continue;
+    const buy = o.type === "buy_limit";
+    const gap = buy ? price - o.price : o.price - price; // > 0: price is on the far side, waiting
+    const key = String(o.ticket);
+    let rec = seen.get(key);
+    if (!rec) {
+      rec = { firstSeen: now, firstGap: Math.max(0, gap), touched: false };
+      seen.set(key, rec);
+    }
+    if (gap <= 0) rec.touched = true; // price came back to the level
+    if (rec.touched) continue;
+    // Running away: further from the level than when the order was first seen.
+    if (!(gap > rec.firstGap)) continue;
+    if (rec.toldAt !== undefined && now - rec.toldAt < STALE_LIMIT_EVERY_MS) continue;
+    const lastGap = rec.lastGap;
+    rec.toldAt = now;
+    rec.lastGap = gap;
+    if (!enabled) continue;
+    const side = buy ? "BUY" : "SELL";
+    const mins = Math.max(1, Math.round((now - rec.firstSeen) / 60_000));
+    const pts = +gap.toFixed(5);
+    out.push({
+      symbol: o.symbol,
+      text:
+        `🏃 STALE LIMIT: ${o.symbol} ${side} LIMIT at ${o.price} (ticket ${o.ticket}) has been pending for ${mins} minutes.\n` +
+        `Price is now ${price}, ${pts} points past the limit level${lastGap !== undefined ? ` (was ${+lastGap.toFixed(5)} points at the last reminder)` : ""}.\n` +
+        `It has not come back to the level and is unlikely to reach it.\n` +
+        `Entry reason: ${reasonOf(key)}\n` +
+        `Should I place a ${side} at market instead?\n` +
+        `Decide: 1) is the idea still valid in the same direction? 2) valid -> DELETE_TICKET ${o.ticket} first, then a market ${side} (same lot, SL/TP from the current price) -- never a second trade for the same idea; 3) R:R too poor or the target already passed -> DELETE_TICKET ${o.ticket} and say "missed entry, no chase". Max trades, risk and spread rules still apply.`,
+    });
+  }
+  return out;
 }

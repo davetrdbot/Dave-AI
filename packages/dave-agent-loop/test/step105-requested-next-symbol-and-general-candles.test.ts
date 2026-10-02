@@ -232,7 +232,7 @@ try {
       const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
       console.log(`    real outcome: ${JSON.stringify(outcome)}, decision calls=${decisionCalls}, candles endpoint hits=${endpointCalls["EURUSD:candles"] ?? 0}`);
       assert.equal(decisionCalls, 2, "the decision tool must be invoked exactly twice: once for the REQUEST_CANDLES ask, once more for the real re-decision");
-      assert.equal(endpointCalls["EURUSD:candles"], 1, "the real candles endpoint must be called exactly once for the symbol actually being analyzed -- never a loop");
+      assert.equal(endpointCalls["EURUSD:candles"], 4, "candles: 3 for the APA structure read + exactly one REQUEST_CANDLES -- never a loop");
       assert.equal(outcome.action, "NONE", "a REPEAT REQUEST_CANDLES on the second call must be rejected/fall back to SKIP, not fire a second fetch");
     } finally {
       await ea.stop();
@@ -268,7 +268,7 @@ try {
       const outcome2 = await runAutonomousTick({ userId: OWNER2, db, executor: executor2, provider: provider2 });
       console.log(`    real outcome: ${JSON.stringify(outcome2)}, decision calls=${decisionCalls2}, candles endpoint hits=${endpointCalls2["EURUSD:candles"] ?? 0}`);
       assert.equal(decisionCalls2, 2, "exactly two decision calls for the real REQUEST_CANDLES -> re-decide round trip");
-      assert.equal(endpointCalls2["EURUSD:candles"], 1, "real candles endpoint hit exactly once");
+      assert.equal(endpointCalls2["EURUSD:candles"], 4, "candles: 3 for the APA read + exactly one REQUEST_CANDLES");
       assert.equal(outcome2.action, "NONE", "the real final SKIP decision after reviewing candles must be honored");
       console.log("    confirmed: REQUEST_CANDLES works generally on an ordinary cycle, bounded to exactly one extra round trip");
     } finally {

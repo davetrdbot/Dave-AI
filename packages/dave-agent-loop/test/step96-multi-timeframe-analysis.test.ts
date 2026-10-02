@@ -55,7 +55,8 @@ function startSimulatedEa(userId: string) {
       const resp = await postReport(heartbeat).catch(() => ({ commands: [] as EaCommand[] }));
       for (const cmd of resp.commands) {
         if (cmd.action !== "analyze") continue;
-        requestedTimeframes.push(cmd.timeframe);
+        // The APA structure read asks for raw candles separately -- not part of the analysis suite.
+        if ((cmd as { endpoint?: string }).endpoint !== "candles") requestedTimeframes.push(cmd.timeframe);
         await postReport({ ...heartbeat, results: [{ commandId: cmd.id, status: "ok", data: { price: { bid: 1.085, ask: 1.0852 }, timeframe: cmd.timeframe } }] }).catch(() => undefined);
       }
       await new Promise((r) => setTimeout(r, 20));

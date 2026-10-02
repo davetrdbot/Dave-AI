@@ -34,23 +34,21 @@ try {
   assert.match((v as { why: string }).why, /stays open -- Dave doesn't close trades; the stop \(1010\)/);
   console.log("   ✓\n");
 
-  console.log("[2] A winner isn't closed early -- its stop goes to true breakeven instead\n");
+  console.log("[2] A winner may be banked (the trader, 2 Oct); protectInstead still moves a stop to true breakeven\n");
   const win = { ...boom, ticket: "2", currentPrice: 990 };
-  const w = holdOrClose(win);
-  assert.equal(w.close, false);
-  assert.equal((w as { inProfit: boolean }).inProfit, true);
+  assert.equal(holdOrClose(win).close, true);
   assert.match(await protectInstead(executor, win), /stop moved to breakeven 999\.7/);
   assert.deepEqual(calls.at(-1), { kind: "modify", ticket: "2", changes: { sl: 999.7 } }, "sell: entry - spread - 1 point");
   assert.match(await protectInstead(executor, { ...win, sl: 998 }), /already protects/);
   console.log("   ✓\n");
 
   console.log("[3] 'I don't like it killing trades': near target, no stop, no live price -- still never closed\n");
-  assert.equal(holdOrClose({ ...boom, currentPrice: 969 }).close, false, "31 of 35 to target: the TP does it");
+  assert.equal(holdOrClose({ ...boom, currentPrice: 969 }).close, true, "31 of 35 to target, in profit: may be banked");
   assert.equal(holdOrClose({ ...boom, sl: undefined }).close, false);
   assert.equal(holdOrClose({ ...boom, currentPrice: undefined }).close, false);
   calls.length = 0;
-  const partial = await runTickActions(executor, [{ type: "PARTIAL_CLOSE", ticket: "2", lots: 0.05 }] as never, [win] as never, []);
-  assert.equal(calls.filter((c) => c.kind === "close").length, 0, "no partial either");
+  const partial = await runTickActions(executor, [{ type: "PARTIAL_CLOSE", ticket: "1238463957", lots: 0.05 }] as never, [boom] as never, []);
+  assert.equal(calls.filter((c) => c.kind === "close").length, 0, "no partial on a losing trade");
   assert.match(partial[0].text, /held whole, not part-closed/);
   console.log("   ✓\n");
 

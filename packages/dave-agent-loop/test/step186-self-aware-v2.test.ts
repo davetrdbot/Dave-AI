@@ -159,13 +159,15 @@ assert.match(outcomeLine(U, "roundTrip")!, /of the last 7 trades that hit this, 
 console.log("[9] The review's safety rules -- enforced in code, not left to the model");
 const pos = { type: "buy" as const, lots: 0.3, openPrice: 100, sl: 90, currentPrice: 104, pnl: 4 };
 const base = { thesis: "intact" as const, confidence: 70, reason: "x" };
-assert.deepEqual(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 85 }, pos, "act").act, false, "never widen");
-assert.match(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 85 }, pos, "act").problem!, /WIDEN/);
+assert.equal(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 85 }, pos, "act").act, true, "extending the stop once is allowed (the trader, 2 Oct)");
+assert.equal(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 75 }, pos, "act").act, false, "but never past double its distance");
+assert.match(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 75 }, pos, "act").problem!, /more than double/);
 assert.match(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 105 }, pos, "act").problem!, /wrong side/);
 assert.equal(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 98 }, pos, "act").act, true);
 assert.equal(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 98 }, pos, "advise").act, false, "advise never acts");
 assert.match(checkVerdict({ ...base, verdict: "BREAKEVEN" }, { ...pos, currentPrice: 97, pnl: -3 }, "act").problem!, /in profit/);
-assert.match(checkVerdict({ ...base, verdict: "CLOSE" }, pos, "act").problem!, /judged broken/, "a full close needs a broken idea");
+assert.equal(checkVerdict({ ...base, verdict: "CLOSE" }, pos, "act").act, true, "a winner may be banked");
+assert.match(checkVerdict({ ...base, verdict: "CLOSE" }, { ...pos, currentPrice: 97 }, "act").problem!, /losing trade stays open/, "a loser is held to its stop");
 assert.equal(checkVerdict({ ...base, thesis: "broken", verdict: "CLOSE" }, pos, "act").act, true);
 assert.match(checkVerdict({ ...base, verdict: "PARTIAL_CLOSE", partialPercent: 95 }, pos, "act").problem!, /10-90/);
 assert.match(checkVerdict({ ...base, verdict: "PARTIAL_CLOSE", partialPercent: 50 }, { ...pos, lots: 0.01 }, "act").problem!, /can't be split/);
@@ -226,7 +228,7 @@ for (let i = 22; i <= 32; i++) {
   setSnapshot(R, T + min(i));
   await sweep.runTradeMonitorSweep(deps, T + min(i));
 }
-assert.match(rSent.find((m) => /SELF-REVIEW/.test(m))!, /Not done: a full close on my own needs the idea judged broken/);
+assert.match(rSent.find((m) => /SELF-REVIEW/.test(m))!, /Not done: a losing trade stays open to its stop/);
 assert.ok(!calls.some((c) => c.startsWith("close 11")), "the trade was not closed");
 
 // Off: no review at all.
