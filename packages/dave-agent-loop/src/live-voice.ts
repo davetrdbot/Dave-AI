@@ -58,7 +58,7 @@ const READ_TOOLS = [
   "web_search",
 ];
 /** Tools that change a trade or schedule something: need the trader's spoken yes. */
-const ACTION_TOOLS = ["set_breakeven", "modify_sl_tp", "partial_close", "full_close", "delete_pending_order", "set_exit_rule", "cancel_exit_rule", "set_reminder", "trade_execute"];
+const ACTION_TOOLS = ["set_breakeven", "fit_analysis_to_skill", "modify_sl_tp", "partial_close", "full_close", "delete_pending_order", "set_exit_rule", "cancel_exit_rule", "set_reminder", "trade_execute"];
 export const LIVE_TOOL_NAMES = new Set([...READ_TOOLS, ...ACTION_TOOLS, "ask_dave"]);
 const isAction = (name: string) => ACTION_TOOLS.includes(name);
 

@@ -232,6 +232,7 @@ export const CORE_TOOL_NAMES: string[] = [
   // The drawing board: the moment it's needed is "draw what you mean", mid-conversation.
   "draw_setup",
   "set_breakeven",
+  "fit_analysis_to_skill",
   "growth_status",
   "brain_learn",
   "brain_recall",

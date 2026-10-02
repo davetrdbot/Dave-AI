@@ -4,7 +4,7 @@ import { createGrowthTools } from "./growth-tools.js";
 import { createTodoTool } from "./todos.js";
 import { createExitRuleTools } from "./exit-rules.js";
 import { createSelfAwareStatsTool } from "./alert-outcomes.js";
-import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness, pullbackScalpRoom, getPullbackMode, isLimitType } from "@dave/trading";
+import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness, pullbackScalpRoom, getPullbackMode, isLimitType, ALL_ANALYSIS_ENDPOINTS, getAnalysisConfig, setCustomEndpoints, resetAnalysisConfigToAll } from "@dave/trading";
 import { EA_STATE_TOOLS, EA_ANALYSIS_TOOLS, MT5_CLOUD_TOOLS, createEaAnalysisSource, getLastKnownAccountSnapshot, getLastKnownState } from "@dave/ea-bridge";
 import { CORE_TOOLS } from "@dave/core";
 import { KNOWLEDGE_TOOLS } from "@dave/knowledge";
@@ -15,7 +15,7 @@ import { LOVABLE_TOOLS, LOVABLE_SETTINGS_TOOLS } from "@dave/lovable-mcp";
 import { VOICE_SETTINGS_TOOLS } from "@dave/notifications";
 import { PAIR_GROUP_TOOLS, getSelfAwareMode, breakevenStop } from "@dave/trading";
 import { SETTINGS_TOOLS, DAVE_TOOL_REQUEST_TOOLS, SUBAGENT_TOOLS, JOURNAL_TOOLS, BACKGROUND_CHECK_TOOLS, REMINDER_TOOLS, type BackgroundCheck } from "@dave/workers";
-import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill } from "@dave/skills";
+import { SKILL_TOOLS, seedInternalToolDocSkills, seedToolUsageSkill, listSkills } from "@dave/skills";
 import { E2B_TOOLS } from "@dave/e2b";
 import { MEMORY_TOOLS, MEMORY_EXTRA_TOOLS, MEMORY_WRITE_TOOLS } from "@dave/memory";
 import { PUSH_TOOLS, TELEGRAM_TOOLS, type TelegramClient, chunkForTelegram, tradeApprovalKeyboard } from "@dave/telegram";
@@ -405,6 +405,46 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   // Breakeven as one call (the trader: "if possible make it a tool -- the agent can send breakeven
   // to a particular pair ticket"). Reads the entry from MT5's own report, refuses a trade that isn't
   // in profit (a breakeven stop there would sit on the wrong side and the broker rejects it).
+  // The trader: "some endpoints are not needed in the APA strategy -- a tool that reads the full
+  // strategy and removes the ones that aren't necessary based on the skill". Two steps: called
+  // without `keep` it returns the skill text and every endpoint; called with `keep` it narrows
+  // get_all_analysis to exactly those (the scan's APA STRUCTURE block is separate and always sent).
+  registry.register([
+    {
+      name: "fit_analysis_to_skill",
+      description:
+        "Trim the analysis endpoints sent to you on every scan down to what a strategy skill actually uses. Step 1: call with `skill` (a skill name, default the APA skill) and NO `keep` -- you get the full skill text and every endpoint. Read the whole skill. " +
+        "Step 2: call again with `keep` = the endpoints that strategy needs (always keep price and candles), and `reason`. Everything else stops being fetched. `reset: true` sends everything again.",
+      parameters: {
+        type: "object",
+        properties: {
+          skill: { type: "string", description: "skill name (or part of it); default: the APA skill" },
+          keep: { type: "array", items: { type: "string" }, description: "endpoints to keep" },
+          reason: { type: "string" },
+          reset: { type: "boolean" },
+        },
+      },
+      execute: async (args: Record<string, unknown>) => {
+        if (args.reset === true) {
+          resetAnalysisConfigToAll(deps.userId);
+          return { ok: true, scope: "all endpoints again" };
+        }
+        const want = String(args.skill ?? "APA").toLowerCase();
+        const skill = listSkills(deps.userId).find((sk) => sk.name.toLowerCase().includes(want));
+        if (!skill) throw new Error(`No skill matches "${args.skill}". Skills: ${listSkills(deps.userId).map((sk) => sk.name).join(", ")}`);
+        const all = [...ALL_ANALYSIS_ENDPOINTS] as string[];
+        if (!Array.isArray(args.keep) || !args.keep.length) {
+          return { step: "read the skill, then call again with keep", skill: skill.name, content: skill.content, endpoints: all, current: getAnalysisConfig(deps.userId) };
+        }
+        const keep = [...new Set([...args.keep.map((e) => String(e).trim().toLowerCase()), "price", "candles"])];
+        const unknown = keep.filter((e) => !all.includes(e));
+        const next = setCustomEndpoints(deps.userId, keep);
+        const removed = all.filter((e) => !next.endpoints.includes(e));
+        return { ok: true, skill: skill.name, kept: next.endpoints, removed, ...(unknown.length ? { ignored: unknown } : {}), reason: String(args.reason ?? "") };
+      },
+    },
+  ]);
+
   registry.register([
     {
       name: "set_breakeven",
