@@ -163,6 +163,7 @@ export type ProviderName =
   | "atlascloud"
   | "githubmodels"
   | "gwarden"
+  | "runware"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {
