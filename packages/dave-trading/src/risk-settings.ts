@@ -35,7 +35,9 @@ function settingsPath(userId: string): string {
 
 export function getRiskSettings(userId: string): RiskSettings {
   const path = settingsPath(userId);
-  if (!existsSync(path)) return { ...DEFAULT_SETTINGS, slOffChosen: false };
+  // SL off means off -- the default included (the trader saw "SL off" in the app and the bot
+  // still placed stops because no settings file had been saved yet).
+  if (!existsSync(path)) return { ...DEFAULT_SETTINGS, slOffChosen: DEFAULT_SETTINGS.slMode === "off" };
   const saved = JSON.parse(readFileSync(path, "utf8")) as RiskSettings;
   return { ...saved, slOffChosen: saved.slMode === "off" };
 }

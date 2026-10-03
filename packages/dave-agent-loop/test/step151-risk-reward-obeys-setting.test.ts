@@ -74,7 +74,7 @@ console.log("\n[4] THE FIX: the autonomous tick now TELLS the model the floor...
   assert.match(tick, /const minRiskReward = getMinRiskReward\(userId\)/, "read fresh per tick, like every other setting");
   // It must reach the model where the numbers are actually chosen, not only in a context header.
   assert.match(tick, /buildDecisionTool\(risk, minRiskReward\)/, "the decision tool must receive it");
-  assert.match(tick, /properties\.sl = \{ type: "number", description: `Stop loss price[^`]*\$\{rrNote\}` \}/, "the sl field must state the floor");
+  assert.match(tick, /properties\.sl = \{ type: "number", description: [^\n]*\$\{rrNote\}/, "the sl field must state the floor");
   assert.match(tick, /properties\.tp = \{ type: "number", description: `Take profit price[^`]*\$\{rrNote\}` \}/, "…and so must tp");
   assert.match(tick, /properties\.target = \{[\s\S]{0,400}\$\{rrNote\}/, "…and the planned target when TP is off");
   console.log("    confirmed: in the context block AND on the sl/tp fields themselves");

@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { DaveDatabase } from "@dave/db";
 import type { Provider, CompletionRequest, CompletionResult } from "@dave/brain";
 import type { TradeExecutor, OrderRequest } from "@dave/trading";
-import { upsertGroup, setActiveGroup, setMinRiskReward } from "@dave/trading";
+import { upsertGroup, setActiveGroup, setMinRiskReward, setRiskMode } from "@dave/trading";
 import { getOrCreateEaWebhook, createEaWebhookServer, type EaCommand } from "@dave/ea-bridge";
 import { runAutonomousTick } from "../src/autonomous-tick.js";
 
@@ -87,6 +87,7 @@ const base = { symbol: "EURUSD", confidence: 80, reason: "sell the retest", lots
 console.log("[1] SELL with its stop BELOW the entry -> sent back -> corrected -> placed");
 {
   const OWNER = "rr-fix";
+  setRiskMode(OWNER, "sl", "auto"); // these cases are about a stop Dave places
   upsertGroup(OWNER, { id: "g", name: "G", symbols: ["EURUSD"] });
   setActiveGroup(OWNER, "g");
   setMinRiskReward(OWNER, 2);
@@ -109,6 +110,7 @@ console.log("   ✓\n");
 console.log("[2] Exact R:R: a target short of the ratio is replaced, not refused -- placed first time");
 {
   const OWNER = "rr-still-bad";
+  setRiskMode(OWNER, "sl", "auto"); // these cases are about a stop Dave places
   upsertGroup(OWNER, { id: "g", name: "G", symbols: ["EURUSD"] });
   setActiveGroup(OWNER, "g");
   setMinRiskReward(OWNER, 2);
@@ -127,6 +129,7 @@ console.log("   ✓\n");
 console.log("[3] The retry answers SKIP -> nothing placed, no crash");
 {
   const OWNER = "rr-skip";
+  setRiskMode(OWNER, "sl", "auto"); // these cases are about a stop Dave places
   upsertGroup(OWNER, { id: "g", name: "G", symbols: ["EURUSD"] });
   setActiveGroup(OWNER, "g");
   setMinRiskReward(OWNER, 2);
@@ -143,6 +146,7 @@ console.log("   ✓\n");
 console.log("[4] Good levels first time -> no retry at all");
 {
   const OWNER = "rr-good";
+  setRiskMode(OWNER, "sl", "auto"); // these cases are about a stop Dave places
   upsertGroup(OWNER, { id: "g", name: "G", symbols: ["EURUSD"] });
   setActiveGroup(OWNER, "g");
   setMinRiskReward(OWNER, 2);

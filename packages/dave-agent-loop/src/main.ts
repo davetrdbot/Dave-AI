@@ -1,4 +1,5 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { SlOffGuardExecutor } from "./sl-off-guard.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -402,7 +403,8 @@ export async function main(): Promise<void> {
     ["/hooks/worker/", subServerHandler(userHookServer)],
   ];
   // One executor for every channel -- Telegram and the app's chat place trades the same way.
-  const sharedExecutor = new DynamicTradeExecutor(ownerUserId, eaBridge.getExecutor(ownerUserId));
+  // SL off = no stop from ANY path (sl-off-guard.ts); copy-trade signals keep theirs.
+  const sharedExecutor = new SlOffGuardExecutor(ownerUserId, new DynamicTradeExecutor(ownerUserId, eaBridge.getExecutor(ownerUserId)));
   // The app's chat is served here, where Dave runs (live steps, real Stop) -- ahead of the admin
   // proxy, which serves every other /api/app route.
   routes.push([APP_CHAT_PREFIX, createAppChatHandler({ userId: ownerUserId, db, executor: sharedExecutor, systemPrompt: loadSystemPrompt(), publicBaseUrl })]);

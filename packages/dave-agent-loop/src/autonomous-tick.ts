@@ -65,7 +65,7 @@ import {
   peekAlertFocus,
 } from "./autonomous-tick-state.js";
 import { isAutonomousExecutionEnabled } from "./autonomous-trading-state.js";
-import { setSelfPause, getSelfPause, MAX_SELF_PAUSE_MINUTES } from "./self-pause.js";
+import { setSelfPause, getSelfPause, DEFAULT_SELF_PAUSE_MINUTES } from "./self-pause.js";
 import { recordAnalysisFetch } from "./analysis-debug-store.js";
 import { buildTradePlacedMessage, buildTradeApprovalRequestMessage, buildSniperTierWhileStoppedMessage, summarizeReason, buildProgressBar } from "./trade-notifications.js";
 import { tradeApprovalKeyboard, type InlineKeyboardMarkup } from "@dave/telegram";
@@ -380,7 +380,7 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
         "DELETE_TICKET removes a pending order, or closes an open trade (needs ticket): allowed on a WINNER (bank it at the FTA / when the move is done) and on a trade with no stop (SL off -- you are its stop); a LOSING trade that has a stop is held to it (refused). " +
         "PARTIAL_CLOSE banks part of a winner (same rule). " +
         "MODIFY adjusts SL/TP on an existing open position (needs ticket; optional newSl/newTp -- pass a number to set it, null to explicitly remove it, or omit to leave it unchanged). " +
-        "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
+        "PAUSE = REST to save credits: no scans at all for pauseMinutes (1-60, default 15). Use it OFTEN -- whenever nothing in your pairs is near a level worth watching and no trade needs you, or exposure is already high. Arm what you're waiting for FIRST (mark_level / set_reminder / setup), because any self-aware alert, reminder, marked level or setup step wakes you instantly. " +
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
         "REQUEST_CANDLES fetches one fresh real batch of candles (for the at-risk symbol if a SELF-AWARE ALERT is active below, otherwise for the symbol you're currently analyzing) so you decide with current price action, not stale data -- optional, never required, available on any cycle, at most once; you'll be asked to decide again right after with the candles in hand. " +
         "RUN_SCRIPT runs one real script (needs script) against this symbol's full analysis suite and hands you its actual output before you decide -- use it ONLY when the decision genuinely turns on a number you cannot reliably work out in your head, and never as a routine step; optional, never required, at most once; you'll be asked to decide again right after with the output in hand. " +
@@ -420,7 +420,7 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
     closeLots: { type: "number", description: "required for PARTIAL_CLOSE -- how many lots of the position to close" },
     newSl: { type: ["number", "null"], description: "optional for MODIFY -- the open position's new SL. A number sets it, null explicitly removes it, omit to leave it unchanged." },
     newTp: { type: ["number", "null"], description: "optional for MODIFY -- the open position's new TP. A number sets it, null explicitly removes it, omit to leave it unchanged." },
-    pauseMinutes: { type: "number", description: "optional for PAUSE -- how long to pause, 1 to 5 minutes; defaults to 5 if omitted" },
+    pauseMinutes: { type: "number", description: "optional for PAUSE -- how long to rest, 1 to 60 minutes; defaults to 15. Alerts, reminders and marked levels wake you early." },
     requestedNextSymbol: {
       type: "string",
       description: "optional -- request a SPECIFIC symbol for the NEXT cycle instead of round-robin order, with a real, genuine reason (e.g. related to a trade you took, or something you want to confirm once a candle closes)",
@@ -458,7 +458,7 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
   // Only the levels the model actually sets are offered. A FIXED stop/target is the trader's rule
   // and is applied in code (trade-levels.ts); offering the field anyway is how the model's own
   // number used to silently replace the trader's fixed 30 pips.
-  if (risk.slMode !== "on") properties.sl = { type: "number", description: `Stop loss price${risk.slMode === "off" ? " (no fixed rule is set -- give one where the idea is proven wrong)" : ""}. ${rrNote}` };
+  if (risk.slMode !== "on") properties.sl = { type: "number", description: risk.slMode === "off" ? `Your INVALIDATION price (SL is OFF: nothing is sent to the broker -- it only measures the target and is where you close the trade yourself). ${rrNote}` : `Stop loss price. ${rrNote}` };
   if (risk.slMode === "auto") required.push("sl");
   if (risk.tpMode !== "on") properties.tp = { type: "number", description: `Take profit price, placed at the broker. ${rrNote}` };
   if (risk.tpMode === "auto") required.push("tp");
@@ -618,7 +618,7 @@ You are never idle. A SKIP is never empty: if there is no trade here right now, 
 
 You may ASK a single genuine question only for real, specific ambiguity you cannot resolve yourself. Prefer deciding over asking.
 
-DELETE_TICKET cancels an existing pending order you no longer want -- use it with a real ticket from PENDING ORDERS below; you never close an open position (only its stop, its target or the trader does). PARTIAL_CLOSE is refused the same way. MODIFY adjusts SL and/or TP on an existing open position (needs ticket) without closing anything -- pass newSl/newTp as a number to set it, null to explicitly remove it, or omit either to leave it unchanged. PAUSE stops you from opening ANY new trade for a short while (1-5 minutes, your call) when you judge there's already enough real open exposure -- you can still ASK, DELETE_TICKET, PARTIAL_CLOSE, or MODIFY while paused, just not open something new.
+DELETE_TICKET cancels an existing pending order you no longer want -- use it with a real ticket from PENDING ORDERS below; you never close an open position (only its stop, its target or the trader does). PARTIAL_CLOSE is refused the same way. MODIFY adjusts SL and/or TP on an existing open position (needs ticket) without closing anything -- pass newSl/newTp as a number to set it, null to explicitly remove it, or omit either to leave it unchanged. PAUSE puts you to rest (1-60 minutes, your call; default 15): no scans, no credits spent, while the monitor, your marked levels and your reminders keep watching for free -- any of them firing wakes you at once. Rest whenever there's nothing to do; arm your marks/reminders first.
 
 CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest opinion before you commit -- entirely optional, never required. Journal has its own access to trade history and analysis tools; it reviews and comments, it never places or modifies a trade itself. Use it when a setup is genuinely borderline and a second read would help, not as a default detour. After Journal answers, you'll be asked to decide again with its opinion in hand.
 
@@ -1165,7 +1165,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     `SYMBOL: ${symbol}`,
     `PRICE: ${JSON.stringify(priceInfo ?? {})}`,
     `ACCOUNT: balance=${account?.balance ?? "unknown"} equity=${account?.equity ?? "unknown"} freeMargin=${account?.freeMargin ?? "unknown"} leverage=${account?.leverage ?? "unknown"}`,
-    `SL_MODE: ${risk.slMode}${risk.slMode === "on" ? ` (fixed ${risk.slValue} pips)` : ""} | TP_MODE: ${risk.tpMode}${risk.tpMode === "on" ? ` (fixed ${risk.tpValue} pips)` : ""} | LOT_MODE: ${risk.lotMode}${risk.lotMode === "on" ? ` (fixed ${risk.lotValue})` : ""}`,
+    `SL_MODE: ${risk.slMode}${risk.slMode === "on" ? ` (fixed ${risk.slValue} pips)` : risk.slMode === "off" ? " (NO stop loss on any trade -- a MODIFY with sl is refused; you are the stop: arm set_exit_rule at the invalidation or close it)" : ""} | TP_MODE: ${risk.tpMode}${risk.tpMode === "on" ? ` (fixed ${risk.tpValue} pips)` : ""} | LOT_MODE: ${risk.lotMode}${risk.lotMode === "on" ? ` (fixed ${risk.lotValue})` : ""}`,
     levelsGuidance(risk, minRiskReward),
     `CONFIDENCE THRESHOLD: ${confidenceSettings.threshold}%`,
     // The setting the tick used to enforce silently without ever showing it -- see
@@ -1694,12 +1694,12 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: "self-pause already active, redundant PAUSE absorbed" });
       return { action: "NONE", notable: false };
     }
-    const state = setSelfPause(userId, decision.pauseMinutes ?? MAX_SELF_PAUSE_MINUTES, reason);
+    const state = setSelfPause(userId, decision.pauseMinutes ?? DEFAULT_SELF_PAUSE_MINUTES, reason);
     const minutesLeft = Math.round((state.pausedUntil - Date.now()) / 60_000);
     recordTickDecision(userId, { ts: Date.now(), symbol, action: "PAUSE", reason });
     // Shown in the app's Live tab as a countdown ("Dave paused himself -- 4m left").
     publishActivity(userId, "loop", "self_pause", { until: state.pausedUntil, minutes: minutesLeft, reason, symbol });
-    return { action: "PAUSE", symbol, notable: true, message: `⏸ Self-pausing for ${minutesLeft}m\n💡 ${summarizeReason(reason)}` };
+    return { action: "PAUSE", symbol, notable: true, message: `⏸ Resting ${minutesLeft}m (no scans, no credits) -- an alert, reminder or marked level wakes me\n💡 ${summarizeReason(reason)}` };
   }
 
   // Real bug fixed (the trader, from the live trade logs: "the risk reward stuff"). The model often

@@ -102,7 +102,7 @@ export function buildLiveSettingsBlock(userId: string): string {
     // First line of the block on purpose: Dave had no clock at all, and everything below
     // (sessions, how long a position has run, whether a level is stale) is time-relative.
     buildClockLine(),
-    `SL: ${modeLabel(risk.slMode, risk.slValue)} | TP: ${modeLabel(risk.tpMode, risk.tpValue)} | Lot: ${modeLabel(risk.lotMode, risk.lotValue)}`,
+    `SL: ${modeLabel(risk.slMode, risk.slValue)}${risk.slMode === "off" ? " (NO stop loss may be placed or moved -- manage exits with set_exit_rule or close)" : ""} | TP: ${modeLabel(risk.tpMode, risk.tpValue)} | Lot: ${modeLabel(risk.lotMode, risk.lotValue)}`,
     pairLine,
     `Trading session: ${session}`,
     `Trading mode: ${tradingMode.mode}${tradingMode.lockedSkillId ? ` (locked to skill ${tradingMode.lockedSkillId})` : ""}`,

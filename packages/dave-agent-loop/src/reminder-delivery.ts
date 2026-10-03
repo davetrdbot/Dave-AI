@@ -1,3 +1,5 @@
+import { wakeFromSelfPause } from "./self-pause.js";
+import { runScanSoon } from "./trading-loop.js";
 import { takeDueReminders, describeFiredReminder, type Reminder } from "@dave/workers";
 import { appendReminderEvent } from "@dave/ea-bridge";
 import { getActiveGroupInfo } from "@dave/trading";
@@ -37,6 +39,10 @@ export function deliverDueReminders(userId: string, send: (text: string) => Prom
     // top of the prompt -- even a pair with an open trade (the trader: "even reminder messages too").
     // A reminder that didn't name its pair: the pair it mentions (from the active and backup groups).
     const symbol = reminder.symbol ?? pairMentioned(userId, `${reminder.text} ${reminder.reason ?? ""}`);
+    if (!symbol && wakeFromSelfPause(userId)) {
+      // A reminder about no pair in particular still ends the rest: the next scan runs now.
+      runScanSoon(userId);
+    }
     if (symbol) {
       focusScanOnAlert(userId, symbol, `REMINDER you set (${reminder.id}) fired: ${reminder.text}${reminder.reason ? ` -- why: ${reminder.reason}` : ""}`, now);
     }

@@ -18,7 +18,8 @@ import { BootstrapFlow, type Transport } from "@dave/core";
 import { stopOrPanic, isTradingHalted, assertNotTripped, CircuitBreakerTrippedError } from "@dave/safety";
 import { getEaConnectionStatus, createEaAnalysisSource } from "@dave/ea-bridge";
 import { enforceDrawdownLimit } from "./drawdown-guard.js";
-import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes } from "./trading-loop.js";
+import { startAutonomousTradingLoop, stopAutonomousTradingLoop, isAutonomousTradingRunning, setAutonomousTradingIntervalMinutes, getTradingLoopIntervalMinutes, registerTick, clearTick } from "./trading-loop.js";
+import { peekAlertFocus } from "./autonomous-tick-state.js";
 import { modelConfigProvider } from "./provider-selection.js";
 import { createWorker, sendMessage as sendCommsMessage, DAVE_PARTICIPANT_ID } from "@dave/workers";
 import { setBusy, clearBusy, getBusyState, setAutonomousBusy, clearAutonomousBusy, getAutonomousBusyState, waitForBusyToClear } from "./busy-state.js";
@@ -648,6 +649,7 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
   // see below) then genuinely cancels this controller's signal, which autonomous-tick.ts threads
   // into its own provider.generate() call.
   const tickAbortController = beginTurn(deps.ownerUserId);
+  registerTick(deps.ownerUserId, tickAbortController, peekAlertFocus(deps.ownerUserId).length > 0);
   const cycleStarted = Date.now();
   noteScanResumed(deps.ownerUserId);
   publishActivity(deps.ownerUserId, "loop", "cycle_start", {});
@@ -702,6 +704,7 @@ async function runAutonomousTradingCycleInner(deps: TelegramBotServerDeps, clien
     if (alert) await client.sendMessage({ chat_id: chatId, text: alert }).catch(() => undefined);
   } finally {
     endTurn(deps.ownerUserId, tickAbortController);
+    clearTick(deps.ownerUserId, tickAbortController);
     clearAutonomousBusy(deps.ownerUserId);
   }
 }

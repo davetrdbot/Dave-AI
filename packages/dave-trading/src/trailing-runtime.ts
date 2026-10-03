@@ -1,3 +1,4 @@
+import { getRiskSettings } from "./risk-settings.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { processPriceTick, type Position, type BreakevenTrailingConfig } from "./breakeven-trailing.js";
@@ -71,6 +72,8 @@ export async function runTrailingTick(userId: string, ticket: string, currentPri
   const registry = readRegistry(userId);
   const position = registry[ticket];
   if (!position) return { ranked: false, slChanged: false };
+  // SL off = no stop moves at all (sl-off-guard.ts in the agent loop covers every other path).
+  if (getRiskSettings(userId).slMode === "off") return { ranked: false, slChanged: false };
 
   const config = getTrailingStopConfig(userId);
   if (!config) return { ranked: false, slChanged: false };

@@ -17,14 +17,22 @@ export interface SelfPauseState {
 }
 
 export const MIN_SELF_PAUSE_MINUTES = 1;
-export const MAX_SELF_PAUSE_MINUTES = 5;
+export const MAX_SELF_PAUSE_MINUTES = 60;
+/** PAUSE with no length: a quarter of an hour of rest. */
+export const DEFAULT_SELF_PAUSE_MINUTES = 15;
 
 function selfPausePath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "agent-loop", userId, "self-pause.json");
 }
 
 /** Clamps to [MIN_SELF_PAUSE_MINUTES, MAX_SELF_PAUSE_MINUTES] -- the model's own judgment call
- *  on duration, never below 1 or above the user's hard 5-minute cap. */
+ *  on duration, never below 1 or above an hour.
+ *
+ *  Self-pause is REST (the trader: "use the self pause instead of burning credits -- wake when a
+ *  reminder hits"): while it runs the scan loop makes no AI calls at all (trading-loop.ts), and
+ *  anything that matters -- a self-aware alert, a reminder, a marked level, a setup step -- wakes
+ *  Dave at once (wakeFromSelfPause, called by alert-focus.ts and reminder-delivery.ts). The trade
+ *  monitor, level watcher and reminders keep running underneath; they cost no credits. */
 export function setSelfPause(userId: string, minutes: number, reason: string): SelfPauseState {
   const clamped = Math.min(MAX_SELF_PAUSE_MINUTES, Math.max(MIN_SELF_PAUSE_MINUTES, Math.round(minutes)));
   const state: SelfPauseState = { pausedUntil: Date.now() + clamped * 60_000, reason };
@@ -51,4 +59,12 @@ export function clearSelfPause(userId: string): void {
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(path, JSON.stringify(null), "utf8");
+}
+
+/** Ends a rest early because something needs Dave. Returns the pause that was cleared, or null. */
+export function wakeFromSelfPause(userId: string): SelfPauseState | null {
+  const state = getSelfPause(userId);
+  if (!state) return null;
+  clearSelfPause(userId);
+  return state;
 }

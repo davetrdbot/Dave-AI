@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getMinRiskReward, setPullbackMode } from "@dave/trading";
+import { getMinRiskReward, setPullbackMode, setRiskMode } from "@dave/trading";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -213,6 +213,7 @@ async function main() {
       // Already passed -> converts to market, sl/tp unchanged.
       {
         const OWNER = `user-convert-${c.action.toLowerCase()}-passed`;
+        setRiskMode(OWNER, "sl", "auto"); // keeping the stop is what's checked
         upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD"] });
         setActiveGroup(OWNER, "majors");
         const ea = startSimulatedEa(OWNER, { bid: LIVE, ask: LIVE + 0.0002, atr: 0.001 });
@@ -240,6 +241,7 @@ async function main() {
       // Not yet passed -> placed exactly as decided, unconverted (regression, the normal common case).
       {
         const OWNER = `user-convert-${c.action.toLowerCase()}-notpassed`;
+        setRiskMode(OWNER, "sl", "auto");
         upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD"] });
         setActiveGroup(OWNER, "majors");
         const ea = startSimulatedEa(OWNER, { bid: LIVE, ask: LIVE + 0.0002, atr: 0.001 });

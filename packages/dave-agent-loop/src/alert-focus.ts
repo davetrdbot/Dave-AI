@@ -1,6 +1,8 @@
 import { requestAlertFocus } from "./autonomous-tick-state.js";
 import { isAutonomousTradingEnabled } from "./autonomous-trading-state.js";
-import { runScanSoon } from "./trading-loop.js";
+import { runScanSoon, preemptRoutineTick } from "./trading-loop.js";
+import { wakeFromSelfPause } from "./self-pause.js";
+import { publishActivity } from "./activity-bus.js";
 
 /**
  * An alert makes mode 2 act, not just read about it later (the trader: "the bot just marked a level
@@ -16,13 +18,17 @@ const lastFocus = new Map<string, number>();
 
 export function focusScanOnAlert(userId: string, symbol: string, alertText: string, now = Date.now()): boolean {
   if (!symbol || !isAutonomousTradingEnabled(userId)) return false;
+  // Resting? Anything worth an alert wakes Dave straight away.
+  if (wakeFromSelfPause(userId)) publishActivity(userId, "loop", "self_pause_end", { text: `▶ Woke up for ${symbol}: ${alertText.replace(/\s+/g, " ").slice(0, 160)}`, symbol });
   const key = `${userId}:${symbol.toUpperCase()}`;
   const last = lastFocus.get(key);
   if (last !== undefined && now - last < ALERT_FOCUS_COOLDOWN_MS) return false;
   lastFocus.set(key, now);
   requestAlertFocus(userId, symbol, alertText, now);
   const soon = runScanSoon(userId);
-  console.log(`[alert-focus] ${userId}: ${symbol} queued for a scan${soon ? " now" : " (next scan)"} -- ${alertText.replace(/\s+/g, " ").slice(0, 120)}`);
+  // A routine scan of another pair is cut short so this one starts within seconds, not after it.
+  const cut = soon && preemptRoutineTick(userId);
+  console.log(`[alert-focus] ${userId}: ${symbol} queued for a scan${soon ? " now" : " (next scan)"}${cut ? " -- routine scan stopped for it" : ""} -- ${alertText.replace(/\s+/g, " ").slice(0, 120)}`);
   return true;
 }
 

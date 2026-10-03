@@ -1,3 +1,4 @@
+import { getSelfPause } from "./self-pause.js";
 import { isTradingHalted, startTradingLoop, resumeTradingLoop } from "@dave/safety";
 import { isAutonomousTradingEnabled, setAutonomousTradingEnabled } from "./autonomous-trading-state.js";
 import { getTradingLoopIntervalMs, getTradingLoopIntervalMinutes, setTradingLoopIntervalMinutes } from "./trading-loop-config.js";
@@ -64,6 +65,8 @@ function pollTick(ownerUserId: string, runCycle: () => Promise<void>): void {
   // running, setting the flag true takes effect on the next restart's boot-time resume.
   if (!isAutonomousTradingEnabled(ownerUserId)) return;
   if (cycleInFlight.has(ownerUserId)) return; // previous cycle still running -- never overlap
+  // Dave is resting (self-pause): no scans, no AI credits, until it ends or an alert wakes him.
+  if (getSelfPause(ownerUserId)) return;
   const due = (lastRunAt.get(ownerUserId) ?? 0) + getTradingLoopIntervalMs(ownerUserId);
   if (Date.now() < due) return; // not due yet
   lastRunAt.set(ownerUserId, Date.now());
@@ -93,6 +96,23 @@ export function startAutonomousTradingLoop(ownerUserId: string, runCycle: () => 
   lastRunAt.set(ownerUserId, Date.now() - (intervalMs !== undefined ? getTradingLoopIntervalMs(ownerUserId) - intervalMs : 0));
   const handle = setInterval(() => pollTick(ownerUserId, runCycle), POLL_MS);
   activeIntervals.set(ownerUserId, handle);
+  return true;
+}
+
+/** The routine scan running right now, so an alert can cut it short (the trader: "the alert comes
+ *  only after the two-minute analysis finishes"). An alert scan itself is never cut short. */
+const currentTick = new Map<string, { controller: AbortController; isAlert: boolean }>();
+export function registerTick(ownerUserId: string, controller: AbortController, isAlert: boolean): void {
+  currentTick.set(ownerUserId, { controller, isAlert });
+}
+export function clearTick(ownerUserId: string, controller: AbortController): void {
+  if (currentTick.get(ownerUserId)?.controller === controller) currentTick.delete(ownerUserId);
+}
+/** Stops a routine scan in flight so the alert's scan runs now. Returns whether one was stopped. */
+export function preemptRoutineTick(ownerUserId: string): boolean {
+  const t = currentTick.get(ownerUserId);
+  if (!t || t.isAlert || t.controller.signal.aborted) return false;
+  t.controller.abort();
   return true;
 }
 
