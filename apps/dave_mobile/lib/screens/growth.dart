@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 
 import '../app_scope.dart';
 import '../look.dart';
@@ -41,6 +42,7 @@ class GrowthScreen extends StatelessWidget {
           SliverToBoxAdapter(child: _GradesCard(g: g)),
           SliverToBoxAdapter(child: _GoalCard(g: g, act: act, reload: reload)),
           SliverToBoxAdapter(child: _NeuronCard(g: g, act: act, reload: reload)),
+          SliverToBoxAdapter(child: _ShareCard(g: g, act: act, reload: reload)),
           SliverToBoxAdapter(child: _RulesCard(g: g)),
           SliverToBoxAdapter(child: _VersionsCard(g: g)),
           const SliverToBoxAdapter(child: SizedBox(height: 110)),
@@ -752,6 +754,101 @@ class _GradesCard extends StatelessWidget {
               ]),
             ),
         ],
+      ]),
+    );
+  }
+}
+
+// ───────────────────────────── share ─────────────────────────────
+
+/// Share this brain with a link, or paste a friend's link to bring theirs in.
+class _ShareCard extends StatelessWidget {
+  const _ShareCard({required this.g, required this.act, required this.reload});
+  final Map<String, dynamic> g;
+  final Future<void> Function(Map<String, Object?>, {String? done}) act;
+  final Future<void> Function() reload;
+
+  Future<void> _import(BuildContext context) async {
+    final clip = (await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim() ?? '';
+    if (!context.mounted) return;
+    final ctrl = TextEditingController(text: clip.contains('/api/share/growth/') ? clip : '');
+    final url = await showCupertinoDialog<String>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Import a Growth link'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Column(children: [
+            const Text('Paste the link copied from the other Growth page. Its neurons, rules and avoided pairs are added to yours; nothing of yours is removed.'),
+            const SizedBox(height: 10),
+            CupertinoTextField(controller: ctrl, placeholder: 'https://.../api/share/growth/...', maxLines: 3, minLines: 1, autofocus: true),
+          ]),
+        ),
+        actions: [
+          CupertinoDialogAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          CupertinoDialogAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('Import')),
+        ],
+      ),
+    );
+    if (url == null || url.isEmpty || !context.mounted) return;
+    try {
+      final r = await AppScope.of(context).api.growthAction({'action': 'import', 'url': url});
+      final i = _m(r['imported']);
+      if (context.mounted) {
+        await _toast(context, 'Imported: ${i['newFacts'] ?? 0} new facts, ${i['confirmedFacts'] ?? 0} already known (made stronger), ${i['newRules'] ?? 0} rules, ${i['newAvoided'] ?? 0} avoided pairs.');
+      }
+    } catch (e) {
+      if (context.mounted) await showError(context, e);
+    }
+    await reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    final link = g['shareUrl'] as String?;
+    return ContentCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const SectionLabel('Share the brain'),
+        const SizedBox(height: Space.s2),
+        Row(children: [
+          const Expanded(child: Text('Share link', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600))),
+          CupertinoSwitch(
+            value: link != null,
+            activeTrackColor: look.accent,
+            onChanged: (v) => act({'action': v ? 'share_on' : 'share_off'}),
+          ),
+        ]),
+        Text(
+          link == null
+              ? 'Turn on to get a link another Dave can import: neurons and their facts, learned rules, avoided pairs. No account, keys or trades are in it.'
+              : 'Anyone with this link can read this brain. Turn it off and the link stops working.',
+          style: TextStyle(fontSize: 12, color: secondary),
+        ),
+        if (link != null) ...[
+          const SizedBox(height: Space.s2),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: look.chip, borderRadius: BorderRadius.circular(10)),
+            child: Text(link, style: const TextStyle(fontSize: 12, fontFamily: 'Menlo')),
+          ),
+          CupertinoButton(
+            padding: const EdgeInsets.only(top: 6),
+            minimumSize: const Size(30, 30),
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: link));
+              if (context.mounted) await _toast(context, 'Link copied. Paste it on the other Growth page with "Import a link".');
+            },
+            child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(CupertinoIcons.doc_on_doc, size: 16), SizedBox(width: 6), Text('Copy link')]),
+          ),
+        ],
+        const SizedBox(height: Space.s2),
+        CupertinoButton.filled(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          onPressed: () => _import(context),
+          child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(CupertinoIcons.arrow_down_doc, size: 18), SizedBox(width: 6), Text('Import a link')]),
+        ),
       ]),
     );
   }

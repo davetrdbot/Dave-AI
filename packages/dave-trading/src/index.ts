@@ -40,3 +40,4 @@ export * from "./market-hours.js";
 export * from "./analysis-config.js";
 export * from "./growth.js";
 export * from "./decision-grades.js";
+export * from "./growth-share.js";

@@ -33,6 +33,10 @@ export function middleware(req: NextRequest): NextResponse {
     return NextResponse.json({ error: "unpaired", message: "This device is not paired. Pair it again from the web panel." }, { status: 401 });
   }
 
+  // Growth share links: public by design, read-only, guarded by a long random token the owner can
+  // revoke (dave-trading growth-share.ts). Only the brain is served -- never keys or the account.
+  if (path.startsWith("/api/share/growth/") && req.method === "GET") return NextResponse.next();
+
   const username = process.env.ADMIN_USERNAME;
   const password = process.env.ADMIN_PASSWORD;
   if (!username || !password) return NextResponse.next();

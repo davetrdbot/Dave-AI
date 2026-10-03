@@ -20,6 +20,11 @@ import {
   listGradedDecisions,
   gradeStats,
   describeVerdict,
+  getGrowthShareToken,
+  createGrowthShareToken,
+  revokeGrowthShareToken,
+  importGrowthBundle,
+  parseGrowthShareUrl,
 } from "@dave/trading";
 import { withDevice } from "../../../../server/require-device";
 
@@ -31,6 +36,18 @@ import { withDevice } from "../../../../server/require-device";
  * The reflection itself needs the model, which lives in the bot process -- "Reflect now" drops a
  * request file the bot picks up within ~20 s (growth-reflection.ts's startGrowthLoop).
  */
+
+/** This bot's public address, as the phone reached it (Railway puts it in x-forwarded-host). */
+function publicBase(req: Request): string {
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "localhost";
+  const proto = req.headers.get("x-forwarded-proto") ?? (host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https");
+  return `${proto.split(",")[0].trim()}://${host.split(",")[0].trim()}`;
+}
+
+function shareUrl(req: Request, userId: string): string | null {
+  const t = getGrowthShareToken(userId);
+  return t ? `${publicBase(req)}/api/share/growth/${t}` : null;
+}
 
 function snapshot(userId: string) {
   const trades = readClosedTradeHistory(userId)
@@ -71,7 +88,7 @@ function snapshot(userId: string) {
   };
 }
 
-export const GET = withDevice(async ({ userId }) => NextResponse.json(snapshot(userId)));
+export const GET = withDevice(async ({ userId, req }) => NextResponse.json({ ...snapshot(userId), shareUrl: shareUrl(req, userId) }));
 
 export const POST = withDevice(async ({ userId, req }) => {
   let body: Record<string, unknown>;
@@ -97,14 +114,34 @@ export const POST = withDevice(async ({ userId, req }) => {
       case "learn":
         learnFact(userId, String(body.neuron ?? ""), String(body.text ?? ""), { source: "trader", strength: 3 });
         break;
+      case "share_on":
+        createGrowthShareToken(userId);
+        break;
+      case "share_off":
+        revokeGrowthShareToken(userId);
+        break;
+      case "import": {
+        const url = parseGrowthShareUrl(String(body.url ?? ""));
+        if (!url) return NextResponse.json({ error: "Paste a Growth share link (it ends in /api/share/growth/...)." }, { status: 400 });
+        let bundle: unknown;
+        try {
+          const res = await fetch(url, { signal: AbortSignal.timeout(15_000), redirect: "error" });
+          if (!res.ok) return NextResponse.json({ error: res.status === 404 ? "That link is off or wrong -- ask your friend to copy it again." : `Their bot answered ${res.status}.` }, { status: 400 });
+          bundle = await res.json();
+        } catch (err) {
+          return NextResponse.json({ error: `Could not reach that bot: ${err instanceof Error ? err.message : String(err)}` }, { status: 400 });
+        }
+        const r = importGrowthBundle(userId, bundle);
+        return NextResponse.json({ ok: true, imported: r, ...snapshot(userId), shareUrl: shareUrl(req, userId) });
+      }
       case "forget":
         if (!forgetFact(userId, String(body.id ?? ""))) return NextResponse.json({ error: "That fact is gone already." }, { status: 404 });
         break;
       default:
-        return NextResponse.json({ error: "action must be goals, reflect, stop_test, learn or forget." }, { status: 400 });
+        return NextResponse.json({ error: "action must be goals, reflect, stop_test, learn, forget, share_on, share_off or import." }, { status: 400 });
     }
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
   }
-  return NextResponse.json({ ok: true, ...snapshot(userId) });
+  return NextResponse.json({ ok: true, ...snapshot(userId), shareUrl: shareUrl(req, userId) });
 });
