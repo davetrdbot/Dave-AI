@@ -84,6 +84,7 @@ export const ALL_ANALYSIS_ENDPOINTS = [
   "inducement",
   "premium_discount",
   "market_structure",
+  "reference_levels",
 ] as const;
 
 export interface AnalysisConfig {
@@ -257,7 +258,7 @@ export const ANALYSIS_ENDPOINT_GROUPS: { group: string; endpoints: { id: (typeof
   {
     group: "Market structure",
     endpoints: [
-      { id: "market_structure", contains: "All in one, from this timeframe's own bars: trend, BOS / CHoCH, validation and invalidation, shift / transition / reclaim, dealing range; liquidity pools, equal highs/lows, previous day/week high-low, sweeps, runs, inducement, liquidity engineering (sweep, FMD, CHoCH); order blocks, breakers, FVGs, engulfing areas, flip zones (fresh or used); displacement / engulfing / rejection on the last candle" },
+      { id: "market_structure", contains: "From THIS timeframe's own bars only. STRUCTURE: external + internal layers (trend, BOS / CHoCH, strong & weak high/low), aligned or not, MSS, CISD, validation / invalidation, shift / transition / reclaim, dealing range with premium / discount / OTE. LIQUIDITY: external range (BSL / SSL), resting pools, equal highs / lows, trendline liquidity, sweeps (with swing failure) vs runs, inducement, liquidity engineering (sweep, FMD, CHoCH), liquidity voids, draw on liquidity. ZONES: order block, breaker, mitigation block, rejection block, FVG, inverse FVG, balanced price range, engulfing area, flip -- each fresh / mitigated % / invalidated. CONFIRMATION: displacement, engulfing, rejection" },
       { id: "structure", contains: "HH/HL/LH/LL trend, BOS, CHoCH, MSS, CISD, dealing range, premium/discount, OTE" },
       { id: "swing", contains: "Swing highs and lows with time, last leg direction" },
       { id: "fractal", contains: "Williams fractal up/down points" },
@@ -315,6 +316,7 @@ export const ANALYSIS_ENDPOINT_GROUPS: { group: string; endpoints: { id: (typeof
   {
     group: "Market context",
     endpoints: [
+      { id: "reference_levels", contains: "Levels other timeframes define, each from its own bars: daily / weekly / monthly open, previous high / low / close, average daily range and today's range" },
       { id: "price", contains: "Bid / ask / spread, day-week-month highs and lows, swap, lot limits" },
       { id: "session", contains: "Tokyo / London / New York status, overlaps, Asian range" },
       { id: "seasonality", contains: "Most volatile hour, hourly average range" },
@@ -330,7 +332,7 @@ export const ANALYSIS_ENDPOINT_GROUPS: { group: string; endpoints: { id: (typeof
   {
     group: "Risk and testing",
     endpoints: [
-      { id: "risk_metrics", contains: "ATR stop/target levels, R:R, pip value, lot per % risk" },
+      { id: "risk_metrics", contains: "ATR stop/target distances, R:R, pip value, spread vs stop, lot per % risk (this timeframe only)" },
       { id: "backtest", contains: "Quick MA20/50 cross backtest: win rate, net pips" },
     ],
   },

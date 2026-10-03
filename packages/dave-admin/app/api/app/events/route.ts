@@ -49,9 +49,11 @@ export const GET = withDevice(async ({ userId, req }) => {
     const after = resumeFrom ?? 0;
     // Reminder events only go to an app that says it understands them: an older build would read
     // one as a trade close and show a nonsense notification.
-    const withReminders = params.get("include") === "reminders";
+    const include = (params.get("include") ?? "").split(",");
+    const withReminders = include.includes("reminders");
+    const withCalls = include.includes("calls");
     const all = readTradeEventsAfter(userId, after);
-    const events = all.filter((e) => withReminders || e.type !== "reminder");
+    const events = all.filter((e) => (withReminders || e.type !== "reminder") && (withCalls || e.type !== "call"));
     // latestId covers the filtered-out events too, so an older app still moves past them.
     return NextResponse.json({ events, latestId: all.length > 0 ? all[all.length - 1].id : latestTradeEventId(userId) });
   }
@@ -85,7 +87,7 @@ export const GET = withDevice(async ({ userId, req }) => {
         for (const e of events) {
           // A reminder goes out under its own SSE event name, which an older app build simply
           // ignores (it only listens for "trade").
-          send(`id: ${e.id}\nevent: ${e.type === "reminder" ? "reminder" : "trade"}\ndata: ${JSON.stringify(e)}\n\n`);
+          send(`id: ${e.id}\nevent: ${e.type === "reminder" ? "reminder" : e.type === "call" ? "call" : "trade"}\ndata: ${JSON.stringify(e)}\n\n`);
           lastId = e.id;
         }
       };

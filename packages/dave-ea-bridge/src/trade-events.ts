@@ -59,6 +59,19 @@ export type TradeEvent =
       symbol: string;
       text: string;
       reason: string;
+    }
+  | {
+      /** Dave calling the trader (dave-calls.ts): the phone rings like a call and answering opens
+       *  a Gemini Live call where Dave says why he called. `ticket` is the call id. */
+      id: number;
+      at: number;
+      type: "call";
+      ticket: string;
+      symbol: string;
+      /** Why Dave is calling, in his words. */
+      text: string;
+      /** "urgent" | "normal" */
+      reason: string;
     };
 
 type NewTradeEvent = TradeEvent extends infer E ? (E extends TradeEvent ? Omit<E, "id" | "at"> : never) : never;
@@ -180,6 +193,11 @@ function appendClosedTrades(userId: string, records: ClosedTradeRecord[]): void 
   if (history.length > CLOSED_TRADE_HISTORY_CAP) history = history.slice(-CLOSED_TRADE_HISTORY_CAP);
   if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(history), "utf8");
+}
+
+/** Rings the trader's phone (dave-calls.ts). Idempotent per call id. */
+export function appendCallEvent(userId: string, call: { id: string; text: string; urgent?: boolean; symbol?: string }, now = Date.now()): TradeEvent[] {
+  return appendTradeEvents(userId, [{ type: "call", ticket: call.id, symbol: call.symbol ?? "", text: call.text, reason: call.urgent ? "urgent" : "normal" }], now);
 }
 
 /** Records a fired reminder for the phone. Idempotent per reminder id. */
