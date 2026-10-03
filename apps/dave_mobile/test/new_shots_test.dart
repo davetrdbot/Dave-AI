@@ -122,7 +122,7 @@ void main() {
       await _shot(t, 'growth_share_${look.name}');
     });
 
-    testWidgets('analysis scope (${look.name})', (t) async {
+    testWidgets('analysis scope (${look.name})', skip: Platform.environment['SCOPE_JSON'] == null, (t) async {
       await phone(t);
       final api = DaveApi(base: Uri.parse('https://x'), token: 't', client: _server());
       await t.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const AnalysisScopePage()), null, look: look));
