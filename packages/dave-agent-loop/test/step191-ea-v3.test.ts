@@ -53,7 +53,7 @@ console.log("   ✓\n");
 
 console.log("[2] The first report from EA 3.0 starts fresh -- the corrected ticket numbers don't read as close+open");
 const v3 = heartbeat({
-  eaVersion: "3.4",
+  eaVersion: "3.5",
   currency: "USD",
   marginLevel: 1234.5,
   profit: 10,
@@ -70,19 +70,19 @@ const state = JSON.parse(readFileSync(join(root, "data", "ea-bridge", userId, "l
 assert.equal(state.positions[0].ticket, "3000000000", "the full ticket number");
 assert.equal(state.positions[0].comment, "Dave 🚀", "a character split across network chunks arrives intact");
 const snap = getLastKnownAccountSnapshot(userId)!;
-assert.equal(snap.eaVersion, "3.4");
+assert.equal(snap.eaVersion, "3.5");
 assert.equal(snap.currency, "USD");
 assert.equal(snap.marginLevel, 1234.5);
 assert.equal(snap.serverUtcOffset, 10800);
 assert.equal(getEaConnectionStatus(userId).eaUpdateAvailable, false);
 await post([Buffer.from(JSON.stringify(v3))]);
 assert.equal(reports.at(-1)!.isFirstReport, false, "same version again: normal report");
-assert.equal(CURRENT_EA_VERSION, "3.4");
+assert.equal(CURRENT_EA_VERSION, "3.5");
 assert.equal(isEaOutdated("2.9"), true);
 assert.equal(isEaOutdated("3.0"), true);
 assert.equal(isEaOutdated("3.1"), true);
 assert.equal(isEaOutdated("3.2"), true);
-assert.equal(isEaOutdated("3.4"), false);
+assert.equal(isEaOutdated("3.5"), false);
 assert.equal(isEaOutdated(undefined), true);
 const bal = (await EA_STATE_TOOLS.find((t) => t.name === "get_account_balance")!.execute({}, { userId })) as Record<string, unknown>;
 assert.equal(bal.currency, "USD");
@@ -92,7 +92,7 @@ console.log("   ✓\n");
 
 console.log("[2b] EA 3.2's one-second poll: hands over queued jobs at once and leaves the saved trades alone");
 bridge.enqueueCommand(userId, { id: "job-1", action: "analyze", endpoint: "all", symbol: "VOL_10", timeframe: "H1" } as never);
-r = await post([Buffer.from(JSON.stringify({ type: "poll", eaVersion: "3.4" }))]);
+r = await post([Buffer.from(JSON.stringify({ type: "poll", eaVersion: "3.5" }))]);
 assert.equal(r.status, 200);
 assert.deepEqual(JSON.parse(r.body).commands.map((c: { id: string }) => c.id), ["job-1"], "the job goes out on the poll, not on the next full report");
 const kept = JSON.parse(readFileSync(join(root, "data", "ea-bridge", userId, "last-known-state.json"), "utf8"));

@@ -33,7 +33,7 @@
 // it -- moved here, to the top, so every real use compiles regardless of where it appears below.
 #define DAVEEA_BARS 1000
 // Reported with every heartbeat so the bot can tell the trader when this file is out of date.
-#define EA_VERSION "3.4"
+#define EA_VERSION "3.5"
 // Docker-mode file bridge (see UseFileBridge) -- defined up here for the same reason.
 #define BRIDGE_DIR "dave_bridge"
 #define BRIDGE_TIMEOUT_MS 5000
@@ -4172,7 +4172,209 @@ string A_All(string sym, ENUM_TIMEFRAMES tf)
    A_Push(d, Jr("order_blocks",     A_OrderBlocks()));
    A_Push(d, Jr("inducement",       A_Inducement()));
    A_Push(d, Jr("premium_discount", A_PremiumDiscount()));
+   A_Push(d, Jr("market_structure", A_MarketStructure(sym)));
    return Obj(A_Join(d));
+  }
+
+
+//--- market_structure (EA 3.5) ------------------------------------------------
+// The trader: "we need invalidation, validation, liquidity sweep, FVG, OB identification, market
+// structure, liquidity engineering, BOS... regroup them". ONE endpoint, grouped, computed from THIS
+// timeframe's own raw bars only (no mixing timeframes):
+//   structure  -- swings, trend, BOS, CHoCH, validation / invalidation, shift / transition / reclaim,
+//                 dealing range with premium / discount / equilibrium
+//   liquidity  -- buy-side / sell-side pools, equal highs / lows, previous day & week highs / lows,
+//                 sweeps (wick through + close back), runs (close through), inducement,
+//                 liquidity engineering (sweep -> FMD -> CHoCH)
+//   zones      -- order blocks, breaker blocks, fair value gaps, Type 1 engulfing areas, flip zones,
+//                 each with fresh / consumed (50% traded)
+//   confirmation -- displacement candle, rejection / engulfing candle on the last closed bar
+// Arrays here are chronological (0 = oldest) for clarity; the EA series is newest-first.
+struct MsSwing { int i; double p; bool hi; };
+
+string A_MarketStructure(string sym)
+  {
+   int n = MathMin(g_anb, 300);
+   if(n < 30) return Obj(J("error", "not enough bars"));
+   double o[], h[], l[], c[];
+   ArrayResize(o, n); ArrayResize(h, n); ArrayResize(l, n); ArrayResize(c, n);
+   for(int k = 0; k < n; k++) { int s = n - 1 - k; o[k] = g_aO[s]; h[k] = g_aH[s]; l[k] = g_aL[s]; c[k] = g_aC[s]; }
+   int d = g_aDigits;
+   double rangeSum = 0; for(int k = n - 50; k < n; k++) rangeSum += h[k] - l[k];
+   double avgR = rangeSum / 50.0;
+   // swings (2 left / 2 right)
+   MsSwing sw[]; int ns = 0;
+   for(int i = 2; i < n - 2; i++)
+     {
+      bool isH = true, isL = true;
+      for(int j = i - 2; j <= i + 2; j++) { if(h[j] > h[i]) isH = false; if(l[j] < l[i]) isL = false; }
+      if(isH) { ArrayResize(sw, ns + 1); sw[ns].i = i; sw[ns].p = h[i]; sw[ns].hi = true; ns++; }
+      if(isL) { ArrayResize(sw, ns + 1); sw[ns].i = i; sw[ns].p = l[i]; sw[ns].hi = false; ns++; }
+     }
+   // last two highs / lows -> trend
+   double h1 = 0, h2 = 0, l1 = 0, l2 = 0; int hc = 0, lc = 0; int lastHiI = -1, lastLoI = -1;
+   for(int k = ns - 1; k >= 0; k--)
+     {
+      if(sw[k].hi && hc < 2) { if(hc == 0) { h2 = sw[k].p; lastHiI = sw[k].i; } else h1 = sw[k].p; hc++; }
+      if(!sw[k].hi && lc < 2) { if(lc == 0) { l2 = sw[k].p; lastLoI = sw[k].i; } else l1 = sw[k].p; lc++; }
+     }
+   string trend = "RANGE";
+   if(hc == 2 && lc == 2) { if(h2 > h1 && l2 > l1) trend = "BULLISH"; else if(h2 < h1 && l2 < l1) trend = "BEARISH"; }
+   // BOS: latest close beyond a prior swing
+   int bosAt = -1; double bosLvl = 0; bool bosBull = false; int bosSw = -1;
+   for(int k = 0; k < ns; k++)
+      for(int j = sw[k].i + 3; j < n; j++)
+        {
+         bool br = sw[k].hi ? c[j] > sw[k].p : c[j] < sw[k].p;
+         if(br) { if(j > bosAt) { bosAt = j; bosLvl = sw[k].p; bosBull = sw[k].hi; bosSw = k; } break; }
+        }
+   // CHoCH = the latest BOS goes against the prior trend read from the swings before it
+   bool choch = false;
+   if(bosAt >= 0) choch = (bosBull && trend == "BEARISH") || (!bosBull && trend == "BULLISH");
+   // validation / invalidation
+   double validation = bosAt >= 0 ? bosLvl : 0, invalidation = 0;
+   if(bosAt >= 0)
+      for(int k = ns - 1; k >= 0; k--) if(sw[k].i < bosAt && sw[k].hi != bosBull) { invalidation = sw[k].p; break; }
+   // shift / transition / reclaim
+   string shift = "NONE"; double reclaimLvl = 0; bool reclaimed = false; int shiftAt = -1;
+   if(bosAt >= 0 && invalidation > 0)
+      for(int j = bosAt + 1; j < n; j++)
+         if(bosBull ? c[j] < invalidation : c[j] > invalidation)
+           {
+            shiftAt = j; int after = 0; for(int k = 0; k < ns; k++) if(sw[k].i > j) after++;
+            shift = after >= 2 ? (bosBull ? "SHIFT_BEARISH" : "SHIFT_BULLISH") : (bosBull ? "TRANSITION_BEARISH" : "TRANSITION_BULLISH");
+            reclaimLvl = bosBull ? h[ArrayMaximum(h, bosAt, j - bosAt + 1)] : l[ArrayMinimum(l, bosAt, j - bosAt + 1)];
+            for(int q = j + 1; q < n; q++) if(bosBull ? c[q] > reclaimLvl : c[q] < reclaimLvl) { reclaimed = true; break; }
+            break;
+           }
+   // dealing range: last swing high / low
+   double rHi = h2 > 0 ? h2 : h[ArrayMaximum(h, n - 50, 50)], rLo = l2 > 0 ? l2 : l[ArrayMinimum(l, n - 50, 50)];
+   double eq = (rHi + rLo) / 2, pos = rHi > rLo ? (c[n - 1] - rLo) / (rHi - rLo) : 0.5;
+   string structure = Obj(J("trend", trend) + "," +
+      (bosAt >= 0 ? Jr("bos", Obj(J("side", bosBull ? "BULLISH" : "BEARISH") + "," + Jn("level", bosLvl, d) + "," + Ji("bars_ago", n - 1 - bosAt) + "," + Jb("is_choch", choch))) : Jnull("bos")) + "," +
+      (validation > 0 ? Jn("validation", validation, d) : Jnull("validation")) + "," +
+      (invalidation > 0 ? Jn("invalidation", invalidation, d) : Jnull("invalidation")) + "," +
+      J("shift", shift) + "," + (shiftAt >= 0 ? Ji("shift_bars_ago", n - 1 - shiftAt) : Jnull("shift_bars_ago")) + "," +
+      (reclaimLvl > 0 ? Jr("reclaim", Obj(Jn("level", reclaimLvl, d) + "," + Jb("reclaimed", reclaimed))) : Jnull("reclaim")) + "," +
+      Jr("range", Obj(Jn("high", rHi, d) + "," + Jn("low", rLo, d) + "," + Jn("equilibrium", eq, d) + "," + J("zone", pos > 0.5 ? "PREMIUM" : "DISCOUNT") + "," + Jn("position", pos, 2))) + "," +
+      Jn("last_swing_high", h2, d) + "," + Jn("last_swing_low", l2, d));
+   // ---- liquidity
+   string sweeps[]; int lastSweepAt = -1; bool lastSweepSellSide = false; double lastSweepLvl = 0;
+   string runs[];
+   for(int k = 0; k < ns; k++)
+      for(int j = sw[k].i + 3; j < n; j++)
+        {
+         if(sw[k].hi && h[j] > sw[k].p)
+           {
+            if(c[j] < sw[k].p) { A_Push(sweeps, Obj(J("side", "BUY_SIDE") + "," + Jn("level", sw[k].p, d) + "," + Ji("bars_ago", n - 1 - j))); if(j > lastSweepAt) { lastSweepAt = j; lastSweepSellSide = false; lastSweepLvl = sw[k].p; } }
+            else A_Push(runs, Obj(J("side", "BUY_SIDE") + "," + Jn("level", sw[k].p, d) + "," + Ji("bars_ago", n - 1 - j)));
+            break;
+           }
+         if(!sw[k].hi && l[j] < sw[k].p)
+           {
+            if(c[j] > sw[k].p) { A_Push(sweeps, Obj(J("side", "SELL_SIDE") + "," + Jn("level", sw[k].p, d) + "," + Ji("bars_ago", n - 1 - j))); if(j > lastSweepAt) { lastSweepAt = j; lastSweepSellSide = true; lastSweepLvl = sw[k].p; } }
+            else A_Push(runs, Obj(J("side", "SELL_SIDE") + "," + Jn("level", sw[k].p, d) + "," + Ji("bars_ago", n - 1 - j)));
+            break;
+           }
+        }
+   // resting pools: untaken swing highs above / lows below price, nearest 3
+   string bsl[], ssl[]; double px = c[n - 1];
+   for(int k = ns - 1; k >= 0 && (ArraySize(bsl) < 3 || ArraySize(ssl) < 3); k--)
+     {
+      bool taken = false;
+      for(int j = sw[k].i + 1; j < n; j++) if(sw[k].hi ? h[j] > sw[k].p : l[j] < sw[k].p) { taken = true; break; }
+      if(taken) continue;
+      if(sw[k].hi && sw[k].p > px && ArraySize(bsl) < 3) A_Push(bsl, DoubleToString(sw[k].p, d));
+      if(!sw[k].hi && sw[k].p < px && ArraySize(ssl) < 3) A_Push(ssl, DoubleToString(sw[k].p, d));
+     }
+   // equal highs / lows (within 10% of the average bar range)
+   double eqh = 0, eql = 0; double tol = avgR * 0.1;
+   for(int a = ns - 1; a >= 0 && (eqh == 0 || eql == 0); a--)
+      for(int b = a - 1; b >= MathMax(0, a - 8); b--)
+         if(sw[a].hi == sw[b].hi && MathAbs(sw[a].p - sw[b].p) <= tol) { if(sw[a].hi && eqh == 0) eqh = sw[a].p; if(!sw[a].hi && eql == 0) eql = sw[a].p; }
+   // liquidity engineering: last sweep -> FMD -> CHoCH back
+   string engineering = "null";
+   if(lastSweepAt >= 0)
+     {
+      double fmd = lastSweepSellSide ? l[ArrayMinimum(l, lastSweepAt, n - lastSweepAt)] : h[ArrayMaximum(h, lastSweepAt, n - lastSweepAt)];
+      double opp = 0; for(int k = ns - 1; k >= 0; k--) if(sw[k].i < lastSweepAt && sw[k].hi == lastSweepSellSide) { opp = sw[k].p; break; }
+      bool ch = false; if(opp > 0) for(int j = lastSweepAt + 1; j < n; j++) if(lastSweepSellSide ? c[j] > opp : c[j] < opp) { ch = true; break; }
+      engineering = Obj(J("side", lastSweepSellSide ? "BULLISH" : "BEARISH") + "," + Jn("swept_level", lastSweepLvl, d) + "," + Jn("fmd", fmd, d) + "," + Jn("choch_level", opp, d) + "," + Jb("choch_confirmed", ch) + "," + Ji("bars_ago", n - 1 - lastSweepAt));
+     }
+   // inducement: the first minor pullback swing inside the current leg (the last opposite swing)
+   double idm = trend == "BULLISH" ? l2 : trend == "BEARISH" ? h2 : 0;
+   bool idmTaken = false;
+   if(idm > 0) { int from = trend == "BULLISH" ? lastLoI : lastHiI; for(int j = from + 1; j < n; j++) if(trend == "BULLISH" ? l[j] < idm : h[j] > idm) { idmTaken = true; break; } }
+   double pdh = xHigh(sym, PERIOD_D1, 1), pdl = xLow(sym, PERIOD_D1, 1), pwh = xHigh(sym, PERIOD_W1, 1), pwl = xLow(sym, PERIOD_W1, 1);
+   string liquidity = Obj(Jr("buy_side_pools", "[" + A_Join(bsl) + "]") + "," + Jr("sell_side_pools", "[" + A_Join(ssl) + "]") + "," +
+      (eqh > 0 ? Jn("equal_highs", eqh, d) : Jnull("equal_highs")) + "," + (eql > 0 ? Jn("equal_lows", eql, d) : Jnull("equal_lows")) + "," +
+      Jp("prev_day_high", pdh, d) + "," + Jp("prev_day_low", pdl, d) + "," + Jp("prev_week_high", pwh, d) + "," + Jp("prev_week_low", pwl, d) + "," +
+      Jr("sweeps", "[" + LastN(sweeps, 3) + "]") + "," + Jr("runs", "[" + LastN(runs, 3) + "]") + "," +
+      (idm > 0 ? Jr("inducement", Obj(Jn("level", idm, d) + "," + Jb("taken", idmTaken))) : Jnull("inducement")) + "," +
+      Jr("engineering", engineering));
+   // ---- zones
+   string zones[];
+   for(int i = 1; i < n - 1; i++)
+     {
+      // Type 1 engulfing area
+      if(c[i-1] < o[i-1] && c[i] < o[i] && h[i] > h[i-1] && c[i] < l[i-1]) MsZone(zones, "ENGULFING_AOL", false, c[i], h[i], i, n, l, h, d);
+      if(c[i-1] > o[i-1] && c[i] > o[i] && l[i] < l[i-1] && c[i] > h[i-1]) MsZone(zones, "ENGULFING_AOL", true, l[i], c[i], i, n, l, h, d);
+      // fair value gap (min 30% of the average bar range)
+      if(i + 1 < n && l[i+1] - h[i-1] >= avgR * 0.3) MsZone(zones, "FVG", true, h[i-1], l[i+1], i + 1, n, l, h, d);
+      if(i + 1 < n && l[i-1] - h[i+1] >= avgR * 0.3) MsZone(zones, "FVG", false, h[i+1], l[i-1], i + 1, n, l, h, d);
+     }
+   // order block before the last BOS, and breakers (an OB price closed through)
+   if(bosAt > 0)
+      for(int j = bosAt - 1; j >= MathMax(0, bosAt - 15); j--)
+        {
+         if(bosBull && c[j] < o[j]) { MsZone(zones, "ORDER_BLOCK", true, l[j], h[j], bosAt, n, l, h, d); break; }
+         if(!bosBull && c[j] > o[j]) { MsZone(zones, "ORDER_BLOCK", false, l[j], h[j], bosAt, n, l, h, d); break; }
+        }
+   for(int i = 3; i < n - 2; i++)
+     {
+      bool bullOB = c[i] < o[i] && c[i+1] > h[i];
+      bool bearOB = c[i] > o[i] && c[i+1] < l[i];
+      if(!bullOB && !bearOB) continue;
+      for(int j = i + 2; j < n; j++)
+         if(bullOB ? c[j] < l[i] : c[j] > h[i]) { MsZone(zones, "BREAKER", !bullOB, l[i], h[i], j, n, l, h, d); break; }
+     }
+   // flip zones: a swing level touched 2+ times, later closed through
+   for(int a = 0; a < ns; a++)
+     {
+      int touches = 1; int lastT = sw[a].i;
+      for(int b = a + 1; b < ns; b++) if(sw[b].hi == sw[a].hi && MathAbs(sw[b].p - sw[a].p) <= avgR * 0.3) { touches++; lastT = sw[b].i; }
+      if(touches < 2) continue;
+      for(int j = lastT + 1; j < n; j++)
+         if(sw[a].hi ? c[j] > sw[a].p + avgR * 0.3 : c[j] < sw[a].p - avgR * 0.3)
+           { MsZone(zones, "FLIP", sw[a].hi, sw[a].p - avgR * 0.15, sw[a].p + avgR * 0.15, j, n, l, h, d); break; }
+     }
+   // ---- confirmation (last closed bar)
+   int z = n - 2;
+   double body = MathAbs(c[z] - o[z]), rng = h[z] - l[z];
+   bool displacement = body > avgR * 1.5;
+   bool bullEng = c[z] > o[z] && c[z-1] < o[z-1] && c[z] > o[z-1] && o[z] < c[z-1];
+   bool bearEng = c[z] < o[z] && c[z-1] > o[z-1] && c[z] < o[z-1] && o[z] > c[z-1];
+   bool pinBull = rng > 0 && (MathMin(o[z], c[z]) - l[z]) / rng > 0.6, pinBear = rng > 0 && (h[z] - MathMax(o[z], c[z])) / rng > 0.6;
+   string confirmation = Obj(Jb("displacement", displacement) + "," + J("displacement_side", displacement ? (c[z] > o[z] ? "BULLISH" : "BEARISH") : "NONE") + "," +
+      J("engulfing", bullEng ? "BULLISH" : bearEng ? "BEARISH" : "NONE") + "," + J("rejection", pinBull ? "BULLISH" : pinBear ? "BEARISH" : "NONE"));
+   return Obj(Jr("structure", structure) + "," + Jr("liquidity", liquidity) + "," + Jr("zones", "[" + LastN(zones, 12) + "]") + "," + Jr("confirmation", confirmation) + "," +
+              Jn("avg_bar_range", avgR, d));
+  }
+
+// One zone, with its freshness: consumed = price traded through 50% of it after it formed.
+void MsZone(string &arr[], string kind, bool bull, double lo, double hi, int from, int n, double &l[], double &h[], int d)
+  {
+   double mid = (lo + hi) / 2; bool consumed = false;
+   for(int j = from + 1; j < n; j++) if(bull ? l[j] <= mid : h[j] >= mid) { consumed = true; break; }
+   A_Push(arr, Obj(J("type", kind) + "," + J("side", bull ? "BULLISH" : "BEARISH") + "," + Jn("low", lo, d) + "," + Jn("high", hi, d) + "," + Ji("bars_ago", n - 1 - from) + "," + Jb("fresh", !consumed)));
+  }
+
+string LastN(string &arr[], int k)
+  {
+   int n = ArraySize(arr), s = MathMax(0, n - k);
+   string out = "";
+   for(int i = s; i < n; i++) { if(i > s) out += ","; out += arr[i]; }
+   return out;
   }
 
 // Puts the freshness label first inside an object answer.
@@ -4273,6 +4475,7 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr,
    else if(endpoint == "order_blocks") data = A_OrderBlocks();
    else if(endpoint == "inducement") data = A_Inducement();
    else if(endpoint == "premium_discount") data = A_PremiumDiscount();
+   else if(endpoint == "market_structure") data = A_MarketStructure(symbol);
    else if(endpoint == "adx") data = A_Adx();
    else if(endpoint == "all") data = A_All(symbol, tf);
    else

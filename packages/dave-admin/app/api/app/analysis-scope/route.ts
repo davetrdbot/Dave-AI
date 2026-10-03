@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { ALL_ANALYSIS_ENDPOINTS, ALL_ANALYSIS_TIMEFRAMES, getAnalysisConfig, resetAnalysisConfigToAll, setCustomEndpoints, setCustomTimeframes } from "@dave/trading";
+import { ALL_ANALYSIS_ENDPOINTS, ALL_ANALYSIS_TIMEFRAMES, ANALYSIS_ENDPOINT_GROUPS, getAnalysisConfig, resetAnalysisConfigToAll, setCustomEndpoints, setCustomTimeframes } from "@dave/trading";
 import { withDevice } from "../../../../server/require-device";
 
 /** Which timeframes and analysis types Dave pulls from the EA on each scan -- fewer is faster. */
@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 function view(userId: string) {
   const c = getAnalysisConfig(userId);
-  return { mode: c.mode, timeframes: c.timeframes, endpoints: c.endpoints, allTimeframes: ALL_ANALYSIS_TIMEFRAMES, allEndpoints: ALL_ANALYSIS_ENDPOINTS };
+  return { mode: c.mode, timeframes: c.timeframes, endpoints: c.endpoints, allTimeframes: ALL_ANALYSIS_TIMEFRAMES, allEndpoints: ALL_ANALYSIS_ENDPOINTS, groups: ANALYSIS_ENDPOINT_GROUPS };
 }
 
 export const GET = withDevice(async ({ userId }) => NextResponse.json(view(userId)));

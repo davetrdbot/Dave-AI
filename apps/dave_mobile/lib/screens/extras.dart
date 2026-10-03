@@ -491,6 +491,13 @@ class AnalysisScopePage extends StatelessWidget {
           final allTf = strings(d['allTimeframes']);
           final allEp = strings(d['allEndpoints']);
           final everything = d['mode'] == 'all';
+          final groups = d['groups'] is List ? (d['groups'] as List).whereType<Map>().toList() : <Map>[];
+          void toggleEp(String ep) {
+            final next = eps.contains(ep) ? (eps.where((x) => x != ep).toList()) : [...eps, ep];
+            if (next.isEmpty) return;
+            act({'action': 'endpoints', 'endpoints': next});
+          }
+
           return [
             SliverToBoxAdapter(
               child: _section(context, header: 'Scope', footer: 'Everything is the most thorough and the slowest. Trimming analysis types Dave never uses makes each scan faster.', children: [
@@ -519,25 +526,33 @@ class AnalysisScopePage extends StatelessWidget {
                 ),
               ]),
             ),
-            SliverToBoxAdapter(
-              child: _section(context, header: 'Analysis types (${eps.length} of ${allEp.length})', children: [
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Wrap(spacing: 6, runSpacing: 6, children: [
-                    for (final ep in allEp)
-                      _Chip(
-                        label: ep.replaceAll('_', ' '),
-                        on: eps.contains(ep),
-                        onTap: () {
-                          final next = eps.contains(ep) ? (eps.where((x) => x != ep).toList()) : [...eps, ep];
-                          if (next.isEmpty) return;
-                          act({'action': 'endpoints', 'endpoints': next});
-                        },
+            if (groups.isEmpty)
+              SliverToBoxAdapter(
+                child: _section(context, header: 'Analysis types (${eps.length} of ${allEp.length})', children: [
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Wrap(spacing: 6, runSpacing: 6, children: [
+                      for (final ep in allEp) _Chip(label: ep.replaceAll('_', ' '), on: eps.contains(ep), onTap: () => toggleEp(ep)),
+                    ]),
+                  ),
+                ]),
+              ),
+            for (final g in groups)
+              SliverToBoxAdapter(
+                child: _section(context, header: '${g['group']}', children: [
+                  for (final e in (g['endpoints'] is List ? g['endpoints'] as List : const []))
+                    if (e is Map)
+                      CupertinoListTile(
+                        title: Text('${e['id']}'.replaceAll('_', ' ')),
+                        subtitle: Text('${e['contains'] ?? ''}', maxLines: 6, style: TextStyle(fontSize: 12, color: resolve(context, CupertinoColors.secondaryLabel))),
+                        trailing: CupertinoSwitch(
+                          activeTrackColor: Look.of(context).accent,
+                          value: eps.contains('${e['id']}'),
+                          onChanged: (_) => toggleEp('${e['id']}'),
+                        ),
                       ),
-                  ]),
-                ),
-              ]),
-            ),
+                ]),
+              ),
           ];
         },
       );

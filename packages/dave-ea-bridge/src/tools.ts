@@ -108,6 +108,7 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
   analysisTool("get_price", "price", "price snapshot (bid/ask/spread, day/week/month/52w high-low, swap, lot size limits)"),
   analysisTool("get_structure", "structure", "market structure (HH/HL/LH/LL trend, BOS, CHoCH, MSS, CISD, dealing range, premium/discount, OTE zone)"),
   analysisTool("get_zones", "zones", "supply/demand zones (fresh/tested, strength score, mitigation %, nearest/strongest zone)"),
+  analysisTool("get_market_structure", "market_structure", "GROUPED market structure for ONE timeframe, computed from that timeframe's own bars: structure {trend, bos {side, level, bars_ago, is_choch}, validation, invalidation, shift (SHIFT/TRANSITION), reclaim, range premium/discount/equilibrium}, liquidity {buy_side_pools, sell_side_pools, equal highs/lows, prev day/week high/low, sweeps, runs, inducement, engineering (sweep -> FMD -> CHoCH)}, zones [ORDER_BLOCK, BREAKER, FVG, ENGULFING_AOL, FLIP with fresh/consumed], confirmation {displacement, engulfing, rejection}"),
   analysisTool("get_liquidity", "liquidity", "liquidity levels (BSL/SSL, equal highs/lows, sweeps, liquidity voids)"),
   analysisTool("get_volume", "volume", "volume analysis (current vs average, bull/bear volume delta, spikes/climax)"),
   analysisTool("get_ichimoku", "ichimoku", "Ichimoku Cloud (tenkan/kijun/senkou A+B/chikou, cloud position, TK cross, signal score)"),
