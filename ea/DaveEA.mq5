@@ -33,10 +33,10 @@
 // it -- moved here, to the top, so every real use compiles regardless of where it appears below.
 #define DAVEEA_BARS 1000
 // Reported with every heartbeat so the bot can tell the trader when this file is out of date.
-#define EA_VERSION "3.6"
+#define EA_VERSION "3.7"
 // Docker-mode file bridge (see UseFileBridge) -- defined up here for the same reason.
 #define BRIDGE_DIR "dave_bridge"
-#define BRIDGE_TIMEOUT_MS 5000
+#define BRIDGE_TIMEOUT_MS 20000
 
 input string WebhookURL     = "{{WEBHOOK_URL}}";
 input string EaToken        = "{{TOKEN}}"; // embedded in WebhookURL's path -- kept here for logging/diagnostics only
@@ -315,6 +315,7 @@ void OnTick()
 // light = the tiny poll (no positions/account, no results) -- only asks for queued commands.
 void PushReportAndExecuteCommands(bool light = false)
   {
+   g_sentResultsLen = 0;
    string body = light ? "{\"type\":\"poll\",\"eaVersion\":\"" + EA_VERSION + "\"}" : BuildReportJson();
    if(!light) g_lastFullAt = GetTickCount();
 
@@ -338,6 +339,7 @@ void PushReportAndExecuteCommands(bool light = false)
          Print("Dave EA: webhook responded with HTTP ", bridgeStatus, " (via bridge): ", bridgeResponse);
          return;
         }
+      ClearSentResults(); // delivered
       ExecuteCommandsFromResponse(bridgeResponse);
       return;
      }
@@ -346,7 +348,7 @@ void PushReportAndExecuteCommands(bool light = false)
    string resultHeaders;
    string headers = "Content-Type: application/json\r\n";
    ResetLastError();
-   int status = WebRequest("POST", WebhookURL, headers, 5000, post, result, resultHeaders);
+   int status = WebRequest("POST", WebhookURL, headers, 20000, post, result, resultHeaders);
 
    if(status == -1)
      {
@@ -364,6 +366,7 @@ void PushReportAndExecuteCommands(bool light = false)
       return;
      }
 
+   ClearSentResults(); // delivered
    string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
    ExecuteCommandsFromResponse(response);
   }
@@ -724,11 +727,21 @@ string OrderTypeToString(ENUM_ORDER_TYPE ot)
 //+------------------------------------------------------------------+
 string g_pendingResultsJson = "";
 
+// Results stay queued until the bot has really received them (HTTP 200). They used to be cleared
+// the moment the report was built -- one failed send (timeout, bridge hiccup) lost the analysis and
+// the bot waited out its full 5-minute timeout for an answer that was never coming.
+int g_sentResultsLen = 0;
 string LastResultsJson()
   {
-   string r = g_pendingResultsJson;
-   g_pendingResultsJson = ""; // reported once, then cleared -- next batch starts fresh
-   return r;
+   g_sentResultsLen = StringLen(g_pendingResultsJson);
+   return g_pendingResultsJson;
+  }
+void ClearSentResults()
+  {
+   if(g_sentResultsLen <= 0) return;
+   g_pendingResultsJson = StringSubstr(g_pendingResultsJson, g_sentResultsLen);
+   if(StringGetCharacter(g_pendingResultsJson, 0) == ',') g_pendingResultsJson = StringSubstr(g_pendingResultsJson, 1);
+   g_sentResultsLen = 0;
   }
 
 void AppendResult(string commandId, bool ok, string message, string ticket)
@@ -1173,6 +1186,9 @@ double   g_cacheC[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
 long     g_cacheV[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
 datetime g_cacheT[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
 int      g_cacheNextSlot = 0;
+datetime g_cacheSavedAt[DAVEEA_CACHE_SLOTS];
+int      g_cacheAgeSec = -1;   // age of the cached series in this answer (-1 = live)
+bool     g_seriesStale = false; // bar 0 is not the bar of the latest tick (MT5 still catching up)
 
 int FindCacheSlot(string key)
   {
@@ -1192,6 +1208,7 @@ void SaveAnalysisCache(string key)
      }
    int n = MathMin(g_anb, DAVEEA_BARS);
    g_cacheNb[slot] = n;
+   g_cacheSavedAt[slot] = TimeGMT();
    for(int i = 0; i < n; i++)
      {
       g_cacheO[slot][i] = g_aO[i]; g_cacheH[slot][i] = g_aH[i];
@@ -1206,6 +1223,7 @@ bool LoadAnalysisCache(string key)
    if(slot < 0 || g_cacheNb[slot] <= 0) return false;
    int n = g_cacheNb[slot];
    g_anb = n;
+   g_cacheAgeSec = (int)(TimeGMT() - g_cacheSavedAt[slot]);
    ArrayResize(g_aO, n); ArrayResize(g_aH, n); ArrayResize(g_aL, n); ArrayResize(g_aC, n);
    ArrayResize(g_aV, n); ArrayResize(g_aT, n);
    for(int i = 0; i < n; i++)
@@ -1297,28 +1315,45 @@ string TfName(ENUM_TIMEFRAMES tf) { string t = EnumToString(tf); StringReplace(t
 string g_lastK[];
 double g_lastV[];
 datetime g_lastT[];
-double LastGood(string k, double v, bool fresh, string label = "")
+datetime g_lastBar[];
+double LastGood(string k, double v, bool fresh, string label = "", datetime barTime = 0)
   {
    int n = ArraySize(g_lastK), i = 0;
    for(; i < n; i++) if(g_lastK[i] == k) break;
    if(fresh && v > 0)
      {
-      if(i == n) { ArrayResize(g_lastK, n + 1); ArrayResize(g_lastV, n + 1); ArrayResize(g_lastT, n + 1); g_lastK[n] = k; }
-      g_lastV[i] = v; g_lastT[i] = TimeLocal();
+      if(i == n) { ArrayResize(g_lastK, n + 1); ArrayResize(g_lastV, n + 1); ArrayResize(g_lastT, n + 1); ArrayResize(g_lastBar, n + 1); g_lastK[n] = k; }
+      g_lastV[i] = v; g_lastT[i] = TimeLocal(); g_lastBar[i] = barTime;
       return v;
      }
    if(i == n) return 0;
-   if(label != "") NotePrevious(label + " (" + IntegerToString((long)(TimeLocal() - g_lastT[i]) / 60) + " min old)");
+   // Say WHICH bar the remembered value is from -- after a day rollover "D1 bar 0" remembered from
+   // yesterday is yesterday's bar, not today's.
+   if(label != "") NotePrevious(label + " (" + IntegerToString((long)(TimeLocal() - g_lastT[i]) / 60) + " min old" +
+                                (g_lastBar[i] > 0 ? ", from the bar of " + TimeToString(g_lastBar[i], TIME_DATE | TIME_MINUTES) : "") + ")");
    return g_lastV[i];
   }
+// Is bar 0 of this series the bar the symbol's latest tick belongs to? (MQL5 docs, "Organizing
+// Data Access": data read before the terminal has caught up is not guaranteed to be current.) A
+// daily/weekly series that is behind still answers iHigh(D1,0) -- with YESTERDAY's bar -- which used
+// to go out as today's levels with no warning. Closed markets are fine: the last tick is then in
+// the last bar, so bar 0 is still the right one.
+bool SeriesCurrent(string s, ENUM_TIMEFRAMES tf)
+  {
+   datetime last = (datetime)SymbolInfoInteger(s, SYMBOL_TIME);
+   if(last <= 0 || iTime(s, tf, 0) <= 0) return false;
+   return iBarShift(s, tf, last, true) == 0;
+  }
+
 string XKey(string f, string s, ENUM_TIMEFRAMES tf, int sh) { return f + "|" + s + "|" + IntegerToString((int)tf) + "|" + IntegerToString(sh); }
 double xGet(string f, string s, ENUM_TIMEFRAMES tf, int sh)
   {
    SeriesReady(s, tf); // starts the download if needed
-   // Present first: read the live value even before MT5 flags the series synchronized; only a real
-   // 0 (no data at all) falls back to the remembered value, and that is labelled as previous data.
-   double v = f == "o" ? iOpen(s, tf, sh) : f == "h" ? iHigh(s, tf, sh) : f == "l" ? iLow(s, tf, sh) : iClose(s, tf, sh);
-   return LastGood(XKey(f, s, tf, sh), v, v > 0, s + " " + TfName(tf));
+   // Only a CURRENT series is live data. One that hasn't caught up falls back to the last value
+   // read while it was current -- labelled previous data, with the date of the bar it came from.
+   bool cur = SeriesCurrent(s, tf);
+   double v = !cur ? 0 : f == "o" ? iOpen(s, tf, sh) : f == "h" ? iHigh(s, tf, sh) : f == "l" ? iLow(s, tf, sh) : iClose(s, tf, sh);
+   return LastGood(XKey(f, s, tf, sh), v, cur && v > 0, s + " " + TfName(tf), cur ? iTime(s, tf, sh) : 0);
   }
 double xOpen(string s, ENUM_TIMEFRAMES tf, int sh)  { return xGet("o", s, tf, sh); }
 double xHigh(string s, ENUM_TIMEFRAMES tf, int sh)  { return xGet("h", s, tf, sh); }
@@ -1330,6 +1365,8 @@ bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
    string key = sym + "|" + IntegerToString((int)tf);
    g_aTf = tf;
    g_fromCache = false;
+   g_seriesStale = false;
+   g_cacheAgeSec = -1;
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
    // PRESENT first (the trader: "the EA gives the bot recent information instead of present").
@@ -1340,16 +1377,20 @@ bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
    int copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
    long lastTick = SymbolInfoInteger(sym, SYMBOL_TIME);
    int period = PeriodSeconds(tf);
-   for(int wait = 0; wait < 10 && copied > 0 && lastTick > 0 && (long)rates[0].time + 2 * period < lastTick; wait++)
+   // Wait (up to 1.5 s) until bar 0 is the bar the latest tick belongs to -- one bar behind used to
+   // be accepted as live, shifting every "forming / last closed" read by a candle.
+   for(int wait = 0; wait < 15 && copied > 0 && lastTick > 0 && iBarShift(sym, tf, (datetime)lastTick, true) != 0; wait++)
      {
       Sleep(100);
       copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
      }
+   g_seriesStale = copied > 0 && lastTick > 0 && iBarShift(sym, tf, (datetime)lastTick, true) != 0;
+   g_cacheAgeSec = -1;
    if(copied > 60)
      {
       CopySeries(rates, copied);
       SetSymbolInfo(sym);
-      SaveAnalysisCache(key);
+      if(!g_seriesStale) SaveAnalysisCache(key);
       return true;
      }
    if(LoadAnalysisCache(key))
@@ -1789,13 +1830,18 @@ string A_Meta(string sym, string tfStr)
    long quoteTime = SymbolInfoInteger(sym, SYMBOL_TIME);
    long qAge = quoteTime > 0 ? (long)nowSrv - quoteTime : -1;
    long barAge = g_anb > 0 ? (long)nowSrv - (long)g_aT[0] : -1;
+   int period = PeriodSeconds(g_aTf);
    bool closed = qAge < 0 || qAge > 600;
-   bool behind = !closed && barAge > 3 * PeriodSeconds(g_aTf);
+   // Behind = bar 0 is not the bar of the latest tick (checked when the series was loaded).
+   bool behind = g_seriesStale || (!closed && barAge > 2 * period);
+   bool forming = g_anb > 0 && !g_fromCache && !closed && !g_seriesStale && barAge >= 0 && barAge < period;
+   long closesIn = forming ? (long)g_aT[0] + period - (long)nowSrv : -1;
    return Obj(Js("symbol", sym) + "," + J("timeframe", tfStr) + "," + Ji("bars", g_anb) + "," +
               J("last_bar_open_utc", g_anb > 0 ? A_BarTime(0) : "") + "," +
-              Jb("last_bar_still_forming", true) + "," +
-              Jb("from_cache", g_fromCache) + "," + Ji("quote_age_sec", qAge) + "," +
+              Jb("last_bar_still_forming", forming) + "," + Ji("bar_closes_in_sec", closesIn) + "," +
+              Jb("from_cache", g_fromCache) + "," + Ji("cache_age_sec", g_fromCache ? g_cacheAgeSec : -1) + "," + Ji("quote_age_sec", qAge) + "," +
               Jb("market_likely_closed", closed) + "," + Jb("bars_behind", behind) + "," +
+              Ji("spread_points", (long)SymbolInfoInteger(sym, SYMBOL_SPREAD)) + "," +
               Jb("limited_history", g_anb < 300) + "," + J("times", "UTC") + "," +
               J("computed_at_utc", A_IsoTime(TimeGMT())) + "," + Ji("broker_utc_offset_min", g_srvOffset / 60) + "," +
               J("ea_version", EA_VERSION) + A_PreviousNote());
@@ -1803,7 +1849,8 @@ string A_Meta(string sym, string tfStr)
 string A_PreviousNote()
   {
    string items[];
-   if(g_fromCache) A_Push(items, "\"this symbol's own candles (MT5 had not loaded fresh ones)\"");
+   if(g_fromCache) A_Push(items, "\"this symbol's own candles, " + IntegerToString(g_cacheAgeSec / 60) + " min old (MT5 had not loaded fresh ones)\"");
+   if(g_seriesStale && !g_fromCache) A_Push(items, "\"this symbol's newest candle (MT5 was still catching up -- the last bar may be one behind)\"");
    for(int i = 0; i < ArraySize(g_prevUsed); i++) A_Push(items, "\"" + JsonEscape(g_prevUsed[i]) + "\"");
    if(ArraySize(items) == 0) return "," + Jr("previous_data", "[]");
    return "," + Jr("previous_data", "[" + A_Join(items) + "]") + "," +
@@ -1825,9 +1872,10 @@ string A_Trend(string sym)
    int score = 0;
    if(c > smma6)       score++; else score--;
    if(c > smma20)      score++; else score--;
-   if(c > smma100)     score++; else score--;
+   // SMMA(100) is 0 when fewer than 100 bars loaded -- comparing against 0 always scored "bullish".
+   if(smma100 > 0) { if(c > smma100) score++; else score--; }
    if(smma6 > smma20)  score++; else score--;
-   if(smma20 > smma100) score++; else score--;
+   if(smma100 > 0) { if(smma20 > smma100) score++; else score--; }
    string bias = score >= 4 ? "STRONG_BULL" : score >= 2 ? "BULL" : score <= -4 ? "STRONG_BEAR" : score <= -2 ? "BEAR" : "NEUTRAL";
    bool allBull = c > ma20 && ma20 > ma50 && ma50 > ma200;
    bool allBear = c < ma20 && ma20 < ma50 && ma50 < ma200;
@@ -1878,7 +1926,30 @@ string A_Momentum()
    if(cci > 0)  bull++; else bear++;
    if(wr > -50) bull++; else bear++;
    if(roc > 0)  bull++; else bear++;
-   return "{\"rsi\":" + DoubleToString(rsi, 2) + ",\"rsi_prev\":" + DoubleToString(rsiPrev, 2) + "," +
+   // Closed-candle history a trader reads off RSI/MACD: the last five closed RSI values, how long ago
+   // RSI was overbought/oversold, how long ago the MACD histogram changed sign.
+   string rsiLast = "";
+   for(int i = 1; i <= 5 && i < g_anb - 15; i++) rsiLast += (i > 1 ? "," : "") + DoubleToString(A_RSI(14, i), 1);
+   int sinceOb = -1, sinceOs = -1;
+   for(int i = 1; i <= 100 && i < g_anb - 15 && (sinceOb < 0 || sinceOs < 0); i++)
+     {
+      double r = A_RSI(14, i);
+      if(sinceOb < 0 && r > 70) sinceOb = i;
+      if(sinceOs < 0 && r < 30) sinceOs = i;
+     }
+   int macdCross = -1; string macdCrossDir = "NONE";
+   for(int i = 1; i <= 60 && i < g_anb - 40; i++)
+     {
+      double a1, b1, h1, a2, b2, h2; A_MACD(a1, b1, h1, i); A_MACD(a2, b2, h2, i + 1);
+      if((h1 > 0) != (h2 > 0)) { macdCross = i; macdCrossDir = h1 > 0 ? "BULL" : "BEAR"; break; }
+     }
+   double kc, dc; A_Stochastic(14, 3, kc, dc, 3, 1);
+   return "{\"values_on\":\"rsi/macd/stoch = the forming candle (moves until it closes); *_prev / *_closed = the last closed candle\"," +
+          "\"rsi_last5_closed\":[" + rsiLast + "]," +
+          "\"bars_since_rsi_overbought\":" + IntegerToString(sinceOb) + ",\"bars_since_rsi_oversold\":" + IntegerToString(sinceOs) + "," +
+          "\"macd_hist_cross_bars_ago\":" + IntegerToString(macdCross) + ",\"macd_hist_cross_dir\":\"" + macdCrossDir + "\"," +
+          "\"stoch_k_closed\":" + DoubleToString(kc, 2) + ",\"stoch_d_closed\":" + DoubleToString(dc, 2) + "," +
+          "\"rsi\":" + DoubleToString(rsi, 2) + ",\"rsi_prev\":" + DoubleToString(rsiPrev, 2) + "," +
           "\"rsi_method\":\"Wilder (same as MT5 RSI)\"," +
           "\"rsi_zone\":\"" + (rsi > 70 ? "OVERBOUGHT" : rsi < 30 ? "OVERSOLD" : "NEUTRAL") + "\"," +
           "\"rsi_slope\":" + DoubleToString(rsi - rsiPrev, 2) + "," +
@@ -2075,9 +2146,9 @@ string A_Structure(string sym)
    double strength = MathMin(100.0, MathAbs(A_Pips(sym, g_aC[0] - eq)) / MathMax(1.0, A_Pips(sym, rng)) * 200.0);
    string f[];
    A_Push(f, J("trend", trend));   A_Push(f, J("bos", bos));   A_Push(f, J("choch", choch));
-   A_Push(f, J("mss", mss));       A_Push(f, J("cisd", cisd));
+   A_Push(f, J("cisd", cisd)); // (mss was a copy of choch -- see market_structure.structure.mss for the real one)
    A_Push(f, J("breaking_now", breakingNow));
-   A_Push(f, Jr("idm", idm));      A_Push(f, Jr("qml", qml));
+   A_Push(f, Jr("qml", qml)); // (idm here was always "detected" -- market_structure.liquidity.inducement checks it properly)
    A_Push(f, Jb("hh", hh)); A_Push(f, Jb("hl", hl)); A_Push(f, Jb("lh", lh)); A_Push(f, Jb("ll", ll));
    A_Push(f, Jr("eq_highs", "[" + A_Join(eqH) + "]"));
    A_Push(f, Jr("eq_lows",  "[" + A_Join(eqL) + "]"));
@@ -2096,7 +2167,7 @@ string A_Structure(string sym)
    A_Push(f, J("internal_trend", iTrend)); A_Push(f, J("internal_bos", iBos)); A_Push(f, J("internal_choch", iChoch));
    A_Push(f, J("external_bos", bos));
    A_Push(f, Ji("bars_since_bos", barsSinceBos));
-   A_Push(f, Jn("trend_strength", strength, 1));
+   A_Push(f, Jn("distance_from_range_mid_pct", strength, 1)); // what this number really is
    A_Push(f, Jr("swing_highs_array", "[" + A_Join(shArr) + "]"));
    A_Push(f, Jr("swing_lows_array",  "[" + A_Join(slArr) + "]"));
    return Obj(A_Join(f));
@@ -2137,8 +2208,8 @@ string A_Zones(string sym)
       string z = Obj(Jn("top", top, g_aDigits) + "," + Jn("bot", bot, g_aDigits) + "," +
                      Ji("bar", i) + "," + J("time", A_BarTime(i)) + "," + Jb("fresh", tests == 0) + "," + Jn("strength", score, 1) + "," +
                      Ji("tests", tests) + "," + Jn("body_ratio", ratio, 3) + "," + Jn("mitigation_pct", mit, 1) + "," + Jb("broken", broken));
+      if(broken) continue; // a zone price has closed through no longer counts -- and no longer takes a slot in the list
       if(isSupply) A_Push(sup, z); else A_Push(dem, z);
-      if(broken) continue; // a zone price has closed through no longer counts
       if(c >= bot && c <= top) { inZone = true; zoneAt = isSupply ? "SUPPLY" : "DEMAND"; }
       if(isSupply && top >= c)
         {
@@ -2253,17 +2324,22 @@ string A_Liquidity(string sym)
       if(MathAbs(sh[i] - sh[i+1]) <= tol)
         {
          double lvl = MathMax(sh[i], sh[i+1]);
-         A_Push(bsl, Obj(Jn("level", lvl, g_aDigits) + "," + Ji("bar1", shB[i]) + "," + Ji("bar2", shB[i+1]) + "," + Jn("dist_pips", A_Pips(sym, lvl - c), 1)));
+         // Taken = a candle after the newer of the two swings already traded through it.
+         bool taken = false; for(int k = 1; k < MathMin(shB[i], shB[i+1]); k++) if(g_aH[k] > lvl) { taken = true; break; }
+         A_Push(bsl, Obj(Jn("level", lvl, g_aDigits) + "," + Ji("bar1", shB[i]) + "," + Ji("bar2", shB[i+1]) + "," + Jb("taken", taken) + "," +
+                         Jn("dist_pips", A_Pips(sym, lvl - c), 1) + "," + Jn("dist_atr", atr > 0 ? (lvl - c) / atr : 0, 2)));
          A_Push(eqH, DoubleToString(lvl, g_aDigits));
-         if(lvl > c && (nearBsl == 0 || lvl < nearBsl)) nearBsl = lvl;
+         if(!taken && lvl > c && (nearBsl == 0 || lvl < nearBsl)) nearBsl = lvl;
         }
    for(int i = 0; i + 1 < ArraySize(sl); i++)
       if(MathAbs(sl[i] - sl[i+1]) <= tol)
         {
          double lvl = MathMin(sl[i], sl[i+1]);
-         A_Push(ssl, Obj(Jn("level", lvl, g_aDigits) + "," + Ji("bar1", slB[i]) + "," + Ji("bar2", slB[i+1]) + "," + Jn("dist_pips", A_Pips(sym, c - lvl), 1)));
+         bool taken = false; for(int k = 1; k < MathMin(slB[i], slB[i+1]); k++) if(g_aL[k] < lvl) { taken = true; break; }
+         A_Push(ssl, Obj(Jn("level", lvl, g_aDigits) + "," + Ji("bar1", slB[i]) + "," + Ji("bar2", slB[i+1]) + "," + Jb("taken", taken) + "," +
+                         Jn("dist_pips", A_Pips(sym, c - lvl), 1) + "," + Jn("dist_atr", atr > 0 ? (c - lvl) / atr : 0, 2)));
          A_Push(eqL, DoubleToString(lvl, g_aDigits));
-         if(lvl < c && (nearSsl == 0 || lvl > nearSsl)) nearSsl = lvl;
+         if(!taken && lvl < c && (nearSsl == 0 || lvl > nearSsl)) nearSsl = lvl;
         }
    // No equal highs/lows: the nearest single swing above/below still holds stops.
    if(nearBsl == 0) for(int i = 0; i < ArraySize(sh); i++) if(sh[i] > c && (nearBsl == 0 || sh[i] < nearBsl)) nearBsl = sh[i];
@@ -2699,7 +2775,6 @@ string A_Ict(string sym, ENUM_TIMEFRAMES tf)
    A_Push(f, Jr("fvg", "[" + A_Join(fvg) + "]"));
    A_Push(f, Jr("ifvg", "[" + A_Join(ifvg) + "]"));
    A_Push(f, Jr("bpr", Obj(Jb("detected", bpr) + "," + Jn("top", bprTop, g_aDigits) + "," + Jn("bot", bprBot, g_aDigits))));
-   A_Push(f, Jr("vi", "[" + A_Join(vi) + "]"));
    A_Push(f, Jr("ob", Obj(J("type", obType) + "," + Jn("high", obH, g_aDigits) + "," + Jn("low", obL, g_aDigits) + "," +
         Jn("ce", obCe, g_aDigits) + "," + Ji("bar", obBar) + "," + J("time", obBar > 0 ? A_BarTime(obBar) : "") + "," +
         Jb("valid", obBar > 0 && !breakerValid) + "," + Jb("tested", obTested))));
@@ -2709,7 +2784,6 @@ string A_Ict(string sym, ENUM_TIMEFRAMES tf)
    A_Push(f, Jr("sweep", Obj(J("type", sweepType) + "," + Jn("level", sweepLvl, g_aDigits) + "," + Ji("bar", sweepType != "NONE" ? 1 : -1) + "," + J("sweeping_now", sweepNow))));
    A_Push(f, Jr("bsl", "[" + A_Join(bslArr) + "]"));
    A_Push(f, Jr("ssl", "[" + A_Join(sslArr) + "]"));
-   A_Push(f, Jr("idm", Obj(Jn("level", ArraySize(sl) > 1 ? sl[1] : dr_lo, g_aDigits) + "," + J("type", "SSL") + "," + Ji("bar", ArraySize(slB) > 1 ? slB[1] : 0))));
    A_Push(f, Jr("ndog", Obj(Jb("detected", MathAbs(ndog) > g_aPip) + "," + Jp("open", dOpen, g_aDigits) + "," +
         Jp("prev_close", pdClose, g_aDigits) + "," + Jn("gap_pips", A_P(ndog), 1))));
    A_Push(f, Jr("nwog", Obj(Jb("detected", MathAbs(nwog) > g_aPip) + "," + Jp("open", wOpen, g_aDigits) + "," +
@@ -2723,16 +2797,13 @@ string A_Ict(string sym, ENUM_TIMEFRAMES tf)
    A_Push(f, Jb("silver_bullet", sb));
    A_Push(f, J("silver_bullet_window", sbName));
    A_Push(f, J("judas_swing", judas));
-   A_Push(f, J("amd_phase", amd));
+   A_Push(f, J("amd_phase_by_clock_only", amd)); // New York clock, not price -- see market_structure for liquidity
    A_Push(f, Jr("cbdr", Obj(Jb("active", nyH >= 14 && nyH < 20) + "," +
         (cbdrOk ? Jn("high", cbdrHi, g_aDigits) + "," + Jn("low", cbdrLo, g_aDigits) : Jnull("high") + "," + Jnull("low")) + "," + J("window", "14:00-20:00 New York"))));
-   A_Push(f, J("dol", dol));
-   A_Push(f, J("dol_dir", c < eq ? "UP" : "DOWN"));
    A_Push(f, J("premium_discount", c > eq ? "PREMIUM" : "DISCOUNT"));
    A_Push(f, Jr("ote_long",  Obj(Jn("high", dr_hi - rng * 0.62, g_aDigits) + "," + Jn("low", dr_hi - rng * 0.79, g_aDigits))));
    A_Push(f, Jr("ote_short", Obj(Jn("high", dr_lo + rng * 0.79, g_aDigits) + "," + Jn("low", dr_lo + rng * 0.62, g_aDigits))));
    A_Push(f, Ji("poi_count", nf + (obBar > 0 ? 1 : 0)));
-   A_Push(f, Jr("smt", Obj(Jb("applicable", smtApplicable) + "," + Jb("detected", smtDetected) + "," + J("direction", smtDir))));
    return Obj(A_Join(f));
   }
 
@@ -2752,7 +2823,7 @@ string A_Wyckoff()
    string phase = "RANGING", sub = "", ev = "NONE", schem = "NEUTRAL";
    bool nearLo = c < trLo + recentRange * 0.25;
    bool nearHi = c > trHi - recentRange * 0.25;
-   if(recentRange > prevRange * 1.3)
+   if(prevRange > 0 && recentRange > prevRange * 1.3) // needs 100+ bars; otherwise the range test is skipped
      {
       bool up = c > (prevHi + prevLo) / 2.0;
       phase = up ? "MARKUP" : "MARKDOWN"; sub = "PHASE_D"; ev = up ? "SOS" : "SOW";
@@ -3471,7 +3542,7 @@ string A_Tape(string sym)
      }
    double ratio = (upT + dnT) > 0 ? (double)upT / (upT + dnT) * 100.0 : 50;
    long spanSec = got > 1 ? (long)((ticks[got - 1].time_msc - ticks[0].time_msc) / 1000) : 0;
-   return Obj(Ji("ticks_sampled", got) + "," + Ji("up_ticks", upT) + "," + Ji("down_ticks", dnT) + "," +
+   return Obj(J("note", "bid-price direction of the last ticks -- MT5 has no buyer/seller (aggressor) side for this symbol, so this is NOT order flow") + "," + Ji("ticks_sampled", got) + "," + Ji("up_ticks", upT) + "," + Ji("down_ticks", dnT) + "," +
               Jn("uptick_pct", ratio, 2) + "," +
               J("tape_bias", ratio > 55 ? "BULL" : ratio < 45 ? "BEAR" : "NEUTRAL") + "," +
               Jn("last_price", lastP, g_aDigits) + "," + Ji("span_seconds", spanSec) + "," +
@@ -3556,7 +3627,7 @@ string A_Gann()
       double upP = MathPow(root + step, 2) * g_aPoint, dnP = MathPow(MathMax(root - step, 0), 2) * g_aPoint;
       A_Push(sq, Obj(Ji("degrees", degs[k]) + "," + Jn("up", upP, g_aDigits) + "," + Jn("down", dnP, g_aDigits)));
      }
-   return Obj(Jr("gann_levels", "[" + A_Join(lines) + "]") + "," +
+   return Obj(J("note", "Gann levels from price arithmetic; gann_bias is only above/below the range midpoint") + "," + Jr("gann_levels", "[" + A_Join(lines) + "]") + "," +
               Jn("nearest_gann", g[bi], g_aDigits) + "," + Jn("nearest_ratio", ratios[bi], 3) + "," +
               Jn("dist_pips", A_P(bd), 1) + "," +
               Jn("range_high", hi, g_aDigits) + "," + Jn("range_low", lo, g_aDigits) + "," +
@@ -3620,7 +3691,7 @@ string A_Macro(string sym, ENUM_TIMEFRAMES tf)
    bool jOk = A_SymReturn("USDJPY", PERIOD_D1, 5, jpy);
    string regime = "UNKNOWN";
    if(gOk && jOk) regime = (gold > 0.5 && jpy < 0) ? "RISK_OFF" : (gold < 0 && jpy > 0) ? "RISK_ON" : "NEUTRAL";
-   return Obj((dOk ? Jn("daily_change_pct", d1, 4) : Jnull("daily_change_pct")) + "," +
+   return Obj(J("note", "daily/weekly changes are real; risk_regime / safe_haven_bid are rough rules on gold and USDJPY moves, not a macro feed") + "," + (dOk ? Jn("daily_change_pct", d1, 4) : Jnull("daily_change_pct")) + "," +
               (wOk ? Jn("weekly_change_pct", w1, 4) : Jnull("weekly_change_pct")) + "," +
               J("changes_are", "last full day / last full week") + "," +
               (euOk ? Jn("dxy_proxy_5d", dxy, 4) : Jnull("dxy_proxy_5d")) + "," +
@@ -3672,7 +3743,9 @@ string A_News(string sym)
    bool calOk = CalendarSnapshot(nowSrv, vals);
    if(calOk)
      {
-      for(int i = 0; i < ArraySize(vals) && ArraySize(items) < 15; i++)
+      // Every event is counted (the next high-impact one can't be missed); only the printed list is
+      // capped. Holidays and no-importance entries are skipped -- they used to fill the list first.
+      for(int i = 0; i < ArraySize(vals); i++)
         {
          if(vals[i].time < from || vals[i].time > to) continue;
          MqlCalendarEvent ev;
@@ -3680,11 +3753,13 @@ string A_News(string sym)
          MqlCalendarCountry co;
          if(!CalendarCountryById(ev.country_id, co)) continue;
          if(co.currency != base && co.currency != quote) continue;
+         if(ev.importance == CALENDAR_IMPORTANCE_NONE) continue;
          bool isHigh = ev.importance == CALENDAR_IMPORTANCE_HIGH;
          long mins = (long)((vals[i].time - nowSrv) / 60);
          if(isHigh && mins >= 0) high++;
          if(mins > 0 && (minsToNext < 0 || mins < minsToNext)) minsToNext = mins;
          if(isHigh && mins > 0 && (minsToNextHigh < 0 || mins < minsToNextHigh)) minsToNextHigh = mins;
+         if(ArraySize(items) >= 15) continue;
          A_Push(items, Obj(J("time", SrvToIso(vals[i].time)) + "," + Ji("minutes_from_now", mins) + "," + J("currency", co.currency) + "," +
                          Js("event", ev.name) + "," +
                          J("importance", isHigh ? "HIGH" : ev.importance == CALENDAR_IMPORTANCE_MODERATE ? "MEDIUM" : "LOW") + "," +
@@ -3759,7 +3834,7 @@ string A_Backtest(string sym)
         }
      }
    double wr = trades > 0 ? (double)wins / trades * 100.0 : 0;
-   return Obj(Ji("strategy_trades", trades) + "," + Ji("wins", wins) + "," +
+   return Obj(J("note", "an MA20/50 crossover tested on this timeframe -- NOT the active strategy and not a reason to trade") + "," + Ji("strategy_trades", trades) + "," + Ji("wins", wins) + "," +
               Jn("win_rate_pct", wr, 1) + "," + Jn("net_pips", pnl, 1) + "," +
               Jn("avg_pips", trades > 0 ? pnl / trades : 0, 1) + "," +
               Jn("best_pips", best, 1) + "," + Jn("worst_pips", worst, 1) + "," +
@@ -3865,7 +3940,7 @@ string A_Adx()
    if(!A_ADXCalc(14, 0, adx, pdi, mdi)) { g_aErr = "not enough history for ADX (needs 45+ bars)"; return ""; }
    A_ADXCalc(14, 5, adxP, pdiP, mdiP);
    string strength = adx < 20 ? "WEAK_OR_NO_TREND" : adx < 25 ? "EMERGING" : adx < 40 ? "STRONG" : "VERY_STRONG";
-   return Obj(J("method", "Wilder ADX(14) with +DI/-DI") + "," + Jn("adx", adx, 2) + "," + Jn("plus_di", pdi, 2) + "," + Jn("minus_di", mdi, 2) + "," +
+   return Obj(J("method", "Wilder ADX(14) with +DI/-DI -- matches MT5's \"ADX Wilder\" indicator; MT5's default \"ADX\" smooths differently, so its number can differ") + "," + Jn("adx", adx, 2) + "," + Jn("plus_di", pdi, 2) + "," + Jn("minus_di", mdi, 2) + "," +
               Jn("adx_5_bars_ago", adxP, 2) + "," + Jb("adx_rising", adx > adxP) + "," +
               J("trend_strength", strength) + "," + J("direction", pdi > mdi ? "BULL" : "BEAR") + "," +
               Jb("di_cross_recent", (pdi > mdi) != (pdiP > mdiP)));
@@ -4301,11 +4376,13 @@ string LastN(string &arr[], int k)
 
 string A_MarketStructure(string sym)
   {
-   int n = MathMin(g_anb, 400);
+   // CLOSED candles only (the forming one would make pivots, breaks and sweeps flicker intra-bar);
+   // index n-1 is the last closed candle, bars_ago counts back from it. Price itself stays live.
+   int n = MathMin(g_anb - 1, 400);
    if(n < 40) return Obj(J("error", "not enough bars"));
    double o[], h[], l[], c[];
    ArrayResize(o, n); ArrayResize(h, n); ArrayResize(l, n); ArrayResize(c, n);
-   for(int k = 0; k < n; k++) { int s = n - 1 - k; o[k] = g_aO[s]; h[k] = g_aH[s]; l[k] = g_aL[s]; c[k] = g_aC[s]; }
+   for(int k = 0; k < n; k++) { int s = n - k; o[k] = g_aO[s]; h[k] = g_aH[s]; l[k] = g_aL[s]; c[k] = g_aC[s]; }
    int d = g_aDigits;
    double rangeSum = 0; for(int k = n - 50; k < n; k++) rangeSum += h[k] - l[k];
    double avgR = rangeSum / 50.0;
@@ -4364,7 +4441,7 @@ string A_MarketStructure(string sym)
    for(int k = ns - 1; k >= 0 && (rHi == 0 || rLo == 0); k--) { if(sw[k].hi && rHi == 0) rHi = sw[k].p; if(!sw[k].hi && rLo == 0) rLo = sw[k].p; }
    if(rHi == 0) rHi = h[ArrayMaximum(h, n - 50, 50)];
    if(rLo == 0) rLo = l[ArrayMinimum(l, n - 50, 50)];
-   double px = c[n - 1];
+   double px = g_aC[0]; // live price
    double eq = (rHi + rLo) / 2, pos = rHi > rLo ? (px - rLo) / (rHi - rLo) : 0.5;
    bool bullCtx = eTrend == "BULLISH";
    double oteA = bullCtx ? rHi - (rHi - rLo) * 0.62 : rLo + (rHi - rLo) * 0.62, oteB = bullCtx ? rHi - (rHi - rLo) * 0.79 : rLo + (rHi - rLo) * 0.79;
@@ -4537,7 +4614,7 @@ string A_MarketStructure(string sym)
      }
 
    // ---- confirmation (last closed bar)
-   int z = n - 2;
+   int z = n - 1; // the last closed candle
    double body = MathAbs(c[z] - o[z]), rng = h[z] - l[z];
    bool displacement = body > avgR * 1.5;
    bool bullEng = c[z] > o[z] && c[z-1] < o[z-1] && c[z] > o[z-1] && o[z] < c[z-1];
@@ -4554,7 +4631,7 @@ string A_MarketStructure(string sym)
       J("shift", shift) + "," + (shiftAt >= 0 ? Ji("shift_bars_ago", n - 1 - shiftAt) : Jnull("shift_bars_ago")) + "," +
       (reclaimLvl > 0 ? Jr("reclaim", Obj(Jn("level", reclaimLvl, d) + "," + Jb("reclaimed", reclaimed))) : Jnull("reclaim")) + "," +
       Jr("range", range));
-   return Obj(J("source", "this timeframe's own bars only") + "," + Ji("bars_used", n) + "," +
+   return Obj(J("source", "this timeframe's own CLOSED bars only (bars_ago 0 = the last closed candle); price is live") + "," + Jn("price_now", g_aC[0], g_aDigits) + "," + Ji("bars_used", n) + "," +
               Jr("structure", structure) + "," + Jr("liquidity", liquidity) + "," + Jr("zones", "[" + LastN(zones, 16) + "]") + "," +
               Jr("confirmation", confirmation) + "," + Jn("avg_bar_range", avgR, d));
   }
