@@ -231,20 +231,39 @@ const SUITE_DROP_ORDER = [
  * gets an equal share; one that's still too big drops its least-used extras first (named in the
  * text, and logged), never its structure, liquidity, zones, price or candles.
  */
+/** Never dropped from a timeframe, whatever its size. */
+const SUITE_KEEP = new Set(["_meta", "price", "candles", "structure", "market_structure", "liquidity", "zones", "trend", "momentum"]);
+
 export function fitSuite(suite: Record<string, unknown>, userId?: string, symbol?: string, budget = SUITE_PROMPT_BUDGET): string {
   const full = JSON.stringify(suite);
   if (full.length <= budget) return full;
-  const tfs = Object.keys(suite);
-  const share = Math.floor(budget / Math.max(1, tfs.length));
+  // Data that is the same on every timeframe (news, macro, session, currency strength, reference
+  // levels...) used to be repeated once per timeframe -- 7 copies eating the budget the per-
+  // timeframe data needs. Identical answers go in once, under _same_on_every_timeframe.
+  const tfs = Object.keys(suite).filter((tf) => suite[tf] && typeof suite[tf] === "object");
+  const shared: Record<string, unknown> = {};
+  if (tfs.length > 1) {
+    const first = suite[tfs[0]] as Record<string, unknown>;
+    for (const key of Object.keys(first)) {
+      if (SUITE_KEEP.has(key)) continue;
+      const text = JSON.stringify(first[key]);
+      if (text.length < 200) continue;
+      if (tfs.every((tf) => JSON.stringify((suite[tf] as Record<string, unknown>)[key]) === text)) shared[key] = first[key];
+    }
+  }
+  const sharedText = JSON.stringify(shared);
+  const share = Math.floor((budget - (Object.keys(shared).length ? sharedText.length : 0)) / Math.max(1, Object.keys(suite).length));
   const out: Record<string, unknown> = {};
+  if (Object.keys(shared).length) out._same_on_every_timeframe = shared;
   const dropped: string[] = [];
-  for (const tf of tfs) {
+  for (const tf of Object.keys(suite)) {
     const data = suite[tf];
-    if (!data || typeof data !== "object" || JSON.stringify(data).length <= share) {
+    if (!data || typeof data !== "object") {
       out[tf] = data;
       continue;
     }
     const copy: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+    for (const key of Object.keys(shared)) delete copy[key];
     const gone: string[] = [];
     for (const key of SUITE_DROP_ORDER) {
       if (JSON.stringify(copy).length <= share) break;
@@ -252,6 +271,15 @@ export function fitSuite(suite: Record<string, unknown>, userId?: string, symbol
         delete copy[key];
         gone.push(key);
       }
+    }
+    // Still too big (a key outside the list grew): drop the largest remaining extras, never the core.
+    while (JSON.stringify(copy).length > share) {
+      const biggest = Object.keys(copy)
+        .filter((k) => !SUITE_KEEP.has(k))
+        .sort((a, b) => JSON.stringify(copy[b]).length - JSON.stringify(copy[a]).length)[0];
+      if (!biggest) break;
+      delete copy[biggest];
+      gone.push(biggest);
     }
     if (gone.length) {
       copy._left_out_for_space = gone;
@@ -1255,7 +1283,9 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     // endpoints across 6 real timeframes the real JSON is far larger, so most of what
     // ANALYSIS_TIMEFRAMES actually requested was silently cut before the model ever saw it.
     // Raised well past any real single-request's actual size instead of an arbitrary small slice.
-    `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${activeTimeframes.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${fitSuite(suite, userId, symbol)}`,
+    `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${activeTimeframes.join(", ")}), merged below -- check for real alignment or conflict across them, not just one. ` +
+      `Each timeframe's _meta says how fresh it is: from_cache / bars_behind / a non-empty previous_data mean part of that timeframe is NOT live (say so and don't enter on it alone); last_bar_still_forming means bar 0 is still moving (decide on closed candles); market_likely_closed means no live price. Anything under _same_on_every_timeframe (news, macro, session, strength...) applies to every timeframe -- it is sent once to save space. ` +
+      `${fitSuite(suite, userId, symbol)}`,
     mtfAlignmentLine,
     mtfConfluenceLine,
     basketRiskLine,

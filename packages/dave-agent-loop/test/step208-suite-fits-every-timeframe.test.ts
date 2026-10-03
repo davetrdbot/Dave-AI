@@ -21,12 +21,20 @@ assert.ok(JSON.stringify(suite).length > SUITE_PROMPT_BUDGET, "this suite is big
 const out = fitSuite(suite);
 assert.ok(out.length <= SUITE_PROMPT_BUDGET, `fits (${out.length})`);
 const parsed = JSON.parse(out) as Record<string, Record<string, unknown>>; // valid JSON: not cut mid-way
-assert.deepEqual(Object.keys(parsed), tfs, "every timeframe is there, M1 included");
+assert.deepEqual(Object.keys(parsed).filter((k) => k !== "_same_on_every_timeframe"), tfs, "every timeframe is there, M1 included");
 for (const tf of tfs) {
   assert.ok(parsed[tf].market_structure && parsed[tf].liquidity && parsed[tf].price, `${tf} keeps structure, liquidity and price`);
-  assert.ok(!("backtest" in parsed[tf]), `${tf}: the least-used extras go first`);
-  assert.ok(Array.isArray(parsed[tf]._left_out_for_space), "and what was left out is named");
+  assert.ok(!("backtest" in parsed[tf]), `${tf}: identical extras are not repeated per timeframe`);
 }
+// Data identical on every timeframe (news, macro) goes in once, not seven times.
+const withShared = Object.fromEntries(tfs.map((tf) => [tf, { ...big(tf), news: { events: "n".repeat(15000) }, weird_new_key: "w".repeat(30000) }]));
+const out2 = fitSuite(withShared);
+assert.ok(out2.length <= SUITE_PROMPT_BUDGET, `fits with shared data (${out2.length})`);
+const p2 = JSON.parse(out2) as Record<string, Record<string, unknown>>;
+assert.ok(p2._same_on_every_timeframe && "news" in p2._same_on_every_timeframe, "news sent once");
+assert.equal(out2.split('"nnnnnnnnnn').length - 1, 1, "only one copy of the news");
+for (const tf of tfs) assert.ok(p2[tf].market_structure && p2[tf].price && !("news" in p2[tf]), `${tf} keeps its own core, no news copy`);
+
 const small = { H1: { price: { bid: 1 } } };
 assert.equal(fitSuite(small), JSON.stringify(small), "a suite that fits goes in untouched");
 console.log("=== ALL ASSERTIONS PASSED ===");

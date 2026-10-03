@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { enqueueCommand, takeAnalysisResult } from "./ea-webhook.js";
+import { enqueueCommand, peekQueue, takeAnalysisResult } from "./ea-webhook.js";
 
 /**
  * Item 5 (DAVEMA retirement): the on-demand replacement for the old direct-HTTP DAVEMA call.
@@ -59,7 +59,7 @@ export async function requestAnalysis(
   endpoint: string,
   symbol: string,
   timeframe: string,
-  opts: { timeoutMs?: number; pollIntervalMs?: number; params?: Record<string, string | number | boolean> } = {}
+  opts: { timeoutMs?: number; pollIntervalMs?: number; resendAfterMs?: number; params?: Record<string, string | number | boolean> } = {}
 ): Promise<unknown> {
   // Real bug fixed (user: "increase the timeout... make sure they is nothing stopping the agent
   // to trade"). Same real round-trip as ea-trade-executor.ts -- an "analyze" command's result
@@ -72,9 +72,16 @@ export async function requestAnalysis(
   const id = randomBytes(6).toString("hex");
   // Extra flat settings (candle count, position-size inputs, history days) ride on the same command;
   // they never overwrite the command's own fields.
-  enqueueCommand(userId, { ...(opts.params ?? {}), id, action: "analyze", endpoint, symbol, timeframe });
+  const command = { ...(opts.params ?? {}), id, action: "analyze" as const, endpoint, symbol, timeframe };
+  enqueueCommand(userId, command);
 
   const started = Date.now();
+  // A command leaves the queue the moment it is handed to the EA. If that reply never reached the
+  // EA (dropped connection, EA restarted mid-report), nothing would ever answer and the scan sat
+  // here for the full 5 minutes. Past one push cycle with no result and the command gone from the
+  // queue, send it once more under the same id (whichever answer lands first is taken).
+  const resendAfterMs = opts.resendAfterMs ?? Math.min(150_000, Math.floor(timeoutMs / 2));
+  let resent = false;
   const deadline = started + timeoutMs;
   const report = (ok: boolean, error?: string) => emitRequest({ userId, endpoint, symbol, timeframe, ok, ms: Date.now() - started, error });
   while (Date.now() < deadline) {
@@ -86,6 +93,10 @@ export async function requestAnalysis(
       }
       report(true);
       return result.data;
+    }
+    if (!resent && Date.now() - started >= resendAfterMs && !peekQueue(userId).some((c) => c.id === id)) {
+      resent = true;
+      enqueueCommand(userId, command);
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }

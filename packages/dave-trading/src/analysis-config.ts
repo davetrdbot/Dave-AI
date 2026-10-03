@@ -179,7 +179,8 @@ export function filterSuiteToConfig(suite: Record<string, unknown>, config: Anal
   const allowed = new Set(config.endpoints);
   const filtered: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(suite)) {
-    if (allowed.has(key)) filtered[key] = value;
+    // _meta is the freshness label (cached? still forming? market closed? previous data?) -- always kept.
+    if (allowed.has(key) || key === "_meta") filtered[key] = value;
   }
   return filtered;
 }
