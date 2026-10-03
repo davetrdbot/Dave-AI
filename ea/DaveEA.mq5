@@ -1,27 +1,20 @@
 //+------------------------------------------------------------------+
 //|                                                      DaveEA.mq5   |
-//|  Dave's MT5 bridge. Pushes account/positions/pending-orders/      |
-//|  heartbeat to Dave's webhook on the same PushSeconds cadence as    |
-//|  always, and executes the open/modify/close/delete-pending/       |
-//|  analyze instructions that come back in that SAME HTTP response    |
-//|  (WebRequest is one-directional -- there is no other way for      |
-//|  Dave to reach this EA).                                          |
+//|  Dave's MT5 bridge, version 4.0.                                   |
 //|                                                                    |
-//|  Item 5 (DAVEMA retirement): this EA now ALSO computes real market |
-//|  analysis (trend/momentum/volatility, more endpoints to follow)    |
-//|  locally on demand, via the "analyze" command -- DAVEMA (the old   |
-//|  external HTTP API) is retired. This is genuinely on-demand, not a |
-//|  new streaming channel: the heartbeat cadence above is completely  |
-//|  unchanged, analysis only computes when a real "analyze" command   |
-//|  actually arrives.                                                 |
+//|  Connection (unchanged from 3.x, proven live): every second a tiny |
+//|  "anything for me?" poll, a full report (account, positions,       |
+//|  pending orders, closed trades, command results) every PushSeconds |
+//|  -- WebRequest, or the container's file bridge. Commands (open,    |
+//|  modify, close, delete_pending, analyze, ...) come back in the     |
+//|  SAME HTTP answer; results are kept until the bot has them.        |
 //|                                                                    |
-//|  Honest architecture note (Part 1 item 10): because WebRequest is  |
-//|  one-directional, there is no real way for Dave to force an        |
-//|  out-of-cycle push from THIS EA -- "bypass the timer" therefore    |
-//|  means Dave-side tools (get_live_state / get_account_balance) read |
-//|  the most recently RECEIVED report instantly from dave-ea-bridge's |
-//|  already-persisted last-known-state/account-snapshot, rather than  |
-//|  waiting for the next PushSeconds tick -- not a live query to MT5. |
+//|  Analysis (rebuilt in 4.0): 15 groups + account tools, each its    |
+//|  own job, all reading one shared memory per symbol+timeframe that  |
+//|  is worked out on CLOSED candles only when a new candle closes.    |
+//|  Raw facts with their rules printed, the APA strategy's pieces     |
+//|  (shift/reclaim/transition, areas of liquidity types 1-4,          |
+//|  liquidity engineering, flip levels, cycles and FTAs) included.    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade\Trade.mqh>
@@ -33,7 +26,7 @@
 // it -- moved here, to the top, so every real use compiles regardless of where it appears below.
 #define DAVEEA_BARS 1000
 // Reported with every heartbeat so the bot can tell the trader when this file is out of date.
-#define EA_VERSION "3.7"
+#define EA_VERSION "4.0"
 // Docker-mode file bridge (see UseFileBridge) -- defined up here for the same reason.
 #define BRIDGE_DIR "dave_bridge"
 #define BRIDGE_TIMEOUT_MS 20000
@@ -190,7 +183,8 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
-   for(int i = 0; i < ArraySize(g_warmH); i++) IndicatorRelease(g_warmH[i]);
+   ReleaseAllWarm();
+   FreeSlots();
   }
 
 //+------------------------------------------------------------------+
@@ -284,6 +278,8 @@ void OnTimer()
    PushReportAndExecuteCommands(!full);
    for(int k = 0; k < 5 && g_pendingResultsJson != ""; k++)
       PushReportAndExecuteCommands(false);
+   // EA 4.0: work out a new candle on the timeframes the bot reads, before it asks again
+   PrecomputeTick();
   }
 
 // Real, light addition (open-trade/price monitoring cadence, faster than any timer): -1 means
@@ -1161,289 +1157,65 @@ ENUM_TIMEFRAMES TimeframeFromString(string tf)
    return PERIOD_M15; // real DAVEMA default, ported verbatim -- only for a genuinely unrecognized string
   }
 
-// Bars for the REQUESTED symbol+timeframe, index 0 = most recent (series order). Bar 0 is the candle
-// that is STILL FORMING -- signals that must not flicker are read from bar 1 (the last closed candle).
-int      g_anb = 0;
-double   g_aO[], g_aH[], g_aL[], g_aC[];
-long     g_aV[];
-datetime g_aT[];
-int      g_aDigits = 5;
-double   g_aPoint = 0.00001, g_aPip = 0.0001;
-ENUM_TIMEFRAMES g_aTf = PERIOD_M15;
-bool     g_fromCache = false;
-string   g_aErr = "";   // set by an endpoint that cannot answer (bad input) -- reported as an error
+//+------------------------------------------------------------------+
+//| EA 4.0 ANALYSIS ENGINE                                            |
+//|                                                                    |
+//| One memory slot per symbol+timeframe ("EURUSD|H1"): its candles    |
+//| (oldest first, the last one is the candle still forming) and the   |
+//| shared engines every endpoint reads -- one ATR, one set of moving  |
+//| averages, one swing finder. Everything is worked out on CLOSED     |
+//| candles, only again when a new candle closes, and each endpoint's  |
+//| answer is kept until then, so a request is answered from memory.  |
+//|                                                                    |
+//| Lessons kept from 3.x (they cost container restarts):             |
+//|  - never wait for another pair's history: a series is read only    |
+//|    when MT5 has it (SERIES_SYNCHRONIZED); otherwise a background   |
+//|    load starts (an indicator handle, never blocks), max 4 a request|
+//|  - a background load is let go once its history has arrived        |
+//|  - every array read is bounds-checked (an out-of-range read makes  |
+//|    MT5 switch the EA off)                                          |
+//|  - the economic calendar is read at most every 10 minutes          |
+//+------------------------------------------------------------------+
 
-// A per symbol+timeframe cache of the last good series: when a fresh CopyRates() doesn't have enough
-// bars yet (MT5 still downloading), the last real series for that exact pair/timeframe is used
-// instead of blocking -- and the answer says so (_meta.from_cache).
-#define DAVEEA_CACHE_SLOTS 24
-string   g_cacheKey[DAVEEA_CACHE_SLOTS];
-int      g_cacheNb[DAVEEA_CACHE_SLOTS];
-double   g_cacheO[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
-double   g_cacheH[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
-double   g_cacheL[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
-double   g_cacheC[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
-long     g_cacheV[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
-datetime g_cacheT[DAVEEA_CACHE_SLOTS][DAVEEA_BARS];
-int      g_cacheNextSlot = 0;
-datetime g_cacheSavedAt[DAVEEA_CACHE_SLOTS];
-int      g_cacheAgeSec = -1;   // age of the cached series in this answer (-1 = live)
-bool     g_seriesStale = false; // bar 0 is not the bar of the latest tick (MT5 still catching up)
+#define SLOT_BARS   600
+#define SLOT_MAX    60
+#define CH_COUNT    16
+// chain ids (index into CSlot.cache)
+#define CH_CANDLES  0
+#define CH_MS       1
+#define CH_LIQ      2
+#define CH_ZONES    3
+#define CH_TREND    4
+#define CH_MOM      5
+#define CH_VOLAT    6
+#define CH_VOLUME   7
+#define CH_LEVELS   8
+#define CH_PATTERNS 9
 
-int FindCacheSlot(string key)
-  {
-   for(int i = 0; i < DAVEEA_CACHE_SLOTS; i++)
-      if(g_cacheKey[i] == key) return i;
-   return -1;
-  }
+string   g_aErr = "";
 
-void SaveAnalysisCache(string key)
-  {
-   int slot = FindCacheSlot(key);
-   if(slot < 0)
-     {
-      slot = g_cacheNextSlot;
-      g_cacheNextSlot = (g_cacheNextSlot + 1) % DAVEEA_CACHE_SLOTS;
-      g_cacheKey[slot] = key;
-     }
-   int n = MathMin(g_anb, DAVEEA_BARS);
-   g_cacheNb[slot] = n;
-   g_cacheSavedAt[slot] = TimeGMT();
-   for(int i = 0; i < n; i++)
-     {
-      g_cacheO[slot][i] = g_aO[i]; g_cacheH[slot][i] = g_aH[i];
-      g_cacheL[slot][i] = g_aL[i]; g_cacheC[slot][i] = g_aC[i];
-      g_cacheV[slot][i] = g_aV[i]; g_cacheT[slot][i] = g_aT[i];
-     }
-  }
-
-bool LoadAnalysisCache(string key)
-  {
-   int slot = FindCacheSlot(key);
-   if(slot < 0 || g_cacheNb[slot] <= 0) return false;
-   int n = g_cacheNb[slot];
-   g_anb = n;
-   g_cacheAgeSec = (int)(TimeGMT() - g_cacheSavedAt[slot]);
-   ArrayResize(g_aO, n); ArrayResize(g_aH, n); ArrayResize(g_aL, n); ArrayResize(g_aC, n);
-   ArrayResize(g_aV, n); ArrayResize(g_aT, n);
-   for(int i = 0; i < n; i++)
-     {
-      g_aO[i] = g_cacheO[slot][i]; g_aH[i] = g_cacheH[slot][i];
-      g_aL[i] = g_cacheL[slot][i]; g_aC[i] = g_cacheC[slot][i];
-      g_aV[i] = g_cacheV[slot][i]; g_aT[i] = g_cacheT[slot][i];
-     }
-   return true;
-  }
-
-void CopySeries(MqlRates &rates[], int copied)
-  {
-   g_anb = copied;
-   ArrayResize(g_aO, copied); ArrayResize(g_aH, copied); ArrayResize(g_aL, copied); ArrayResize(g_aC, copied);
-   ArrayResize(g_aV, copied); ArrayResize(g_aT, copied);
-   for(int i = 0; i < copied; i++)
-     {
-      g_aO[i] = rates[i].open; g_aH[i] = rates[i].high; g_aL[i] = rates[i].low; g_aC[i] = rates[i].close;
-      g_aV[i] = rates[i].tick_volume; g_aT[i] = rates[i].time;
-     }
-  }
-
-void SetSymbolInfo(string sym)
-  {
-   g_aDigits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   g_aPoint  = SymbolInfoDouble(sym, SYMBOL_POINT);
-   // Same pip rule as the bot (dave-trading pip-size): 3/5-digit quotes -> 10 points, else 1 point.
-   g_aPip    = (g_aDigits == 3 || g_aDigits == 5) ? g_aPoint * 10 : g_aPoint;
-   if(g_aPip <= 0) g_aPip = g_aPoint > 0 ? g_aPoint : 0.0001;
-  }
-
-// --- Series that are already loaded -------------------------------------------------------------
-// In an EA, reading a symbol/timeframe MT5 hasn't loaded yet makes MT5 WAIT for the download. The
-// cross-market parts of "all" read up to 28 other pairs on every timeframe, which froze the EA for
-// many minutes (live: it stopped reporting and the bot marked it offline until a restart). So a
-// series is only read when it's already there; otherwise a background load starts (an indicator
-// handle, which never blocks) and this answer leaves that piece out.
-// Background loads are started a few per request, not all at once: the container has little
-// memory, and asking MT5 for dozens of histories at the same moment got MetaTrader killed.
-string g_warmK[];
-int g_warmH[];
-int g_warmBudget = 4;
-bool SeriesReady(string s, ENUM_TIMEFRAMES tf)
-  {
-   if(s == "") return false;
-   if(SeriesInfoInteger(s, tf, SERIES_SYNCHRONIZED)) return true;
-   string k = s + "|" + IntegerToString((int)tf);
-   for(int i = 0; i < ArraySize(g_warmK); i++) if(g_warmK[i] == k) return false;
-   int n = ArraySize(g_warmK);
-   if(n < 400 && g_warmBudget > 0)
-     {
-      int h = iMA(s, tf, 1, 0, MODE_SMA, PRICE_CLOSE); // starts the download without waiting
-      if(h == INVALID_HANDLE) return false;
-      g_warmBudget--;
-      ArrayResize(g_warmK, n + 1); ArrayResize(g_warmH, n + 1);
-      g_warmK[n] = k; g_warmH[n] = h;
-     }
-   return false;
-  }
-
-// Memory: a background load is let go as soon as its history has arrived. Held forever, every
-// pair/timeframe ever touched stayed loaded and memory crept up all day; let go, MT5 drops a
-// series nobody reads (and the next read that needs it loads it again). Called once per request.
-void ReleaseLoadedSeries()
-  {
-   for(int i = ArraySize(g_warmK) - 1; i >= 0; i--)
-     {
-      if(BarsCalculated(g_warmH[i]) <= 0) continue; // still downloading
-      IndicatorRelease(g_warmH[i]);
-      int last = ArraySize(g_warmK) - 1;
-      g_warmK[i] = g_warmK[last]; g_warmH[i] = g_warmH[last];
-      ArrayResize(g_warmK, last); ArrayResize(g_warmH, last);
-     }
-  }
-// Previous + present: the last good value of every cross-series read is remembered, so when a
-// series is momentarily not ready the answer uses the previous value instead of waiting or
-// leaving it out -- and the fresh value replaces it the moment it's there.
-// Every answer says which parts are previous data (the freshness label's "previous_data"), so the
-// bot never mistakes a remembered value for a live one.
-string g_prevUsed[];
-void NotePrevious(string label)
-  {
-   string head = StringSubstr(label, 0, StringFind(label, " ("));
-   for(int i = 0; i < ArraySize(g_prevUsed); i++) if(StringFind(g_prevUsed[i], head + " (") == 0 || g_prevUsed[i] == label) return;
-   A_Push(g_prevUsed, label);
-  }
-string TfName(ENUM_TIMEFRAMES tf) { string t = EnumToString(tf); StringReplace(t, "PERIOD_", ""); return t; }
-string g_lastK[];
-double g_lastV[];
-datetime g_lastT[];
-datetime g_lastBar[];
-double LastGood(string k, double v, bool fresh, string label = "", datetime barTime = 0)
-  {
-   int n = ArraySize(g_lastK), i = 0;
-   for(; i < n; i++) if(g_lastK[i] == k) break;
-   if(fresh && v > 0)
-     {
-      if(i == n) { ArrayResize(g_lastK, n + 1); ArrayResize(g_lastV, n + 1); ArrayResize(g_lastT, n + 1); ArrayResize(g_lastBar, n + 1); g_lastK[n] = k; }
-      g_lastV[i] = v; g_lastT[i] = TimeLocal(); g_lastBar[i] = barTime;
-      return v;
-     }
-   if(i == n) return 0;
-   // Say WHICH bar the remembered value is from -- after a day rollover "D1 bar 0" remembered from
-   // yesterday is yesterday's bar, not today's.
-   if(label != "") NotePrevious(label + " (" + IntegerToString((long)(TimeLocal() - g_lastT[i]) / 60) + " min old" +
-                                (g_lastBar[i] > 0 ? ", from the bar of " + TimeToString(g_lastBar[i], TIME_DATE | TIME_MINUTES) : "") + ")");
-   return g_lastV[i];
-  }
-// Is bar 0 of this series the bar the symbol's latest tick belongs to? (MQL5 docs, "Organizing
-// Data Access": data read before the terminal has caught up is not guaranteed to be current.) A
-// daily/weekly series that is behind still answers iHigh(D1,0) -- with YESTERDAY's bar -- which used
-// to go out as today's levels with no warning. Closed markets are fine: the last tick is then in
-// the last bar, so bar 0 is still the right one.
-bool SeriesCurrent(string s, ENUM_TIMEFRAMES tf)
-  {
-   datetime last = (datetime)SymbolInfoInteger(s, SYMBOL_TIME);
-   if(last <= 0 || iTime(s, tf, 0) <= 0) return false;
-   return iBarShift(s, tf, last, true) == 0;
-  }
-
-string XKey(string f, string s, ENUM_TIMEFRAMES tf, int sh) { return f + "|" + s + "|" + IntegerToString((int)tf) + "|" + IntegerToString(sh); }
-double xGet(string f, string s, ENUM_TIMEFRAMES tf, int sh)
-  {
-   SeriesReady(s, tf); // starts the download if needed
-   // Only a CURRENT series is live data. One that hasn't caught up falls back to the last value
-   // read while it was current -- labelled previous data, with the date of the bar it came from.
-   bool cur = SeriesCurrent(s, tf);
-   double v = !cur ? 0 : f == "o" ? iOpen(s, tf, sh) : f == "h" ? iHigh(s, tf, sh) : f == "l" ? iLow(s, tf, sh) : iClose(s, tf, sh);
-   return LastGood(XKey(f, s, tf, sh), v, cur && v > 0, s + " " + TfName(tf), cur ? iTime(s, tf, sh) : 0);
-  }
-double xOpen(string s, ENUM_TIMEFRAMES tf, int sh)  { return xGet("o", s, tf, sh); }
-double xHigh(string s, ENUM_TIMEFRAMES tf, int sh)  { return xGet("h", s, tf, sh); }
-double xLow(string s, ENUM_TIMEFRAMES tf, int sh)   { return xGet("l", s, tf, sh); }
-double xClose(string s, ENUM_TIMEFRAMES tf, int sh) { return xGet("c", s, tf, sh); }
-
-bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
-  {
-   string key = sym + "|" + IntegerToString((int)tf);
-   g_aTf = tf;
-   g_fromCache = false;
-   g_seriesStale = false;
-   g_cacheAgeSec = -1;
-   MqlRates rates[];
-   ArraySetAsSeries(rates, true);
-   // PRESENT first (the trader: "the EA gives the bot recent information instead of present").
-   // Always ask MT5 for the live series -- even when it isn't flagged synchronized yet, CopyRates
-   // returns what the terminal has, and that is newer than any cache. If the newest bar is behind
-   // the last tick (MT5 still catching up), give it up to a second to catch up before answering.
-   SeriesReady(sym, tf); // starts the download if this pair/timeframe was never opened
-   int copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
-   long lastTick = SymbolInfoInteger(sym, SYMBOL_TIME);
-   int period = PeriodSeconds(tf);
-   // Wait (up to 1.5 s) until bar 0 is the bar the latest tick belongs to -- one bar behind used to
-   // be accepted as live, shifting every "forming / last closed" read by a candle.
-   for(int wait = 0; wait < 15 && copied > 0 && lastTick > 0 && iBarShift(sym, tf, (datetime)lastTick, true) != 0; wait++)
-     {
-      Sleep(100);
-      copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
-     }
-   g_seriesStale = copied > 0 && lastTick > 0 && iBarShift(sym, tf, (datetime)lastTick, true) != 0;
-   g_cacheAgeSec = -1;
-   if(copied > 60)
-     {
-      CopySeries(rates, copied);
-      SetSymbolInfo(sym);
-      if(!g_seriesStale) SaveAnalysisCache(key);
-      return true;
-     }
-   if(LoadAnalysisCache(key))
-     {
-      g_fromCache = true;
-      SetSymbolInfo(sym);
-      return true;
-     }
-   // Never loaded before: one bounded wait while MT5 downloads it.
-   for(int attempt = 0; attempt < 5 && !SeriesReady(sym, tf); attempt++)
-      Sleep(100);
-   if(!SeriesReady(sym, tf)) return false;
-   copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
-   if(copied <= 60) return false;
-   CopySeries(rates, copied);
-   SetSymbolInfo(sym);
-   SaveAnalysisCache(key);
-   return true;
-  }
-
-// --- JSON helpers ---
+// --- JSON helpers --------------------------------------------------------------------------------
 string J(string k, string v)          { return "\"" + k + "\":\"" + v + "\""; }
 string Js(string k, string v)         { return "\"" + k + "\":\"" + JsonEscape(v) + "\""; }
 string Jn(string k, double v, int d=6){ return "\"" + k + "\":" + (MathIsValidNumber(v) ? DoubleToString(v, d) : "null"); }
-// A price that may be unavailable (MT5 returns 0 when that history isn't loaded): null, never a fake 0.
 string Jp(string k, double v, int d)  { return "\"" + k + "\":" + ((v > 0 && MathIsValidNumber(v)) ? DoubleToString(v, d) : "null"); }
 string Ji(string k, long v)           { return "\"" + k + "\":" + IntegerToString(v); }
 string Jb(string k, bool v)           { return "\"" + k + "\":" + (v ? "true" : "false"); }
 string Jr(string k, string rawJson)   { return "\"" + k + "\":" + rawJson; }
 string Jnull(string k)                { return "\"" + k + "\":null"; }
+string Jwhy(string k, string why)     { return "\"" + k + "\":null,\"" + k + "_why\":\"" + JsonEscape(why) + "\""; }
 string Obj(string body)               { return "{" + body + "}"; }
+string Arr(string &a[])               { return "[" + A_Join(a) + "]"; }
 string A_Join(string &a[], string sep=",")
   {
    string s = "";
-   for(int i = 0; i < ArraySize(a); i++) { if(i > 0) s += sep; s += a[i]; }
+   for(int i = 0; i < ArraySize(a); i++) { if(i > 0) StringAdd(s, sep); StringAdd(s, a[i]); }
    return s;
   }
 void A_Push(string &arr[], string v) { int n = ArraySize(arr); ArrayResize(arr, n + 1); arr[n] = v; }
-// A real UTC time (TimeGMT) as ISO.
-string A_IsoTime(datetime t) { return IsoUtc(t); }
-// A broker-server time (bar, deal, calendar) as real UTC ISO.
-string A_BarTime(int i) { return SrvToIso(g_aT[i]); }
-double A_P(double priceDiff) { return g_aPip > 0 ? priceDiff / g_aPip : 0; }
+string TfName(ENUM_TIMEFRAMES tf) { string t = EnumToString(tf); StringReplace(t, "PERIOD_", ""); return t; }
 
-double A_Pips(string sym, double priceDiff)
-  {
-   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
-   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   double pip = (digits == 3 || digits == 5) ? point * 10 : point;
-   return pip > 0 ? priceDiff / pip : 0;
-  }
-
-// --- Time zones (for sessions and ICT times, which are defined in LOCAL market time) -------------
+// --- Time zones (sessions are defined in LOCAL market time, with real summer-time rules) ---------
 int DaysInMonth(int y, int m)
   {
    if(m == 2) return ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) ? 29 : 28;
@@ -1459,13 +1231,11 @@ datetime MkTime(int y, int m, int d, int h)
 int DowOf(int y, int m, int d) { MqlDateTime o; TimeToStruct(MkTime(y, m, d, 0), o); return o.day_of_week; }
 int NthSunday(int y, int m, int n) { int w = DowOf(y, m, 1); return 1 + ((7 - w) % 7) + (n - 1) * 7; }
 int LastSunday(int y, int m) { int dim = DaysInMonth(y, m); return dim - DowOf(y, m, dim); }
-
 #define TZ_UTC 0
 #define TZ_LONDON 1
 #define TZ_NEWYORK 2
 #define TZ_TOKYO 3
 #define TZ_SYDNEY 4
-// Hours to add to UTC for a zone at a UTC moment, with its real summer-time rules.
 int ZoneOffset(int zone, datetime utc)
   {
    MqlDateTime u; TimeToStruct(utc, u);
@@ -1477,14 +1247,12 @@ int ZoneOffset(int zone, datetime utc)
      }
    if(zone == TZ_NEWYORK)
      {
-      // 2am local: 07:00 UTC on the 2nd Sunday of March, 06:00 UTC on the 1st Sunday of November.
       datetime a = MkTime(y, 3, NthSunday(y, 3, 2), 7), b = MkTime(y, 11, NthSunday(y, 11, 1), 6);
       return (utc >= a && utc < b) ? -4 : -5;
      }
    if(zone == TZ_TOKYO) return 9;
    if(zone == TZ_SYDNEY)
      {
-      // Summer time ends on the 1st Sunday of April and starts on the 1st Sunday of October (16:00 UTC the day before).
       datetime endA = (datetime)((long)MkTime(y, 4, NthSunday(y, 4, 1), 0) - 8 * 3600);
       datetime startO = (datetime)((long)MkTime(y, 10, NthSunday(y, 10, 1), 0) - 8 * 3600);
       return (utc < endA || utc >= startO) ? 11 : 10;
@@ -1492,61 +1260,21 @@ int ZoneOffset(int zone, datetime utc)
    return 0;
   }
 datetime LocalOf(int zone, datetime utc) { return (datetime)((long)utc + ZoneOffset(zone, utc) * 3600); }
-int LocalHour(int zone, datetime utc) { MqlDateTime d; TimeToStruct(LocalOf(zone, utc), d); return d.hour; }
 int LocalMinuteOfDay(int zone, datetime utc) { MqlDateTime d; TimeToStruct(LocalOf(zone, utc), d); return d.hour * 60 + d.min; }
-
-// Minutes until a zone's clock next reads startHour:00 (0 never -- if it is exactly now, 24 h).
-int MinutesUntilLocal(int zone, int startHour)
+// UTC time of today's (in that zone) local hh:mm -- dayShift -1 = yesterday.
+datetime UtcOfLocal(int zone, datetime nowUtc, int hh, int mm, int dayShift)
   {
-   datetime now = TimeGMT();
-   long nowL = (long)now;
-   long t = nowL - (nowL % 60) + 60;
-   for(int k = 0; k < 60 * 48; k++, t += 60)
-     {
-      MqlDateTime d; TimeToStruct(LocalOf(zone, (datetime)t), d);
-      if(d.hour == startHour && d.min == 0) return (int)((t - nowL) / 60);
-     }
-   return -1;
+   datetime loc = LocalOf(zone, nowUtc);
+   long day0 = (long)loc - ((long)loc % 86400) + (long)dayShift * 86400;
+   long locT = day0 + hh * 3600 + mm * 60;
+   // convert local -> utc with the offset at that moment (iterate once for DST edges)
+   long u = locT - ZoneOffset(zone, (datetime)locT) * 3600;
+   u = locT - ZoneOffset(zone, (datetime)u) * 3600;
+   return (datetime)u;
   }
+string HHMM(int minutes) { return StringFormat("%02d:%02d", minutes / 60, minutes % 60); }
 
-bool InLocalWindow(int zone, datetime utc, int startH, int endH)
-  {
-   int h = LocalHour(zone, utc);
-   return startH <= endH ? (h >= startH && h < endH) : (h >= startH || h < endH);
-  }
-
-// The latest instance of a daily window [startH, endH) in a zone's local time, from M5 bars:
-// its high/low/open, when it started (UTC) and whether it is running right now.
-bool ZoneWindowRange(string sym, int zone, int startH, int endH, double &hi, double &lo, double &openPx, datetime &startUtc)
-  {
-   MqlRates r[]; ArraySetAsSeries(r, true);
-   hi = 0; lo = 0; openPx = 0; startUtc = 0;
-   if(!SeriesReady(sym, PERIOD_M5)) return false;
-   int n = CopyRates(sym, PERIOD_M5, 0, 900, r);
-   if(n <= 0) return false;
-   int found = -1, dayKey = -1;
-   for(int i = 0; i < n; i++)
-     {
-      datetime u = (datetime)((long)r[i].time - g_srvOffset);
-      MqlDateTime d; TimeToStruct(LocalOf(zone, u), d);
-      bool inW = d.hour >= startH && d.hour < endH;
-      int key = d.year * 1000 + d.day_of_year;
-      if(found < 0)
-        {
-         if(!inW) continue;
-         found = i; dayKey = key; hi = r[i].high; lo = r[i].low;
-        }
-      else
-        {
-         if(!inW || key != dayKey) break;
-         hi = MathMax(hi, r[i].high); lo = MathMin(lo, r[i].low);
-        }
-      openPx = r[i].open; startUtc = u;
-     }
-   return found >= 0;
-  }
-
-// --- Broker symbol names for cross-market reads (EURUSD may be "EURUSDm" on this broker) ----------
+// --- Broker names for other pairs (EURUSD may be "EURUSDm") ---------------------------------------
 string g_resBase[];
 string g_resName[];
 string ResolvedName(string base)
@@ -1560,2152 +1288,1993 @@ string ResolvedName(string base)
    return nm;
   }
 
-// % return of a (resolved) symbol over `bars` CLOSED bars; false when that data isn't there.
-bool A_SymReturn(string base, ENUM_TIMEFRAMES tf, int bars, double &ret)
+// --- Background history loads (never block) --------------------------------------------------------
+string g_warmK[];
+int    g_warmH[];
+int    g_warmBudget = 4;
+bool SeriesReady(string s, ENUM_TIMEFRAMES tf)
   {
-   ret = 0;
-   string nm = ResolvedName(base);
-   if(nm == "") return false;
-   double c0 = xClose(nm, tf, 1), cn = xClose(nm, tf, bars + 1);
-   if(c0 <= 0 || cn <= 0) return false;
-   ret = (c0 - cn) / cn * 100.0;
-   return true;
+   if(s == "") return false;
+   if(SeriesInfoInteger(s, tf, SERIES_SYNCHRONIZED)) return true;
+   string k = s + "|" + IntegerToString((int)tf);
+   for(int i = 0; i < ArraySize(g_warmK); i++) if(g_warmK[i] == k) return false;
+   int n = ArraySize(g_warmK);
+   if(n < 200 && g_warmBudget > 0)
+     {
+      int h = iMA(s, tf, 1, 0, MODE_SMA, PRICE_CLOSE); // starts the download without waiting
+      if(h == INVALID_HANDLE) return false;
+      g_warmBudget--;
+      ArrayResize(g_warmK, n + 1); ArrayResize(g_warmH, n + 1);
+      g_warmK[n] = k; g_warmH[n] = h;
+     }
+   return false;
+  }
+void ReleaseLoadedSeries()
+  {
+   for(int i = ArraySize(g_warmK) - 1; i >= 0; i--)
+     {
+      if(BarsCalculated(g_warmH[i]) <= 0) continue;
+      IndicatorRelease(g_warmH[i]);
+      int last = ArraySize(g_warmK) - 1;
+      g_warmK[i] = g_warmK[last]; g_warmH[i] = g_warmH[last];
+      ArrayResize(g_warmK, last); ArrayResize(g_warmH, last);
+     }
+  }
+void ReleaseAllWarm()
+  {
+   for(int i = 0; i < ArraySize(g_warmH); i++) IndicatorRelease(g_warmH[i]);
+   ArrayFree(g_warmK); ArrayFree(g_warmH);
   }
 
-// --- Indicator maths (matching MT5's own indicators) ---
-double A_SMA(int period, int shift = 0)
+// --- Symbol facts -----------------------------------------------------------------------------------
+double PipOf(string sym)
   {
-   if(period <= 0 || shift + period > g_anb) return 0;
-   double s = 0; for(int i = shift; i < shift + period; i++) s += g_aC[i];
-   return s / period;
+   int d = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double pt = SymbolInfoDouble(sym, SYMBOL_POINT);
+   double pip = (d == 3 || d == 5) ? pt * 10 : pt;
+   return pip > 0 ? pip : (pt > 0 ? pt : 0.0001);
   }
-// EMA over ALL loaded history (seeded with an SMA at the oldest end), so it has settled.
-double A_EMA(int period, int shift = 0)
+// 24/7 symbols (synthetic indices, crypto): MT5 lists a trading session on Saturday.
+bool Is247(string sym)
   {
-   int span = g_anb - shift;
-   if(period <= 0 || span < period) return 0;
-   double e = 0;
-   for(int i = g_anb - period; i < g_anb; i++) e += g_aC[i];
-   e /= period;
-   double k = 2.0 / (period + 1.0);
-   for(int i = g_anb - period - 1; i >= shift; i--) e = g_aC[i] * k + e * (1 - k);
-   return e;
+   datetime f, t;
+   return SymbolInfoSessionTrade(sym, SATURDAY, 0, f, t);
   }
-// Smoothed MA (Wilder / MT5 "Smoothed"): SMA seed at the oldest end, then (prev*(n-1)+price)/n.
-double A_SMMA(int period, int shift = 0)
+bool IsForex(string sym)
   {
-   int span = g_anb - shift;
-   if(period <= 0 || span < period) return 0;
-   double s = 0;
-   for(int i = g_anb - period; i < g_anb; i++) s += g_aC[i];
-   double smma = s / period;
-   for(int i = g_anb - period - 1; i >= shift; i--) smma = (smma * (period - 1) + g_aC[i]) / period;
-   return smma;
+   return SymbolInfoInteger(sym, SYMBOL_TRADE_CALC_MODE) == SYMBOL_CALC_MODE_FOREX ||
+          SymbolInfoInteger(sym, SYMBOL_TRADE_CALC_MODE) == SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE;
   }
-double A_StdDev(int period, int shift = 0)
+bool IsSynthetic(string sym) { return Is247(sym) && !IsForex(sym); }
+string PxS(string sym, double v) { return DoubleToString(v, (int)SymbolInfoInteger(sym, SYMBOL_DIGITS)); }
+
+//+------------------------------------------------------------------+
+//| The memory slot                                                   |
+//+------------------------------------------------------------------+
+class CSlot
   {
-   if(shift + period > g_anb) return 0;
-   double m = A_SMA(period, shift), s = 0;
-   for(int i = shift; i < shift + period; i++) s += MathPow(g_aC[i] - m, 2);
-   return MathSqrt(s / period);
-  }
-double A_TrueRange(int i)
+public:
+   string            sym;
+   ENUM_TIMEFRAMES   tf;
+   string            key;
+   int               n;             // candles held; [n-1] = still forming
+   int               lc;            // last CLOSED candle index (n-2)
+   double            o[], h[], l[], c[];
+   long              v[];
+   datetime          t[];
+   datetime          lastClosedTime; // time of candle [lc] the engines were built for
+   datetime          loadedAt;       // TimeLocal of the last refresh
+   datetime          lastUsed;
+   bool              stale;          // newest candle behind the last tick
+   bool              fromCache;      // refresh failed, older candles kept
+   int               digits;
+   double            point, pip;
+   // engines
+   double            atr[], atr10[], ema20[], ema50[], ema200[], smma6[], smma20[], smma100[];
+   double            rsi[], macd[], macdSig[], stK[], stD[], adx[], pdi[], mdi[], st[];
+   int               stDir[];
+   // swings: internal fractal 2/2 (APA, wicks) and external fractal 5/5
+   int               swI[];  double swP[]; int swK[];   // kind +1 high, -1 low
+   int               exI[];  double exP[]; int exK[];
+   // chain answers built for lastClosedTime
+   string            cache[CH_COUNT];
+   ulong             chUs[CH_COUNT];
+   datetime          cacheAt[CH_COUNT];
+   datetime          lastAsked;      // last time the bot asked for this one (precompute keeps it warm)
+  };
+
+CSlot *g_slots[];
+
+CSlot *FindSlot(string key)
   {
-   if(i + 1 >= g_anb) return g_aH[i] - g_aL[i];
-   return MathMax(g_aH[i] - g_aL[i], MathMax(MathAbs(g_aH[i] - g_aC[i + 1]), MathAbs(g_aL[i] - g_aC[i + 1])));
-  }
-// MT5's ATR: a simple average of the true range.
-double A_ATR(int period, int shift = 0)
-  {
-   if(shift + period + 1 > g_anb) return 0;
-   double s = 0; for(int i = shift; i < shift + period; i++) s += A_TrueRange(i);
-   return s / period;
-  }
-// Wilder's RSI (what MT5's RSI draws): first average of `period` changes, then smoothed
-// (prev*(n-1)+change)/n all the way to `shift`. The old version averaged only the last 14 changes.
-double A_RSI(int period, int shift = 0)
-  {
-   int last = g_anb - 1;
-   if(last - shift < period + 1) return 50;
-   double ag = 0, al = 0;
-   for(int i = last - 1; i >= last - period; i--)
-     {
-      double d = g_aC[i] - g_aC[i + 1];
-      if(d > 0) ag += d; else al -= d;
-     }
-   ag /= period; al /= period;
-   for(int i = last - period - 1; i >= shift; i--)
-     {
-      double d = g_aC[i] - g_aC[i + 1];
-      ag = (ag * (period - 1) + (d > 0 ? d : 0)) / period;
-      al = (al * (period - 1) + (d < 0 ? -d : 0)) / period;
-     }
-   if(al == 0) return ag == 0 ? 50 : 100;
-   return 100.0 - 100.0 / (1.0 + ag / al);
-  }
-double A_MACDMain(int shift) { return A_EMA(12, shift) - A_EMA(26, shift); }
-// MT5 MACD: main = EMA12 - EMA26; signal = SIMPLE 9-bar average of main (MT5 help).
-void A_MACD(double &main, double &sig, double &hist, int shift = 0)
-  {
-   main = A_MACDMain(shift);
-   double s = 0;
-   for(int i = 0; i < 9; i++) s += A_MACDMain(shift + i);
-   sig  = s / 9.0;
-   hist = main - sig;
-  }
-// MT5 slow stochastic %K(kP, slowing): sum(close - lowest) / sum(highest - lowest) over `slow` bars.
-double A_HighestHigh(int from, int count){ if(from >= g_anb) return 0; double v = g_aH[from]; for(int i = from; i < MathMin(g_anb, from + count); i++) v = MathMax(v, g_aH[i]); return v; }
-double A_LowestLow (int from, int count){ if(from >= g_anb) return 0; double v = g_aL[from]; for(int i = from; i < MathMin(g_anb, from + count); i++) v = MathMin(v, g_aL[i]); return v; }
-double A_StochK(int kP, int slow, int shift)
-  {
-   double num = 0, den = 0;
-   for(int j = shift; j < shift + slow; j++)
-     {
-      if(j + kP > g_anb) return 50;
-      double hh = A_HighestHigh(j, kP), ll = A_LowestLow(j, kP);
-      num += g_aC[j] - ll; den += hh - ll;
-     }
-   return den > 0 ? num / den * 100.0 : 50;
-  }
-// 14/3/3 by default (K period, slowing, D period) -- %D = simple average of %K.
-void A_Stochastic(int kP, int dP, double &k, double &d, int slow = 3, int shift = 0)
-  {
-   k = A_StochK(kP, slow, shift);
-   double s = 0;
-   for(int j = 0; j < dP; j++) s += A_StochK(kP, slow, shift + j);
-   d = s / dP;
-  }
-double A_CCI(int period, int shift = 0)
-  {
-   if(shift + period + 1 >= g_anb) return 0;
-   double m = 0;
-   for(int i = shift; i < shift + period; i++) m += (g_aH[i] + g_aL[i] + g_aC[i]) / 3.0;
-   m /= period;
-   double dev = 0;
-   for(int i = shift; i < shift + period; i++) dev += MathAbs((g_aH[i] + g_aL[i] + g_aC[i]) / 3.0 - m);
-   dev /= period;
-   double tp0 = (g_aH[shift] + g_aL[shift] + g_aC[shift]) / 3.0;
-   return dev > 0 ? (tp0 - m) / (0.015 * dev) : 0;
-  }
-double A_WilliamsR(int period)
-  {
-   if(period >= g_anb) return -50;
-   double hi = A_HighestHigh(0, period), lo = A_LowestLow(0, period);
-   return (hi - lo) > 0 ? (hi - g_aC[0]) / (hi - lo) * -100.0 : -50;
-  }
-// Wilder's ADX with +DI/-DI, run over all loaded history up to `shift`.
-bool A_ADXCalc(int p, int shift, double &adx, double &pdi, double &mdi)
-  {
-   adx = 0; pdi = 0; mdi = 0;
-   int last = g_anb - 1;
-   if(last - shift < 3 * p) return false;
-   double sTR = 0, sP = 0, sM = 0;
-   int i = last - 1;
-   for(int c = 0; c < p; c++, i--)
-     {
-      double up = g_aH[i] - g_aH[i + 1], dn = g_aL[i + 1] - g_aL[i];
-      sTR += A_TrueRange(i);
-      sP  += (up > dn && up > 0) ? up : 0;
-      sM  += (dn > up && dn > 0) ? dn : 0;
-     }
-   double dxSum = 0; int dxN = 0; bool ready = false;
-   for(; i >= shift; i--)
-     {
-      double up = g_aH[i] - g_aH[i + 1], dn = g_aL[i + 1] - g_aL[i];
-      sTR = sTR - sTR / p + A_TrueRange(i);
-      sP  = sP - sP / p + ((up > dn && up > 0) ? up : 0);
-      sM  = sM - sM / p + ((dn > up && dn > 0) ? dn : 0);
-      pdi = sTR > 0 ? 100.0 * sP / sTR : 0;
-      mdi = sTR > 0 ? 100.0 * sM / sTR : 0;
-      double dx = (pdi + mdi) > 0 ? 100.0 * MathAbs(pdi - mdi) / (pdi + mdi) : 0;
-      if(!ready) { dxSum += dx; dxN++; if(dxN == p) { adx = dxSum / p; ready = true; } }
-      else adx = (adx * (p - 1) + dx) / p;
-     }
-   return ready;
+   for(int i = 0; i < ArraySize(g_slots); i++)
+      if(CheckPointer(g_slots[i]) != POINTER_INVALID && g_slots[i].key == key) return g_slots[i];
+   return NULL;
   }
 
-// --- Swings ---
-bool A_IsSwingHigh(int i, int k)
+void EvictSlots()
   {
-   if(i - k < 0 || i + k >= g_anb) return false;
-   for(int j = 1; j <= k; j++) if(g_aH[i] <= g_aH[i - j] || g_aH[i] <= g_aH[i + j]) return false;
-   return true;
-  }
-bool A_IsSwingLow(int i, int k)
-  {
-   if(i - k < 0 || i + k >= g_anb) return false;
-   for(int j = 1; j <= k; j++) if(g_aL[i] >= g_aL[i - j] || g_aL[i] >= g_aL[i + j]) return false;
-   return true;
-  }
-// Most recent first. A swing needs k closed bars on its right, so none of these move once found.
-void A_CollectSwings(int k, int maxOut, double &hi[], int &hiBar[], double &lo[], int &loBar[])
-  {
-   ArrayResize(hi, 0); ArrayResize(lo, 0);
-   ArrayResize(hiBar, 0); ArrayResize(loBar, 0);
-   for(int i = k + 1; i < g_anb - k && (ArraySize(hi) < maxOut || ArraySize(lo) < maxOut); i++)
+   // keep at most SLOT_MAX; drop the ones not used for the longest (and anything unused for 2 h)
+   datetime now = TimeLocal();
+   for(int i = ArraySize(g_slots) - 1; i >= 0; i--)
      {
-      if(ArraySize(hi) < maxOut && A_IsSwingHigh(i, k))
-        { int n = ArraySize(hi); ArrayResize(hi, n+1); ArrayResize(hiBar, n+1); hi[n] = g_aH[i]; hiBar[n] = i; }
-      if(ArraySize(lo) < maxOut && A_IsSwingLow(i, k))
-        { int n = ArraySize(lo); ArrayResize(lo, n+1); ArrayResize(loBar, n+1); lo[n] = g_aL[i]; loBar[n] = i; }
-     }
-  }
-// Alternating high/low pivots in time order (oldest first) -- the zigzag harmonic and Elliott counts
-// are read from. Two highs in a row keep the higher one, two lows the lower one.
-int A_Zigzag(int k, int maxPts, double &px[], int &bar[], int &typ[])
-  {
-   double sh[], sl[]; int shB[], slB[];
-   A_CollectSwings(k, 40, sh, shB, sl, slB);
-   int n = ArraySize(sh) + ArraySize(sl);
-   double tp[]; int tb[], tt[];
-   ArrayResize(tp, n); ArrayResize(tb, n); ArrayResize(tt, n);
-   int m = 0;
-   for(int i = 0; i < ArraySize(sh); i++) { tp[m] = sh[i]; tb[m] = shB[i]; tt[m] = 1; m++; }
-   for(int i = 0; i < ArraySize(sl); i++) { tp[m] = sl[i]; tb[m] = slB[i]; tt[m] = -1; m++; }
-   // oldest first = biggest bar index first
-   for(int a = 1; a < m; a++)
-     {
-      double p = tp[a]; int b = tb[a], t = tt[a]; int j = a - 1;
-      while(j >= 0 && tb[j] < b) { tp[j+1] = tp[j]; tb[j+1] = tb[j]; tt[j+1] = tt[j]; j--; }
-      tp[j+1] = p; tb[j+1] = b; tt[j+1] = t;
-     }
-   ArrayResize(px, 0); ArrayResize(bar, 0); ArrayResize(typ, 0);
-   for(int a = 0; a < m; a++)
-     {
-      int c = ArraySize(px);
-      if(c > 0 && typ[c - 1] == tt[a])
+      bool drop = CheckPointer(g_slots[i]) == POINTER_INVALID || now - g_slots[i].lastUsed > 7200;
+      if(!drop && ArraySize(g_slots) > SLOT_MAX)
         {
-         if((tt[a] == 1 && tp[a] > px[c - 1]) || (tt[a] == -1 && tp[a] < px[c - 1])) { px[c - 1] = tp[a]; bar[c - 1] = tb[a]; }
-         continue;
+         int oldest = 0;
+         for(int j = 1; j < ArraySize(g_slots); j++)
+            if(g_slots[j].lastUsed < g_slots[oldest].lastUsed) oldest = j;
+         drop = (oldest == i);
         }
-      ArrayResize(px, c + 1); ArrayResize(bar, c + 1); ArrayResize(typ, c + 1);
-      px[c] = tp[a]; bar[c] = tb[a]; typ[c] = tt[a];
+      if(!drop) continue;
+      if(CheckPointer(g_slots[i]) == POINTER_DYNAMIC) delete g_slots[i];
+      int last = ArraySize(g_slots) - 1;
+      g_slots[i] = g_slots[last];
+      ArrayResize(g_slots, last);
      }
-   int c = ArraySize(px);
-   if(c > maxPts)
+  }
+
+void FreeSlots()
+  {
+   for(int i = 0; i < ArraySize(g_slots); i++)
+      if(CheckPointer(g_slots[i]) == POINTER_DYNAMIC) delete g_slots[i];
+   ArrayFree(g_slots);
+  }
+
+int MinBarsFor(ENUM_TIMEFRAMES tf) { return tf == PERIOD_MN1 ? 24 : tf == PERIOD_W1 ? 52 : 120; }
+
+void BuildEngines(CSlot *s);
+
+// Loads (or refreshes) a slot. wait = how long it may wait (ms) for MT5 to catch up; 0 for other
+// pairs/timeframes read as context (never blocks: not loaded = NULL and a background load starts).
+CSlot *GetSlot(string sym, ENUM_TIMEFRAMES tf, int waitMs)
+  {
+   if(sym == "" || SymbolInfoDouble(sym, SYMBOL_POINT) <= 0) return NULL;
+   string key = sym + "|" + TfName(tf);
+   CSlot *s = FindSlot(key);
+   bool ready = SeriesReady(sym, tf);
+   if(!ready && waitMs > 0)
      {
-      int drop = c - maxPts;
-      for(int a = 0; a < maxPts; a++) { px[a] = px[a + drop]; bar[a] = bar[a + drop]; typ[a] = typ[a + drop]; }
-      ArrayResize(px, maxPts); ArrayResize(bar, maxPts); ArrayResize(typ, maxPts);
+      for(int w = 0; w < waitMs / 100 && !ready; w++) { Sleep(100); ready = SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED) != 0; }
      }
-   return ArraySize(px);
-  }
+   if(!ready && waitMs <= 0 && s == NULL) return NULL;
 
-// --- Candles ---
-string A_Dir(int i)
-  {
-   double b = g_aC[i] - g_aO[i];
-   if(MathAbs(b) < g_aPoint * 0.5) return "NEUTRAL";
-   return b > 0 ? "BULL" : "BEAR";
-  }
-// Was price falling into candle i (last 5 closes before it)?
-bool A_PriorDown(int i) { return i + 6 < g_anb && g_aC[i + 1] < g_aC[i + 6]; }
-// One strict rule set, used by BOTH the candles and the patterns endpoints.
-string A_CandleType(int i)
-  {
-   double rng = MathMax(g_aH[i] - g_aL[i], g_aPoint);
-   double body = MathAbs(g_aC[i] - g_aO[i]);
-   double uw = g_aH[i] - MathMax(g_aO[i], g_aC[i]);
-   double lw = MathMin(g_aO[i], g_aC[i]) - g_aL[i];
-   double br = body / rng;
-   if(br <= 0.1)
+   datetime bar0 = ready ? iTime(sym, tf, 0) : 0;
+   bool needLoad = s == NULL || (ready && bar0 > 0 && (s.n < 2 || s.t[s.n - 1] != bar0)) || (ready && TimeLocal() - s.loadedAt >= 1);
+   if(s != NULL && !needLoad) { s.lastUsed = TimeLocal(); return s; }
+
+   MqlRates r[];
+   int got = -1;
+   if(ready || waitMs > 0)
      {
-      if(uw <= 0.1 * rng && lw >= 0.6 * rng) return "DRAGONFLY_DOJI";
-      if(lw <= 0.1 * rng && uw >= 0.6 * rng) return "GRAVESTONE_DOJI";
-      return "DOJI";
-     }
-   if(br >= 0.9) return "MARUBOZU";
-   double small = MathMax(body * 0.5, 0.1 * rng);
-   if(lw >= 2 * body && uw <= small) return A_PriorDown(i) ? "HAMMER" : "HANGING_MAN";
-   if(uw >= 2 * body && lw <= small) return A_PriorDown(i) ? "INVERTED_HAMMER" : "SHOOTING_STAR";
-   if(br >= 0.7) return "LARGE_BODY";
-   if(br < 0.3 && uw > body && lw > body) return "SPINNING_TOP";
-   return "NORMAL";
-  }
-
-// --- Freshness label that goes on every answer ---
-string A_Meta(string sym, string tfStr)
-  {
-   datetime nowSrv = TimeTradeServer();
-   long quoteTime = SymbolInfoInteger(sym, SYMBOL_TIME);
-   long qAge = quoteTime > 0 ? (long)nowSrv - quoteTime : -1;
-   long barAge = g_anb > 0 ? (long)nowSrv - (long)g_aT[0] : -1;
-   int period = PeriodSeconds(g_aTf);
-   bool closed = qAge < 0 || qAge > 600;
-   // Behind = bar 0 is not the bar of the latest tick (checked when the series was loaded).
-   bool behind = g_seriesStale || (!closed && barAge > 2 * period);
-   bool forming = g_anb > 0 && !g_fromCache && !closed && !g_seriesStale && barAge >= 0 && barAge < period;
-   long closesIn = forming ? (long)g_aT[0] + period - (long)nowSrv : -1;
-   return Obj(Js("symbol", sym) + "," + J("timeframe", tfStr) + "," + Ji("bars", g_anb) + "," +
-              J("last_bar_open_utc", g_anb > 0 ? A_BarTime(0) : "") + "," +
-              Jb("last_bar_still_forming", forming) + "," + Ji("bar_closes_in_sec", closesIn) + "," +
-              Jb("from_cache", g_fromCache) + "," + Ji("cache_age_sec", g_fromCache ? g_cacheAgeSec : -1) + "," + Ji("quote_age_sec", qAge) + "," +
-              Jb("market_likely_closed", closed) + "," + Jb("bars_behind", behind) + "," +
-              Ji("spread_points", (long)SymbolInfoInteger(sym, SYMBOL_SPREAD)) + "," +
-              Jb("limited_history", g_anb < 300) + "," + J("times", "UTC") + "," +
-              J("computed_at_utc", A_IsoTime(TimeGMT())) + "," + Ji("broker_utc_offset_min", g_srvOffset / 60) + "," +
-              J("ea_version", EA_VERSION) + A_PreviousNote());
-  }
-string A_PreviousNote()
-  {
-   string items[];
-   if(g_fromCache) A_Push(items, "\"this symbol's own candles, " + IntegerToString(g_cacheAgeSec / 60) + " min old (MT5 had not loaded fresh ones)\"");
-   if(g_seriesStale && !g_fromCache) A_Push(items, "\"this symbol's newest candle (MT5 was still catching up -- the last bar may be one behind)\"");
-   for(int i = 0; i < ArraySize(g_prevUsed); i++) A_Push(items, "\"" + JsonEscape(g_prevUsed[i]) + "\"");
-   if(ArraySize(items) == 0) return "," + Jr("previous_data", "[]");
-   return "," + Jr("previous_data", "[" + A_Join(items) + "]") + "," +
-          J("previous_data_note", "these parts use the LAST GOOD values the EA saw, because that data was not loaded in MT5 yet -- treat them as previous data, not live; everything else is live");
-  }
-
-// ============================== the endpoints ==============================
-
-//--- trend ---------------------------------------------------------------
-string A_Trend(string sym)
-  {
-   int n200 = MathMin(200, g_anb - 6);
-   double ma20 = A_SMA(20), ma50 = A_SMA(50), ma200 = A_SMA(n200);
-   double ema9 = A_EMA(9), ema21 = A_EMA(21);
-   double ma20p = A_SMA(20, 5), ma50p = A_SMA(50, 5), ma200p = A_SMA(n200, 5);
-   // The trader's own trend system: SMMA 6/20/100 drives bias and score (SMA/EMA are context).
-   double smma6 = A_SMMA(6), smma20 = A_SMMA(20), smma100 = A_SMMA(100);
-   double c = g_aC[0];
-   int score = 0;
-   if(c > smma6)       score++; else score--;
-   if(c > smma20)      score++; else score--;
-   // SMMA(100) is 0 when fewer than 100 bars loaded -- comparing against 0 always scored "bullish".
-   if(smma100 > 0) { if(c > smma100) score++; else score--; }
-   if(smma6 > smma20)  score++; else score--;
-   if(smma100 > 0) { if(smma20 > smma100) score++; else score--; }
-   string bias = score >= 4 ? "STRONG_BULL" : score >= 2 ? "BULL" : score <= -4 ? "STRONG_BEAR" : score <= -2 ? "BEAR" : "NEUTRAL";
-   bool allBull = c > ma20 && ma20 > ma50 && ma50 > ma200;
-   bool allBear = c < ma20 && ma20 < ma50 && ma50 < ma200;
-   bool smmaAllBull = smma100 > 0 && c > smma6 && smma6 > smma20 && smma20 > smma100;
-   bool smmaAllBear = smma100 > 0 && c < smma6 && smma6 < smma20 && smma20 < smma100;
-   double adx, pdi, mdi; bool adxOk = A_ADXCalc(14, 0, adx, pdi, mdi);
-   int d = g_aDigits;
-   return "{\"bias\":\"" + bias + "\",\"score\":" + IntegerToString(score) + "," +
-          "\"slope_20\":" + DoubleToString(A_Pips(sym, ma20 - ma20p), 2) + "," +
-          "\"slope_50\":" + DoubleToString(A_Pips(sym, ma50 - ma50p), 2) + "," +
-          "\"ma20\":" + DoubleToString(ma20, d) + ",\"ma50\":" + DoubleToString(ma50, d) + ",\"ma200\":" + DoubleToString(ma200, d) + "," +
-          "\"ma200_period_used\":" + IntegerToString(n200) + "," +
-          "\"ema9\":" + DoubleToString(ema9, d) + ",\"ema21\":" + DoubleToString(ema21, d) + "," +
-          "\"price_vs_ma20\":\"" + (c > ma20 ? "ABOVE" : "BELOW") + "\"," +
-          "\"price_vs_ma50\":\"" + (c > ma50 ? "ABOVE" : "BELOW") + "\"," +
-          "\"price_vs_ma200\":\"" + (c > ma200 ? "ABOVE" : "BELOW") + "\"," +
-          "\"ema9_vs_ema21\":\"" + (ema9 > ema21 ? "ABOVE" : "BELOW") + "\"," +
-          "\"ma_rising_20\":" + (ma20 > ma20p ? "true" : "false") + ",\"ma_rising_50\":" + (ma50 > ma50p ? "true" : "false") + "," +
-          "\"ma_rising_200\":" + (ma200 > ma200p ? "true" : "false") + "," +
-          "\"golden_cross\":" + ((ma50 > ma200 && A_SMA(50, 3) <= A_SMA(n200, 3)) ? "true" : "false") + "," +
-          "\"death_cross\":" + ((ma50 < ma200 && A_SMA(50, 3) >= A_SMA(n200, 3)) ? "true" : "false") + "," +
-          "\"price_above_all_mas\":" + (allBull ? "true" : "false") + "," +
-          "\"ma_alignment\":\"" + (allBull ? "PERFECT_BULL" : allBear ? "PERFECT_BEAR" : "MIXED") + "\"," +
-          "\"dist_ma200_pips\":" + DoubleToString(A_Pips(sym, c - ma200), 1) + "," +
-          "\"dist_ma50_pips\":" + DoubleToString(A_Pips(sym, c - ma50), 1) + "," +
-          "\"smma6\":" + DoubleToString(smma6, d) + ",\"smma20\":" + DoubleToString(smma20, d) + ",\"smma100\":" + DoubleToString(smma100, d) + "," +
-          "\"price_vs_smma6\":\"" + (c > smma6 ? "ABOVE" : "BELOW") + "\"," +
-          "\"price_vs_smma20\":\"" + (c > smma20 ? "ABOVE" : "BELOW") + "\"," +
-          "\"price_vs_smma100\":\"" + (c > smma100 ? "ABOVE" : "BELOW") + "\"," +
-          "\"smma_alignment\":\"" + (smmaAllBull ? "PERFECT_BULL" : smmaAllBear ? "PERFECT_BEAR" : "MIXED") + "\"," +
-          (adxOk ? Jn("adx", adx, 1) : Jnull("adx")) + "," +
-          J("adx_direction", pdi > mdi ? "BULL" : "BEAR") + "}";
-  }
-
-//--- momentum ------------------------------------------------------------
-string A_Momentum()
-  {
-   double rsi = A_RSI(14), rsiPrev = A_RSI(14, 1);
-   double m, s, h; A_MACD(m, s, h, 0);
-   double mP, sP, hP; A_MACD(mP, sP, hP, 1);
-   double k, d; A_Stochastic(14, 3, k, d, 3, 0);
-   double cci = A_CCI(20), wr = A_WilliamsR(14);
-   double roc = g_anb > 10 && g_aC[10] != 0 ? (g_aC[0] - g_aC[10]) / g_aC[10] * 100.0 : 0;
-   int bull = 0, bear = 0;
-   if(rsi > 50) bull++; else bear++;
-   if(h > 0)    bull++; else bear++;
-   if(k > d)    bull++; else bear++;
-   if(cci > 0)  bull++; else bear++;
-   if(wr > -50) bull++; else bear++;
-   if(roc > 0)  bull++; else bear++;
-   // Closed-candle history a trader reads off RSI/MACD: the last five closed RSI values, how long ago
-   // RSI was overbought/oversold, how long ago the MACD histogram changed sign.
-   string rsiLast = "";
-   for(int i = 1; i <= 5 && i < g_anb - 15; i++) rsiLast += (i > 1 ? "," : "") + DoubleToString(A_RSI(14, i), 1);
-   int sinceOb = -1, sinceOs = -1;
-   for(int i = 1; i <= 100 && i < g_anb - 15 && (sinceOb < 0 || sinceOs < 0); i++)
-     {
-      double r = A_RSI(14, i);
-      if(sinceOb < 0 && r > 70) sinceOb = i;
-      if(sinceOs < 0 && r < 30) sinceOs = i;
-     }
-   int macdCross = -1; string macdCrossDir = "NONE";
-   for(int i = 1; i <= 60 && i < g_anb - 40; i++)
-     {
-      double a1, b1, h1, a2, b2, h2; A_MACD(a1, b1, h1, i); A_MACD(a2, b2, h2, i + 1);
-      if((h1 > 0) != (h2 > 0)) { macdCross = i; macdCrossDir = h1 > 0 ? "BULL" : "BEAR"; break; }
-     }
-   double kc, dc; A_Stochastic(14, 3, kc, dc, 3, 1);
-   return "{\"values_on\":\"rsi/macd/stoch = the forming candle (moves until it closes); *_prev / *_closed = the last closed candle\"," +
-          "\"rsi_last5_closed\":[" + rsiLast + "]," +
-          "\"bars_since_rsi_overbought\":" + IntegerToString(sinceOb) + ",\"bars_since_rsi_oversold\":" + IntegerToString(sinceOs) + "," +
-          "\"macd_hist_cross_bars_ago\":" + IntegerToString(macdCross) + ",\"macd_hist_cross_dir\":\"" + macdCrossDir + "\"," +
-          "\"stoch_k_closed\":" + DoubleToString(kc, 2) + ",\"stoch_d_closed\":" + DoubleToString(dc, 2) + "," +
-          "\"rsi\":" + DoubleToString(rsi, 2) + ",\"rsi_prev\":" + DoubleToString(rsiPrev, 2) + "," +
-          "\"rsi_method\":\"Wilder (same as MT5 RSI)\"," +
-          "\"rsi_zone\":\"" + (rsi > 70 ? "OVERBOUGHT" : rsi < 30 ? "OVERSOLD" : "NEUTRAL") + "\"," +
-          "\"rsi_slope\":" + DoubleToString(rsi - rsiPrev, 2) + "," +
-          "\"macd_main\":" + DoubleToString(m, 8) + ",\"macd_signal\":" + DoubleToString(s, 8) + ",\"macd_hist\":" + DoubleToString(h, 8) + "," +
-          "\"macd_hist_prev\":" + DoubleToString(hP, 8) + "," +
-          "\"macd_settings\":\"12,26,9 (signal = simple average, as MT5)\"," +
-          "\"macd_dir\":\"" + (h > 0 ? "BULL" : "BEAR") + "\"," +
-          "\"macd_above_zero\":" + (m > 0 ? "true" : "false") + "," +
-          "\"macd_hist_growing\":" + (MathAbs(h) > MathAbs(hP) ? "true" : "false") + "," +
-          "\"stoch_k\":" + DoubleToString(k, 2) + ",\"stoch_d\":" + DoubleToString(d, 2) + "," +
-          "\"stoch_settings\":\"14,3,3\"," +
-          "\"stoch_zone\":\"" + (k > 80 ? "OVERBOUGHT" : k < 20 ? "OVERSOLD" : "NEUTRAL") + "\"," +
-          "\"stoch_cross\":\"" + (k > d ? "BULL" : "BEAR") + "\"," +
-          "\"cci\":" + DoubleToString(cci, 2) + ",\"cci_zone\":\"" + (cci > 100 ? "OVERBOUGHT" : cci < -100 ? "OVERSOLD" : "NEUTRAL") + "\"," +
-          "\"williams_r\":" + DoubleToString(wr, 2) + ",\"williams_zone\":\"" + (wr > -20 ? "OVERBOUGHT" : wr < -80 ? "OVERSOLD" : "NEUTRAL") + "\"," +
-          "\"roc\":" + DoubleToString(roc, 4) + "," +
-          "\"momentum_score\":" + IntegerToString(bull - bear) + ",\"max_score\":6," +
-          "\"overall_signal\":\"" + (bull > bear ? "BULL" : bull < bear ? "BEAR" : "NEUTRAL") + "\"," +
-          "\"bull_signals_count\":" + IntegerToString(bull) + ",\"bear_signals_count\":" + IntegerToString(bear) + "}";
-  }
-
-//--- volatility ----------------------------------------------------------
-string A_Volatility(string sym)
-  {
-   double atr = A_ATR(14), atrPrev = A_ATR(14, 5), atrLong = A_ATR(MathMin(50, g_anb - 2));
-   double sd = A_StdDev(20), ma20 = A_SMA(20);
-   double bbU = ma20 + 2 * sd, bbL = ma20 - 2 * sd;
-   double kcU = ma20 + 1.5 * atr, kcL = ma20 - 1.5 * atr;
-   double pctB = (bbU - bbL) > 0 ? (g_aC[0] - bbL) / (bbU - bbL) : 0.5;
-   int below = 0, total = 0;
-   for(int i = 0; i < MathMin(g_anb - 15, 100); i++) { total++; if(A_ATR(14, i) < atr) below++; }
-   double pctile = total > 0 ? (double)below / total * 100.0 : 50;
-   // Historical volatility = standard deviation of bar-to-bar returns (%), last 10 closed bars.
-   double rets[]; ArrayResize(rets, 0);
-   for(int i = 1; i <= 10 && i + 1 < g_anb; i++)
-     if(g_aC[i + 1] > 0) { int n = ArraySize(rets); ArrayResize(rets, n + 1); rets[n] = MathLog(g_aC[i] / g_aC[i + 1]); }
-   double mean = 0; for(int i = 0; i < ArraySize(rets); i++) mean += rets[i];
-   double hv = 0;
-   if(ArraySize(rets) > 1) { mean /= ArraySize(rets); for(int i = 0; i < ArraySize(rets); i++) hv += MathPow(rets[i] - mean, 2); hv = MathSqrt(hv / (ArraySize(rets) - 1)) * 100.0; }
-   int digits = g_aDigits;
-   return "{\"atr\":" + DoubleToString(atr, digits) + ",\"atr_pips\":" + DoubleToString(A_Pips(sym, atr), 1) + "," +
-          "\"atr_state\":\"" + (atr > atrLong * 1.2 ? "EXPANDING" : atr < atrLong * 0.8 ? "CONTRACTING" : "NORMAL") + "\"," +
-          "\"atr_percentile\":" + DoubleToString(pctile, 1) + "," +
-          "\"atr_vs_avg\":" + DoubleToString(atrLong > 0 ? atr / atrLong : 1, 3) + "," +
-          "\"bb_upper\":" + DoubleToString(bbU, digits) + ",\"bb_mid\":" + DoubleToString(ma20, digits) + ",\"bb_lower\":" + DoubleToString(bbL, digits) + "," +
-          "\"bb_width_pips\":" + DoubleToString(A_Pips(sym, bbU - bbL), 1) + "," +
-          "\"bb_position\":\"" + (g_aC[0] > bbU ? "ABOVE_UPPER" : g_aC[0] < bbL ? "BELOW_LOWER" : "INSIDE") + "\"," +
-          "\"bb_pct_b\":" + DoubleToString(pctB, 3) + "," +
-          "\"bb_squeeze\":" + ((bbU < kcU && bbL > kcL) ? "true" : "false") + "," +
-          "\"kc_upper\":" + DoubleToString(kcU, digits) + ",\"kc_lower\":" + DoubleToString(kcL, digits) + "," +
-          "\"kc_position\":\"" + (g_aC[0] > kcU ? "ABOVE" : g_aC[0] < kcL ? "BELOW" : "INSIDE") + "\"," +
-          "\"expanding\":" + (atr > atrPrev ? "true" : "false") + ",\"contracting\":" + (atr < atrPrev ? "true" : "false") + "," +
-          "\"historical_vol_10\":" + DoubleToString(hv, 4) + "," +
-          "\"historical_vol_note\":\"std-dev of the last 10 bar returns, % per bar\"," +
-          "\"regime\":\"" + (pctile > 70 ? "HIGH" : pctile < 30 ? "LOW" : "NORMAL") + "\"}";
-  }
-
-//--- price ---------------------------------------------------------------
-double A_Hi52(string sym) { if(!SeriesReady(sym, PERIOD_W1)) return 0; double h[]; int n = CopyHigh(sym, PERIOD_W1, 0, 52, h); return n > 0 ? h[ArrayMaximum(h, 0, n)] : 0; }
-double A_Lo52(string sym) { if(!SeriesReady(sym, PERIOD_W1)) return 0; double l[]; int n = CopyLow(sym, PERIOD_W1, 0, 52, l); return n > 0 ? l[ArrayMinimum(l, 0, n)] : 0; }
-string A_TradeModeName(string sym)
-  {
-   long m = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
-   if(m == SYMBOL_TRADE_MODE_DISABLED) return "DISABLED";
-   if(m == SYMBOL_TRADE_MODE_LONGONLY) return "LONG_ONLY";
-   if(m == SYMBOL_TRADE_MODE_SHORTONLY) return "SHORT_ONLY";
-   if(m == SYMBOL_TRADE_MODE_CLOSEONLY) return "CLOSE_ONLY";
-   return "FULL";
-  }
-
-// Real daily/weekly/monthly figures from MT5's own D1/W1/MN1 candles -- not "the last N bars of
-// whatever timeframe was asked for" (on M15 the old "day high" was really the last 6 hours).
-string A_Price(string sym)
-  {
-   MqlTick tk; SymbolInfoTick(sym, tk);
-   double bid = tk.bid, ask = tk.ask, mid = (bid + ask) / 2.0;
-   double spread = ask - bid;
-   double last = bid > 0 ? bid : g_aC[0];
-   double dO = xOpen(sym, PERIOD_D1, 0), dH = xHigh(sym, PERIOD_D1, 0), dL = xLow(sym, PERIOD_D1, 0);
-   double pdC = xClose(sym, PERIOD_D1, 1), pdO = xOpen(sym, PERIOD_D1, 1), pdH = xHigh(sym, PERIOD_D1, 1), pdL = xLow(sym, PERIOD_D1, 1);
-   double wH = xHigh(sym, PERIOD_W1, 0), wL = xLow(sym, PERIOD_W1, 0);
-   double mH = xHigh(sym, PERIOD_MN1, 0), mL = xLow(sym, PERIOD_MN1, 0);
-   double yH = A_Hi52(sym), yL = A_Lo52(sym);
-   int d = g_aDigits;
-   string f[];
-   A_Push(f, Jn("bid", bid, d));  A_Push(f, Jn("ask", ask, d));
-   A_Push(f, Jn("mid", mid, d));
-   A_Push(f, J("quote_time_utc", SrvToIso((datetime)tk.time)));
-   A_Push(f, Jn("spread_pts", g_aPoint > 0 ? spread / g_aPoint : 0, 1));
-   A_Push(f, Jn("spread_pips", A_Pips(sym, spread), 2));
-   A_Push(f, Jp("day_open", dO, d));
-   A_Push(f, Jp("day_high", dH, d)); A_Push(f, Jp("day_low", dL, d));
-   A_Push(f, (dH > 0 && dL > 0) ? Jn("day_range_pips", A_Pips(sym, dH - dL), 1) : Jnull("day_range_pips"));
-   A_Push(f, Jp("prev_close", pdC, d)); A_Push(f, Jp("prev_open", pdO, d));
-   A_Push(f, Jp("prev_day_high", pdH, d)); A_Push(f, Jp("prev_day_low", pdL, d));
-   A_Push(f, pdC > 0 ? Jn("change_pts", g_aPoint > 0 ? (last - pdC) / g_aPoint : 0, 1) : Jnull("change_pts"));
-   A_Push(f, pdC > 0 ? Jn("change_pct", (last - pdC) / pdC * 100.0, 4) : Jnull("change_pct"));
-   A_Push(f, J("change_vs", "previous day's close"));
-   A_Push(f, Jn("prev_bar_close", g_anb > 1 ? g_aC[1] : g_aC[0], d));
-   A_Push(f, Jp("week_high", wH, d)); A_Push(f, Jp("week_low", wL, d));
-   A_Push(f, (wH > 0 && wL > 0) ? Jn("week_range_pips", A_Pips(sym, wH - wL), 1) : Jnull("week_range_pips"));
-   A_Push(f, Jp("month_high", mH, d)); A_Push(f, Jp("month_low", mL, d));
-   A_Push(f, Jp("hi_52w", yH, d)); A_Push(f, Jp("lo_52w", yL, d));
-   A_Push(f, Ji("digits", g_aDigits));
-   A_Push(f, Jn("point", g_aPoint, 8)); A_Push(f, Jn("pip", g_aPip, 8));
-   A_Push(f, Jn("tick_value", SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE), 6));
-   A_Push(f, Jn("tick_size",  SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 8));
-   A_Push(f, Jn("swap_long",  SymbolInfoDouble(sym, SYMBOL_SWAP_LONG), 4));
-   A_Push(f, Jn("swap_short", SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4));
-   A_Push(f, Jn("min_lot",  SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN), 2));
-   A_Push(f, Jn("max_lot",  SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX), 2));
-   A_Push(f, Jn("lot_step", SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP), 2));
-   A_Push(f, J("trade_mode", A_TradeModeName(sym)));
-   return Obj(A_Join(f));
-  }
-
-//--- structure -----------------------------------------------------------
-// The most recent CLOSED candle that closed beyond `level`, among the candles AFTER the swing at
-// `swingBar` (a candle from before the swing existed can't break it). -1 = none.
-int A_BreakBar(double level, int swingBar, bool up)
-  {
-   int found = -1;
-   for(int i = 1; i < swingBar && i < g_anb; i++)
-     if((up && g_aC[i] > level) || (!up && g_aC[i] < level)) found = i; // keep the EARLIEST break (the BOS candle)
-   return found;
-  }
-
-void A_StructureBreak(int k, string &trend, string &bos, int &barsSince, string &choch)
-  {
-   double sh[], sl[]; int shB[], slB[];
-   A_CollectSwings(k, 5, sh, shB, sl, slB);
-   trend = "UNKNOWN"; bos = "NONE"; choch = "NONE"; barsSince = -1;
-   if(ArraySize(sh) < 2 || ArraySize(sl) < 2) return;
-   bool hh = sh[0] > sh[1], hl = sl[0] > sl[1], lh = sh[0] < sh[1], ll = sl[0] < sl[1];
-   trend = hh && hl ? "HH_HL" : (lh && ll ? "LH_LL" : (hh && ll ? "HH_LL" : "LH_HL"));
-   int bull = A_BreakBar(sh[0], shB[0], true);
-   int bear = A_BreakBar(sl[0], slB[0], false);
-   if(bull > 0 && (bear < 0 || bull < bear)) { bos = "BULL"; barsSince = bull; }
-   else if(bear > 0) { bos = "BEAR"; barsSince = bear; }
-   if(bos == "BULL" && trend == "LH_LL") choch = "BULL";
-   if(bos == "BEAR" && trend == "HH_HL") choch = "BEAR";
-  }
-
-string A_Structure(string sym)
-  {
-   double sh[], sl[]; int shB[], slB[];
-   A_CollectSwings(SwingLookback, 5, sh, shB, sl, slB);
-   double swingHigh = ArraySize(sh) > 0 ? sh[0] : A_HighestHigh(1, 50);
-   double swingLow  = ArraySize(sl) > 0 ? sl[0] : A_LowestLow(1, 50);
-   double prevHigh  = ArraySize(sh) > 1 ? sh[1] : swingHigh;
-   double prevLow   = ArraySize(sl) > 1 ? sl[1] : swingLow;
-   bool hh = swingHigh > prevHigh, hl = swingLow > prevLow;
-   bool lh = swingHigh < prevHigh, ll = swingLow < prevLow;
-   // External = the big swings (SwingLookback); internal = the small ones (2 bars each side).
-   string trend, bos, choch; int barsSinceBos;
-   A_StructureBreak(SwingLookback, trend, bos, barsSinceBos, choch);
-   string iTrend, iBos, iChoch; int iBars;
-   A_StructureBreak(2, iTrend, iBos, iBars, iChoch);
-   if(trend == "UNKNOWN") trend = hh && hl ? "HH_HL" : (lh && ll ? "LH_LL" : (hh && ll ? "HH_LL" : "LH_HL"));
-   string mss = choch;
-   // Is the live candle breaking a swing right now? (not final until it closes)
-   string breakingNow = g_aC[0] > swingHigh ? "BULL" : g_aC[0] < swingLow ? "BEAR" : "NONE";
-   // CISD: the last closed candle closes beyond the OPEN of the whole run of opposite candles before it.
-   string cisd = "NONE";
-   if(g_anb > 6)
-     {
-      int j = 2; while(j < g_anb - 1 && g_aC[j] < g_aO[j]) j++;
-      if(j > 2 && g_aC[1] > g_aO[j - 1]) cisd = "BULL";
-      j = 2; while(j < g_anb - 1 && g_aC[j] > g_aO[j]) j++;
-      if(cisd == "NONE" && j > 2 && g_aC[1] < g_aO[j - 1]) cisd = "BEAR";
-     }
-   double dr_hi = A_HighestHigh(0, 50), dr_lo = A_LowestLow(0, 50);
-   double eq    = (dr_hi + dr_lo) / 2.0, rng = dr_hi - dr_lo;
-   string pd    = g_aC[0] > eq ? "PREMIUM" : "DISCOUNT";
-   // OTE = a 62-79% pullback: for BUYS it sits in the lower part of the leg (discount), for SELLS in
-   // the upper part (premium). The old code only ever gave the sell side, unlabelled.
-   double oteLongHi = dr_hi - rng * 0.62, oteLongLo = dr_hi - rng * 0.79;
-   double oteShortLo = dr_lo + rng * 0.62, oteShortHi = dr_lo + rng * 0.79;
-   bool bullish = (trend == "HH_HL" || bos == "BULL");
-   string eqH[], eqL[];
-   double tol = EqTolerancePips * g_aPip;
-   for(int i = 0; i + 1 < ArraySize(sh); i++)
-      if(MathAbs(sh[i] - sh[i+1]) <= tol) A_Push(eqH, DoubleToString(sh[i], g_aDigits));
-   for(int i = 0; i + 1 < ArraySize(sl); i++)
-      if(MathAbs(sl[i] - sl[i+1]) <= tol) A_Push(eqL, DoubleToString(sl[i], g_aDigits));
-   string shArr[], slArr[];
-   for(int i = 0; i < ArraySize(sh); i++) A_Push(shArr, DoubleToString(sh[i], g_aDigits));
-   for(int i = 0; i < ArraySize(sl); i++) A_Push(slArr, DoubleToString(sl[i], g_aDigits));
-   double idmLevel = bullish ? (ArraySize(sl) > 0 ? sl[0] : swingLow) : (ArraySize(sh) > 0 ? sh[0] : swingHigh);
-   string idm = Obj(Jb("detected", ArraySize(sl) > 1 && ArraySize(sh) > 1) + "," + Jn("level", idmLevel, g_aDigits) + "," +
-                    J("type", bullish ? "SSL" : "BSL") + "," + Ji("bar", bullish ? (ArraySize(slB) > 0 ? slB[0] : 0) : (ArraySize(shB) > 0 ? shB[0] : 0)));
-   string qml = Obj(Jb("detected", choch != "NONE") + "," + Jn("level", choch == "BULL" ? prevLow : prevHigh, g_aDigits) + "," +
-                    J("type", choch));
-   double strength = MathMin(100.0, MathAbs(A_Pips(sym, g_aC[0] - eq)) / MathMax(1.0, A_Pips(sym, rng)) * 200.0);
-   string f[];
-   A_Push(f, J("trend", trend));   A_Push(f, J("bos", bos));   A_Push(f, J("choch", choch));
-   A_Push(f, J("cisd", cisd)); // (mss was a copy of choch -- see market_structure.structure.mss for the real one)
-   A_Push(f, J("breaking_now", breakingNow));
-   A_Push(f, Jr("qml", qml)); // (idm here was always "detected" -- market_structure.liquidity.inducement checks it properly)
-   A_Push(f, Jb("hh", hh)); A_Push(f, Jb("hl", hl)); A_Push(f, Jb("lh", lh)); A_Push(f, Jb("ll", ll));
-   A_Push(f, Jr("eq_highs", "[" + A_Join(eqH) + "]"));
-   A_Push(f, Jr("eq_lows",  "[" + A_Join(eqL) + "]"));
-   A_Push(f, Jn("swing_high", swingHigh, g_aDigits)); A_Push(f, Jn("swing_low", swingLow, g_aDigits));
-   A_Push(f, Jn("prev_high", prevHigh, g_aDigits));   A_Push(f, Jn("prev_low", prevLow, g_aDigits));
-   A_Push(f, Jn("dealing_range_high", dr_hi, g_aDigits));
-   A_Push(f, Jn("dealing_range_low",  dr_lo, g_aDigits));
-   A_Push(f, Jn("equilibrium", eq, g_aDigits));
-   A_Push(f, J("premium_discount", pd));
-   A_Push(f, Jn("ote_zone_high", bullish ? oteLongHi : oteShortHi, g_aDigits));
-   A_Push(f, Jn("ote_zone_low",  bullish ? oteLongLo : oteShortLo, g_aDigits));
-   A_Push(f, J("ote_zone_side", bullish ? "BUY" : "SELL"));
-   A_Push(f, Jr("ote_long",  Obj(Jn("high", oteLongHi, g_aDigits) + "," + Jn("low", oteLongLo, g_aDigits))));
-   A_Push(f, Jr("ote_short", Obj(Jn("high", oteShortHi, g_aDigits) + "," + Jn("low", oteShortLo, g_aDigits))));
-   A_Push(f, Jn("ce", eq, g_aDigits));
-   A_Push(f, J("internal_trend", iTrend)); A_Push(f, J("internal_bos", iBos)); A_Push(f, J("internal_choch", iChoch));
-   A_Push(f, J("external_bos", bos));
-   A_Push(f, Ji("bars_since_bos", barsSinceBos));
-   A_Push(f, Jn("distance_from_range_mid_pct", strength, 1)); // what this number really is
-   A_Push(f, Jr("swing_highs_array", "[" + A_Join(shArr) + "]"));
-   A_Push(f, Jr("swing_lows_array",  "[" + A_Join(slArr) + "]"));
-   return Obj(A_Join(f));
-  }
-
-//--- zones (supply / demand + support / resistance) ----------------------
-string A_Zones(string sym)
-  {
-   string sup[], dem[];
-   double c = g_aC[0];
-   double nsBot = 0, nsTop = 0, nsDist = 1e18, ndBot = 0, ndTop = 0, ndDist = 1e18;
-   bool inZone = false; string zoneAt = "NONE";
-   double strongestLvl = 0; string strongestType = "NONE"; double strongestScore = -1;
-   for(int i = 2; i < MathMin(g_anb - 2, 300) && (ArraySize(sup) < ZoneMax || ArraySize(dem) < ZoneMax); i++)
-     {
-      double top = g_aH[i], bot = g_aL[i];
-      double body = MathAbs(g_aC[i] - g_aO[i]), rng = MathMax(top - bot, g_aPoint);
-      double ratio = body / rng;
-      bool isSupply = g_aC[i] > g_aO[i] && g_aC[i - 1] < bot;   // last up candle before a drop through it
-      bool isDemand = g_aC[i] < g_aO[i] && g_aC[i - 1] > top;   // last down candle before a rally through it
-      if(!isSupply && !isDemand) continue;
-      if(isSupply && ArraySize(sup) >= ZoneMax) continue;
-      if(isDemand && ArraySize(dem) >= ZoneMax) continue;
-      // Touches start AFTER the move candle (i-1 is the move itself); counted as separate visits.
-      int tests = 0; bool wasIn = false; double deepest = isSupply ? 0 : 1e18; bool broken = false;
-      for(int j = i - 2; j >= 0; j--)
+      got = CopyRates(sym, tf, 0, SLOT_BARS, r); // oldest first
+      long lastTick = SymbolInfoInteger(sym, SYMBOL_TIME);
+      // the newest candle must be the candle of the latest tick (MT5 can lag a candle behind)
+      for(int w = 0; w < waitMs / 100 && got > 0 && lastTick > 0 && iBarShift(sym, tf, (datetime)lastTick, true) != 0; w++)
         {
-         bool touch = isSupply ? (g_aH[j] >= bot) : (g_aL[j] <= top);
-         if(touch && !wasIn && j >= 1) tests++;
-         wasIn = touch;
-         if(isSupply) deepest = MathMax(deepest, g_aH[j]); else deepest = MathMin(deepest, g_aL[j]);
-         if(j >= 1 && ((isSupply && g_aC[j] > top) || (isDemand && g_aC[j] < bot))) broken = true;
-        }
-      double mit = 0;
-      if(isSupply && deepest > bot) mit = MathMin(100.0, (deepest - bot) / rng * 100.0);
-      if(isDemand && deepest < top) mit = MathMin(100.0, (top - deepest) / rng * 100.0);
-      double score = MathMax(0.0, (100.0 - tests * 15.0) * ratio);
-      string z = Obj(Jn("top", top, g_aDigits) + "," + Jn("bot", bot, g_aDigits) + "," +
-                     Ji("bar", i) + "," + J("time", A_BarTime(i)) + "," + Jb("fresh", tests == 0) + "," + Jn("strength", score, 1) + "," +
-                     Ji("tests", tests) + "," + Jn("body_ratio", ratio, 3) + "," + Jn("mitigation_pct", mit, 1) + "," + Jb("broken", broken));
-      if(broken) continue; // a zone price has closed through no longer counts -- and no longer takes a slot in the list
-      if(isSupply) A_Push(sup, z); else A_Push(dem, z);
-      if(c >= bot && c <= top) { inZone = true; zoneAt = isSupply ? "SUPPLY" : "DEMAND"; }
-      if(isSupply && top >= c)
-        {
-         double dist = MathMax(0.0, bot - c);
-         if(dist < nsDist) { nsDist = dist; nsBot = bot; nsTop = top; }
-        }
-      if(isDemand && bot <= c)
-        {
-         double dist = MathMax(0.0, c - top);
-         if(dist < ndDist) { ndDist = dist; ndBot = bot; ndTop = top; }
-        }
-      if(score > strongestScore) { strongestScore = score; strongestLvl = (top + bot) / 2; strongestType = isSupply ? "SUPPLY" : "DEMAND"; }
-     }
-   // Retest read from the last CLOSED candle against the nearest zone.
-   string retestQuality = "NONE", retestZoneType = "NONE";
-   if(nsBot > 0 && g_aH[1] >= nsBot)
-     { retestZoneType = "SUPPLY"; retestQuality = g_aC[1] < nsBot ? "CLEAN_REJECTION" : (g_aC[1] > nsTop ? "BROKEN_THROUGH" : "INSIDE_ZONE"); }
-   else if(ndTop > 0 && g_aL[1] <= ndTop)
-     { retestZoneType = "DEMAND"; retestQuality = g_aC[1] > ndTop ? "CLEAN_REJECTION" : (g_aC[1] < ndBot ? "BROKEN_THROUGH" : "INSIDE_ZONE"); }
-   // Horizontal support/resistance: swing clusters with 2+ touches.
-   double sh2[], sl2[]; int sh2B[], sl2B[];
-   A_CollectSwings(SwingLookback, 20, sh2, sh2B, sl2, sl2B);
-   double srTol = EqTolerancePips * g_aPip;
-   double atr = A_ATR(14);
-   if(srTol < atr * 0.1) srTol = atr * 0.1; // synthetics/indices: a fixed pip tolerance is far too tight
-   string resist[], support[];
-   double nearestResistance = 0, nearestSupport = 0;
-   // cluster all swing prices
-   double all[]; ArrayResize(all, 0);
-   for(int i = 0; i < ArraySize(sh2); i++) { int n = ArraySize(all); ArrayResize(all, n + 1); all[n] = sh2[i]; }
-   for(int i = 0; i < ArraySize(sl2); i++) { int n = ArraySize(all); ArrayResize(all, n + 1); all[n] = sl2[i]; }
-   bool used[]; ArrayResize(used, ArraySize(all));
-   for(int u = 0; u < ArraySize(used); u++) used[u] = false;
-   for(int i = 0; i < ArraySize(all); i++)
-     {
-      if(used[i]) continue;
-      double sum = 0; int touches = 0;
-      for(int j = 0; j < ArraySize(all); j++) if(!used[j] && MathAbs(all[j] - all[i]) <= srTol) { sum += all[j]; touches++; used[j] = true; }
-      if(touches < 2) continue;
-      double level = sum / touches;
-      if(level > c && ArraySize(resist) < ZoneMax)
-        {
-         A_Push(resist, Obj(Jn("level", level, g_aDigits) + "," + Ji("touches", touches) + "," + Jn("dist_pips", A_Pips(sym, level - c), 1)));
-         if(nearestResistance == 0 || level < nearestResistance) nearestResistance = level;
-        }
-      else if(level <= c && ArraySize(support) < ZoneMax)
-        {
-         A_Push(support, Obj(Jn("level", level, g_aDigits) + "," + Ji("touches", touches) + "," + Jn("dist_pips", A_Pips(sym, c - level), 1)));
-         if(nearestSupport == 0 || level > nearestSupport) nearestSupport = level;
+         Sleep(100);
+         got = CopyRates(sym, tf, 0, SLOT_BARS, r);
         }
      }
-   string f[];
-   A_Push(f, Jr("supply", "[" + A_Join(sup) + "]"));
-   A_Push(f, Jr("demand", "[" + A_Join(dem) + "]"));
-   A_Push(f, Ji("supply_count", ArraySize(sup)));
-   A_Push(f, Ji("demand_count", ArraySize(dem)));
-   A_Push(f, Jr("nearest_supply", nsBot > 0 ? Obj(Jn("level", nsBot, g_aDigits) + "," + Jn("top", nsTop, g_aDigits) + "," + Jn("dist_pips", A_Pips(sym, nsDist), 1)) : "null"));
-   A_Push(f, Jr("nearest_demand", ndTop > 0 ? Obj(Jn("level", ndTop, g_aDigits) + "," + Jn("bot", ndBot, g_aDigits) + "," + Jn("dist_pips", A_Pips(sym, ndDist), 1)) : "null"));
-   A_Push(f, Jb("price_in_zone", inZone));
-   A_Push(f, J("zone_at_price", zoneAt));
-   A_Push(f, Jr("strongest_zone", Obj(J("type", strongestType) + "," + Jn("level", strongestLvl, g_aDigits))));
-   A_Push(f, Jr("retest", Obj(J("zone_type", retestZoneType) + "," + J("quality", retestQuality) + "," + J("read_from", "last closed candle"))));
-   A_Push(f, Jr("resistance", "[" + A_Join(resist) + "]"));
-   A_Push(f, Jr("support", "[" + A_Join(support) + "]"));
-   A_Push(f, Jr("nearest_resistance", nearestResistance > 0 ? Obj(Jn("level", nearestResistance, g_aDigits) + "," + Jn("dist_pips", A_Pips(sym, nearestResistance - c), 1)) : "null"));
-   A_Push(f, Jr("nearest_support", nearestSupport > 0 ? Obj(Jn("level", nearestSupport, g_aDigits) + "," + Jn("dist_pips", A_Pips(sym, c - nearestSupport), 1)) : "null"));
-   return Obj(A_Join(f));
-  }
-
-//--- fair value gaps (shared by liquidity + ict) --------------------------
-// Confirmed 3-candle gaps only (all three candles closed). For each: filled = price has since traded
-// through the whole gap; mitigated = price has at least reached into it; inverted = a candle has
-// CLOSED through it (it now works the other way).
-int A_Fvgs(int maxOut, int lookback, string &types[], double &tops[], double &bots[], int &bars[], bool &filled[], bool &mitig[], bool &inverted[])
-  {
-   ArrayResize(types, 0); ArrayResize(tops, 0); ArrayResize(bots, 0); ArrayResize(bars, 0);
-   ArrayResize(filled, 0); ArrayResize(mitig, 0); ArrayResize(inverted, 0);
-   for(int i = 2; i + 1 < MathMin(g_anb, lookback); i++)
+   if(got < MinBarsFor(tf))
      {
-      bool bull = g_aL[i - 1] > g_aH[i + 1];
-      bool bear = g_aH[i - 1] < g_aL[i + 1];
-      if(!bull && !bear) continue;
-      double top = bull ? g_aL[i - 1] : g_aL[i + 1];
-      double bot = bull ? g_aH[i + 1] : g_aH[i - 1];
-      bool f = false, m = false, inv = false;
-      for(int j = i - 2; j >= 0; j--)
-        {
-         if(bull) { if(g_aL[j] <= top) m = true; if(g_aL[j] <= bot) f = true; if(j >= 1 && g_aC[j] < bot) inv = true; }
-         else     { if(g_aH[j] >= bot) m = true; if(g_aH[j] >= top) f = true; if(j >= 1 && g_aC[j] > top) inv = true; }
-        }
-      int n = ArraySize(types);
-      ArrayResize(types, n + 1); ArrayResize(tops, n + 1); ArrayResize(bots, n + 1); ArrayResize(bars, n + 1);
-      ArrayResize(filled, n + 1); ArrayResize(mitig, n + 1); ArrayResize(inverted, n + 1);
-      types[n] = bull ? "BULL" : "BEAR"; tops[n] = top; bots[n] = bot; bars[n] = i; filled[n] = f; mitig[n] = m; inverted[n] = inv;
-      if(n + 1 >= maxOut) break;
+      if(s != NULL) { s.fromCache = true; s.lastUsed = TimeLocal(); return s; }
+      return NULL;
      }
-   return ArraySize(types);
-  }
-
-//--- liquidity -----------------------------------------------------------
-string A_Liquidity(string sym)
-  {
-   double sh[], sl[]; int shB[], slB[];
-   A_CollectSwings(SwingLookback, 8, sh, shB, sl, slB);
-   double tol = EqTolerancePips * g_aPip;
-   double atr = A_ATR(14);
-   if(tol < atr * 0.1) tol = atr * 0.1;
-   double c = g_aC[0];
-   string bsl[], ssl[], eqH[], eqL[], irl[], erl[];
-   double nearBsl = 0, nearSsl = 0;
-   for(int i = 0; i + 1 < ArraySize(sh); i++)
-      if(MathAbs(sh[i] - sh[i+1]) <= tol)
-        {
-         double lvl = MathMax(sh[i], sh[i+1]);
-         // Taken = a candle after the newer of the two swings already traded through it.
-         bool taken = false; for(int k = 1; k < MathMin(shB[i], shB[i+1]); k++) if(g_aH[k] > lvl) { taken = true; break; }
-         A_Push(bsl, Obj(Jn("level", lvl, g_aDigits) + "," + Ji("bar1", shB[i]) + "," + Ji("bar2", shB[i+1]) + "," + Jb("taken", taken) + "," +
-                         Jn("dist_pips", A_Pips(sym, lvl - c), 1) + "," + Jn("dist_atr", atr > 0 ? (lvl - c) / atr : 0, 2)));
-         A_Push(eqH, DoubleToString(lvl, g_aDigits));
-         if(!taken && lvl > c && (nearBsl == 0 || lvl < nearBsl)) nearBsl = lvl;
-        }
-   for(int i = 0; i + 1 < ArraySize(sl); i++)
-      if(MathAbs(sl[i] - sl[i+1]) <= tol)
-        {
-         double lvl = MathMin(sl[i], sl[i+1]);
-         bool taken = false; for(int k = 1; k < MathMin(slB[i], slB[i+1]); k++) if(g_aL[k] < lvl) { taken = true; break; }
-         A_Push(ssl, Obj(Jn("level", lvl, g_aDigits) + "," + Ji("bar1", slB[i]) + "," + Ji("bar2", slB[i+1]) + "," + Jb("taken", taken) + "," +
-                         Jn("dist_pips", A_Pips(sym, c - lvl), 1) + "," + Jn("dist_atr", atr > 0 ? (c - lvl) / atr : 0, 2)));
-         A_Push(eqL, DoubleToString(lvl, g_aDigits));
-         if(!taken && lvl < c && (nearSsl == 0 || lvl > nearSsl)) nearSsl = lvl;
-        }
-   // No equal highs/lows: the nearest single swing above/below still holds stops.
-   if(nearBsl == 0) for(int i = 0; i < ArraySize(sh); i++) if(sh[i] > c && (nearBsl == 0 || sh[i] < nearBsl)) nearBsl = sh[i];
-   if(nearSsl == 0) for(int i = 0; i < ArraySize(sl); i++) if(sl[i] < c && (nearSsl == 0 || sl[i] > nearSsl)) nearSsl = sl[i];
-   // ERL = the range's own high and low; IRL = unfilled fair value gaps inside the range.
-   double drHi = A_HighestHigh(0, 50), drLo = A_LowestLow(0, 50);
-   A_Push(erl, Obj(Jn("level", drHi, g_aDigits) + "," + J("type", "RANGE_HIGH")));
-   A_Push(erl, Obj(Jn("level", drLo, g_aDigits) + "," + J("type", "RANGE_LOW")));
-   string ft[]; double fT[], fB[]; int fBar[]; bool fF[], fM[], fI[];
-   int nf = A_Fvgs(12, 50, ft, fT, fB, fBar, fF, fM, fI);
-   for(int i = 0; i < nf && ArraySize(irl) < 4; i++)
-      if(!fF[i]) A_Push(irl, Obj(J("type", "FVG_" + ft[i]) + "," + Jn("top", fT[i], g_aDigits) + "," + Jn("bot", fB[i], g_aDigits) + "," + Ji("bar", fBar[i])));
-   // Sweep: a CLOSED candle wicks through a liquidity level and closes back.
-   bool bslSwept = false, sslSwept = false;
-   string sweepType = "NONE"; double sweepLevel = 0; int sweepBar = -1;
-   for(int i = 1; i < MathMin(g_anb, 21); i++)
+   if(s == NULL)
      {
-      for(int s = 0; s < ArraySize(sh); s++)
-         if(shB[s] > i && g_aH[i] > sh[s] && g_aC[i] < sh[s] && !bslSwept)
-           { bslSwept = true; if(sweepBar < 0) { sweepType = "BSL"; sweepLevel = sh[s]; sweepBar = i; } }
-      for(int s = 0; s < ArraySize(sl); s++)
-         if(slB[s] > i && g_aL[i] < sl[s] && g_aC[i] > sl[s] && !sslSwept)
-           { sslSwept = true; if(sweepBar < 0) { sweepType = "SSL"; sweepLevel = sl[s]; sweepBar = i; } }
-      if(bslSwept && sslSwept) break;
+      s = new CSlot();
+      s.sym = sym; s.tf = tf; s.key = key; s.lastClosedTime = 0; s.lastAsked = 0;
+      int k = ArraySize(g_slots);
+      ArrayResize(g_slots, k + 1);
+      g_slots[k] = s;
      }
-   bool voidAbove = false, voidBelow = false;
-   for(int i = 0; i < nf; i++) if(!fF[i]) { if(fB[i] > c) voidAbove = true; if(fT[i] < c) voidBelow = true; }
-   string f[];
-   A_Push(f, Jr("bsl", "[" + A_Join(bsl) + "]"));  A_Push(f, Jr("ssl", "[" + A_Join(ssl) + "]"));
-   A_Push(f, Ji("bsl_count", ArraySize(bsl)));   A_Push(f, Ji("ssl_count", ArraySize(ssl)));
-   A_Push(f, Jb("bsl_swept", bslSwept));         A_Push(f, Jb("ssl_swept", sslSwept));
-   A_Push(f, Jr("nearest_bsl", nearBsl > 0 ? Obj(Jn("level", nearBsl, g_aDigits) + "," + Jn("dist_pips", A_Pips(sym, nearBsl - c), 1)) : "null"));
-   A_Push(f, Jr("nearest_ssl", nearSsl > 0 ? Obj(Jn("level", nearSsl, g_aDigits) + "," + Jn("dist_pips", A_Pips(sym, c - nearSsl), 1)) : "null"));
-   A_Push(f, Jr("irl", "[" + A_Join(irl) + "]"));  A_Push(f, Jr("erl", "[" + A_Join(erl) + "]"));
-   A_Push(f, Jb("liquidity_void_above", voidAbove));
-   A_Push(f, Jb("liquidity_void_below", voidBelow));
-   A_Push(f, Jr("equal_highs", "[" + A_Join(eqH) + "]"));
-   A_Push(f, Jr("equal_lows",  "[" + A_Join(eqL) + "]"));
-   A_Push(f, Jr("most_recent_sweep", Obj(J("type", sweepType) + "," + Jn("level", sweepLevel, g_aDigits) + "," + Ji("bar", sweepBar) + "," + J("time", sweepBar > 0 ? A_BarTime(sweepBar) : ""))));
-   return Obj(A_Join(f));
-  }
-
-//--- volume (MT5 tick volume: forex/synthetics have no real traded volume) --
-string A_Volume()
-  {
-   double cur = (double)g_aV[0], last = g_anb > 1 ? (double)g_aV[1] : cur, a20 = 0, a50 = 0;
-   int n20 = MathMin(20, g_anb - 1), n50 = MathMin(50, g_anb - 1);
-   for(int i = 1; i <= n20; i++) a20 += (double)g_aV[i]; a20 /= MathMax(1, n20);
-   for(int i = 1; i <= n50; i++) a50 += (double)g_aV[i]; a50 /= MathMax(1, n50);
-   double bullV = 0, bearV = 0;
-   for(int i = 1; i <= n20; i++) { if(g_aC[i] >= g_aO[i]) bullV += (double)g_aV[i]; else bearV += (double)g_aV[i]; }
-   double delta = (bullV + bearV) > 0 ? (bullV - bearV) / (bullV + bearV) * 100.0 : 0;
-   string lastArr[];
-   for(int i = 0; i < MathMin(10, g_anb); i++) A_Push(lastArr, IntegerToString((long)g_aV[i]));
-   string f[];
-   A_Push(f, J("source", "tick volume (number of price changes), not traded volume"));
-   A_Push(f, Jn("current", cur, 0)); A_Push(f, Jn("last_closed", last, 0));
-   A_Push(f, Jn("avg_20", a20, 1)); A_Push(f, Jn("avg_50", a50, 1));
-   A_Push(f, J("state", last > a20 * 1.5 ? "HIGH" : last < a20 * 0.5 ? "LOW" : "NORMAL"));
-   A_Push(f, Jn("vs_avg20", a20 > 0 ? last / a20 : 1, 3));
-   A_Push(f, Jb("trending_up", a20 > a50));
-   A_Push(f, Jn("bull_vol", bullV, 0)); A_Push(f, Jn("bear_vol", bearV, 0));
-   A_Push(f, Jn("delta_pct", delta, 2));
-   A_Push(f, J("vol_bias", delta > 10 ? "BULL" : delta < -10 ? "BEAR" : "NEUTRAL"));
-   A_Push(f, Jb("vol_spike", last > a20 * 2.0));
-   A_Push(f, Jb("vol_climax", last > a50 * 3.0));
-   A_Push(f, Jb("rising_price_rising_vol", g_anb > 2 && g_aC[1] > g_aC[2] && last > a20));
-   A_Push(f, Jb("rising_price_falling_vol", g_anb > 2 && g_aC[1] > g_aC[2] && last < a20));
-   A_Push(f, Jr("last_10", "[" + A_Join(lastArr) + "]"));
-   return Obj(A_Join(f));
-  }
-
-//--- ichimoku ------------------------------------------------------------
-// The cloud is plotted 26 bars AHEAD: the cloud under price today was computed 26 bars ago.
-double A_Tenkan(int s) { return (A_HighestHigh(s, 9) + A_LowestLow(s, 9)) / 2.0; }
-double A_Kijun(int s)  { return (A_HighestHigh(s, 26) + A_LowestLow(s, 26)) / 2.0; }
-double A_SpanA(int s)  { return (A_Tenkan(s) + A_Kijun(s)) / 2.0; }
-double A_SpanB(int s)  { return (A_HighestHigh(s, 52) + A_LowestLow(s, 52)) / 2.0; }
-string A_Ichimoku()
-  {
-   if(g_anb < 110) { g_aErr = "not enough history for Ichimoku (needs 110 bars)"; return ""; }
-   double tenkan = A_Tenkan(0), kijun = A_Kijun(0);
-   double spanA = A_SpanA(26), spanB = A_SpanB(26);          // the cloud under price NOW
-   double futA = A_SpanA(0), futB = A_SpanB(0);              // the cloud 26 bars ahead
-   double futAPrev = A_SpanA(1), futBPrev = A_SpanB(1);
-   double top = MathMax(spanA, spanB), bot = MathMin(spanA, spanB);
-   double chikou = g_aC[0];
-   double cloudAtChikouA = A_SpanA(52), cloudAtChikouB = A_SpanB(52); // the cloud where the chikou line sits
-   double tenkanPrev = A_Tenkan(3), kijunPrev = A_Kijun(3);
-   double c = g_aC[0];
-   int score = 0;
-   if(c > top)           score++;
-   if(futA > futB)       score++;
-   if(c > tenkan)        score++;
-   if(c > kijun)         score++;
-   if(chikou > g_aC[26]) score++;
-   bool twist = (futA > futB) != (futAPrev > futBPrev);
-   double atr = A_ATR(14);
-   double chTop = MathMax(cloudAtChikouA, cloudAtChikouB), chBot = MathMin(cloudAtChikouA, cloudAtChikouB);
-   string f[];
-   A_Push(f, Jn("tenkan", tenkan, g_aDigits)); A_Push(f, Jn("kijun", kijun, g_aDigits));
-   A_Push(f, Jn("senkou_a", spanA, g_aDigits)); A_Push(f, Jn("senkou_b", spanB, g_aDigits));
-   A_Push(f, Jn("future_senkou_a", futA, g_aDigits)); A_Push(f, Jn("future_senkou_b", futB, g_aDigits));
-   A_Push(f, Jn("chikou", chikou, g_aDigits));
-   A_Push(f, Jr("cloud", Obj(J("color", spanA > spanB ? "BULL" : "BEAR") + "," +
-        Jn("top", top, g_aDigits) + "," + Jn("bottom", bot, g_aDigits) + "," +
-        Jn("thickness_pips", A_P(top - bot), 1) + "," + Jb("price_inside", c <= top && c >= bot))));
-   A_Push(f, J("future_cloud_color", futA > futB ? "BULL" : "BEAR"));
-   A_Push(f, J("price_vs_cloud", c > top ? "ABOVE" : c < bot ? "BELOW" : "INSIDE"));
-   A_Push(f, J("price_vs_tenkan", c > tenkan ? "ABOVE" : "BELOW"));
-   A_Push(f, J("price_vs_kijun",  c > kijun  ? "ABOVE" : "BELOW"));
-   A_Push(f, Jn("tenkan_slope", A_P(tenkan - tenkanPrev), 2));
-   A_Push(f, Jn("kijun_slope",  A_P(kijun - kijunPrev), 2));
-   A_Push(f, J("chikou_vs_price", chikou > g_aC[26] ? "ABOVE" : "BELOW"));
-   A_Push(f, J("chikou_vs_cloud", chikou > chTop ? "ABOVE" : chikou < chBot ? "BELOW" : "INSIDE"));
-   A_Push(f, Jb("flat_kijun", MathAbs(kijun - kijunPrev) < g_aPip));
-   A_Push(f, Jb("kijun_support", c > kijun && MathAbs(c - kijun) < atr));
-   A_Push(f, Jb("kijun_resistance", c < kijun && MathAbs(c - kijun) < atr));
-   A_Push(f, Jb("kumo_twist", twist));
-   A_Push(f, J("signal", score >= 4 ? "STRONG_BULL" : score == 3 ? "BULL" : score == 1 ? "BEAR" : score == 0 ? "STRONG_BEAR" : "NEUTRAL"));
-   A_Push(f, Ji("score", score)); A_Push(f, Ji("max_score", 5));
-   A_Push(f, Jn("dist_tenkan_pips", A_P(c - tenkan), 1));
-   A_Push(f, Jn("dist_kijun_pips",  A_P(c - kijun), 1));
-   A_Push(f, Jb("all_conditions_bull", score == 5));
-   A_Push(f, Jb("all_conditions_bear", score == 0));
-   return Obj(A_Join(f));
-  }
-
-//--- fibonacci -----------------------------------------------------------
-string A_Fibonacci(string sym)
-  {
-   int look = MathMin(100, g_anb - 1);
-   double hi = A_HighestHigh(0, look), lo = A_LowestLow(0, look);
-   int hiBar = 0, loBar = 0;
-   for(int i = look - 1; i >= 0; i--) { if(g_aH[i] == hi) hiBar = i; if(g_aL[i] == lo) loBar = i; }
-   bool swingUp = loBar > hiBar;   // the low came first -> the leg went up
-   double rng = hi - lo;
-   // Retracement levels measured back from the END of the leg (0% = the leg's end).
-   double f0   = swingUp ? hi : lo;
-   double f100 = swingUp ? lo : hi;
-   double ratios[7] = {0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0};
-   double px[7];
-   for(int i = 0; i < 7; i++) px[i] = f0 + (f100 - f0) * ratios[i];
-   double best = 1e18; int bestI = 0;
-   for(int i = 0; i < 7; i++) { double dd = MathAbs(g_aC[0] - px[i]); if(dd < best) { best = dd; bestI = i; } }
-   // OTE = 62-79% retracement of the leg: after an UP leg it is a BUY zone below the high; after a
-   // DOWN leg a SELL zone above the low. (The old code had these two swapped.)
-   double oteA = f0 + (f100 - f0) * 0.62, oteB = f0 + (f100 - f0) * 0.79;
-   double oteHi = MathMax(oteA, oteB), oteLo = MathMin(oteA, oteB);
-   double pos   = rng > 0 ? (g_aC[0] - lo) / rng : 0.5;
-   double ma50  = A_SMA(50);
-   double atr   = A_ATR(14);
-   double dir   = swingUp ? 1 : -1;
-   string f[];
-   A_Push(f, Jn("high", hi, g_aDigits)); A_Push(f, Jn("low", lo, g_aDigits));
-   A_Push(f, Jn("range_pips", A_Pips(sym, rng), 1)); A_Push(f, Jb("swing_up", swingUp));
-   A_Push(f, Jn("f0", px[0], g_aDigits));   A_Push(f, Jn("f236", px[1], g_aDigits));
-   A_Push(f, Jn("f382", px[2], g_aDigits)); A_Push(f, Jn("f500", px[3], g_aDigits));
-   A_Push(f, Jn("f618", px[4], g_aDigits)); A_Push(f, Jn("f786", px[5], g_aDigits));
-   A_Push(f, Jn("f100", px[6], g_aDigits));
-   // Continuation targets: beyond the leg's end, in its direction.
-   A_Push(f, Jn("e127", f0 + dir * rng * 0.272, g_aDigits));
-   A_Push(f, Jn("e161", f0 + dir * rng * 0.618, g_aDigits));
-   A_Push(f, Jn("e200", f0 + dir * rng * 1.0, g_aDigits));
-   A_Push(f, Jn("e261", f0 + dir * rng * 1.618, g_aDigits));
-   A_Push(f, J("extensions_are", "continuation targets beyond the leg's end, in the leg's direction"));
-   A_Push(f, Jn("nearest_level", ratios[bestI], 3));
-   A_Push(f, Jn("nearest_price", px[bestI], g_aDigits));
-   A_Push(f, Jn("dist_to_nearest_pips", A_Pips(sym, best), 1));
-   A_Push(f, Jn("pos_in_range", pos, 3));
-   A_Push(f, J("price_zone", pos > 0.5 ? "PREMIUM" : "DISCOUNT"));
-   A_Push(f, Jr("ote", Obj(Jn("high", oteHi, g_aDigits) + "," + Jn("low", oteLo, g_aDigits) + "," + J("side", swingUp ? "BUY" : "SELL"))));
-   A_Push(f, Jb("in_ote", g_aC[0] <= oteHi && g_aC[0] >= oteLo));
-   A_Push(f, Jn("retracement_depth_pct", rng > 0 ? MathAbs(g_aC[0] - f0) / rng * 100.0 : 0, 2));
-   A_Push(f, Jb("confluence_with_ma", MathAbs(px[bestI] - ma50) < atr));
-   A_Push(f, Jb("golden_ratio_bounce", MathAbs(g_aC[0] - px[4]) < atr * 0.3));
-   return Obj(A_Join(f));
-  }
-
-//--- candles -------------------------------------------------------------
-// Newest first. Candle 0 is still forming (closed:false, seconds_left); every time is real UTC.
-string A_Candles(string sym, int count)
-  {
-   if(count <= 0) count = 21;
-   if(count > 300) count = 300;
-   double atr = A_ATR(14, 1); // from closed candles only
-   long secsLeft = PeriodSeconds(g_aTf) - ((long)TimeTradeServer() - (long)g_aT[0]);
-   if(secsLeft < 0) secsLeft = 0;
-   string arr[];
-   for(int i = 0; i < MathMin(count, g_anb); i++)
-     {
-      double body = MathAbs(g_aC[i] - g_aO[i]);
-      double rng  = MathMax(g_aH[i] - g_aL[i], g_aPoint);
-      double uw   = g_aH[i] - MathMax(g_aO[i], g_aC[i]);
-      double lw   = MathMin(g_aO[i], g_aC[i]) - g_aL[i];
-      double gap  = (i + 1 < g_anb) ? g_aO[i] - g_aC[i + 1] : 0;
-      bool   imb  = (i > 0 && i + 1 < g_anb) && (g_aL[i - 1] > g_aH[i + 1] || g_aH[i - 1] < g_aL[i + 1]);
-      string b[];
-      A_Push(b, J("t", A_BarTime(i)));
-      A_Push(b, Jb("closed", i > 0));
-      if(i == 0) A_Push(b, Ji("seconds_left", secsLeft));
-      A_Push(b, Jn("o", g_aO[i], g_aDigits)); A_Push(b, Jn("h", g_aH[i], g_aDigits));
-      A_Push(b, Jn("l", g_aL[i], g_aDigits)); A_Push(b, Jn("c", g_aC[i], g_aDigits));
-      A_Push(b, Ji("v", g_aV[i]));
-      A_Push(b, J("d", A_Dir(i)));
-      A_Push(b, Jn("body", body, g_aDigits));
-      A_Push(b, Jn("upper_wick", uw, g_aDigits)); A_Push(b, Jn("lower_wick", lw, g_aDigits));
-      A_Push(b, Jn("body_ratio", body / rng, 3));
-      A_Push(b, Jn("wick_ratio", (uw + lw) / rng, 3));
-      A_Push(b, Jn("size_pips", A_Pips(sym, rng), 1));
-      A_Push(b, Jn("size_vs_atr", atr > 0 ? rng / atr : 0, 3));
-      A_Push(b, J("type", A_CandleType(i)));
-      A_Push(b, Jn("gap", gap, g_aDigits));
-      A_Push(b, J("gap_type", MathAbs(gap) < g_aPip ? "NONE" : gap > 0 ? "UP" : "DOWN"));
-      A_Push(b, Jb("is_imbalance", imb));
-      // An imbalance centred on candle 1 uses the still-forming candle 0 -- not confirmed yet.
-      if(i == 1) A_Push(b, Jb("imbalance_confirmed", false));
-      A_Push(arr, Obj(A_Join(b)));
-     }
-   return Obj(J("order", "newest_first") + "," + J("times", "UTC") + "," + Js("symbol", sym) + "," +
-              Jn("atr", atr, g_aDigits) + "," + J("volume_is", "tick volume") + "," +
-              Jr("candles", "[" + A_Join(arr) + "]"));
-  }
-
-//--- patterns (read from the last CLOSED candles) --------------------------
-string A_Patterns()
-  {
-   int p = 1; // the last closed candle; candle 0 is still forming and would make patterns flicker
-   if(g_anb < p + 8) { g_aErr = "not enough history for patterns"; return ""; }
-   double rng0 = MathMax(g_aH[p] - g_aL[p], g_aPoint);
-   double body0 = MathAbs(g_aC[p] - g_aO[p]), body1 = MathAbs(g_aC[p+1] - g_aO[p+1]), body2 = MathAbs(g_aC[p+2] - g_aO[p+2]);
-   double rng2 = MathMax(g_aH[p+2] - g_aL[p+2], g_aPoint);
-   bool bull0 = g_aC[p] > g_aO[p], bear0 = g_aC[p] < g_aO[p];
-   bool bull1 = g_aC[p+1] > g_aO[p+1], bear1 = g_aC[p+1] < g_aO[p+1];
-   bool bull2 = g_aC[p+2] > g_aO[p+2], bear2 = g_aC[p+2] < g_aO[p+2];
-   string t0 = A_CandleType(p);
-   bool doji = StringFind(t0, "DOJI") >= 0;
-   bool hammer = t0 == "HAMMER", hanging = t0 == "HANGING_MAN";
-   bool invHammer = t0 == "INVERTED_HAMMER", shooting = t0 == "SHOOTING_STAR";
-   bool maru = t0 == "MARUBOZU";
-   double uw0 = g_aH[p] - MathMax(g_aO[p], g_aC[p]), lw0 = MathMin(g_aO[p], g_aC[p]) - g_aL[p];
-   bool pinbar = (uw0 > rng0 * 0.6) || (lw0 > rng0 * 0.6);
-   bool spin = t0 == "SPINNING_TOP";
-   double hi0 = MathMax(g_aO[p], g_aC[p]), lo0 = MathMin(g_aO[p], g_aC[p]);
-   double hi1 = MathMax(g_aO[p+1], g_aC[p+1]), lo1 = MathMin(g_aO[p+1], g_aC[p+1]);
-   bool engulf = body0 > body1 && ((bull0 && bear1) || (bear0 && bull1)) && hi0 >= hi1 && lo0 <= lo1;
-   bool harami = body0 < body1 && ((bull0 && bear1) || (bear0 && bull1)) && hi0 <= hi1 && lo0 >= lo1;
-   bool haramiX = body0 < body1 && doji && hi0 <= hi1 && lo0 >= lo1;
-   double atr = A_ATR(14, 1);
-   double tol = MathMax(g_aPip, atr * 0.05);
-   bool tweezerTop = bull1 && bear0 && MathAbs(g_aH[p] - g_aH[p+1]) <= tol;
-   bool tweezerBot = bear1 && bull0 && MathAbs(g_aL[p] - g_aL[p+1]) <= tol;
-   double mid1 = (g_aO[p+1] + g_aC[p+1]) / 2.0;
-   bool piercing  = bear1 && bull0 && g_aO[p] <= g_aC[p+1] && g_aC[p] > mid1 && g_aC[p] < g_aO[p+1];
-   bool darkcloud = bull1 && bear0 && g_aO[p] >= g_aC[p+1] && g_aC[p] < mid1 && g_aC[p] > g_aO[p+1];
-   bool inside  = g_aH[p] < g_aH[p+1] && g_aL[p] > g_aL[p+1];
-   bool outside = g_aH[p] > g_aH[p+1] && g_aL[p] < g_aL[p+1];
-   double mid2 = (g_aO[p+2] + g_aC[p+2]) / 2.0;
-   bool morning = bear2 && body2 >= 0.5 * rng2 && body1 < body2 * 0.3 && bull0 && g_aC[p] > mid2;
-   bool evening = bull2 && body2 >= 0.5 * rng2 && body1 < body2 * 0.3 && bear0 && g_aC[p] < mid2;
-   bool tws = bull0 && bull1 && bull2 && g_aC[p] > g_aC[p+1] && g_aC[p+1] > g_aC[p+2] &&
-              g_aO[p] > g_aO[p+1] && g_aO[p] <= g_aC[p+1] && g_aO[p+1] > g_aO[p+2] && g_aO[p+1] <= g_aC[p+2];
-   bool tbc = bear0 && bear1 && bear2 && g_aC[p] < g_aC[p+1] && g_aC[p+1] < g_aC[p+2] &&
-              g_aO[p] < g_aO[p+1] && g_aO[p] >= g_aC[p+1] && g_aO[p+1] < g_aO[p+2] && g_aO[p+1] >= g_aC[p+2];
-   double hi2 = MathMax(g_aO[p+2], g_aC[p+2]), lo2 = MathMin(g_aO[p+2], g_aC[p+2]);
-   bool harami12 = body1 < body2 && hi1 <= hi2 && lo1 >= lo2;
-   bool tiu = bear2 && bull1 && harami12 && bull0 && g_aC[p] > g_aO[p+2];
-   bool tid = bull2 && bear1 && harami12 && bear0 && g_aC[p] < g_aO[p+2];
-   // Institutional candle: big body AND clearly above-average tick volume AND a close near its extreme.
-   double volAvg20 = 0; int volN = MathMin(20, g_anb - p - 1);
-   for(int i = p + 1; i <= p + volN; i++) volAvg20 += (double)g_aV[i];
-   if(volN > 0) volAvg20 /= volN;
-   bool bigBody = body0 / rng0 > 0.6;
-   bool bigVolume = volAvg20 > 0 && (double)g_aV[p] > volAvg20 * 1.5;
-   bool closeNearExtreme = bull0 ? (g_aH[p] - g_aC[p]) / rng0 < 0.2 : (g_aC[p] - g_aL[p]) / rng0 < 0.2;
-   bool institutional = bigBody && bigVolume && closeNearExtreme;
-   string strongest = "NONE"; string bias = "NEUTRAL"; int reliability = 0;
-   if(engulf)  { strongest = bull0 ? "BULLISH_ENGULFING" : "BEARISH_ENGULFING"; bias = bull0 ? "BULL":"BEAR"; reliability = 80; }
-   else if(morning) { strongest = "MORNING_STAR"; bias = "BULL"; reliability = 85; }
-   else if(evening) { strongest = "EVENING_STAR"; bias = "BEAR"; reliability = 85; }
-   else if(tws)     { strongest = "THREE_WHITE_SOLDIERS"; bias = "BULL"; reliability = 78; }
-   else if(tbc)     { strongest = "THREE_BLACK_CROWS"; bias = "BEAR"; reliability = 78; }
-   else if(tiu)     { strongest = "THREE_INSIDE_UP"; bias = "BULL"; reliability = 70; }
-   else if(tid)     { strongest = "THREE_INSIDE_DOWN"; bias = "BEAR"; reliability = 70; }
-   else if(piercing){ strongest = "PIERCING_LINE"; bias = "BULL"; reliability = 65; }
-   else if(darkcloud){ strongest = "DARK_CLOUD_COVER"; bias = "BEAR"; reliability = 65; }
-   else if(hammer)  { strongest = "HAMMER"; bias = "BULL"; reliability = 65; }
-   else if(shooting){ strongest = "SHOOTING_STAR"; bias = "BEAR"; reliability = 65; }
-   else if(hanging) { strongest = "HANGING_MAN"; bias = "BEAR"; reliability = 55; }
-   else if(invHammer){ strongest = "INVERTED_HAMMER"; bias = "BULL"; reliability = 55; }
-   else if(tweezerTop){ strongest = "TWEEZER_TOP"; bias = "BEAR"; reliability = 55; }
-   else if(tweezerBot){ strongest = "TWEEZER_BOTTOM"; bias = "BULL"; reliability = 55; }
-   else if(doji)    { strongest = "DOJI"; bias = "NEUTRAL"; reliability = 40; }
-   string single = Obj(Jb("doji", doji) + "," + Jb("hammer", hammer) + "," + Jb("hanging_man", hanging) + "," +
-                       Jb("inverted_hammer", invHammer) + "," + Jb("shooting_star", shooting) + "," + Jb("marubozu", maru) + "," +
-                       Jb("pin_bar", pinbar) + "," + Jb("spinning_top", spin));
-   string dbl = Obj(Jb("engulfing", engulf) + "," + Jb("harami", harami) + "," + Jb("harami_cross", haramiX) + "," +
-                    Jb("tweezers", tweezerTop || tweezerBot) + "," + Jb("tweezer_top", tweezerTop) + "," + Jb("tweezer_bottom", tweezerBot) + "," +
-                    Jb("piercing_line", piercing) + "," + Jb("dark_cloud_cover", darkcloud) + "," + Jb("inside_bar", inside) + "," + Jb("outside_bar", outside));
-   string tri = Obj(Jb("morning_star", morning) + "," + Jb("evening_star", evening) + "," +
-                    Jb("three_white_soldiers", tws) + "," + Jb("three_black_crows", tbc) + "," +
-                    Jb("three_inside_up", tiu) + "," + Jb("three_inside_down", tid));
-   return Obj(J("read_from", "last closed candle") + "," + J("candle_time", A_BarTime(p)) + "," + J("candle_type", t0) + "," +
-              Jr("single", single) + "," + Jr("double", dbl) + "," + Jr("triple", tri) + "," +
-              J("strongest", strongest) + "," + J("bias", bias) + "," + Ji("reliability", reliability) + "," +
-              J("forming_candle_type", A_CandleType(0)) + "," +
-              Jr("institutional_candle", Obj(Jb("detected", institutional) + "," + J("direction", institutional ? (bull0 ? "BULL" : "BEAR") : "NONE") + "," +
-                   Jb("big_body", bigBody) + "," + Jb("big_volume", bigVolume) + "," + Jb("close_near_extreme", closeNearExtreme))));
-  }
-
-//--- ict -----------------------------------------------------------------
-// ICT defines its times in NEW YORK local time (with US summer time):
-//   killzones: Asian 20:00-00:00, London 02:00-05:00, New York 07:00-10:00, London close 10:00-12:00
-//   Silver Bullet: 03-04, 10-11, 14-15 · CBDR: 14:00-20:00 · midnight open: 00:00
-string A_NyKillzone(datetime utc)
-  {
-   int h = LocalHour(TZ_NEWYORK, utc);
-   if(h >= 20) return "ASIA";
-   if(h >= 2 && h < 5) return "LONDON_OPEN";
-   if(h >= 7 && h < 10) return "NY_OPEN";
-   if(h >= 10 && h < 12) return "LONDON_CLOSE";
-   return "NONE";
-  }
-
-bool A_IsFxLike(string sym)
-  {
-   string base = SymbolInfoString(sym, SYMBOL_CURRENCY_BASE), prof = SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT);
-   return base != "" && prof != "" && base != prof;
-  }
-
-string A_Ict(string sym, ENUM_TIMEFRAMES tf)
-  {
-   double atr = A_ATR(14, 1);
-   double c = g_aC[0];
-   datetime nowUtc = TimeGMT();
-   // Fair value gaps (confirmed ones only; see A_Fvgs).
-   string ft[]; double fT[], fB[]; int fBar[]; bool fF[], fM[], fI[];
-   int nf = A_Fvgs(8, 80, ft, fT, fB, fBar, fF, fM, fI);
-   string fvg[], ifvg[], vi[];
-   for(int i = 0; i < nf; i++)
-     {
-      A_Push(fvg, Obj(J("type", ft[i]) + "," + Jn("top", fT[i], g_aDigits) + "," + Jn("bot", fB[i], g_aDigits) + "," +
-                    Jn("ce", (fT[i] + fB[i]) / 2, g_aDigits) + "," + Jb("mitigated", fM[i]) + "," + Jb("filled", fF[i]) + "," +
-                    Ji("bar", fBar[i]) + "," + J("time", A_BarTime(fBar[i]))));
-      // Inversion FVG: a candle CLOSED through the gap, so it now works the other way.
-      if(fI[i]) A_Push(ifvg, Obj(J("type", ft[i] == "BULL" ? "BEAR" : "BULL") + "," + Jn("top", fT[i], g_aDigits) + "," + Jn("bot", fB[i], g_aDigits) + "," + Ji("bar", fBar[i])));
-      A_Push(vi, Obj(Jn("gap_pips", A_P(fT[i] - fB[i]), 1) + "," + Ji("bar", fBar[i])));
-     }
-   // Balanced price range: a bullish and a bearish FVG that overlap.
-   bool bpr = false; double bprTop = 0, bprBot = 0;
-   for(int a = 0; a < nf && !bpr; a++)
-      for(int b = 0; b < nf && !bpr; b++)
-         if(ft[a] == "BULL" && ft[b] == "BEAR")
-           {
-            double top = MathMin(fT[a], fT[b]), bot = MathMax(fB[a], fB[b]);
-            if(top > bot) { bpr = true; bprTop = top; bprBot = bot; }
-           }
-   // Order block: the last opposite candle before a displacement candle (> 0.7 ATR body) that closes beyond it.
-   string obType = "NONE"; double obH = 0, obL = 0; int obBar = -1; bool obTested = false;
-   for(int i = 3; i < MathMin(g_anb, 60); i++)
-     {
-      if(g_aC[i] < g_aO[i] && g_aC[i - 1] > g_aH[i] && (g_aC[i-1] - g_aO[i-1]) > atr * 0.7)
-        { obType = "BULL"; obH = g_aH[i]; obL = g_aL[i]; obBar = i; break; }
-      if(g_aC[i] > g_aO[i] && g_aC[i - 1] < g_aL[i] && (g_aO[i-1] - g_aC[i-1]) > atr * 0.7)
-        { obType = "BEAR"; obH = g_aH[i]; obL = g_aL[i]; obBar = i; break; }
-     }
-   // Tested = price came BACK into it after the displacement candle (i-1 is the move itself).
-   if(obBar > 0) for(int j = obBar - 2; j >= 0; j--) if(g_aL[j] <= obH && g_aH[j] >= obL) { obTested = true; break; }
-   double obCe = (obH + obL) / 2.0;
-   // Breaker: that order block failed -- a candle CLOSED through its far side -- confirmed by the last
-   // closed candle closing decisively (>50% body) in the breaker's direction.
-   string breakerType = obType == "BULL" ? "BEAR" : obType == "BEAR" ? "BULL" : "NONE";
-   bool breakerValid = false;
-   if(obBar > 0)
-     for(int j = obBar - 2; j >= 1; j--)
-       {
-        if(obType == "BULL" && g_aC[j] < obL) { breakerValid = true; break; }
-        if(obType == "BEAR" && g_aC[j] > obH) { breakerValid = true; break; }
-       }
-   double body1 = MathAbs(g_aC[1] - g_aO[1]), rng1 = MathMax(g_aH[1] - g_aL[1], g_aPoint);
-   bool breakerConfirmed = breakerValid && body1 / rng1 > 0.5 && (breakerType == "BULL" ? g_aC[1] > g_aO[1] : g_aC[1] < g_aO[1]);
-   // Sweep: the last closed candle ran the previous 50-candle range's high/low and closed back inside.
-   double prevHi = A_HighestHigh(2, 50), prevLo = A_LowestLow(2, 50);
-   string sweepType = "NONE"; double sweepLvl = 0;
-   if(g_aH[1] > prevHi && g_aC[1] < prevHi) { sweepType = "BSL"; sweepLvl = prevHi; }
-   else if(g_aL[1] < prevLo && g_aC[1] > prevLo) { sweepType = "SSL"; sweepLvl = prevLo; }
-   string sweepNow = (g_aH[0] > prevHi && c < prevHi) ? "BSL" : (g_aL[0] < prevLo && c > prevLo) ? "SSL" : "NONE";
-   double dr_hi = A_HighestHigh(0, 50), dr_lo = A_LowestLow(0, 50), eq = (dr_hi + dr_lo) / 2.0, rng = dr_hi - dr_lo;
-   // Sessions in New York time.
-   double asiaHi, asiaLo, asiaOpen; datetime asiaStart;
-   bool asiaOk = ZoneWindowRange(sym, TZ_NEWYORK, 20, 24, asiaHi, asiaLo, asiaOpen, asiaStart);
-   double cbdrHi, cbdrLo, cbdrOpen; datetime cbdrStart;
-   bool cbdrOk = ZoneWindowRange(sym, TZ_NEWYORK, 14, 20, cbdrHi, cbdrLo, cbdrOpen, cbdrStart);
-   double dayHi, dayLo, midnightOpen; datetime dayStart;
-   bool dayOk = ZoneWindowRange(sym, TZ_NEWYORK, 0, 24, dayHi, dayLo, midnightOpen, dayStart);
-   int nyH = LocalHour(TZ_NEWYORK, nowUtc);
-   string kz = A_NyKillzone(nowUtc);
-   bool sb = nyH == 3 || nyH == 10 || nyH == 14;
-   string sbName = nyH == 3 ? "LONDON" : nyH == 10 ? "NY_AM" : nyH == 14 ? "NY_PM" : "CLOSED";
-   // Judas swing: early in the New York day, price ran the Asian range's high (or low) and is back inside.
-   string judas = "NONE";
-   if(asiaOk && dayOk && nyH < 12)
-     {
-      if(dayHi > asiaHi && c < asiaHi) judas = "BEARISH";
-      else if(dayLo < asiaLo && c > asiaLo) judas = "BULLISH";
-     }
-   string amd = (nyH >= 18 || nyH < 2) ? "ACCUMULATION" : nyH < 7 ? "MANIPULATION" : nyH < 17 ? "DISTRIBUTION" : "ROLLOVER";
-   string dol = c < eq ? "BSL_ABOVE" : "SSL_BELOW";
-   // New day / new week opening gaps: yesterday's close -> today's open, last week's close -> this week's open.
-   double dOpen = xOpen(sym, PERIOD_D1, 0), pdClose = xClose(sym, PERIOD_D1, 1);
-   double wOpen = xOpen(sym, PERIOD_W1, 0), pwClose = xClose(sym, PERIOD_W1, 1);
-   double ndog = (dOpen > 0 && pdClose > 0) ? dOpen - pdClose : 0;
-   double nwog = (wOpen > 0 && pwClose > 0) ? wOpen - pwClose : 0;
-   string bslArr[], sslArr[];
-   double sh[], sl[]; int shB[], slB[]; A_CollectSwings(SwingLookback, 4, sh, shB, sl, slB);
-   for(int i = 0; i < ArraySize(sh); i++) if(sh[i] > c) A_Push(bslArr, DoubleToString(sh[i], g_aDigits));
-   for(int i = 0; i < ArraySize(sl); i++) if(sl[i] < c) A_Push(sslArr, DoubleToString(sl[i], g_aDigits));
-   // SMT: this market makes a new swing high/low while a correlated one (EURUSD) doesn't confirm.
-   // Only meaningful for currency pairs and metals.
-   bool smtApplicable = A_IsFxLike(sym) && StringFind(sym, "EURUSD") < 0;
-   bool smtDetected = false; string smtDir = "NONE";
-   if(smtApplicable && ArraySize(sh) > 1 && ArraySize(sl) > 1)
-     {
-      double euRet;
-      if(A_SymReturn("EURUSD", tf, 20, euRet))
-        {
-         if(sh[0] > sh[1] && euRet <= 0) { smtDetected = true; smtDir = "BEARISH"; }
-         else if(sl[0] < sl[1] && euRet >= 0) { smtDetected = true; smtDir = "BULLISH"; }
-        }
-      else smtApplicable = false;
-     }
-   string f[];
-   A_Push(f, Jr("fvg", "[" + A_Join(fvg) + "]"));
-   A_Push(f, Jr("ifvg", "[" + A_Join(ifvg) + "]"));
-   A_Push(f, Jr("bpr", Obj(Jb("detected", bpr) + "," + Jn("top", bprTop, g_aDigits) + "," + Jn("bot", bprBot, g_aDigits))));
-   A_Push(f, Jr("ob", Obj(J("type", obType) + "," + Jn("high", obH, g_aDigits) + "," + Jn("low", obL, g_aDigits) + "," +
-        Jn("ce", obCe, g_aDigits) + "," + Ji("bar", obBar) + "," + J("time", obBar > 0 ? A_BarTime(obBar) : "") + "," +
-        Jb("valid", obBar > 0 && !breakerValid) + "," + Jb("tested", obTested))));
-   A_Push(f, Jr("breaker", Obj(J("type", breakerValid ? breakerType : "NONE") + "," +
-        Jn("high", obH, g_aDigits) + "," + Jn("low", obL, g_aDigits) + "," + Ji("bar", obBar) + "," +
-        Jb("valid", breakerValid) + "," + Jb("confirmed", breakerConfirmed))));
-   A_Push(f, Jr("sweep", Obj(J("type", sweepType) + "," + Jn("level", sweepLvl, g_aDigits) + "," + Ji("bar", sweepType != "NONE" ? 1 : -1) + "," + J("sweeping_now", sweepNow))));
-   A_Push(f, Jr("bsl", "[" + A_Join(bslArr) + "]"));
-   A_Push(f, Jr("ssl", "[" + A_Join(sslArr) + "]"));
-   A_Push(f, Jr("ndog", Obj(Jb("detected", MathAbs(ndog) > g_aPip) + "," + Jp("open", dOpen, g_aDigits) + "," +
-        Jp("prev_close", pdClose, g_aDigits) + "," + Jn("gap_pips", A_P(ndog), 1))));
-   A_Push(f, Jr("nwog", Obj(Jb("detected", MathAbs(nwog) > g_aPip) + "," + Jp("open", wOpen, g_aDigits) + "," +
-        Jp("prev_close", pwClose, g_aDigits) + "," + Jn("gap_pips", A_P(nwog), 1))));
-   A_Push(f, dayOk ? Jn("midnight_open", midnightOpen, g_aDigits) : Jnull("midnight_open"));
-   A_Push(f, dayOk ? J("vs_midnight_open", c > midnightOpen ? "ABOVE" : "BELOW") : Jnull("vs_midnight_open"));
-   A_Push(f, Jr("asian_range", asiaOk ? Obj(Jn("high", asiaHi, g_aDigits) + "," + Jn("low", asiaLo, g_aDigits) + "," +
-        Jn("range_pips", A_P(asiaHi - asiaLo), 1) + "," + J("started_utc", IsoUtc(asiaStart)) + "," + J("window", "20:00-00:00 New York")) : "null"));
-   A_Push(f, J("killzone", kz));
-   A_Push(f, J("new_york_time", StringFormat("%02d:%02d", nyH, LocalMinuteOfDay(TZ_NEWYORK, nowUtc) % 60)));
-   A_Push(f, Jb("silver_bullet", sb));
-   A_Push(f, J("silver_bullet_window", sbName));
-   A_Push(f, J("judas_swing", judas));
-   A_Push(f, J("amd_phase_by_clock_only", amd)); // New York clock, not price -- see market_structure for liquidity
-   A_Push(f, Jr("cbdr", Obj(Jb("active", nyH >= 14 && nyH < 20) + "," +
-        (cbdrOk ? Jn("high", cbdrHi, g_aDigits) + "," + Jn("low", cbdrLo, g_aDigits) : Jnull("high") + "," + Jnull("low")) + "," + J("window", "14:00-20:00 New York"))));
-   A_Push(f, J("premium_discount", c > eq ? "PREMIUM" : "DISCOUNT"));
-   A_Push(f, Jr("ote_long",  Obj(Jn("high", dr_hi - rng * 0.62, g_aDigits) + "," + Jn("low", dr_hi - rng * 0.79, g_aDigits))));
-   A_Push(f, Jr("ote_short", Obj(Jn("high", dr_lo + rng * 0.79, g_aDigits) + "," + Jn("low", dr_lo + rng * 0.62, g_aDigits))));
-   A_Push(f, Ji("poi_count", nf + (obBar > 0 ? 1 : 0)));
-   return Obj(A_Join(f));
-  }
-
-//--- wyckoff (rough rules -- a phase guess, not a full Wyckoff reading) ----
-string A_Wyckoff()
-  {
-   double trHi = A_HighestHigh(1, 50), trLo = A_LowestLow(1, 50);
-   double prevHi = A_HighestHigh(51, 50), prevLo = A_LowestLow(51, 50);
-   double recentRange = trHi - trLo, prevRange = prevHi - prevLo;
-   double avgVol = 0, recVol = 0;
-   int n = MathMin(50, g_anb - 1);
-   for(int i = 1; i <= n; i++) avgVol += (double)g_aV[i]; avgVol /= MathMax(1, n);
-   for(int i = 1; i <= 5; i++) recVol += (double)g_aV[i]; recVol /= 5.0;
-   double volRatio = avgVol > 0 ? recVol / avgVol : 1;
-   double c = g_aC[1];
-   double moved = MathAbs(c - g_aC[MathMin(g_anb - 1, 6)]);
-   string phase = "RANGING", sub = "", ev = "NONE", schem = "NEUTRAL";
-   bool nearLo = c < trLo + recentRange * 0.25;
-   bool nearHi = c > trHi - recentRange * 0.25;
-   if(prevRange > 0 && recentRange > prevRange * 1.3) // needs 100+ bars; otherwise the range test is skipped
-     {
-      bool up = c > (prevHi + prevLo) / 2.0;
-      phase = up ? "MARKUP" : "MARKDOWN"; sub = "PHASE_D"; ev = up ? "SOS" : "SOW";
-     }
-   else if(nearLo && volRatio > 1.3) { phase = "ACCUMULATION"; sub = "PHASE_C"; ev = "SPRING"; schem = "ACCUMULATION"; }
-   else if(nearLo)                   { phase = "ACCUMULATION"; sub = "PHASE_B"; ev = "ST"; schem = "ACCUMULATION"; }
-   else if(nearHi && volRatio > 1.3) { phase = "DISTRIBUTION"; sub = "PHASE_C"; ev = "UTAD"; schem = "DISTRIBUTION"; }
-   else if(nearHi)                   { phase = "DISTRIBUTION"; sub = "PHASE_B"; ev = "UT"; schem = "DISTRIBUTION"; }
-   string er = "NEUTRAL";
-   if(volRatio > 1.3 && moved < recentRange * 0.15) er = "EFFORT_NO_RESULT";
-   else if(volRatio < 0.8 && moved > recentRange * 0.3) er = "RESULT_NO_EFFORT";
-   else if(volRatio > 1.1 && moved > recentRange * 0.2) er = "HARMONY";
-   string f[];
-   A_Push(f, J("method", "rough rules on closed candles and tick volume -- a phase guess"));
-   A_Push(f, J("phase", phase)); A_Push(f, J("sub_phase", sub));
-   A_Push(f, J("event", ev));    A_Push(f, J("schematic", schem));
-   A_Push(f, Jn("avg_vol", avgVol, 1)); A_Push(f, Jn("recent_vol", recVol, 1));
-   A_Push(f, Jn("vol_ratio", volRatio, 3));
-   A_Push(f, J("effort_result", er));
-   A_Push(f, Jn("trading_range_high", trHi, g_aDigits));
-   A_Push(f, Jn("trading_range_low",  trLo, g_aDigits));
-   A_Push(f, J("breakout_direction", g_aC[0] > trHi ? "UP" : g_aC[0] < trLo ? "DOWN" : "NONE"));
-   A_Push(f, Ji("cause_bars", n));
-   A_Push(f, Jn("recent_range", A_P(recentRange), 1));
-   A_Push(f, Jn("prev_range", A_P(prevRange), 1));
-   return Obj(A_Join(f));
-  }
-
-//--- divergence (values compared AT the two swing points) ------------------
-string A_Divergence()
-  {
-   double sh[], sl[]; int shB[], slB[];
-   A_CollectSwings(SwingLookback, 3, sh, shB, sl, slB);
-   bool haveH = ArraySize(sh) > 1, haveL = ArraySize(sl) > 1;
-   double rsiNow = A_RSI(14);
-   double ph1 = haveH ? sh[0] : 0, ph2 = haveH ? sh[1] : 0;
-   double pl1 = haveL ? sl[0] : 0, pl2 = haveL ? sl[1] : 0;
-   double rH1 = haveH ? A_RSI(14, shB[0]) : 0, rH2 = haveH ? A_RSI(14, shB[1]) : 0;
-   double rL1 = haveL ? A_RSI(14, slB[0]) : 0, rL2 = haveL ? A_RSI(14, slB[1]) : 0;
-   double mH1 = haveH ? A_MACDMain(shB[0]) : 0, mH2 = haveH ? A_MACDMain(shB[1]) : 0;
-   double mL1 = haveL ? A_MACDMain(slB[0]) : 0, mL2 = haveL ? A_MACDMain(slB[1]) : 0;
-   double kH1 = haveH ? A_StochK(14, 3, shB[0]) : 0, kH2 = haveH ? A_StochK(14, 3, shB[1]) : 0;
-   double kL1 = haveL ? A_StochK(14, 3, slB[0]) : 0, kL2 = haveL ? A_StochK(14, 3, slB[1]) : 0;
-   // Regular: price makes a new extreme, the oscillator doesn't. Hidden: the reverse (continuation).
-   bool rsiBear = haveH && ph1 > ph2 && rH1 < rH2;
-   bool rsiBull = haveL && pl1 < pl2 && rL1 > rL2;
-   bool hidBull = haveL && pl1 > pl2 && rL1 < rL2;
-   bool hidBear = haveH && ph1 < ph2 && rH1 > rH2;
-   bool macdBear = haveH && ph1 > ph2 && mH1 < mH2;
-   bool macdBull = haveL && pl1 < pl2 && mL1 > mL2;
-   bool macdHidBull = haveL && pl1 > pl2 && mL1 < mL2;
-   bool macdHidBear = haveH && ph1 < ph2 && mH1 > mH2;
-   bool stochBull = haveL && pl1 < pl2 && kL1 > kL2;
-   bool stochBear = haveH && ph1 > ph2 && kH1 < kH2;
-   string strongest = rsiBull ? "RSI_BULL" : rsiBear ? "RSI_BEAR" :
-                      macdBull ? "MACD_BULL" : macdBear ? "MACD_BEAR" :
-                      hidBull ? "HIDDEN_BULL" : hidBear ? "HIDDEN_BEAR" :
-                      stochBull ? "STOCH_BULL" : stochBear ? "STOCH_BEAR" : "NONE";
-   // Confirmed: since the latest swing, a closed candle has moved away in the divergence's direction.
-   bool bullish = StringFind(strongest, "BULL") >= 0;
-   bool confirmed = false;
-   if(strongest != "NONE")
-     {
-      if(bullish && haveL) confirmed = g_aC[1] > g_aH[slB[0]];
-      if(!bullish && haveH) confirmed = g_aC[1] < g_aL[shB[0]];
-     }
-   int barsSince = strongest == "NONE" ? -1 : (bullish ? (haveL ? slB[0] : -1) : (haveH ? shB[0] : -1));
-   string f[];
-   A_Push(f, Jb("rsi_bull_div", rsiBull)); A_Push(f, Jb("rsi_bear_div", rsiBear));
-   A_Push(f, Jb("rsi_hidden_bull", hidBull)); A_Push(f, Jb("rsi_hidden_bear", hidBear));
-   A_Push(f, Jb("macd_bull_div", macdBull)); A_Push(f, Jb("macd_bear_div", macdBear));
-   A_Push(f, Jb("macd_hidden_bull", macdHidBull)); A_Push(f, Jb("macd_hidden_bear", macdHidBear));
-   A_Push(f, Jb("stoch_bull_div", stochBull)); A_Push(f, Jb("stoch_bear_div", stochBear));
-   A_Push(f, Jn("price_high1", ph1, g_aDigits)); A_Push(f, Jn("price_high2", ph2, g_aDigits));
-   A_Push(f, Jn("price_low1", pl1, g_aDigits));  A_Push(f, Jn("price_low2", pl2, g_aDigits));
-   A_Push(f, Jn("rsi_now", rsiNow, 2));
-   A_Push(f, Jn("rsi_at_high1", rH1, 2)); A_Push(f, Jn("rsi_at_prev_high", rH2, 2));
-   A_Push(f, Jn("rsi_at_low1", rL1, 2));  A_Push(f, Jn("rsi_at_prev_low", rL2, 2));
-   A_Push(f, J("strongest", strongest));
-   A_Push(f, Jb("confirmed", confirmed));
-   A_Push(f, Ji("bars_since_div", barsSince));
-   return Obj(A_Join(f));
-  }
-
-//--- session ---------------------------------------------------------------
-// Local market hours with their real summer-time rules: Sydney 07-16, Tokyo 09-18, London 08-17,
-// New York 08-17 (each in its own local time).
-string A_Session(string sym)
-  {
-   datetime now = TimeGMT();
-   bool sydney = InLocalWindow(TZ_SYDNEY, now, 7, 16);
-   bool tokyo  = InLocalWindow(TZ_TOKYO, now, 9, 18);
-   bool london = InLocalWindow(TZ_LONDON, now, 8, 17);
-   bool ny     = InLocalWindow(TZ_NEWYORK, now, 8, 17);
-   MqlDateTime u; TimeToStruct(now, u);
-   // Forex closes from Friday 17:00 to Sunday 17:00 New York time.
-   int nyDow; { MqlDateTime nd; TimeToStruct(LocalOf(TZ_NEWYORK, now), nd); nyDow = nd.day_of_week; }
-   int nyHour = LocalHour(TZ_NEWYORK, now);
-   bool fxWeekend = (nyDow == 6) || (nyDow == 5 && nyHour >= 17) || (nyDow == 0 && nyHour < 17);
-   bool overlapLN = london && ny, overlapTL = tokyo && london;
-   string cur = overlapLN ? "LONDON_NY" : ny ? "NEW_YORK" : london ? "LONDON" : tokyo ? "TOKYO" : sydney ? "SYDNEY" : "CLOSED";
-   // The current (or latest) main session's own high/low and open.
-   int zone = ny ? TZ_NEWYORK : london ? TZ_LONDON : tokyo ? TZ_TOKYO : TZ_SYDNEY;
-   int sH = zone == TZ_TOKYO ? 9 : zone == TZ_SYDNEY ? 7 : 8, eH = zone == TZ_TOKYO ? 18 : zone == TZ_SYDNEY ? 16 : 17;
-   double sHi, sLo, sOpen; datetime sStart;
-   bool sOk = ZoneWindowRange(sym, zone, sH, eH, sHi, sLo, sOpen, sStart);
-   double aHi, aLo, aOpen; datetime aStart;
-   bool aOk = ZoneWindowRange(sym, TZ_TOKYO, 9, 18, aHi, aLo, aOpen, aStart);
-   int lh = LocalHour(TZ_LONDON, now), nh = nyHour;
-   string f[];
-   A_Push(f, J("current", cur));
-   A_Push(f, Jb("tokyo", tokyo)); A_Push(f, Jb("london", london));
-   A_Push(f, Jb("new_york", ny)); A_Push(f, Jb("sydney", sydney));
-   A_Push(f, Jb("overlap", overlapLN || overlapTL)); A_Push(f, J("overlap_type", overlapLN ? "LONDON_NY" : overlapTL ? "TOKYO_LONDON" : "NONE"));
-   A_Push(f, Jb("forex_weekend_closed", fxWeekend));
-   A_Push(f, Ji("hour_utc", u.hour)); A_Push(f, Ji("min_utc", u.min));
-   A_Push(f, J("london_time", StringFormat("%02d:%02d", lh, u.min)));
-   A_Push(f, J("new_york_time", StringFormat("%02d:%02d", nh, u.min)));
-   A_Push(f, Ji("to_london_min", MinutesUntilLocal(TZ_LONDON, 8)));
-   A_Push(f, Ji("to_ny_min", MinutesUntilLocal(TZ_NEWYORK, 8)));
-   A_Push(f, Ji("to_tokyo_min", MinutesUntilLocal(TZ_TOKYO, 9)));
-   A_Push(f, Ji("to_sydney_min", MinutesUntilLocal(TZ_SYDNEY, 7)));
-   A_Push(f, Jb("silver_bullet_window", nh == 3 || nh == 10 || nh == 14));
-   A_Push(f, Jb("cbdr_active", nh >= 14 && nh < 20));
-   // The opens: London 08:00-10:00 London time, New York 08:00-11:00 New York time.
-   A_Push(f, Jb("high_impact_hours", (lh >= 8 && lh < 10) || (nh >= 8 && nh < 11)));
-   A_Push(f, sOk ? Jn("session_open_price", sOpen, g_aDigits) : Jnull("session_open_price"));
-   A_Push(f, sOk ? Jn("session_high", sHi, g_aDigits) : Jnull("session_high"));
-   A_Push(f, sOk ? Jn("session_low", sLo, g_aDigits) : Jnull("session_low"));
-   A_Push(f, sOk ? J("session_started_utc", IsoUtc(sStart)) : Jnull("session_started_utc"));
-   A_Push(f, aOk ? Jn("asian_range_high", aHi, g_aDigits) : Jnull("asian_range_high"));
-   A_Push(f, aOk ? Jn("asian_range_low", aLo, g_aDigits) : Jnull("asian_range_low"));
-   A_Push(f, aOk ? Jn("asian_range_pips", A_P(aHi - aLo), 1) : Jnull("asian_range_pips"));
-   A_Push(f, J("asian_range_window", "Tokyo session 09:00-18:00 Tokyo time"));
-   A_Push(f, Ji("session_time_elapsed_min", sOk && cur != "CLOSED" ? (long)(now - sStart) / 60 : 0));
-   return Obj(A_Join(f));
-  }
-
-//--- pivots (from real daily/weekly/monthly candles) -----------------------
-string A_Pivots(string sym)
-  {
-   double pdh = xHigh(sym, PERIOD_D1, 1),  pdl = xLow(sym, PERIOD_D1, 1);
-   double pdc = xClose(sym, PERIOD_D1, 1), pdo = xOpen(sym, PERIOD_D1, 1);
-   double pwh = xHigh(sym, PERIOD_W1, 1),  pwl = xLow(sym, PERIOD_W1, 1);
-   double pwc = xClose(sym, PERIOD_W1, 1);
-   double pmh = xHigh(sym, PERIOD_MN1, 1), pml = xLow(sym, PERIOD_MN1, 1);
-   double pmc = xClose(sym, PERIOD_MN1, 1);
-   if(pdh <= 0 || pdl <= 0 || pdc <= 0) { g_aErr = "yesterday's daily candle isn't loaded yet for " + sym; return ""; }
-   double rng = pdh - pdl;
-   double p  = (pdh + pdl + pdc) / 3.0;
-   double r1 = 2 * p - pdl, s1 = 2 * p - pdh;
-   double r2 = p + rng,     s2 = p - rng;
-   double r3 = pdh + 2 * (p - pdl), s3 = pdl - 2 * (pdh - p);
-   double fr1 = p + 0.382 * rng, fs1 = p - 0.382 * rng;
-   double fr2 = p + 0.618 * rng, fs2 = p - 0.618 * rng;
-   double fr3 = p + 1.000 * rng, fs3 = p - 1.000 * rng;
-   double cr1 = pdc + rng * 1.1 / 12, cs1 = pdc - rng * 1.1 / 12;
-   double cr2 = pdc + rng * 1.1 / 6,  cs2 = pdc - rng * 1.1 / 6;
-   double cr3 = pdc + rng * 1.1 / 4,  cs3 = pdc - rng * 1.1 / 4;
-   double cr4 = pdc + rng * 1.1 / 2,  cs4 = pdc - rng * 1.1 / 2;
-   bool wOk = pwh > 0 && pwl > 0 && pwc > 0, mOk = pmh > 0 && pml > 0 && pmc > 0;
-   double wp = (pwh + pwl + pwc) / 3.0;
-   double mp = (pmh + pml + pmc) / 3.0;
-   double lv[7]; lv[0]=p; lv[1]=r1; lv[2]=r2; lv[3]=r3; lv[4]=s1; lv[5]=s2; lv[6]=s3;
-   string nm[7]; nm[0]="P"; nm[1]="R1"; nm[2]="R2"; nm[3]="R3"; nm[4]="S1"; nm[5]="S2"; nm[6]="S3";
-   int bi = 0; double bd = 1e18;
-   for(int i = 0; i < 7; i++) { double dd = MathAbs(g_aC[0] - lv[i]); if(dd < bd) { bd = dd; bi = i; } }
-   int digits = g_aDigits;
-   string f[];
-   A_Push(f, Jr("classic", Obj(Jn("p", p, digits) + "," + Jn("r1", r1, digits) + "," + Jn("r2", r2, digits) + "," +
-        Jn("r3", r3, digits) + "," + Jn("s1", s1, digits) + "," + Jn("s2", s2, digits) + "," + Jn("s3", s3, digits))));
-   A_Push(f, Jr("fibonacci", Obj(Jn("p", p, digits) + "," + Jn("r1", fr1, digits) + "," + Jn("r2", fr2, digits) + "," +
-        Jn("r3", fr3, digits) + "," + Jn("s1", fs1, digits) + "," + Jn("s2", fs2, digits) + "," + Jn("s3", fs3, digits))));
-   A_Push(f, Jr("camarilla", Obj(Jn("r1", cr1, digits) + "," + Jn("r2", cr2, digits) + "," + Jn("r3", cr3, digits) + "," +
-        Jn("r4", cr4, digits) + "," + Jn("s1", cs1, digits) + "," + Jn("s2", cs2, digits) + "," +
-        Jn("s3", cs3, digits) + "," + Jn("s4", cs4, digits))));
-   A_Push(f, Jr("weekly", wOk ? Obj(Jn("p", wp, digits) + "," + Jn("r1", 2*wp - pwl, digits) + "," +
-        Jn("s1", 2*wp - pwh, digits) + "," + Jn("high", pwh, digits) + "," + Jn("low", pwl, digits)) : "null"));
-   A_Push(f, Jr("monthly", mOk ? Obj(Jn("p", mp, digits) + "," + Jn("r1", 2*mp - pml, digits) + "," + Jn("s1", 2*mp - pmh, digits)) : "null"));
-   A_Push(f, Jn("pdh", pdh, digits)); A_Push(f, Jn("pdl", pdl, digits));
-   A_Push(f, Jn("pdc", pdc, digits)); A_Push(f, Jp("pdo", pdo, digits));
-   A_Push(f, Jp("pwh", pwh, digits)); A_Push(f, Jp("pwl", pwl, digits));
-   A_Push(f, J("nearest_pivot", nm[bi]));
-   A_Push(f, Jn("dist_to_nearest_pips", A_P(bd), 1));
-   A_Push(f, J("price_vs_pivot", g_aC[0] > p ? "ABOVE" : "BELOW"));
-   return Obj(A_Join(f));
-  }
-
-//--- levels (round numbers sized to the market) ---------------------------
-// EURUSD ~1.08 -> big figure 0.01; USDJPY ~150 -> 1; gold ~2650 -> 10; an index at ~9,000 -> 100.
-string A_Levels(string sym)
-  {
-   double c = g_aC[0];
-   double big = c > 0 ? MathPow(10.0, MathFloor(MathLog10(c)) - 2) : g_aPip * 100;
-   double half = big / 2.0, quarter = big / 4.0, major = big * 10.0;
-   double step = half;
-   double nearest = MathRound(c / step) * step;
-   double above = MathFloor(c / step) * step + step;
-   double below = MathCeil(c / step) * step - step;
-   double bigF  = MathRound(c / big) * big;
-   double halfF = MathRound(c / half) * half;
-   double majF  = MathRound(c / major) * major;
-   double hi52 = A_Hi52(sym), lo52 = A_Lo52(sym);
-   string nearby[];
-   for(int i = -2; i <= 2; i++) A_Push(nearby, DoubleToString(nearest + i * step, g_aDigits));
-   string f[];
-   A_Push(f, Jn("nearest", nearest, g_aDigits));
-   A_Push(f, Jn("above", above, g_aDigits)); A_Push(f, Jn("below", below, g_aDigits));
-   A_Push(f, Jn("mid", (above + below) / 2, g_aDigits));
-   A_Push(f, Jn("dist_pips", A_P(MathAbs(c - nearest)), 1));
-   A_Push(f, Jn("step_size", step, g_aDigits));
-   A_Push(f, Jn("big_figure", bigF, g_aDigits));
-   A_Push(f, Jn("half_figure", halfF, g_aDigits));
-   A_Push(f, Jn("quarter_step", quarter, g_aDigits));
-   A_Push(f, Jn("major_level", majF, g_aDigits));
-   A_Push(f, Jn("dist_to_big_figure_pips", A_P(MathAbs(c - bigF)), 1));
-   A_Push(f, Jn("dist_to_half_figure_pips", A_P(MathAbs(c - halfF)), 1));
-   A_Push(f, Jn("psychological_level", bigF, g_aDigits));
-   A_Push(f, Jn("magnet_level", MathAbs(c - bigF) < MathAbs(c - halfF) ? bigF : halfF, g_aDigits));
-   A_Push(f, Jr("nearby_rounds", "[" + A_Join(nearby) + "]"));
-   A_Push(f, Jp("hi_52w", hi52, g_aDigits)); A_Push(f, Jp("lo_52w", lo52, g_aDigits));
-   A_Push(f, hi52 > 0 ? Jn("dist_to_52h_pips", A_P(hi52 - c), 1) : Jnull("dist_to_52h_pips"));
-   A_Push(f, lo52 > 0 ? Jn("dist_to_52l_pips", A_P(c - lo52), 1) : Jnull("dist_to_52l_pips"));
-   return Obj(A_Join(f));
-  }
-
-//--- orderflow (ESTIMATED from tick volume and candle colour) ---------------
-string A_OrderFlow()
-  {
-   double buyV = 0, sellV = 0;
-   int n = MathMin(20, g_anb - 1);
-   for(int i = 1; i <= n; i++) { if(g_aC[i] >= g_aO[i]) buyV += (double)g_aV[i]; else sellV += (double)g_aV[i]; }
-   double delta = buyV - sellV;
-   int consec = 1; bool up = g_aC[1] >= g_aO[1];
-   for(int i = 2; i <= n; i++) { if((g_aC[i] >= g_aO[i]) == up) consec++; else break; }
-   double atr = A_ATR(14, 1);
-   int absorption = 0;
-   double avgV = (buyV + sellV) / MathMax(1, n);
-   for(int i = 1; i <= n; i++) if((double)g_aV[i] > avgV * 1.5 && MathAbs(g_aC[i] - g_aO[i]) < atr * 0.3) absorption++;
-   double accel = g_anb > 4 ? MathAbs(g_aC[1]-g_aC[2]) - MathAbs(g_aC[3]-g_aC[4]) : 0;
-   bool climaxBuy  = g_aC[1] > g_aO[1] && (double)g_aV[1] > avgV * 2.5;
-   bool climaxSell = g_aC[1] < g_aO[1] && (double)g_aV[1] > avgV * 2.5;
-   bool stopRun = g_anb > 3 && ((g_aH[1] > g_aH[2] && g_aC[1] < g_aC[2]) || (g_aL[1] < g_aL[2] && g_aC[1] > g_aC[2]));
-   string f[];
-   A_Push(f, J("source", "estimated from tick volume x candle colour -- not real order flow"));
-   A_Push(f, Jn("delta", delta, 0));
-   A_Push(f, J("bias", delta > 0 ? "BULL" : delta < 0 ? "BEAR" : "NEUTRAL"));
-   A_Push(f, Jn("buy_vol", buyV, 0)); A_Push(f, Jn("sell_vol", sellV, 0));
-   A_Push(f, Ji("consecutive", consec));
-   A_Push(f, J("consecutive_dir", up ? "BULL" : "BEAR"));
-   A_Push(f, Ji("absorption_bars", absorption));
-   A_Push(f, Jn("momentum_acceleration", A_P(accel), 2));
-   A_Push(f, Jb("climax_buy", climaxBuy)); A_Push(f, Jb("climax_sell", climaxSell));
-   A_Push(f, Jb("initiative_buyers", delta > 0 && consec >= 3 && up));
-   A_Push(f, Jb("initiative_sellers", delta < 0 && consec >= 3 && !up));
-   A_Push(f, Jb("responsive_buyers", delta > 0 && g_aC[1] < A_SMA(20, 1)));
-   A_Push(f, Jb("responsive_sellers", delta < 0 && g_aC[1] > A_SMA(20, 1)));
-   A_Push(f, Jb("stop_run", stopRun));
-   A_Push(f, Jb("momentum_ignition", MathAbs(g_aC[1]-g_aO[1]) > atr * 1.5));
-   return Obj(A_Join(f));
-  }
-
-//--- confluence ------------------------------------------------------------
-string A_Confluence(int &outScore, string &outDir)
-  {
-   double ma20 = A_SMA(20), ma50 = A_SMA(50);
-   double rsi = A_RSI(14);
-   double m, s, h; A_MACD(m, s, h, 0);
-   double adx, pdi, mdi; bool adxOk = A_ADXCalc(14, 0, adx, pdi, mdi);
-   int bull = 0, bear = 0;
-   int maT = g_aC[0] > ma20 && ma20 > ma50 ? 1 : (g_aC[0] < ma20 && ma20 < ma50 ? -1 : 0);
-   int rsiS = rsi > 55 ? 1 : rsi < 45 ? -1 : 0;
-   int macdS = h > 0 ? 1 : h < 0 ? -1 : 0;
-   // Real ADX: a trend counts only when ADX >= 25, in the direction of the stronger DI.
-   int adxS  = (adxOk && adx >= 25) ? (pdi > mdi ? 1 : -1) : 0;
-   int paS   = g_aC[1] > g_aO[1] ? 1 : g_aC[1] < g_aO[1] ? -1 : 0; // last closed candle
-   int arr[5]; arr[0]=maT; arr[1]=rsiS; arr[2]=macdS; arr[3]=adxS; arr[4]=paS;
-   for(int i = 0; i < 5; i++) { if(arr[i] > 0) bull++; else if(arr[i] < 0) bear++; }
-   int total = 5;
-   int score = (int)MathRound((double)MathMax(bull, bear) / total * 100.0);
-   string dir = bull > bear ? "BULL" : bull < bear ? "BEAR" : "NEUTRAL";
-   outScore = score; outDir = dir;
-   string strength = score >= 80 ? "VERY_STRONG" : score >= 60 ? "STRONG" : score >= 40 ? "MODERATE" : "WEAK";
-   string bd = Obj(Ji("ma_trend", maT) + "," + Ji("rsi", rsiS) + "," + Ji("macd", macdS) + "," +
-                   Ji("adx_trend", adxS) + "," + Ji("price_action", paS));
-   string f[];
-   A_Push(f, Ji("score", score)); A_Push(f, J("direction", dir)); A_Push(f, J("strength", strength));
-   A_Push(f, Ji("bull_signals", bull)); A_Push(f, Ji("bear_signals", bear));
-   A_Push(f, Ji("total_signals", total));
-   A_Push(f, Jn("agreement_pct", (double)MathMax(bull, bear) / total * 100.0, 1));
-   A_Push(f, J("confidence", score >= 80 ? "HIGH" : score >= 60 ? "MEDIUM" : "LOW"));
-   A_Push(f, adxOk ? Jn("adx", adx, 1) : Jnull("adx"));
-   A_Push(f, Jr("signal_breakdown", bd));
-   return Obj(A_Join(f));
-  }
-
-//--- risk_metrics ----------------------------------------------------------
-double A_ADR(string sym, int days)
-  {
-   MqlRates d[]; ArraySetAsSeries(d, true);
-   int n = SeriesReady(sym, PERIOD_D1) ? CopyRates(sym, PERIOD_D1, 1, days, d) : 0;
-   if(n <= 0) return 0;
-   double s = 0; for(int i = 0; i < n; i++) s += d[i].high - d[i].low;
-   return s / n;
-  }
-double A_RoundLots(string sym, double lots)
-  {
-   double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP), vmax = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
-   if(step <= 0) step = 0.01;
-   double r = MathFloor(lots / step + 1e-9) * step;
-   if(vmax > 0 && r > vmax) r = vmax;
-   return NormalizeDouble(r, 2);
-  }
-string A_RiskMetrics(string sym)
-  {
-   double atr = A_ATR(14, 1), atrP = A_Pips(sym, atr);
-   double spread = A_Pips(sym, SymbolInfoDouble(sym, SYMBOL_ASK) - SymbolInfoDouble(sym, SYMBOL_BID));
-   double tickVal = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
-   double tickSz  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-   double pipVal  = (tickSz > 0) ? tickVal * (g_aPip / tickSz) : 0;
-   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
-   double sl2 = atrP * 2.0;
-   double vmin = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
-   double raw1 = (pipVal > 0 && sl2 > 0) ? (bal * 0.01) / (sl2 * pipVal) : 0;
-   double lot1 = A_RoundLots(sym, raw1), lot2 = A_RoundLots(sym, raw1 * 2);
-   string f[];
-   A_Push(f, Jn("atr_pips", atrP, 1));
-   A_Push(f, Jn("sl_1x_pips", atrP, 1));   A_Push(f, Jn("sl_1_5x_pips", atrP * 1.5, 1));
-   A_Push(f, Jn("sl_2x_pips", sl2, 1));    A_Push(f, Jn("sl_3x_pips", atrP * 3, 1));
-   A_Push(f, Jn("tp_1_5x_pips", atrP * 1.5, 1)); A_Push(f, Jn("tp_2x_pips", atrP * 2, 1));
-   A_Push(f, Jn("tp_3x_pips", atrP * 3, 1));     A_Push(f, Jn("tp_5x_pips", atrP * 5, 1));
-   A_Push(f, Jn("rr_1_5", 1.5, 2)); A_Push(f, Jn("rr_2", 2.0, 2)); A_Push(f, Jn("rr_3", 3.0, 2));
-   A_Push(f, Jn("pip_value", pipVal, 4));
-   A_Push(f, J("pip_value_is", "per 1 lot, in the account currency"));
-   A_Push(f, Jn("spread_pips", spread, 2));
-   A_Push(f, Jn("spread_pct_of_sl", sl2 > 0 ? spread / sl2 * 100.0 : 0, 2));
-   // Daily range numbers moved to reference_levels: this endpoint stays on its own timeframe.
-   A_Push(f, Jn("max_recommended_sl_pips", atrP * 3, 1));
-   A_Push(f, Jr("position_sizing", Obj(Jn("lot_per_1pct_risk", lot1, 2) + "," + Jn("lot_per_2pct_risk", lot2, 2) + "," +
-        J("for_stop_of", "2x ATR") + "," + Jb("below_min_lot", lot1 < vmin) + "," + Jn("min_lot", vmin, 2) + "," +
-        J("exact_sizing", "use get_position_size for an exact size from your real entry and stop"))));
-   return Obj(A_Join(f));
-  }
-
-//--- synthetic (measured from THIS broker's own price feed) ---------------
-// Spikes on synthetic indices come from a random generator: the time since the last spike does NOT
-// make the next one more likely. So there is no "due"/"overdue" here -- the real, measured spike rate
-// on this broker's history gives the chance per candle.
-string A_Synthetic(string sym)
-  {
-   string s = sym; StringToUpper(s);
-   string type = "OTHER";
-   if(StringFind(s, "BOOM") >= 0) type = "BOOM";
-   else if(StringFind(s, "CRASH") >= 0) type = "CRASH";
-   else if(StringFind(s, "STORM") >= 0) type = "STORM";
-   else if(StringFind(s, "FLAME") >= 0) type = "FLAME";
-   else if(StringFind(s, "VOL") >= 0) type = "VOL";
-   else if(StringFind(s, "STEP") >= 0) type = "STEP";
-   // The FIRST number in the name only ("VOL_10" -> 10, "Volatility 75 (1s)" -> 75).
-   int tick = 0; bool inNum = false;
-   for(int i = 0; i < StringLen(s); i++)
-     {
-      ushort ch = StringGetCharacter(s, i);
-      if(ch >= '0' && ch <= '9') { tick = tick * 10 + (int)(ch - '0'); inNum = true; }
-      else if(inNum) break;
-     }
-   // A spike = a closed candle whose body is > 4x the typical (median) candle range.
-   int n = g_anb - 1;
-   double ranges[]; ArrayResize(ranges, n);
-   for(int i = 1; i <= n; i++) ranges[i - 1] = g_aH[i] - g_aL[i];
-   ArraySort(ranges);
-   double median = n > 0 ? ranges[n / 2] : 0;
-   double threshold = median * 4.0;
-   string spikes[]; int count = 0, up = 0, dn = 0, lastBar = -1;
-   double sizeSum = 0;
-   for(int i = 1; i <= n && threshold > 0; i++)
-     {
-      double mv = g_aC[i] - g_aO[i];
-      if(MathAbs(mv) <= threshold) continue;
-      if(type == "BOOM" && mv < 0) continue;
-      if(type == "CRASH" && mv > 0) continue;
-      count++; sizeSum += MathAbs(mv);
-      if(mv > 0) up++; else dn++;
-      if(lastBar < 0) lastBar = i;
-      if(ArraySize(spikes) < 5)
-         A_Push(spikes, Obj(Ji("bar", i) + "," + J("time", A_BarTime(i)) + "," + J("dir", mv > 0 ? "UP" : "DOWN") + "," + Jn("size_pips", A_Pips(sym, MathAbs(mv)), 1)));
-     }
-   double perBar = n > 0 ? (double)count / n : 0;              // measured spike rate per candle
-   double avgBetween = count > 0 ? (double)n / count : 0;
-   double chanceNext = (1.0 - MathExp(-perBar)) * 100.0;
-   double chance10 = (1.0 - MathExp(-perBar * 10)) * 100.0;
-   double avgRange = 0; int m = MathMin(50, n);
-   for(int i = 1; i <= m; i++) avgRange += (g_aH[i] - g_aL[i]); avgRange /= MathMax(1, m);
-   double atr = A_ATR(14, 1);
-   string f[];
-   A_Push(f, J("type", type));
-   A_Push(f, Ji("tick_interval_number", tick));
-   A_Push(f, J("spike_dir", type == "BOOM" ? "UP" : type == "CRASH" ? "DOWN" : "BOTH"));
-   A_Push(f, Ji("bars_measured", n));
-   A_Push(f, Ji("spike_count", count));
-   A_Push(f, Ji("spikes_up", up)); A_Push(f, Ji("spikes_down", dn));
-   A_Push(f, Jn("spikes_per_100_bars", perBar * 100.0, 2));
-   A_Push(f, Jn("avg_bars_between", avgBetween, 1));
-   A_Push(f, Jn("avg_spike_pips", count > 0 ? A_Pips(sym, sizeSum / count) : 0, 1));
-   A_Push(f, Ji("bars_since_spike", lastBar));
-   A_Push(f, Jn("spike_chance_next_bar_pct", chanceNext, 1));
-   A_Push(f, Jn("spike_chance_next_10_bars_pct", chance10, 1));
-   A_Push(f, J("note", "spikes are random: waiting longer does not make one more likely -- the chance per candle stays the same"));
-   A_Push(f, J("dominant_dir", g_aC[1] > A_SMA(50, 1) ? "UP" : "DOWN"));
-   A_Push(f, J("micro_trend", g_aC[1] > A_SMA(5, 1) ? "UP" : "DOWN"));
-   A_Push(f, Jn("spike_threshold", A_Pips(sym, threshold), 1));
-   A_Push(f, Jn("avg_candle_range", A_Pips(sym, avgRange), 1));
-   A_Push(f, J("volatility_class", atr > avgRange * 1.5 ? "EXTREME" : atr > avgRange ? "HIGH" : "NORMAL"));
-   A_Push(f, Jr("recent_spikes", "[" + A_Join(spikes) + "]"));
-   return Obj(A_Join(f));
-  }
-
-//--- elliott (Elliott's three hard rules on a real zigzag) -----------------
-string A_Elliott()
-  {
-   double px[]; int bar[], typ[];
-   int n = A_Zigzag(SwingLookback, 8, px, bar, typ);
-   string f[];
-   int wave = 0; bool impulse = false; string dir = "NONE"; double target = 0, invalid = 0; string rules = ""; string corr = "NONE";
-   // Try the last 6 pivots as waves 0-5, then the last 5 (wave 5 in progress), then 3 (wave 3 in progress).
-   for(int len = 6; len >= 3 && wave == 0; len--)
-     {
-      if(n < len) continue;
-      int o = n - len;
-      bool up = typ[o] == -1; // starts at a low -> bullish impulse
-      double p0 = px[o], p1 = px[o+1], p2 = px[o+2];
-      double s = up ? 1 : -1;
-      double w1 = s * (p1 - p0);
-      bool r2 = s * (p2 - p0) > 0;           // wave 2 never goes past the start of wave 1
-      if(w1 <= 0 || !r2) continue;
-      if(len == 3)
-        {
-         // In wave 3 if price is beyond the end of wave 1.
-         if(s * (g_aC[0] - p1) > 0) { wave = 3; impulse = true; dir = up ? "BULL" : "BEAR"; target = p2 + s * w1 * 1.618; invalid = p2; rules = "wave2_ok"; }
-         continue;
-        }
-      double p3 = px[o+3];
-      double w3 = s * (p3 - p2);
-      if(w3 <= 0) continue;
-      if(len == 4)
-        {
-         // Wave 4 in progress (only 4 pivots -- there is no px[o+4]; reading it was an "array out of
-         // range" that made MT5 switch the whole EA off). Valid while price stays clear of wave 1's end.
-         if(s * (g_aC[0] - p1) > 0) { wave = 4; impulse = true; dir = up ? "BULL" : "BEAR"; target = p3 - s * w3 * 0.382; invalid = p1; rules = "wave2_ok,wave4_no_overlap_so_far"; }
-         continue;
-        }
-      double p4 = px[o+4];
-      bool r4 = s * (p4 - p1) > 0;           // wave 4 never overlaps wave 1
-      if(!r4) continue;
-      if(len == 5)
-        {
-         if(w3 < w1 && s * (g_aC[0] - p3) <= 0) continue;
-         wave = 5; impulse = true; dir = up ? "BULL" : "BEAR"; target = p4 + s * w1; invalid = p4; rules = "wave2_ok,wave4_no_overlap";
-         continue;
-        }
-      double p5 = px[o+5];
-      double w5 = s * (p5 - p4);
-      bool r3 = !(w3 < w1 && w3 < w5);        // wave 3 is never the shortest
-      if(w5 <= 0 || !r3) continue;
-      wave = 5; impulse = true; dir = up ? "BULL" : "BEAR"; target = p5 - s * (p5 - p0) * 0.382; invalid = p5;
-      rules = "wave2_ok,wave3_not_shortest,wave4_no_overlap"; corr = "ABC_EXPECTED";
-     }
-   string pts[];
-   for(int i = 0; i < n; i++) A_Push(pts, Obj(Jn("price", px[i], g_aDigits) + "," + J("type", typ[i] == 1 ? "HIGH" : "LOW") + "," + Ji("bar", bar[i])));
-   A_Push(f, J("method", "zigzag pivots checked against Elliott's 3 rules (wave 2 < start of 1, wave 3 not shortest, wave 4 no overlap with 1)"));
-   A_Push(f, Ji("wave", wave)); A_Push(f, Jb("impulse", impulse)); A_Push(f, J("direction", dir));
-   A_Push(f, Ji("pivots", n));
-   A_Push(f, J("rules_passed", rules));
-   A_Push(f, wave > 0 ? Jn("wave_target", target, g_aDigits) : Jnull("wave_target"));
-   A_Push(f, wave > 0 ? Jn("wave_invalidation", invalid, g_aDigits) : Jnull("wave_invalidation"));
-   A_Push(f, J("correction_type", corr));
-   A_Push(f, J("confidence", wave == 0 ? "NONE" : corr != "NONE" ? "MEDIUM" : "LOW"));
-   A_Push(f, J("result", wave == 0 ? "no valid Elliott count on this timeframe" : "a count that passes the rules -- one reading, not a certainty"));
-   A_Push(f, Jr("pivots_used", "[" + A_Join(pts) + "]"));
-   return Obj(A_Join(f));
-  }
-
-//--- correlation (real correlation of bar returns) -------------------------
-// Pearson correlation of closed-bar returns, matched candle by candle on time.
-bool A_CorrWith(string base, ENUM_TIMEFRAMES tf, int want, double &corr, int &pairs)
-  {
-   corr = 0; pairs = 0;
-   string nm = ResolvedName(base);
-   if(nm == "") return false;
-   string ck = XKey("corr", nm, tf, want);
-   if(!SeriesReady(nm, tf))
-     {
-      // previous answer (stored shifted by +2 so a real 0 or negative correlation is kept)
-      double prev = LastGood(ck, 0, false, nm + " " + TfName(tf)), prevN = LastGood(ck + "|n", 0, false);
-      if(prev <= 0) return false;
-      corr = prev - 2; pairs = (int)prevN;
-      return true;
-     }
-   MqlRates r[]; ArraySetAsSeries(r, true);
-   int got = CopyRates(nm, tf, 0, want + 60, r);
-   if(got < 20) return false;
-   double x[], y[]; ArrayResize(x, 0); ArrayResize(y, 0);
-   int j = 0;
-   for(int i = 1; i + 1 < g_anb && ArraySize(x) < want; i++)
-     {
-      while(j < got && r[j].time > g_aT[i]) j++;
-      if(j + 1 >= got) break;
-      if(r[j].time != g_aT[i] || r[j + 1].time != g_aT[i + 1]) continue;
-      if(g_aC[i + 1] <= 0 || r[j + 1].close <= 0) continue;
-      int k = ArraySize(x); ArrayResize(x, k + 1); ArrayResize(y, k + 1);
-      x[k] = MathLog(g_aC[i] / g_aC[i + 1]); y[k] = MathLog(r[j].close / r[j + 1].close);
-     }
-   pairs = ArraySize(x);
-   if(pairs < 20) return false;
-   double mx = 0, my = 0; for(int i = 0; i < pairs; i++) { mx += x[i]; my += y[i]; } mx /= pairs; my /= pairs;
-   double sxy = 0, sxx = 0, syy = 0;
-   for(int i = 0; i < pairs; i++) { sxy += (x[i]-mx)*(y[i]-my); sxx += (x[i]-mx)*(x[i]-mx); syy += (y[i]-my)*(y[i]-my); }
-   if(sxx <= 0 || syy <= 0) return false;
-   corr = sxy / MathSqrt(sxx * syy);
-   LastGood(ck, corr + 2, true); LastGood(ck + "|n", pairs, true);
-   return true;
-  }
-string A_Correlation(string sym, ENUM_TIMEFRAMES tf)
-  {
-   double r5  = g_anb > 6  && g_aC[6]  != 0 ? (g_aC[1] - g_aC[6])  / g_aC[6]  * 100.0 : 0;
-   double r20 = g_anb > 21 && g_aC[21] != 0 ? (g_aC[1] - g_aC[21]) / g_aC[21] * 100.0 : 0;
-   string refs[6] = {"EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "AUDUSD", "USDCHF"};
-   string items[]; int pos = 0, neg = 0;
-   double euCorr = 0; bool euOk = false;
-   for(int i = 0; i < 6; i++)
-     {
-      if(StringFind(sym, refs[i]) == 0) continue;
-      double c; int pairs;
-      if(!A_CorrWith(refs[i], tf, 100, c, pairs)) continue;
-      A_Push(items, Obj(J("symbol", refs[i]) + "," + Jn("corr", c, 3) + "," + Ji("bars", pairs)));
-      if(c > 0.5) pos++; else if(c < -0.5) neg++;
-      if(refs[i] == "EURUSD") { euCorr = c; euOk = true; }
-     }
-   double eu = 0; bool euRetOk = A_SymReturn("EURUSD", tf, 20, eu);
-   string s = sym; StringToUpper(s);
-   bool haven = StringFind(s, "XAU") >= 0 || StringFind(s, "JPY") >= 0 || StringFind(s, "CHF") >= 0;
-   string f[];
-   A_Push(f, Jn("ret_5bar", r5, 4)); A_Push(f, Jn("ret_20bar", r20, 4));
-   A_Push(f, euRetOk ? Jn("vs_eurusd", eu, 4) : Jnull("vs_eurusd"));
-   A_Push(f, euOk ? Jn("corr_eurusd", euCorr, 3) : Jnull("corr_eurusd"));
-   A_Push(f, J("corr_label", !euOk ? "UNKNOWN" : euCorr > 0.5 ? "POSITIVE" : euCorr < -0.5 ? "NEGATIVE" : "WEAK"));
-   A_Push(f, euRetOk ? Jn("vs_dxy", -eu, 4) : Jnull("vs_dxy"));
-   A_Push(f, J("vs_dxy_is", "minus EURUSD's return (a proxy, no DXY feed)"));
-   A_Push(f, Jr("correlations", "[" + A_Join(items) + "]"));
-   A_Push(f, J("correlation_is", "Pearson correlation of the last 100 closed-candle returns"));
-   A_Push(f, Jb("risk_on", r20 > 0 && !haven));
-   A_Push(f, Jb("safe_haven", haven));
-   A_Push(f, Jb("momentum_sync", euOk && euCorr > 0.5));
-   A_Push(f, Ji("positive_pairs", pos));
-   A_Push(f, Ji("negative_pairs", neg));
-   return Obj(A_Join(f));
-  }
-
-//--- strength / heatmap ---------------------------------------------------
-int A_CurrencyStrengths(ENUM_TIMEFRAMES tf, string &cur[], double &str[])
-  {
-   string ccy[8] = {"USD","EUR","GBP","JPY","AUD","NZD","CAD","CHF"};
-   string pairs[28] = {"EURUSD","GBPUSD","AUDUSD","NZDUSD","USDJPY","USDCAD","USDCHF",
-                       "EURGBP","EURJPY","EURAUD","EURNZD","EURCAD","EURCHF",
-                       "GBPJPY","GBPAUD","GBPNZD","GBPCAD","GBPCHF",
-                       "AUDJPY","AUDNZD","AUDCAD","AUDCHF",
-                       "NZDJPY","NZDCAD","NZDCHF","CADJPY","CADCHF","CHFJPY"};
-   ArrayResize(cur, 8); ArrayResize(str, 8);
-   int cnt[8];
-   for(int i = 0; i < 8; i++) { cur[i] = ccy[i]; str[i] = 0; cnt[i] = 0; }
-   int used = 0;
-   for(int p = 0; p < 28; p++)
-     {
-      double r;
-      if(!A_SymReturn(pairs[p], tf, 20, r)) continue;
-      used++;
-      string base = StringSubstr(pairs[p], 0, 3), quote = StringSubstr(pairs[p], 3, 3);
-      for(int i = 0; i < 8; i++)
-        {
-         if(cur[i] == base)  { str[i] += r; cnt[i]++; }
-         if(cur[i] == quote) { str[i] -= r; cnt[i]++; }
-        }
-     }
-   // Average per pair, so a currency with fewer pairs available isn't penalised.
-   for(int i = 0; i < 8; i++) if(cnt[i] > 0) str[i] /= cnt[i];
-   return used;
-  }
-string A_Strength(string sym, ENUM_TIMEFRAMES tf)
-  {
-   string cur[]; double str[]; int used = A_CurrencyStrengths(tf, cur, str);
-   string base = SymbolInfoString(sym, SYMBOL_CURRENCY_BASE), quote = SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT);
-   if(base == "" || quote == "") { base = StringSubstr(sym, 0, 3); quote = StringSubstr(sym, 3, 3); }
-   double bs = 0, qs = 0; bool bOk = false, qOk = false;
-   int strongestI = 0, weakestI = 0;
-   for(int i = 0; i < ArraySize(cur); i++)
-     {
-      if(cur[i] == base) { bs = str[i]; bOk = true; }
-      if(cur[i] == quote) { qs = str[i]; qOk = true; }
-      if(str[i] > str[strongestI]) strongestI = i;
-      if(str[i] < str[weakestI])   weakestI = i;
-     }
-   string items[];
-   for(int i = 0; i < ArraySize(cur); i++) A_Push(items, "\"" + cur[i] + "\":" + DoubleToString(str[i], 3));
-   string f[];
-   A_Push(f, J("base", base)); A_Push(f, J("quote", quote));
-   A_Push(f, bOk ? Jn("base_strength", bs, 3) : Jnull("base_strength"));
-   A_Push(f, qOk ? Jn("quote_strength", qs, 3) : Jnull("quote_strength"));
-   A_Push(f, (bOk && qOk) ? Jn("differential", bs - qs, 3) : Jnull("differential"));
-   A_Push(f, J("bias", !(bOk && qOk) ? "NOT_A_CURRENCY_PAIR" : bs > qs ? "LONG_BASE" : "SHORT_BASE"));
-   A_Push(f, J("strongest", used > 0 ? cur[strongestI] : "")); A_Push(f, J("weakest", used > 0 ? cur[weakestI] : ""));
-   A_Push(f, Ji("pairs_used", used)); A_Push(f, Ji("pairs_total", 28));
-   A_Push(f, J("method", "average % move over the last 20 closed candles across the 28 major pairs"));
-   A_Push(f, Jr("all", Obj(A_Join(items))));
-   return Obj(A_Join(f));
-  }
-string A_Heatmap(ENUM_TIMEFRAMES tf)
-  {
-   string cur[]; double str[]; int used = A_CurrencyStrengths(tf, cur, str);
-   string rows[];
-   for(int i = 0; i < ArraySize(cur); i++)
-      A_Push(rows, Obj(J("ccy", cur[i]) + "," + Jn("score", str[i], 3) + "," +
-                     J("state", str[i] > 0.15 ? "STRONG" : str[i] < -0.15 ? "WEAK" : "NEUTRAL")));
-   return Obj(Jr("currencies", "[" + A_Join(rows) + "]") + "," + Ji("count", ArraySize(cur)) + "," + Ji("pairs_used", used));
-  }
-
-//--- fractal (Williams, 2 closed bars each side) --------------------------
-string A_Fractal()
-  {
-   string up[], dn[];
-   int lastUp = -1, lastDn = -1;
-   for(int i = 3; i < MathMin(g_anb - 2, 120) && (ArraySize(up) < 6 || ArraySize(dn) < 6); i++)
-     {
-      if(ArraySize(up) < 6 && A_IsSwingHigh(i, 2)) { A_Push(up, Obj(Ji("bar", i) + "," + Jn("level", g_aH[i], g_aDigits))); if(lastUp < 0) lastUp = i; }
-      if(ArraySize(dn) < 6 && A_IsSwingLow(i, 2))  { A_Push(dn, Obj(Ji("bar", i) + "," + Jn("level", g_aL[i], g_aDigits))); if(lastDn < 0) lastDn = i; }
-     }
-   double atr = A_ATR(14);
-   string last = lastUp < 0 && lastDn < 0 ? "NONE" : lastDn < 0 || (lastUp >= 0 && lastUp < lastDn) ? "UP" : "DOWN";
-   return Obj(Jr("up_fractals", "[" + A_Join(up) + "]") + "," + Jr("down_fractals", "[" + A_Join(dn) + "]") + "," +
-              Ji("up_count", ArraySize(up)) + "," + Ji("down_count", ArraySize(dn)) + "," +
-              J("last_fractal", last) + "," + Jn("fractal_atr", A_P(atr), 1));
-  }
-
-//--- harmonic (time-ordered X-A-B-C + the D completion zone) -----------------
-bool InRange(double v, double lo, double hi) { return v >= lo && v <= hi; }
-string A_Harmonic()
-  {
-   double px[]; int bar[], typ[];
-   int n = A_Zigzag(SwingLookback, 4, px, bar, typ);
-   if(n < 4) return Obj(J("pattern", "NONE") + "," + Ji("confidence", 0) + "," + J("reason", "not enough swings"));
-   double X = px[0], A = px[1], B = px[2], C = px[3];
-   bool bullish = A > X;  // X low -> A high -> B low -> C high -> D low (buy)
-   double xa = MathAbs(A - X), ab = MathAbs(A - B), bc = MathAbs(B - C);
-   double abXa = xa > 0 ? ab / xa : 0, bcAb = ab > 0 ? bc / ab : 0;
-   double D = g_aC[0];
-   double adXa = xa > 0 ? MathAbs(A - D) / xa : 0;
-   double cdBc = bc > 0 ? MathAbs(C - D) / bc : 0;
-   string pattern = "NONE"; double dRatio = 0; int conf = 0;
-   bool bcOk = InRange(bcAb, 0.382, 0.886);
-   if(InRange(abXa, 0.58, 0.66) && bcOk) { pattern = "GARTLEY"; dRatio = 0.786; }
-   else if(InRange(abXa, 0.382, 0.5) && bcOk) { pattern = "BAT"; dRatio = 0.886; }
-   else if(InRange(abXa, 0.75, 0.82) && bcOk) { pattern = "BUTTERFLY"; dRatio = 1.27; }
-   else if(InRange(abXa, 0.382, 0.618) && bcOk) { pattern = "CRAB"; dRatio = 1.618; }
-   double s = bullish ? -1 : 1;
-   double prz = pattern != "NONE" ? A + s * xa * dRatio : 0;  // the D completion level
-   double atr = A_ATR(14);
-   bool inPrz = pattern != "NONE" && MathAbs(D - prz) <= atr * 0.5;
-   if(pattern != "NONE") conf = inPrz ? 70 : 45;
-   return Obj(J("pattern", pattern) + "," + J("status", pattern == "NONE" ? "NONE" : inPrz ? "AT_COMPLETION_ZONE" : "FORMING") + "," + Ji("confidence", conf) + "," +
-              Jn("x", X, g_aDigits) + "," + Jn("a", A, g_aDigits) + "," + Jn("b", B, g_aDigits) + "," +
-              Jn("c", C, g_aDigits) + "," + Jn("d", D, g_aDigits) + "," +
-              Jn("ab_xa", abXa, 3) + "," + Jn("bc_ab", bcAb, 3) + "," + Jn("cd_bc", cdBc, 3) + "," + Jn("ad_xa", adXa, 3) + "," +
-              J("direction", pattern == "NONE" ? "NONE" : bullish ? "BULL" : "BEAR") + "," +
-              (pattern != "NONE" ? Jn("prz", prz, g_aDigits) + "," + Jn("prz_high", prz + atr * 0.5, g_aDigits) + "," + Jn("prz_low", prz - atr * 0.5, g_aDigits)
-                                 : Jnull("prz") + "," + Jnull("prz_high") + "," + Jnull("prz_low")) + "," +
-              Jb("in_prz", inPrz));
-  }
-
-//--- mean_reversion --------------------------------------------------------
-string A_MeanReversion()
-  {
-   double ma20 = A_SMA(20), sd = A_StdDev(20), atr = A_ATR(14);
-   double z = sd > 0 ? (g_aC[0] - ma20) / sd : 0;
-   int barsAway = 0;
-   for(int i = 0; i < MathMin(g_anb, 50); i++) { if((g_aC[i] > A_SMA(20, i)) == (g_aC[0] > ma20)) barsAway++; else break; }
-   // Real half-life (Ornstein-Uhlenbeck): regress the bar change on the previous close over 100 closed bars.
-   int n = MathMin(100, g_anb - 2);
-   double sx = 0, sy = 0, sxx = 0, sxy = 0;
-   for(int i = 1; i <= n; i++) { double x = g_aC[i + 1], y = g_aC[i] - g_aC[i + 1]; sx += x; sy += y; sxx += x * x; sxy += x * y; }
-   double den = n * sxx - sx * sx;
-   double beta = den != 0 ? (n * sxy - sx * sy) / den : 0;
-   bool hlOk = beta < 0;
-   double halfLife = hlOk ? -MathLog(2.0) / beta : 0;
-   return Obj(Jn("mean", ma20, g_aDigits) + "," + Jn("zscore", z, 3) + "," +
-              Jn("deviation_pips", A_P(g_aC[0] - ma20), 1) + "," +
-              J("state", z > 2 ? "OVEREXTENDED_UP" : z < -2 ? "OVEREXTENDED_DOWN" : "NORMAL") + "," +
-              Jb("revert_long", z < -1.5) + "," + Jb("revert_short", z > 1.5) + "," +
-              Ji("bars_from_mean", barsAway) + "," +
-              (hlOk ? Jn("half_life_est", halfLife, 1) : Jnull("half_life_est")) + "," +
-              J("half_life_is", hlOk ? "bars for half of a move away from the mean to fade (regression on 100 bars)" : "no mean-reverting tendency measured") + "," +
-              Jn("target", ma20, g_aDigits) + "," +
-              Jn("target_dist_pips", A_P(MathAbs(g_aC[0] - ma20)), 1) + "," +
-              Jn("atr_multiple", atr > 0 ? MathAbs(g_aC[0] - ma20) / atr : 0, 3));
-  }
-
-//--- tape (real last 200 ticks) ---------------------------------------------
-string A_Tape(string sym)
-  {
-   MqlTick ticks[];
-   int got = SymbolIsSynchronized(sym) ? CopyTicks(sym, ticks, COPY_TICKS_ALL, 0, 200) : 0;
-   int upT = 0, dnT = 0; double lastP = 0;
+   s.n = got;
+   ArrayResize(s.o, got); ArrayResize(s.h, got); ArrayResize(s.l, got); ArrayResize(s.c, got);
+   ArrayResize(s.v, got); ArrayResize(s.t, got);
    for(int i = 0; i < got; i++)
      {
-      double p = ticks[i].bid > 0 ? ticks[i].bid : ticks[i].last;
+      s.o[i] = r[i].open; s.h[i] = r[i].high; s.l[i] = r[i].low; s.c[i] = r[i].close;
+      s.v[i] = r[i].tick_volume; s.t[i] = r[i].time;
+     }
+   s.lc = got - 2;
+   s.digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   s.point = SymbolInfoDouble(sym, SYMBOL_POINT);
+   s.pip = PipOf(sym);
+   long lt = SymbolInfoInteger(sym, SYMBOL_TIME);
+   s.stale = lt > 0 && iBarShift(sym, tf, (datetime)lt, true) != 0;
+   s.fromCache = false;
+   s.loadedAt = TimeLocal();
+   s.lastUsed = TimeLocal();
+   if(s.t[s.lc] != s.lastClosedTime)
+     {
+      BuildEngines(s);
+      s.lastClosedTime = s.t[s.lc];
+      for(int ch = 0; ch < CH_COUNT; ch++) s.cache[ch] = "";
+     }
+   return s;
+  }
+
+// next higher / lower timeframe used for context
+ENUM_TIMEFRAMES HigherTf(ENUM_TIMEFRAMES tf)
+  {
+   switch(tf)
+     {
+      case PERIOD_M1: return PERIOD_M5;
+      case PERIOD_M2: case PERIOD_M3: case PERIOD_M4: return PERIOD_M15;
+      case PERIOD_M5: case PERIOD_M6: return PERIOD_M15;
+      case PERIOD_M10: case PERIOD_M12: case PERIOD_M15: case PERIOD_M20: return PERIOD_H1;
+      case PERIOD_M30: case PERIOD_H1: return PERIOD_H4;
+      case PERIOD_H2: case PERIOD_H3: case PERIOD_H4: case PERIOD_H6: case PERIOD_H8: case PERIOD_H12: return PERIOD_D1;
+      case PERIOD_D1: return PERIOD_W1;
+      case PERIOD_W1: return PERIOD_MN1;
+     }
+   return PERIOD_MN1;
+  }
+ENUM_TIMEFRAMES LowerTf(ENUM_TIMEFRAMES tf)
+  {
+   switch(tf)
+     {
+      case PERIOD_MN1: return PERIOD_W1;
+      case PERIOD_W1: return PERIOD_D1;
+      case PERIOD_D1: return PERIOD_H4;
+      case PERIOD_H4: return PERIOD_H1;
+      case PERIOD_H1: return PERIOD_M15;
+      case PERIOD_M30: return PERIOD_M5;
+      case PERIOD_M15: return PERIOD_M5;
+      case PERIOD_M5: return PERIOD_M1;
+     }
+   return PERIOD_M1;
+  }
+
+//+------------------------------------------------------------------+
+//| Shared indicator maths (whole series, closed + forming candle)    |
+//+------------------------------------------------------------------+
+void SeriesEma(const double &src[], int n, int p, double &out[])
+  {
+   ArrayResize(out, n); ArrayInitialize(out, 0);
+   if(n < p || p <= 0) return;
+   double sum = 0;
+   for(int i = 0; i < p; i++) sum += src[i];
+   out[p - 1] = sum / p;
+   double k = 2.0 / (p + 1);
+   for(int i = p; i < n; i++) out[i] = out[i - 1] + k * (src[i] - out[i - 1]);
+  }
+void SeriesRma(const double &src[], int n, int p, double &out[])
+  {
+   ArrayResize(out, n); ArrayInitialize(out, 0);
+   if(n < p || p <= 0) return;
+   double sum = 0;
+   for(int i = 0; i < p; i++) sum += src[i];
+   out[p - 1] = sum / p;
+   for(int i = p; i < n; i++) out[i] = (out[i - 1] * (p - 1) + src[i]) / p;
+  }
+double SmaAt(const double &a[], int i, int p)
+  {
+   if(i - p + 1 < 0 || i >= ArraySize(a)) return 0;
+   double s = 0;
+   for(int k = i - p + 1; k <= i; k++) s += a[k];
+   return s / p;
+  }
+double StdAt(const double &a[], int i, int p)
+  {
+   double m = SmaAt(a, i, p);
+   if(i - p + 1 < 0) return 0;
+   double s = 0;
+   for(int k = i - p + 1; k <= i; k++) s += (a[k] - m) * (a[k] - m);
+   return MathSqrt(s / p);
+  }
+double HighestH(CSlot *s, int from, int to) { double m = -DBL_MAX; for(int i = MathMax(0, from); i <= to && i < s.n; i++) m = MathMax(m, s.h[i]); return m; }
+double LowestL(CSlot *s, int from, int to)  { double m = DBL_MAX;  for(int i = MathMax(0, from); i <= to && i < s.n; i++) m = MathMin(m, s.l[i]); return m; }
+
+void BuildEngines(CSlot *s)
+  {
+   int n = s.n;
+   double tr[]; ArrayResize(tr, n);
+   for(int i = 0; i < n; i++)
+      tr[i] = i == 0 ? s.h[i] - s.l[i] : MathMax(s.h[i], s.c[i - 1]) - MathMin(s.l[i], s.c[i - 1]);
+   SeriesRma(tr, n, 14, s.atr);
+   SeriesRma(tr, n, 10, s.atr10);
+   SeriesEma(s.c, n, 20, s.ema20);
+   SeriesEma(s.c, n, 50, s.ema50);
+   SeriesEma(s.c, n, 200, s.ema200);
+   SeriesRma(s.c, n, 6, s.smma6);
+   SeriesRma(s.c, n, 20, s.smma20);
+   SeriesRma(s.c, n, 100, s.smma100);
+   // RSI 14 (Wilder)
+   double up[], dn[], au[], ad[];
+   ArrayResize(up, n); ArrayResize(dn, n);
+   up[0] = 0; dn[0] = 0;
+   for(int i = 1; i < n; i++) { double d = s.c[i] - s.c[i - 1]; up[i] = d > 0 ? d : 0; dn[i] = d < 0 ? -d : 0; }
+   SeriesRma(up, n, 14, au); SeriesRma(dn, n, 14, ad);
+   ArrayResize(s.rsi, n); ArrayInitialize(s.rsi, 0);
+   for(int i = 14; i < n; i++) s.rsi[i] = ad[i] == 0 ? 100 : 100 - 100 / (1 + au[i] / ad[i]);
+   // MACD 12/26/9
+   double e12[], e26[];
+   SeriesEma(s.c, n, 12, e12); SeriesEma(s.c, n, 26, e26);
+   ArrayResize(s.macd, n); ArrayInitialize(s.macd, 0);
+   for(int i = 25; i < n; i++) s.macd[i] = e12[i] - e26[i];
+   ArrayResize(s.macdSig, n); ArrayInitialize(s.macdSig, 0);
+   if(n > 34)
+     {
+      double sum = 0;
+      for(int i = 25; i < 34; i++) sum += s.macd[i];
+      s.macdSig[33] = sum / 9;
+      for(int i = 34; i < n; i++) s.macdSig[i] = s.macdSig[i - 1] + 0.2 * (s.macd[i] - s.macdSig[i - 1]);
+     }
+   // Stochastic 14,3,3
+   double raw[]; ArrayResize(raw, n); ArrayInitialize(raw, 50);
+   for(int i = 13; i < n; i++)
+     {
+      double hh = HighestH(s, i - 13, i), ll = LowestL(s, i - 13, i);
+      raw[i] = hh > ll ? (s.c[i] - ll) / (hh - ll) * 100 : 50;
+     }
+   ArrayResize(s.stK, n); ArrayResize(s.stD, n);
+   for(int i = 0; i < n; i++) s.stK[i] = i >= 15 ? SmaAt(raw, i, 3) : 50;
+   for(int i = 0; i < n; i++) s.stD[i] = i >= 17 ? SmaAt(s.stK, i, 3) : 50;
+   // ADX 14 (Wilder) + DI
+   double pdm[], mdm[], spdm[], smdm[], str_[];
+   ArrayResize(pdm, n); ArrayResize(mdm, n);
+   pdm[0] = 0; mdm[0] = 0;
+   for(int i = 1; i < n; i++)
+     {
+      double upM = s.h[i] - s.h[i - 1], dnM = s.l[i - 1] - s.l[i];
+      pdm[i] = (upM > dnM && upM > 0) ? upM : 0;
+      mdm[i] = (dnM > upM && dnM > 0) ? dnM : 0;
+     }
+   SeriesRma(pdm, n, 14, spdm); SeriesRma(mdm, n, 14, smdm); SeriesRma(tr, n, 14, str_);
+   ArrayResize(s.pdi, n); ArrayResize(s.mdi, n); ArrayInitialize(s.pdi, 0); ArrayInitialize(s.mdi, 0);
+   double dx[]; ArrayResize(dx, n); ArrayInitialize(dx, 0);
+   for(int i = 14; i < n; i++)
+     {
+      if(str_[i] <= 0) continue;
+      s.pdi[i] = 100 * spdm[i] / str_[i];
+      s.mdi[i] = 100 * smdm[i] / str_[i];
+      double sm = s.pdi[i] + s.mdi[i];
+      dx[i] = sm > 0 ? 100 * MathAbs(s.pdi[i] - s.mdi[i]) / sm : 0;
+     }
+   ArrayResize(s.adx, n); ArrayInitialize(s.adx, 0);
+   if(n > 28)
+     {
+      double sum = 0;
+      for(int i = 14; i < 28; i++) sum += dx[i];
+      s.adx[27] = sum / 14;
+      for(int i = 28; i < n; i++) s.adx[i] = (s.adx[i - 1] * 13 + dx[i]) / 14;
+     }
+   // Supertrend 10, 3
+   ArrayResize(s.st, n); ArrayResize(s.stDir, n); ArrayInitialize(s.st, 0); ArrayInitialize(s.stDir, 0);
+   double fu = 0, fl = 0; int dir = 1;
+   for(int i = 10; i < n; i++)
+     {
+      double mid = (s.h[i] + s.l[i]) / 2, a = s.atr10[i];
+      double bu = mid + 3 * a, bl = mid - 3 * a;
+      fu = (i == 10 || bu < fu || s.c[i - 1] > fu) ? bu : fu;
+      fl = (i == 10 || bl > fl || s.c[i - 1] < fl) ? bl : fl;
+      if(dir == 1 && s.c[i] < fl) dir = -1;
+      else if(dir == -1 && s.c[i] > fu) dir = 1;
+      s.st[i] = dir == 1 ? fl : fu;
+      s.stDir[i] = dir;
+     }
+   // Swings on WICKS, confirmed only when their right-hand candles have CLOSED
+   ArrayFree(s.swI); ArrayFree(s.swP); ArrayFree(s.swK);
+   ArrayFree(s.exI); ArrayFree(s.exP); ArrayFree(s.exK);
+   int lc = s.lc;
+   for(int pass = 0; pass < 2; pass++)
+     {
+      int k = pass == 0 ? 2 : 5;
+      for(int i = k; i <= lc - k; i++)
+        {
+         bool hi = true, lo = true;
+         for(int j = 1; j <= k && (hi || lo); j++)
+           {
+            if(!(s.h[i] > s.h[i - j] && s.h[i] >= s.h[i + j])) hi = false;
+            if(!(s.l[i] < s.l[i - j] && s.l[i] <= s.l[i + j])) lo = false;
+           }
+         if(hi)
+           {
+            if(pass == 0) { int m = ArraySize(s.swI); ArrayResize(s.swI, m + 1); ArrayResize(s.swP, m + 1); ArrayResize(s.swK, m + 1); s.swI[m] = i; s.swP[m] = s.h[i]; s.swK[m] = 1; }
+            else          { int m = ArraySize(s.exI); ArrayResize(s.exI, m + 1); ArrayResize(s.exP, m + 1); ArrayResize(s.exK, m + 1); s.exI[m] = i; s.exP[m] = s.h[i]; s.exK[m] = 1; }
+           }
+         if(lo)
+           {
+            if(pass == 0) { int m = ArraySize(s.swI); ArrayResize(s.swI, m + 1); ArrayResize(s.swP, m + 1); ArrayResize(s.swK, m + 1); s.swI[m] = i; s.swP[m] = s.l[i]; s.swK[m] = -1; }
+            else          { int m = ArraySize(s.exI); ArrayResize(s.exI, m + 1); ArrayResize(s.exP, m + 1); ArrayResize(s.exK, m + 1); s.exI[m] = i; s.exP[m] = s.l[i]; s.exK[m] = -1; }
+           }
+        }
+     }
+  }
+
+// --- small readers -------------------------------------------------------------------------------
+double Atr(CSlot *s) { double a = s.atr[s.lc]; return a > 0 ? a : (s.h[s.lc] - s.l[s.lc]); }
+string SPx(CSlot *s, double v) { return DoubleToString(v, s.digits); }
+string BarIso(CSlot *s, int i) { return (i < 0 || i >= s.n) ? "" : SrvToIso(s.t[i]); }
+int    Ago(CSlot *s, int i) { return s.lc - i; }
+double ToPips(CSlot *s, double d) { return s.pip > 0 ? d / s.pip : 0; }
+bool   Syn(CSlot *s) { return IsSynthetic(s.sym); }
+// The four facts every price-like item carries.
+string Lv(CSlot *s, double price, double ref)
+  {
+   double a = Atr(s);
+   return Jn("price", price, s.digits) + "," + Jn("dist_atr", a > 0 ? MathAbs(price - ref) / a : 0, 2) + "," +
+          (Syn(s) ? Jn("dist_points", s.point > 0 ? MathAbs(price - ref) / s.point : 0, 0) : Jn("dist_pips", ToPips(s, MathAbs(price - ref)), 1)) + "," +
+          J("side", price >= ref ? "above" : "below");
+  }
+string LvAt(CSlot *s, double price, int bar)
+  {
+   return Lv(s, price, s.c[s.lc]) + "," + Ji("bars_ago", Ago(s, bar)) + "," + J("time", BarIso(s, bar));
+  }
+
+//+------------------------------------------------------------------+
+//| Structure engine (APA rules: wick swings, CLOSE breaks)           |
+//+------------------------------------------------------------------+
+// One break of structure: a candle CLOSE beyond a confirmed swing.
+int    g_brAt[];    // candle that closed through
+int    g_brSide[];  // +1 bullish (through a high), -1 bearish
+double g_brLvl[];
+int    g_brSw[];    // index of the swing broken (into s.swI)
+bool   g_brChoch[]; // true = against the structure before it (CHoCH), false = BOS
+bool   g_brDisp[];  // with displacement
+
+struct MsRead
+  {
+   int    trend;          // +1 bullish (HH+HL), -1 bearish (LH+LL), 0 range
+   int    lastBos;        // index into g_br* of the last break (any kind), -1 none
+   int    lastChoch;      // index of the last CHoCH, -1 none
+   double validation;     // level whose break confirmed the side in control
+   double invalidation;   // close beyond it = control changed (the shift point)
+   int    shiftAt;        // candle that closed through the invalidation, -1 none
+   int    shiftSide;
+   bool   transition;     // shifted, but no new structure yet
+   double reclaim;        // old extreme
+   bool   reclaimed;
+   int    reclaimAt;
+   int    shiftType;      // 1 inside, 2 outside, 3 both, 0 unknown
+   bool   returnedIntoAol;
+   double returnDepthPct;
+   double rangeHi, rangeLo; int rangeHiAt, rangeLoAt;
+   int    cisdAt; int cisdSide; double cisdLvl;
+  };
+
+bool Displacement(CSlot *s, int i)
+  {
+   if(i < 1 || i > s.lc) return false;
+   double rng = s.h[i] - s.l[i], body = MathAbs(s.c[i] - s.o[i]), a = s.atr[i] > 0 ? s.atr[i] : rng;
+   if(rng >= 1.5 * a && rng > 0 && body >= 0.7 * rng) return true;
+   if(i + 1 <= s.lc && (s.l[i + 1] > s.h[i - 1] || s.h[i + 1] < s.l[i - 1])) return true; // left an FVG
+   return false;
+  }
+
+void ReadStructure(CSlot *s, MsRead &r)
+  {
+   ZeroMemory(r);
+   r.lastBos = -1; r.lastChoch = -1; r.shiftAt = -1; r.reclaimAt = -1; r.cisdAt = -1;
+   ArrayFree(g_brAt); ArrayFree(g_brSide); ArrayFree(g_brLvl); ArrayFree(g_brSw); ArrayFree(g_brChoch); ArrayFree(g_brDisp);
+   int lc = s.lc, ns = ArraySize(s.swI);
+   // trend from the last two swing highs and lows
+   int h1 = -1, h2 = -1, l1 = -1, l2 = -1;
+   for(int k = ns - 1; k >= 0; k--)
+     {
+      if(s.swK[k] == 1) { if(h2 < 0) h2 = k; else if(h1 < 0) h1 = k; }
+      else { if(l2 < 0) l2 = k; else if(l1 < 0) l1 = k; }
+      if(h1 >= 0 && l1 >= 0) break;
+     }
+   if(h1 >= 0 && l1 >= 0)
+     {
+      if(s.swP[h2] > s.swP[h1] && s.swP[l2] > s.swP[l1]) r.trend = 1;
+      else if(s.swP[h2] < s.swP[h1] && s.swP[l2] < s.swP[l1]) r.trend = -1;
+     }
+   // every swing's first CLOSE beyond it (only after the swing is confirmed: 2 candles to its right)
+   int tmpAt[]; int tmpSw[];
+   for(int k = 0; k < ns; k++)
+     {
+      for(int j = s.swI[k] + 3; j <= lc; j++)
+        {
+         bool broke = s.swK[k] == 1 ? s.c[j] > s.swP[k] : s.c[j] < s.swP[k];
+         if(broke) { int m = ArraySize(tmpAt); ArrayResize(tmpAt, m + 1); ArrayResize(tmpSw, m + 1); tmpAt[m] = j; tmpSw[m] = k; break; }
+        }
+     }
+   // chronological; BOS = with the structure before it, CHoCH = against it
+   int m = ArraySize(tmpAt);
+   for(int a = 0; a < m - 1; a++)
+      for(int b = a + 1; b < m; b++)
+         if(tmpAt[b] < tmpAt[a] || (tmpAt[b] == tmpAt[a] && tmpSw[b] < tmpSw[a]))
+           { int x = tmpAt[a]; tmpAt[a] = tmpAt[b]; tmpAt[b] = x; x = tmpSw[a]; tmpSw[a] = tmpSw[b]; tmpSw[b] = x; }
+   int state = 0;
+   for(int a = 0; a < m; a++)
+     {
+      int side = s.swK[tmpSw[a]];
+      int q = ArraySize(g_brAt);
+      ArrayResize(g_brAt, q + 1); ArrayResize(g_brSide, q + 1); ArrayResize(g_brLvl, q + 1); ArrayResize(g_brSw, q + 1); ArrayResize(g_brChoch, q + 1); ArrayResize(g_brDisp, q + 1);
+      g_brAt[q] = tmpAt[a]; g_brSide[q] = side; g_brLvl[q] = s.swP[tmpSw[a]]; g_brSw[q] = tmpSw[a];
+      g_brChoch[q] = state != 0 && side != state;
+      g_brDisp[q] = Displacement(s, tmpAt[a]);
+      state = side;
+      r.lastBos = q;
+      if(g_brChoch[q]) r.lastChoch = q;
+     }
+   // validation / invalidation (shift point) from the last break
+   if(r.lastBos >= 0)
+     {
+      int at = g_brAt[r.lastBos], side = g_brSide[r.lastBos];
+      r.validation = g_brLvl[r.lastBos];
+      // bullish: the last swing LOW before the break (the higher low); bearish: the last swing HIGH
+      for(int k = ns - 1; k >= 0; k--)
+         if(s.swI[k] < at && s.swK[k] == -side) { r.invalidation = s.swP[k]; break; }
+      if(r.invalidation > 0)
+        {
+         for(int j = at + 1; j <= lc; j++)
+           {
+            bool shifted = side == 1 ? s.c[j] < r.invalidation : s.c[j] > r.invalidation;
+            if(!shifted) continue;
+            r.shiftAt = j; r.shiftSide = -side;
+            int after = 0;
+            for(int k = 0; k < ns; k++) if(s.swI[k] > j) after++;
+            r.transition = after < 2;
+            r.reclaim = side == 1 ? HighestH(s, at, j) : LowestL(s, at, j);
+            for(int q2 = j + 1; q2 <= lc; q2++)
+               if(side == 1 ? s.c[q2] > r.reclaim : s.c[q2] < r.reclaim) { r.reclaimed = true; r.reclaimAt = q2; break; }
+            // shift type: is the first new swing after the shift inside the old range or beyond it?
+            double oldHi = MathMax(r.reclaim, r.invalidation), oldLo = MathMin(r.reclaim, r.invalidation);
+            bool inside = false, outside = false;
+            for(int k = 0; k < ns; k++)
+              {
+               if(s.swI[k] <= j) continue;
+               if(s.swP[k] <= oldHi && s.swP[k] >= oldLo) inside = true; else outside = true;
+              }
+            r.shiftType = inside && outside ? 3 : inside ? 1 : outside ? 2 : 0;
+            break;
+           }
+         // pure vs different: after the break, did price come back into validation..invalidation?
+         double extreme = side == 1 ? LowestL(s, at + 1, lc) : HighestH(s, at + 1, lc);
+         double span = MathAbs(r.validation - r.invalidation);
+         if(at < lc && span > 0)
+           {
+            r.returnedIntoAol = side == 1 ? extreme <= r.validation : extreme >= r.validation;
+            r.returnDepthPct = r.returnedIntoAol ? MathMin(100, MathAbs(r.validation - extreme) / span * 100) : 0;
+           }
+        }
+     }
+   // dealing range = last external swing high and low
+   r.rangeHiAt = -1; r.rangeLoAt = -1;
+   for(int k = ArraySize(s.exI) - 1; k >= 0; k--)
+     {
+      if(s.exK[k] == 1 && r.rangeHiAt < 0) { r.rangeHi = s.exP[k]; r.rangeHiAt = s.exI[k]; }
+      if(s.exK[k] == -1 && r.rangeLoAt < 0) { r.rangeLo = s.exP[k]; r.rangeLoAt = s.exI[k]; }
+      if(r.rangeHiAt >= 0 && r.rangeLoAt >= 0) break;
+     }
+   if(r.rangeHiAt < 0 || r.rangeLoAt < 0)
+     {
+      int from = MathMax(0, lc - 100);
+      r.rangeHi = HighestH(s, from, lc); r.rangeLo = LowestL(s, from, lc);
+      r.rangeHiAt = from; r.rangeLoAt = from;
+     }
+   // CISD: the latest close through the OPEN of the run (2+) of opposite candles just before it
+   for(int j = lc; j >= MathMax(3, lc - 60) && r.cisdAt < 0; j--)
+     {
+      for(int side = 1; side >= -1; side -= 2)
+        {
+         int k = j - 1, start = -1;
+         while(k >= 1 && (side == 1 ? s.c[k] < s.o[k] : s.c[k] > s.o[k])) { start = k; k--; }
+         if(start < 0 || j - start < 2) continue;
+         bool through = side == 1 ? s.c[j] > s.o[start] : s.c[j] < s.o[start];
+         if(through) { r.cisdAt = j; r.cisdSide = side; r.cisdLvl = s.o[start]; break; }
+        }
+     }
+  }
+
+string SideName(int side) { return side > 0 ? "bullish" : side < 0 ? "bearish" : "range"; }
+
+// the trend + last break of a timeframe, short (used as higher-timeframe context)
+string StructureBrief(CSlot *s)
+  {
+   if(s == NULL) return "null";
+   MsRead r; ReadStructure(s, r);
+   string f = J("tf", TfName(s.tf)) + "," + J("trend", SideName(r.trend));
+   if(r.lastBos >= 0)
+      f += "," + Jr("last_break", Obj(J("type", g_brChoch[r.lastBos] ? "CHoCH" : "BOS") + "," + J("side", SideName(g_brSide[r.lastBos])) + "," + LvAt(s, g_brLvl[r.lastBos], g_brAt[r.lastBos])));
+   if(r.shiftAt >= 0) f += "," + Jr("shift", Obj(J("to", SideName(r.shiftSide)) + "," + Jb("transition", r.transition) + "," + LvAt(s, r.invalidation, r.shiftAt)));
+   return Obj(f);
+  }
+
+//+------------------------------------------------------------------+
+//| 3. get_market_structure                                           |
+//+------------------------------------------------------------------+
+string C_MarketStructure(CSlot *s)
+  {
+   MsRead r; ReadStructure(s, r);
+   int lc = s.lc; double px = s.c[lc], a = Atr(s);
+   string f[];
+   A_Push(f, J("rules", "swings: fractal 2 left/2 right on wicks (internal), 5/5 (external), confirmed only after their right-hand candles CLOSE; every break needs a candle BODY CLOSE beyond the level; closed candles only"));
+   // a. swings
+   string sw[];
+   int ns = ArraySize(s.swI), lastH = -1, lastL = -1;
+   for(int k = MathMax(0, ns - 10); k < ns; k++)
+     {
+      string lbl = "";
+      // label against the previous swing of the same kind
+      for(int q = k - 1; q >= 0; q--)
+         if(s.swK[q] == s.swK[k])
+           { lbl = s.swK[k] == 1 ? (s.swP[k] > s.swP[q] ? "HH" : "LH") : (s.swP[k] > s.swP[q] ? "HL" : "LL"); break; }
+      A_Push(sw, Obj(J("kind", s.swK[k] == 1 ? "high" : "low") + "," + J("label", lbl) + "," + LvAt(s, s.swP[k], s.swI[k]) + "," +
+                     Ji("confirmed_at_bars_ago", Ago(s, MathMin(lc, s.swI[k] + 2)))));
+     }
+   A_Push(f, Jr("swings", Arr(sw)));
+   // b. trend
+   A_Push(f, J("trend", SideName(r.trend)));
+   // c-d. breaks (last 4)
+   string br[];
+   for(int q = MathMax(0, ArraySize(g_brAt) - 4); q < ArraySize(g_brAt); q++)
+      A_Push(br, Obj(J("type", g_brChoch[q] ? "CHoCH" : "BOS") + "," + J("side", SideName(g_brSide[q])) + "," + LvAt(s, g_brLvl[q], g_brAt[q]) + "," +
+                     Jb("body_close", true) + "," + Jb("with_displacement", g_brDisp[q])));
+   A_Push(f, Jr("breaks", Arr(br)));
+   // e. CISD
+   if(r.cisdAt >= 0) A_Push(f, Jr("cisd", Obj(J("side", SideName(r.cisdSide)) + "," + LvAt(s, r.cisdLvl, r.cisdAt))));
+   else A_Push(f, Jnull("cisd"));
+   // f. swing failures (wick beyond a swing, close back inside on the same or next candle) -- last 3
+   string sf[];
+   for(int k = ns - 1; k >= 0 && ArraySize(sf) < 3; k--)
+     {
+      for(int j = s.swI[k] + 3; j <= lc; j++)
+        {
+         bool beyond = s.swK[k] == 1 ? s.h[j] > s.swP[k] : s.l[j] < s.swP[k];
+         if(!beyond) continue;
+         bool backIn = s.swK[k] == 1 ? s.c[j] < s.swP[k] : s.c[j] > s.swP[k];
+         if(!backIn && j + 1 <= lc) backIn = s.swK[k] == 1 ? s.c[j + 1] < s.swP[k] : s.c[j + 1] > s.swP[k];
+         if(backIn) A_Push(sf, Obj(J("side", s.swK[k] == 1 ? "bearish (high failed)" : "bullish (low failed)") + "," + LvAt(s, s.swP[k], j)));
+         break;
+        }
+     }
+   A_Push(f, Jr("swing_failures", Arr(sf)));
+   // g. dealing range
+   double rh = r.rangeHi, rl = r.rangeLo, eq = (rh + rl) / 2;
+   double pos = rh > rl ? (px - rl) / (rh - rl) * 100 : 50;
+   A_Push(f, Jr("dealing_range", Obj(Jr("high", Obj(LvAt(s, rh, r.rangeHiAt))) + "," + Jr("low", Obj(LvAt(s, rl, r.rangeLoAt))) + "," +
+                                     Jn("equilibrium", eq, s.digits) + "," + Jn("price_position_pct", pos, 1) + "," +
+                                     J("zone", pos > 50 ? "premium" : pos < 50 ? "discount" : "equilibrium"))));
+   // OTE 62-79% of the last displacement leg (range direction from which swing came last)
+   bool upLeg = r.rangeLoAt < r.rangeHiAt;
+   double legR = rh - rl;
+   double oteA = upLeg ? rh - 0.62 * legR : rl + 0.62 * legR, oteB = upLeg ? rh - 0.79 * legR : rl + 0.79 * legR;
+   A_Push(f, Jr("ote", Obj(J("leg", upLeg ? "up" : "down") + "," + Jn("from", MathMin(oteA, oteB), s.digits) + "," + Jn("to", MathMax(oteA, oteB), s.digits) + "," +
+                           Jn("mid_0705", upLeg ? rh - 0.705 * legR : rl + 0.705 * legR, s.digits) + "," + Jb("price_inside", px >= MathMin(oteA, oteB) && px <= MathMax(oteA, oteB)))));
+   // h. inducement: first internal pullback swing after the last break
+   if(r.lastBos >= 0)
+     {
+      int at = g_brAt[r.lastBos], side = g_brSide[r.lastBos], idx = -1;
+      for(int k = 0; k < ns; k++) if(s.swI[k] > at && s.swK[k] == -side) { idx = k; break; }
+      if(idx >= 0)
+        {
+         bool taken = false; int takenAt = -1;
+         for(int j = s.swI[idx] + 3; j <= lc; j++) if(side == 1 ? s.l[j] < s.swP[idx] : s.h[j] > s.swP[idx]) { taken = true; takenAt = j; break; }
+         A_Push(f, Jr("inducement", Obj(LvAt(s, s.swP[idx], s.swI[idx]) + "," + Jb("taken", taken) + (taken ? "," + Ji("taken_bars_ago", Ago(s, takenAt)) : ""))));
+        }
+      else A_Push(f, Jnull("inducement"));
+     }
+   // i. trendline through the last two swing lows (uptrend) or highs (downtrend)
+   int want = r.trend >= 0 ? -1 : 1, p2 = -1, p1 = -1;
+   for(int k = ns - 1; k >= 0; k--) if(s.swK[k] == want) { if(p2 < 0) p2 = k; else { p1 = k; break; } }
+   if(p1 >= 0 && p2 >= 0 && s.swI[p2] > s.swI[p1])
+     {
+      double slope = (s.swP[p2] - s.swP[p1]) / (s.swI[p2] - s.swI[p1]);
+      bool valid = want == -1 ? slope > 0 : slope < 0;
+      if(valid)
+        {
+         int touches = 0;
+         for(int k = 0; k < ns; k++)
+            if(s.swK[k] == want && s.swI[k] >= s.swI[p1] && MathAbs(s.swP[k] - (s.swP[p1] + slope * (s.swI[k] - s.swI[p1]))) <= 0.1 * a) touches++;
+         int brokeAt = -1;
+         for(int j = s.swI[p2] + 1; j <= lc; j++)
+           {
+            double line = s.swP[p1] + slope * (j - s.swI[p1]);
+            if(want == -1 ? s.c[j] < line - 0.1 * a : s.c[j] > line + 0.1 * a) { brokeAt = j; break; }
+           }
+         double lineNow = s.swP[p1] + slope * (lc - s.swI[p1]);
+         A_Push(f, Jr("trendline", Obj(J("kind", want == -1 ? "rising (through lows)" : "falling (through highs)") + "," + Lv(s, lineNow, px) + "," +
+                                       Ji("touches", touches) + "," + Jb("broken", brokeAt >= 0) + (brokeAt >= 0 ? "," + Ji("broken_bars_ago", Ago(s, brokeAt)) : ""))));
+        }
+     }
+   // j. legs between external swings (last 5) + pullback depth
+   string legs[];
+   int ne = ArraySize(s.exI);
+   double lastImpulse = 0; int lastImpulseDir = 0;
+   for(int k = MathMax(1, ne - 5); k < ne; k++)
+     {
+      if(s.exK[k] == s.exK[k - 1]) continue;
+      double size = s.exP[k] - s.exP[k - 1];
+      bool impulse = false;
+      for(int q = k - 2; q >= 0; q--) if(s.exK[q] == s.exK[k]) { impulse = s.exK[k] == 1 ? s.exP[k] > s.exP[q] : s.exP[k] < s.exP[q]; break; }
+      if(impulse) { lastImpulse = size; lastImpulseDir = size > 0 ? 1 : -1; }
+      A_Push(legs, Obj(J("dir", size > 0 ? "up" : "down") + "," + Jn("from", s.exP[k - 1], s.digits) + "," + Jn("to", s.exP[k], s.digits) + "," +
+                       Jn("size_atr", a > 0 ? MathAbs(size) / a : 0, 2) + "," + Ji("bars", s.exI[k] - s.exI[k - 1]) + "," +
+                       J("type", impulse ? "impulse (broke structure)" : "pullback") + "," + Ji("ended_bars_ago", Ago(s, s.exI[k]))));
+     }
+   A_Push(f, Jr("legs", Arr(legs)));
+   if(ne > 0 && lastImpulse != 0)
+     {
+      double end = s.exP[ne - 1];
+      double depth = lastImpulseDir > 0 ? (end - LowestL(s, s.exI[ne - 1], lc)) : (HighestH(s, s.exI[ne - 1], lc) - end);
+      A_Push(f, Jn("pullback_depth_pct_of_last_impulse", MathAbs(lastImpulse) > 0 ? depth / MathAbs(lastImpulse) * 100 : 0, 1));
+     }
+   // k. higher timeframe (only if MT5 already has it)
+   CSlot *hs = GetSlot(s.sym, HigherTf(s.tf), 0);
+   A_Push(f, Jr("higher_tf", StructureBrief(hs)));
+   // l-s. APA
+   string apa[];
+   A_Push(apa, Jn("validation", r.validation, s.digits));
+   A_Push(apa, r.invalidation > 0 ? Jr("shift_point", Obj(Lv(s, r.invalidation, px) + "," + J("rule", "a candle CLOSE beyond it = shift"))) : Jnull("shift_point"));
+   A_Push(apa, Jb("shifted", r.shiftAt >= 0));
+   if(r.shiftAt >= 0)
+     {
+      A_Push(apa, J("shift_to", SideName(r.shiftSide)));
+      A_Push(apa, Ji("shift_bars_ago", Ago(s, r.shiftAt)));
+      A_Push(apa, Jb("transition", r.transition));
+      A_Push(apa, J("shift_type", r.shiftType == 1 ? "inside formation" : r.shiftType == 2 ? "outside formation" : r.shiftType == 3 ? "inside and outside formation" : "no new formation yet"));
+      A_Push(apa, Jr("reclaim_point", Obj(Lv(s, r.reclaim, px) + "," + Jb("reclaimed", r.reclaimed) + (r.reclaimAt >= 0 ? "," + Ji("reclaimed_bars_ago", Ago(s, r.reclaimAt)) : ""))));
+     }
+   A_Push(apa, J("trend_kind", r.lastBos < 0 ? "none" : r.returnedIntoAol ? "different (price came back into the area of liquidity)" : "pure (price did not come back)"));
+   A_Push(apa, Jn("return_depth_pct", r.returnDepthPct, 1));
+   if(r.lastBos >= 0) A_Push(apa, Jr("confirm_level", Obj(Lv(s, r.validation, px))));
+   A_Push(f, Jr("apa", Obj(A_Join(apa))));
+   return Obj(A_Join(f));
+  }
+
+//+------------------------------------------------------------------+
+//| 4. get_liquidity                                                  |
+//+------------------------------------------------------------------+
+// first candle after swing k that trades beyond it (-1 = untaken)
+int TakenAt(CSlot *s, int k)
+  {
+   for(int j = s.swI[k] + 3; j <= s.lc; j++)
+      if(s.swK[k] == 1 ? s.h[j] > s.swP[k] : s.l[j] < s.swP[k]) return j;
+   return -1;
+  }
+
+string C_Liquidity(CSlot *s)
+  {
+   MsRead r; ReadStructure(s, r);
+   int lc = s.lc, ns = ArraySize(s.swI);
+   double px = s.c[lc], a = Atr(s);
+   double tol = Syn(s) ? MathMax(3 * (SymbolInfoDouble(s.sym, SYMBOL_ASK) - SymbolInfoDouble(s.sym, SYMBOL_BID)), 0.05 * a) : 0.1 * a;
+   string f[];
+   A_Push(f, J("rules", "pools = confirmed swing highs (buy-side, BSL) / lows (sell-side, SSL); taken = a later wick traded beyond; equal = within " + (Syn(s) ? "3 x spread" : "0.1 ATR") + "; sweep = wick beyond then a CLOSE back inside within 3 candles"));
+   // a. pools above / below, untaken, nearest first (3 each)
+   string bsl[], ssl[];
+   for(int pass = 0; pass < 2; pass++)
+     {
+      int kind = pass == 0 ? 1 : -1;
+      int idx[]; double dist[];
+      for(int k = ns - 1; k >= 0 && k >= ns - 60; k--)
+        {
+         if(s.swK[k] != kind || TakenAt(s, k) >= 0) continue;
+         int m = ArraySize(idx); ArrayResize(idx, m + 1); ArrayResize(dist, m + 1);
+         idx[m] = k; dist[m] = MathAbs(s.swP[k] - px);
+        }
+      for(int x = 0; x < ArraySize(idx) - 1; x++)
+         for(int y = x + 1; y < ArraySize(idx); y++)
+            if(dist[y] < dist[x]) { double t = dist[x]; dist[x] = dist[y]; dist[y] = t; int ti = idx[x]; idx[x] = idx[y]; idx[y] = ti; }
+      for(int x = 0; x < ArraySize(idx) && x < 3; x++)
+        {
+         int k = idx[x], touches = 0;
+         for(int q = 0; q < ns; q++) if(s.swK[q] == kind && MathAbs(s.swP[q] - s.swP[k]) <= tol) touches++;
+         string row = Obj(LvAt(s, s.swP[k], s.swI[k]) + "," + Ji("touches", touches) + "," + Jb("taken", false));
+         if(kind == 1) A_Push(bsl, row); else A_Push(ssl, row);
+        }
+     }
+   A_Push(f, Jr("buy_side_above", Arr(bsl)));
+   A_Push(f, Jr("sell_side_below", Arr(ssl)));
+   // b. equal highs / lows (2+ swings within tolerance, last 40 swings)
+   string eqh[], eql[];
+   for(int k = ns - 1; k >= MathMax(0, ns - 40); k--)
+     {
+      int cnt = 1;
+      for(int q = k - 1; q >= MathMax(0, ns - 40); q--) if(s.swK[q] == s.swK[k] && MathAbs(s.swP[q] - s.swP[k]) <= tol) cnt++;
+      if(cnt < 2) continue;
+      string row = Obj(LvAt(s, s.swP[k], s.swI[k]) + "," + Ji("count", cnt) + "," + Jb("taken", TakenAt(s, k) >= 0));
+      if(s.swK[k] == 1) { if(ArraySize(eqh) < 3) A_Push(eqh, row); }
+      else { if(ArraySize(eql) < 3) A_Push(eql, row); }
+     }
+   A_Push(f, Jr("equal_highs", Arr(eqh)));
+   A_Push(f, Jr("equal_lows", Arr(eql)));
+   // c. untouched old highs/lows (external swings never traded through)
+   string old[];
+   for(int k = ArraySize(s.exI) - 1; k >= 0 && ArraySize(old) < 4; k--)
+     {
+      bool taken = false;
+      for(int j = s.exI[k] + 6; j <= lc; j++) if(s.exK[k] == 1 ? s.h[j] > s.exP[k] : s.l[j] < s.exP[k]) { taken = true; break; }
+      if(taken) continue;
+      int tests = 0;
+      for(int q = 0; q < ns; q++) if(s.swK[q] == s.exK[k] && s.swI[q] > s.exI[k] && MathAbs(s.swP[q] - s.exP[k]) <= 0.25 * a) tests++;
+      A_Push(old, Obj(J("kind", s.exK[k] == 1 ? "high" : "low") + "," + LvAt(s, s.exP[k], s.exI[k]) + "," + Ji("tests", tests)));
+     }
+   A_Push(f, Jr("untouched_old_levels", Arr(old)));
+   // d. sweeps (last 3) + e. side swept today
+   string sw[]; bool buyToday = false, sellToday = false;
+   MqlDateTime nd; TimeToStruct(s.t[lc], nd);
+   datetime dayStart = s.t[lc] - (nd.hour * 3600 + nd.min * 60 + nd.sec);
+   int lastSweepK = -1, lastSweepAt = -1;
+   for(int k = 0; k < ns; k++)
+     {
+      int j = TakenAt(s, k);
+      if(j < 0) continue;
+      bool back = false;
+      for(int q = j; q <= MathMin(lc, j + 2) && !back; q++) back = s.swK[k] == 1 ? s.c[q] < s.swP[k] : s.c[q] > s.swP[k];
+      if(!back) continue;
+      if(j > lastSweepAt) { lastSweepAt = j; lastSweepK = k; }
+      if(s.t[j] >= dayStart) { if(s.swK[k] == 1) buyToday = true; else sellToday = true; }
+     }
+   for(int k = ns - 1; k >= 0 && ArraySize(sw) < 3; k--)
+     {
+      int j = TakenAt(s, k);
+      if(j < 0) continue;
+      bool back = false;
+      for(int q = j; q <= MathMin(lc, j + 2) && !back; q++) back = s.swK[k] == 1 ? s.c[q] < s.swP[k] : s.c[q] > s.swP[k];
+      if(!back) continue;
+      double after = s.swK[k] == 1 ? s.swP[k] - LowestL(s, j, lc) : HighestH(s, j, lc) - s.swP[k];
+      A_Push(sw, Obj(J("pool", s.swK[k] == 1 ? "buy-side (high)" : "sell-side (low)") + "," + LvAt(s, s.swP[k], j) + "," + Jn("move_after_atr", a > 0 ? after / a : 0, 2)));
+     }
+   A_Push(f, Jr("sweeps", Arr(sw)));
+   A_Push(f, J("swept_today", buyToday && sellToday ? "both" : buyToday ? "buy-side" : sellToday ? "sell-side" : "none"));
+   // f. day / week levels taken (owned by get_price; only the flags here)
+   double pdh = 0, pdl = 0;
+   CSlot *d1 = GetSlot(s.sym, PERIOD_D1, 0);
+   if(d1 != NULL && d1.n >= 3)
+     {
+      pdh = d1.h[d1.n - 2]; pdl = d1.l[d1.n - 2];
+      A_Push(f, Jr("previous_day", Obj(Jn("pdh", pdh, s.digits) + "," + Jb("pdh_taken", d1.h[d1.n - 1] > pdh) + "," + Jn("pdl", pdl, s.digits) + "," + Jb("pdl_taken", d1.l[d1.n - 1] < pdl))));
+     }
+   // g. draw on liquidity: nearest untaken pool in the higher-timeframe (else own) trend direction
+   CSlot *hs = GetSlot(s.sym, HigherTf(s.tf), 0);
+   int bias = r.trend;
+   if(hs != NULL) { MsRead hr; ReadStructure(hs, hr); if(hr.trend != 0) bias = hr.trend; }
+   ReadStructure(s, r); // restore this timeframe's break list
+   int best = -1; double bestD = DBL_MAX;
+   for(int k = 0; k < ns; k++)
+     {
+      if(bias == 0 || s.swK[k] != bias || TakenAt(s, k) >= 0) continue;
+      double d = bias == 1 ? s.swP[k] - px : px - s.swP[k];
+      if(d > 0 && d < bestD) { bestD = d; best = k; }
+     }
+   A_Push(f, best >= 0 ? Jr("draw_on_liquidity", Obj(J("direction", bias == 1 ? "up" : "down") + "," + LvAt(s, s.swP[best], s.swI[best]) + "," +
+                                                       J("rule", "nearest untaken pool in the " + (hs != NULL ? "higher-timeframe" : "own") + " trend direction")))
+                       : Jnull("draw_on_liquidity"));
+   // h-n. APA liquidity engineering (book p.12-14): level, thrust candle, FMD, CHoCH
+   if(lastSweepK >= 0)
+     {
+      int k = lastSweepK, j = lastSweepAt;
+      bool bullish = s.swK[k] == -1; // sell-side swept = early sellers taken = buy setup
+      // CHoCH after the thrust: close beyond the last opposite swing before the sweep
+      int opp = -1;
+      for(int q = ns - 1; q >= 0; q--) if(s.swI[q] < j && s.swK[q] == (bullish ? 1 : -1)) { opp = q; break; }
+      int chochAt = -1;
+      if(opp >= 0) for(int q = j + 1; q <= lc; q++) if(bullish ? s.c[q] > s.swP[opp] : s.c[q] < s.swP[opp]) { chochAt = q; break; }
+      int fmdEnd = chochAt >= 0 ? chochAt : lc;
+      double fmd = bullish ? LowestL(s, j, fmdEnd) : HighestH(s, j, fmdEnd);
+      bool nearInv = r.invalidation > 0 && MathAbs(s.swP[k] - r.invalidation) <= 0.5 * a;
+      string missing = chochAt < 0 ? "CHoCH" : "";
+      A_Push(f, Jr("liquidity_engineering", Obj(
+         J("side", bullish ? "bullish (early sellers swept)" : "bearish (early buyers swept)") + "," +
+         Jr("level", Obj(LvAt(s, s.swP[k], s.swI[k]))) + "," +
+         Jr("thrust_candle", Obj(LvAt(s, bullish ? s.l[j] : s.h[j], j) + "," + Jn("close", s.c[j], s.digits))) + "," +
+         Jr("fmd", Obj(Lv(s, fmd, px) + "," + J("note", "stop goes beyond this"))) + "," +
+         (chochAt >= 0 ? Jr("choch", Obj(LvAt(s, s.swP[opp], chochAt))) : Jnull("choch")) + "," +
+         Jb("complete", chochAt >= 0) + "," + J("missing", missing) + "," +
+         Jb("near_aol_invalidation", nearInv))));
+     }
+   else A_Push(f, Jnull("liquidity_engineering"));
+   return Obj(A_Join(f));
+  }
+
+//+------------------------------------------------------------------+
+//| 5. get_zones                                                      |
+//+------------------------------------------------------------------+
+#define ZK_OB      1
+#define ZK_BREAKER 2
+#define ZK_FVG     3
+#define ZK_IFVG    4
+#define ZK_BPR     5
+#define ZK_AOL     6
+#define ZK_T1      7
+#define ZK_T2      8
+#define ZK_T3      9
+#define ZK_T4      10
+#define ZK_NDOG    11
+#define ZK_NWOG    12
+struct Zone
+  {
+   int    kind;
+   int    side;       // +1 demand / bullish, -1 supply / bearish
+   double lo, hi;
+   int    at;         // candle that formed it
+   double valid;      // validation line (0 = n/a)
+   double invalid;    // invalidation price (0 = n/a)
+   bool   swept;      // breaker: the order block's move swept liquidity first
+   int    lowerOk;    // Type 4: 1 yes / 0 no / -1 unknown
+  };
+Zone g_z[];
+
+string ZName(int k)
+  {
+   switch(k)
+     {
+      case ZK_OB: return "order_block"; case ZK_BREAKER: return "breaker"; case ZK_FVG: return "fvg"; case ZK_IFVG: return "ifvg";
+      case ZK_BPR: return "bpr"; case ZK_AOL: return "aol"; case ZK_T1: return "aol_type1_engulfing"; case ZK_T2: return "aol_type2";
+      case ZK_T3: return "aol_type3"; case ZK_T4: return "aol_type4_wick_overlap"; case ZK_NDOG: return "ndog"; case ZK_NWOG: return "nwog";
+     }
+   return "zone";
+  }
+void AddZone(int kind, int side, double lo, double hi, int at, double valid, double invalid)
+  {
+   if(hi < lo) { double t = hi; hi = lo; lo = t; }
+   int n = ArraySize(g_z); ArrayResize(g_z, n + 1);
+   g_z[n].kind = kind; g_z[n].side = side; g_z[n].lo = lo; g_z[n].hi = hi; g_z[n].at = at;
+   g_z[n].valid = valid; g_z[n].invalid = invalid; g_z[n].swept = false; g_z[n].lowerOk = -1;
+  }
+// how far into the zone price has traded since it formed (APA: consumed at 50%)
+double ConsumedPct(CSlot *s, Zone &z)
+  {
+   double w = z.hi - z.lo;
+   if(w <= 0) return 0;
+   double deepest = 0;
+   for(int j = z.at + 1; j <= s.lc; j++)
+     {
+      double pen = z.side == 1 ? z.hi - s.l[j] : s.h[j] - z.lo;
+      deepest = MathMax(deepest, pen);
+     }
+   return MathMin(100, MathMax(0, deepest / w * 100));
+  }
+int Touches(CSlot *s, Zone &z)
+  {
+   int t = 0; bool inside = false;
+   for(int j = z.at + 1; j <= s.lc; j++)
+     {
+      bool in = s.l[j] <= z.hi && s.h[j] >= z.lo;
+      if(in && !inside) t++;
+      inside = in;
+     }
+   return t;
+  }
+int ClosedThrough(CSlot *s, Zone &z)
+  {
+   for(int j = z.at + 1; j <= s.lc; j++)
+      if(z.side == 1 ? s.c[j] < z.lo : s.c[j] > z.hi) return j;
+   return -1;
+  }
+
+// APA area-of-liquidity candle types on candles i-1 (candle 1) and i (candle 2)
+void FindApaTypes(CSlot *s, int from)
+  {
+   bool weekPlus = s.tf == PERIOD_W1 || s.tf == PERIOD_MN1;
+   for(int i = MathMax(1, from); i <= s.lc; i++)
+     {
+      double o1 = s.o[i - 1], c1 = s.c[i - 1], h1 = s.h[i - 1], l1 = s.l[i - 1];
+      double o2 = s.o[i], c2 = s.c[i], h2 = s.h[i], l2 = s.l[i];
+      bool g1 = c1 > o1, r1 = c1 < o1, g2 = c2 > o2, r2 = c2 < o2;
+      double rng2 = h2 - l2;
+      // Type 1: same colour, candle 2 sweeps candle 1's extreme and closes beyond, engulfing it
+      if(r1 && r2 && h2 > h1 && c2 < l1) AddZone(ZK_T1, -1, c2, h2, i, l1, h2);
+      if(g1 && g2 && l2 < l1 && c2 > h1) AddZone(ZK_T1, 1, l2, c2, i, h1, l2);
+      // Type 2: opposite colours, candle 2 SWEEPS candle 1's extreme, closes beyond candle 1's other end
+      if(g1 && r2 && h2 > h1 && c2 < l1) AddZone(ZK_T2, -1, MathMin(o2, c1), h2, i, o2, h2);
+      if(r1 && g2 && l2 < l1 && c2 > h1) AddZone(ZK_T2, 1, l2, MathMax(o2, c1), i, o2, l2);
+      // Type 3: opposite colours, NO sweep, minor/no wick on candle 2's open side (<=15%), closes beyond candle 1
+      if(g1 && r2 && h2 <= h1 && rng2 > 0 && (h2 - o2) <= 0.15 * rng2 && c2 < l1) AddZone(ZK_T3, -1, l1, h1, i, l1, h1);
+      if(r1 && g2 && l2 >= l1 && rng2 > 0 && (o2 - l2) <= 0.15 * rng2 && c2 > h1) AddZone(ZK_T3, 1, l1, h1, i, h1, l1);
+      // Type 4 (wick overlap, W1/MN1 only): same colour, bodies apart, wicks overlap
+      if(weekPlus)
+        {
+         if(g1 && g2 && MathMin(o2, c2) > MathMax(o1, c1) && l2 < h1) AddZone(ZK_T4, 1, l2, h1, i, h1, l2);
+         if(r1 && r2 && MathMax(o2, c2) < MathMin(o1, c1) && h2 > l1) AddZone(ZK_T4, -1, l1, h2, i, l1, h2);
+        }
+     }
+  }
+
+void BuildZones(CSlot *s, MsRead &r)
+  {
+   ArrayFree(g_z);
+   int lc = s.lc; double a = Atr(s);
+   // order blocks (last opposite candle within 15 before each break) -> breakers when closed through
+   for(int q = MathMax(0, ArraySize(g_brAt) - 12); q < ArraySize(g_brAt); q++)
+     {
+      int at = g_brAt[q], side = g_brSide[q];
+      for(int j = at - 1; j >= MathMax(1, at - 15); j--)
+        {
+         if(side == 1 ? s.c[j] < s.o[j] : s.c[j] > s.o[j])
+           {
+            AddZone(ZK_OB, side, s.l[j], s.h[j], j, 0, side == 1 ? s.l[j] : s.h[j]);
+            int zi = ArraySize(g_z) - 1;
+            // did the move into this block sweep a swing first?
+            bool swept = false;
+            for(int k = 0; k < ArraySize(s.swI); k++)
+               if(s.swI[k] < j && s.swK[k] == -side && (side == 1 ? LowestL(s, j - 3, j) < s.swP[k] : HighestH(s, j - 3, j) > s.swP[k]) && s.swI[k] > j - 30) { swept = true; break; }
+            g_z[zi].swept = swept;
+            int ct = ClosedThrough(s, g_z[zi]);
+            if(ct >= 0) { g_z[zi].kind = ZK_BREAKER; g_z[zi].side = -side; g_z[zi].at = ct; }
+            break;
+           }
+        }
+     }
+   // FVG / IFVG (last 200 closed candles, >= 0.1 ATR)
+   for(int i = MathMax(2, lc - 200); i <= lc; i++)
+     {
+      double gapUp = s.l[i] - s.h[i - 2], gapDn = s.l[i - 2] - s.h[i];
+      if(gapUp >= 0.1 * a) AddZone(ZK_FVG, 1, s.h[i - 2], s.l[i], i, 0, s.h[i - 2]);
+      else if(gapDn >= 0.1 * a) AddZone(ZK_FVG, -1, s.h[i], s.l[i - 2], i, 0, s.l[i - 2]);
+      else continue;
+      int zi = ArraySize(g_z) - 1;
+      int ct = ClosedThrough(s, g_z[zi]);
+      if(ct >= 0) { g_z[zi].kind = ZK_IFVG; g_z[zi].side = -g_z[zi].side; g_z[zi].at = ct; }
+     }
+   // BPR: overlap of a fresh bullish and bearish FVG
+   int nz = ArraySize(g_z);
+   for(int x = 0; x < nz; x++)
+      for(int y = x + 1; y < nz; y++)
+        {
+         if(g_z[x].kind != ZK_FVG || g_z[y].kind != ZK_FVG || g_z[x].side == g_z[y].side) continue;
+         double lo = MathMax(g_z[x].lo, g_z[y].lo), hi = MathMin(g_z[x].hi, g_z[y].hi);
+         if(hi > lo && MathAbs(g_z[x].at - g_z[y].at) <= 20) AddZone(ZK_BPR, g_z[y].side, lo, hi, MathMax(g_z[x].at, g_z[y].at), 0, 0);
+        }
+   // APA area of liquidity: between validation and invalidation of the last break
+   if(r.lastBos >= 0 && r.invalidation > 0)
+      AddZone(ZK_AOL, g_brSide[r.lastBos], MathMin(r.validation, r.invalidation), MathMax(r.validation, r.invalidation), g_brAt[r.lastBos], r.validation, r.invalidation);
+   // APA candle types (last 150 candles)
+   FindApaTypes(s, lc - 150);
+   // opening gaps (forex only): daily and weekly close -> open
+   if(!Is247(s.sym))
+     {
+      CSlot *d1 = GetSlot(s.sym, PERIOD_D1, 0);
+      if(d1 != NULL && d1.n >= 2 && MathAbs(d1.o[d1.n - 1] - d1.c[d1.n - 2]) > 0)
+         AddZone(ZK_NDOG, d1.o[d1.n - 1] > d1.c[d1.n - 2] ? 1 : -1, MathMin(d1.o[d1.n - 1], d1.c[d1.n - 2]), MathMax(d1.o[d1.n - 1], d1.c[d1.n - 2]), lc, 0, 0);
+      CSlot *w1 = GetSlot(s.sym, PERIOD_W1, 0);
+      if(w1 != NULL && w1.n >= 2 && MathAbs(w1.o[w1.n - 1] - w1.c[w1.n - 2]) > 0)
+         AddZone(ZK_NWOG, w1.o[w1.n - 1] > w1.c[w1.n - 2] ? 1 : -1, MathMin(w1.o[w1.n - 1], w1.c[w1.n - 2]), MathMax(w1.o[w1.n - 1], w1.c[w1.n - 2]), lc, 0, 0);
+     }
+  }
+
+string ZoneJson(CSlot *s, Zone &z, double px)
+  {
+   double a = Atr(s), w = z.hi - z.lo, cons = ConsumedPct(s, z);
+   int touches = Touches(s, z), ct = ClosedThrough(s, z);
+   double mid = (z.lo + z.hi) / 2;
+   string f = J("kind", ZName(z.kind)) + "," + J("side", z.side == 1 ? "demand (bullish)" : "supply (bearish)") + "," +
+              Jn("top", z.hi, s.digits) + "," + Jn("bottom", z.lo, s.digits) + "," +
+              Jn("width_atr", a > 0 ? w / a : 0, 2) + "," + Jn("width_pips", ToPips(s, w), 1) + "," +
+              Jn("dist_atr", a > 0 ? (px > z.hi ? px - z.hi : px < z.lo ? z.lo - px : 0) / a : 0, 2) + "," +
+              J("position", px > z.hi ? "price above" : px < z.lo ? "price below" : "price inside") + "," +
+              Ji("age_bars", Ago(s, z.at)) + "," + J("formed", BarIso(s, z.at)) + "," +
+              Ji("touches", touches) + "," + Jb("fresh", touches == 0) + "," +
+              Jn("consumed_pct", cons, 0) + "," + Jb("consumed", cons >= 50) + "," +
+              Jb("closed_through", ct >= 0);
+   if(z.valid > 0) f += "," + Jn("validation", z.valid, s.digits);
+   if(z.invalid > 0) f += "," + Jn("invalidation", z.invalid, s.digits) + "," + Jn("sl_size_pips", ToPips(s, MathAbs(z.invalid - (z.side == 1 ? z.hi : z.lo))), 1) +
+                          "," + Jn("sl_size_atr", a > 0 ? MathAbs(z.invalid - (z.side == 1 ? z.hi : z.lo)) / a : 0, 2);
+   if(z.kind == ZK_BREAKER) f += "," + Jb("swept_before", z.swept) + "," + J("note", z.swept ? "breaker" : "no sweep before it = mitigation-block case");
+   if(z.kind == ZK_T4) f += "," + (z.lowerOk < 0 ? Jnull("lower_tf_formation_found") : Jb("lower_tf_formation_found", z.lowerOk == 1));
+   // other zones overlapping it
+   string ov = "";
+   for(int k = 0; k < ArraySize(g_z); k++)
+     {
+      if(g_z[k].kind == z.kind && g_z[k].at == z.at) continue;
+      if(g_z[k].lo <= z.hi && g_z[k].hi >= z.lo) ov += (ov == "" ? "" : ",") + "\"" + ZName(g_z[k].kind) + "\"";
+     }
+   f += "," + Jr("overlaps", "[" + ov + "]");
+   return Obj(f);
+  }
+
+string C_Zones(CSlot *s)
+  {
+   MsRead r; ReadStructure(s, r);
+   BuildZones(s, r);
+   int lc = s.lc; double px = s.c[lc];
+   // Type 4 needs structure inside it on the next lower timeframe
+   CSlot *lower = NULL;
+   bool hasT4 = false;
+   for(int k = 0; k < ArraySize(g_z); k++) if(g_z[k].kind == ZK_T4) hasT4 = true;
+   if(hasT4) lower = GetSlot(s.sym, LowerTf(s.tf), 0);
+   if(lower != NULL)
+      for(int k = 0; k < ArraySize(g_z); k++)
+        {
+         if(g_z[k].kind != ZK_T4) continue;
+         g_z[k].lowerOk = 0;
+         for(int q = 0; q < ArraySize(lower.swI); q++)
+            if(lower.t[lower.swI[q]] >= s.t[g_z[k].at] && lower.swP[q] >= g_z[k].lo && lower.swP[q] <= g_z[k].hi) { g_z[k].lowerOk = 1; break; }
+        }
+   // nearest first, not invalidated; 3 demand + 3 supply in the main list, the rest in detail (cap 12)
+   int order[]; double dist[];
+   for(int k = 0; k < ArraySize(g_z); k++)
+     {
+      if(ClosedThrough(s, g_z[k]) >= 0) continue;
+      int m = ArraySize(order); ArrayResize(order, m + 1); ArrayResize(dist, m + 1);
+      order[m] = k; dist[m] = px > g_z[k].hi ? px - g_z[k].hi : px < g_z[k].lo ? g_z[k].lo - px : 0;
+     }
+   for(int x = 0; x < ArraySize(order) - 1; x++)
+      for(int y = x + 1; y < ArraySize(order); y++)
+         if(dist[y] < dist[x]) { double t = dist[x]; dist[x] = dist[y]; dist[y] = t; int ti = order[x]; order[x] = order[y]; order[y] = ti; }
+   string dem[], sup[], more[], apa[];
+   for(int x = 0; x < ArraySize(order); x++)
+     {
+      Zone z = g_z[order[x]];
+      string js = ZoneJson(s, z, px);
+      bool isApa = z.kind == ZK_AOL || z.kind == ZK_T1 || z.kind == ZK_T2 || z.kind == ZK_T3 || z.kind == ZK_T4;
+      if(isApa && ArraySize(apa) < 6) A_Push(apa, js);
+      if(z.side == 1 && ArraySize(dem) < 3) A_Push(dem, js);
+      else if(z.side == -1 && ArraySize(sup) < 3) A_Push(sup, js);
+      else if(ArraySize(more) < 6) A_Push(more, js);
+     }
+   bool insideAol = false;
+   for(int k = 0; k < ArraySize(g_z); k++) if(g_z[k].kind == ZK_AOL && px >= g_z[k].lo && px <= g_z[k].hi) insideAol = true;
+   // refinement: fresh zones of the next lower timeframe lying inside this timeframe's AOL
+   string refine[];
+   int aolK = -1;
+   for(int k = 0; k < ArraySize(g_z); k++) if(g_z[k].kind == ZK_AOL) aolK = k;
+   if(aolK >= 0)
+     {
+      double alo = g_z[aolK].lo, ahi = g_z[aolK].hi;
+      CSlot *ls = GetSlot(s.sym, LowerTf(s.tf), 0);
+      if(ls != NULL)
+        {
+         Zone keep[]; ArrayResize(keep, ArraySize(g_z));
+         for(int k = 0; k < ArraySize(g_z); k++) keep[k] = g_z[k];
+         MsRead lr; ReadStructure(ls, lr); BuildZones(ls, lr);
+         for(int k = 0; k < ArraySize(g_z) && ArraySize(refine) < 3; k++)
+            if(g_z[k].lo >= alo && g_z[k].hi <= ahi && ConsumedPct(ls, g_z[k]) < 50 && ClosedThrough(ls, g_z[k]) < 0)
+               A_Push(refine, Obj(J("tf", TfName(ls.tf)) + "," + J("kind", ZName(g_z[k].kind)) + "," + Jn("top", g_z[k].hi, s.digits) + "," + Jn("bottom", g_z[k].lo, s.digits)));
+         ArrayResize(g_z, ArraySize(keep));
+         for(int k = 0; k < ArraySize(keep); k++) g_z[k] = keep[k];
+        }
+     }
+   return Obj(J("rules", "order block = last opposite candle before a break; breaker = order block closed through; FVG = 3-candle gap >= 0.1 ATR; IFVG = FVG closed through; consumed = 50% traded through (APA); AOL = between the last break's validation and invalidation; APA types per the book (1 same colour+sweep+engulf, 2 opposite+sweep+close beyond, 3 opposite+no sweep+no/minor wick (<=15%)+close beyond, 4 W1/MN1 wick overlap); sorted by distance; invalidated zones left out") + "," +
+              Jr("demand", Arr(dem)) + "," + Jr("supply", Arr(sup)) + "," +
+              Jr("apa_areas", Arr(apa)) + "," + Jb("price_inside_aol", insideAol) + "," +
+              Jr("refinement_inside_aol", Arr(refine)) + "," + Jr("more", Arr(more)));
+  }
+
+//+------------------------------------------------------------------+
+//| 2. get_candles                                                    |
+//+------------------------------------------------------------------+
+string PatternAt(CSlot *s, int i)
+  {
+   if(i < 2 || i > s.lc) return "";
+   double rng = s.h[i] - s.l[i], body = MathAbs(s.c[i] - s.o[i]);
+   if(rng <= 0) return "";
+   double up = s.h[i] - MathMax(s.o[i], s.c[i]), dn = MathMin(s.o[i], s.c[i]) - s.l[i];
+   string p = "";
+   if(body <= 0.1 * rng) p = "doji";
+   else if(dn >= 2.0 / 3 * rng && body <= rng / 3 && MathMin(s.o[i], s.c[i]) >= s.l[i] + 2.0 / 3 * rng) p = "pin_bar_bullish";
+   else if(up >= 2.0 / 3 * rng && body <= rng / 3 && MathMax(s.o[i], s.c[i]) <= s.h[i] - 2.0 / 3 * rng) p = "pin_bar_bearish";
+   double pb = MathAbs(s.c[i - 1] - s.o[i - 1]);
+   bool twoOppBefore = (s.c[i - 1] < s.o[i - 1] && s.c[i - 2] < s.o[i - 2]) || (s.c[i - 1] > s.o[i - 1] && s.c[i - 2] > s.o[i - 2]);
+   if(twoOppBefore && body > pb && MathMax(s.o[i], s.c[i]) >= MathMax(s.o[i - 1], s.c[i - 1]) && MathMin(s.o[i], s.c[i]) <= MathMin(s.o[i - 1], s.c[i - 1]))
+     {
+      if(s.c[i] > s.o[i] && s.c[i - 1] < s.o[i - 1]) p = "engulfing_bullish";
+      if(s.c[i] < s.o[i] && s.c[i - 1] > s.o[i - 1]) p = "engulfing_bearish";
+     }
+   if(p == "" && s.h[i] <= s.h[i - 1] && s.l[i] >= s.l[i - 1]) p = "inside_bar";
+   if(p == "" && s.h[i] > s.h[i - 1] && s.l[i] < s.l[i - 1]) p = "outside_bar";
+   // morning / evening star on i-2, i-1, i
+   double b2 = MathAbs(s.c[i - 2] - s.o[i - 2]), b1 = MathAbs(s.c[i - 1] - s.o[i - 1]);
+   double mid2 = (s.o[i - 2] + s.c[i - 2]) / 2;
+   if(b2 > 0 && b1 <= 0.3 * b2)
+     {
+      if(s.c[i - 2] < s.o[i - 2] && s.c[i] > s.o[i] && s.c[i] > mid2) p = "morning_star";
+      if(s.c[i - 2] > s.o[i - 2] && s.c[i] < s.o[i] && s.c[i] < mid2) p = "evening_star";
+     }
+   return p;
+  }
+
+string C_Candles(CSlot *s, int count)
+  {
+   if(count < 1) count = 21;
+   if(count > 300) count = 300;
+   int last = s.n - 1;
+   string rows[];
+   for(int i = last; i >= 0 && i > last - count; i--)
+     {
+      double rng = s.h[i] - s.l[i], body = MathAbs(s.c[i] - s.o[i]);
+      double prevAtr = i >= 1 ? s.atr[i - 1] : 0;
+      bool closed = i <= s.lc;
+      string row = J("t", BarIso(s, i)) + "," + Jb("closed", closed) + "," +
+                   Jn("o", s.o[i], s.digits) + "," + Jn("h", s.h[i], s.digits) + "," + Jn("l", s.l[i], s.digits) + "," + Jn("c", s.c[i], s.digits) + "," +
+                   Ji("v", s.v[i]) + "," + J("dir", s.c[i] > s.o[i] ? "bull" : s.c[i] < s.o[i] ? "bear" : "flat") + "," +
+                   Jn("body", body, s.digits) + "," + Jn("upper_wick", s.h[i] - MathMax(s.o[i], s.c[i]), s.digits) + "," + Jn("lower_wick", MathMin(s.o[i], s.c[i]) - s.l[i], s.digits) + "," +
+                   Jn("size_vs_atr", prevAtr > 0 ? rng / prevAtr : 0, 2) + "," + Jn("close_pos_pct", rng > 0 ? (s.c[i] - s.l[i]) / rng * 100 : 50, 0);
+      if(i >= 1 && MathAbs(s.o[i] - s.c[i - 1]) > 0.1 * (prevAtr > 0 ? prevAtr : rng)) row += "," + J("gap", s.o[i] > s.c[i - 1] ? "up" : "down");
+      if(closed) { string p = PatternAt(s, i); if(p != "") row += "," + J("pattern", p); }
+      if(!closed) row += "," + Ji("seconds_left", MathMax((long)0, (long)PeriodSeconds(s.tf) - (long)(TimeTradeServer() - s.t[i])));
+      A_Push(rows, Obj(row));
+     }
+   // run of same-direction closes ending at the last closed candle
+   int run = 0, dir = s.c[s.lc] > s.o[s.lc] ? 1 : s.c[s.lc] < s.o[s.lc] ? -1 : 0;
+   for(int i = s.lc; i >= 0 && dir != 0; i--) { int d = s.c[i] > s.o[i] ? 1 : s.c[i] < s.o[i] ? -1 : 0; if(d != dir) break; run++; }
+   // APA Type 1 engulfing on the last 3 closed candles
+   ArrayFree(g_z);
+   FindApaTypes(s, s.lc - 2);
+   string t1 = "null";
+   for(int k = 0; k < ArraySize(g_z); k++) if(g_z[k].kind == ZK_T1) t1 = Obj(J("side", g_z[k].side == 1 ? "bullish" : "bearish") + "," + Ji("bars_ago", Ago(s, g_z[k].at)));
+   return Obj(J("order", "newest_first") + "," + J("times", "UTC") + "," + J("volume_is", "tick volume (number of price changes)") + "," +
+              J("patterns_rule", "closed candles only: doji body<=10%; pin bar wick>=2/3, body<=1/3, close in outer third; engulfing body over prior body after 2 opposite closes; inside/outside bar; morning/evening star") + "," +
+              Jr("same_direction_run", Obj(J("dir", dir > 0 ? "bull" : dir < 0 ? "bear" : "flat") + "," + Ji("candles", run))) + "," +
+              Jr("apa_type1_engulfing_recent", t1) + "," +
+              Jr("candles", Arr(rows)));
+  }
+
+//+------------------------------------------------------------------+
+//| 6. get_trend                                                      |
+//+------------------------------------------------------------------+
+string MaJson(CSlot *s, string name, const double &ma[], double px)
+  {
+   int lc = s.lc; double a = Atr(s);
+   double v = ma[lc];
+   if(v <= 0) return Jwhy(name, "not enough candles");
+   double slope = lc >= 5 && a > 0 ? (ma[lc] - ma[lc - 5]) / a : 0;
+   return Jr(name, Obj(Jn("value", v, s.digits) + "," + J("price", px > v ? "above" : px < v ? "below" : "at") + "," + Jn("slope_atr_per_5", slope, 3)));
+  }
+
+string C_Trend(CSlot *s)
+  {
+   int lc = s.lc; double px = s.c[lc], a = Atr(s);
+   string f[];
+   A_Push(f, J("rules", "closed candles; EMA seeded with SMA; SMMA = Wilder; ADX/DI Wilder 14 (same as MT5 iADXWilder, not iADX); Supertrend(10,3) on ATR10; Ichimoku 9/26/52; slope = MA change over 5 candles in ATR"));
+   A_Push(f, MaJson(s, "ema20", s.ema20, px)); A_Push(f, MaJson(s, "ema50", s.ema50, px)); A_Push(f, MaJson(s, "ema200", s.ema200, px));
+   A_Push(f, MaJson(s, "smma6", s.smma6, px)); A_Push(f, MaJson(s, "smma20", s.smma20, px)); A_Push(f, MaJson(s, "smma100", s.smma100, px));
+   double sma50 = SmaAt(s.c, lc, 50), sma200 = SmaAt(s.c, lc, 200);
+   A_Push(f, sma200 > 0 ? Jr("sma200", Obj(Jn("value", sma200, s.digits) + "," + J("price", px > sma200 ? "above" : "below"))) : Jwhy("sma200", "fewer than 200 candles"));
+   // golden / death cross: last SMA50 x SMA200 cross
+   if(sma200 > 0)
+     {
+      int crossAt = -1; int kind = 0;
+      for(int i = lc; i >= 201 && crossAt < 0; i--)
+        {
+         double a1 = SmaAt(s.c, i, 50) - SmaAt(s.c, i, 200), a0 = SmaAt(s.c, i - 1, 50) - SmaAt(s.c, i - 1, 200);
+         if(a1 > 0 && a0 <= 0) { crossAt = i; kind = 1; }
+         if(a1 < 0 && a0 >= 0) { crossAt = i; kind = -1; }
+        }
+      A_Push(f, crossAt >= 0 ? Jr("sma50_200_cross", Obj(J("type", kind > 0 ? "golden" : "death") + "," + Ji("bars_ago", Ago(s, crossAt)))) : Jnull("sma50_200_cross"));
+     }
+   A_Push(f, Jn("dist_from_ema20_atr", a > 0 && s.ema20[lc] > 0 ? (px - s.ema20[lc]) / a : 0, 2));
+   // ADX / DI
+   int diCross = -1;
+   for(int i = lc; i > 15 && diCross < 0; i--) if((s.pdi[i] - s.mdi[i]) * (s.pdi[i - 1] - s.mdi[i - 1]) < 0) diCross = i;
+   A_Push(f, Jr("adx", Obj(Jn("adx", s.adx[lc], 1) + "," + Jn("plus_di", s.pdi[lc], 1) + "," + Jn("minus_di", s.mdi[lc], 1) + "," +
+                           Jb("rising", lc >= 5 && s.adx[lc] > s.adx[lc - 5]) + "," + J("di_on_top", s.pdi[lc] >= s.mdi[lc] ? "plus" : "minus") + "," +
+                           (diCross >= 0 ? Ji("di_cross_bars_ago", Ago(s, diCross)) : Jnull("di_cross_bars_ago")))));
+   // Supertrend
+   int flip = -1;
+   for(int i = lc; i > 11 && flip < 0; i--) if(s.stDir[i] != s.stDir[i - 1]) flip = i;
+   A_Push(f, Jr("supertrend", Obj(J("dir", s.stDir[lc] > 0 ? "up" : "down") + "," + Lv(s, s.st[lc], px) + "," + (flip >= 0 ? Ji("flip_bars_ago", Ago(s, flip)) : Jnull("flip_bars_ago")))));
+   // Ichimoku (short): cloud at the current candle = spans computed 26 candles ago
+   if(lc >= 52 + 26)
+     {
+      int b = lc - 26;
+      double tenB = (HighestH(s, b - 8, b) + LowestL(s, b - 8, b)) / 2, kijB = (HighestH(s, b - 25, b) + LowestL(s, b - 25, b)) / 2;
+      double spanA = (tenB + kijB) / 2, spanB = (HighestH(s, b - 51, b) + LowestL(s, b - 51, b)) / 2;
+      double ten = (HighestH(s, lc - 8, lc) + LowestL(s, lc - 8, lc)) / 2, kij = (HighestH(s, lc - 25, lc) + LowestL(s, lc - 25, lc)) / 2;
+      int tkCross = -1;
+      for(int i = lc; i > lc - 60 && i > 26 && tkCross < 0; i--)
+        {
+         double t1 = (HighestH(s, i - 8, i) + LowestL(s, i - 8, i)) / 2, k1 = (HighestH(s, i - 25, i) + LowestL(s, i - 25, i)) / 2;
+         double t0 = (HighestH(s, i - 9, i - 1) + LowestL(s, i - 9, i - 1)) / 2, k0 = (HighestH(s, i - 26, i - 1) + LowestL(s, i - 26, i - 1)) / 2;
+         if((t1 - k1) * (t0 - k0) < 0) tkCross = i;
+        }
+      double top = MathMax(spanA, spanB), bot = MathMin(spanA, spanB);
+      A_Push(f, Jr("ichimoku", Obj(J("price_vs_cloud", px > top ? "above" : px < bot ? "below" : "inside") + "," +
+                                   J("cloud_colour", spanA >= spanB ? "bullish" : "bearish") + "," + Jn("cloud_top", top, s.digits) + "," + Jn("cloud_bottom", bot, s.digits) + "," +
+                                   J("tenkan_vs_kijun", ten >= kij ? "tenkan above" : "tenkan below") + "," + (tkCross >= 0 ? Ji("tk_cross_bars_ago", Ago(s, tkCross)) : Jnull("tk_cross_bars_ago")))));
+     }
+   // linear regression slope (20) and efficiency ratio (10)
+   if(lc >= 20)
+     {
+      double sx = 0, sy = 0, sxy = 0, sxx = 0;
+      for(int k = 0; k < 20; k++) { double x = k, y = s.c[lc - 19 + k]; sx += x; sy += y; sxy += x * y; sxx += x * x; }
+      double slope = (20 * sxy - sx * sy) / (20 * sxx - sx * sx);
+      A_Push(f, Jn("regression_slope_atr_per_bar", a > 0 ? slope / a : 0, 3));
+     }
+   double er = 0;
+   if(lc >= 10)
+     {
+      double path = 0;
+      for(int k = lc - 9; k <= lc; k++) path += MathAbs(s.c[k] - s.c[k - 1]);
+      er = path > 0 ? MathAbs(s.c[lc] - s.c[lc - 10]) / path : 0;
+     }
+   A_Push(f, Jn("efficiency_ratio_10", er, 2));
+   // higher timeframe EMA200
+   CSlot *hs = GetSlot(s.sym, HigherTf(s.tf), 0);
+   if(hs != NULL && hs.ema200[hs.lc] > 0)
+      A_Push(f, Jr("higher_tf_ema200", Obj(J("tf", TfName(hs.tf)) + "," + J("price", hs.c[hs.lc] > hs.ema200[hs.lc] ? "above" : "below") + "," +
+                                           Jn("slope_atr_per_5", hs.lc >= 5 && Atr(hs) > 0 ? (hs.ema200[hs.lc] - hs.ema200[hs.lc - 5]) / Atr(hs) : 0, 3))));
+   else A_Push(f, Jwhy("higher_tf_ema200", "higher timeframe not loaded yet"));
+   string regime = s.adx[lc] > 25 && er > 0.3 ? "trending" : s.adx[lc] < 20 ? "ranging" : "mixed";
+   A_Push(f, Jr("regime", Obj(J("label", regime) + "," + J("rule", "trending = ADX>25 and ER>0.3; ranging = ADX<20; else mixed"))));
+   return Obj(A_Join(f));
+  }
+
+//+------------------------------------------------------------------+
+//| 7. get_momentum                                                   |
+//+------------------------------------------------------------------+
+string C_Momentum(CSlot *s)
+  {
+   int lc = s.lc;
+   string f[];
+   A_Push(f, J("rules", "closed candles only; RSI 14 Wilder; MACD 12/26/9; Stochastic 14/3/3; ROC 10; z-score (close-SMA20)/StdDev20; divergence only between two CONFIRMED swings 5-60 candles apart"));
+   string last5 = "";
+   for(int i = lc - 4; i <= lc; i++) last5 += (last5 == "" ? "" : ",") + DoubleToString(s.rsi[i], 1);
+   int ob = -1, os = -1;
+   for(int i = lc; i > 14 && (ob < 0 || os < 0); i--) { if(ob < 0 && s.rsi[i] > 70) ob = i; if(os < 0 && s.rsi[i] < 30) os = i; }
+   string rsi = Jn("value", s.rsi[lc], 1) + "," + Jr("last5_closed", "[" + last5 + "]") + "," +
+                (ob >= 0 ? Ji("bars_since_above_70", Ago(s, ob)) : Jnull("bars_since_above_70")) + "," +
+                (os >= 0 ? Ji("bars_since_below_30", Ago(s, os)) : Jnull("bars_since_below_30"));
+   CSlot *hs = GetSlot(s.sym, HigherTf(s.tf), 0);
+   if(hs != NULL) rsi += "," + Jr("higher_tf", Obj(J("tf", TfName(hs.tf)) + "," + Jn("rsi", hs.rsi[hs.lc], 1)));
+   A_Push(f, Jr("rsi", Obj(rsi)));
+   int mx = -1, mxDir = 0;
+   for(int i = lc; i > 35 && mx < 0; i--)
+     {
+      double d1 = s.macd[i] - s.macdSig[i], d0 = s.macd[i - 1] - s.macdSig[i - 1];
+      if(d1 * d0 < 0) { mx = i; mxDir = d1 > 0 ? 1 : -1; }
+     }
+   A_Push(f, Jr("macd", Obj(Jn("main", s.macd[lc], s.digits + 1) + "," + Jn("signal", s.macdSig[lc], s.digits + 1) + "," + Jn("histogram", s.macd[lc] - s.macdSig[lc], s.digits + 1) + "," +
+                            Jb("histogram_growing", MathAbs(s.macd[lc] - s.macdSig[lc]) > MathAbs(s.macd[lc - 1] - s.macdSig[lc - 1])) + "," +
+                            (mx >= 0 ? Jr("last_cross", Obj(J("dir", mxDir > 0 ? "up" : "down") + "," + Ji("bars_ago", Ago(s, mx)))) : Jnull("last_cross")))));
+   int sx = -1;
+   for(int i = lc; i > 18 && sx < 0; i--) if((s.stK[i] - s.stD[i]) * (s.stK[i - 1] - s.stD[i - 1]) < 0) sx = i;
+   A_Push(f, Jr("stochastic", Obj(Jn("k", s.stK[lc], 1) + "," + Jn("d", s.stD[lc], 1) + "," + (sx >= 0 ? Ji("cross_bars_ago", Ago(s, sx)) : Jnull("cross_bars_ago")))));
+   A_Push(f, Jn("roc_10_pct", lc >= 10 && s.c[lc - 10] > 0 ? (s.c[lc] - s.c[lc - 10]) / s.c[lc - 10] * 100 : 0, 3));
+   double sd = StdAt(s.c, lc, 20);
+   A_Push(f, Jn("zscore_20", sd > 0 ? (s.c[lc] - SmaAt(s.c, lc, 20)) / sd : 0, 2));
+   // divergence: latest between the last two confirmed swing highs / lows
+   string div = "null"; int bestAt = -1;
+   for(int kind = 1; kind >= -1; kind -= 2)
+     {
+      int k2 = -1, k1 = -1;
+      for(int k = ArraySize(s.swI) - 1; k >= 0; k--) if(s.swK[k] == kind) { if(k2 < 0) k2 = k; else { k1 = k; break; } }
+      if(k1 < 0) continue;
+      int i1 = s.swI[k1], i2 = s.swI[k2], gap = i2 - i1;
+      if(gap < 5 || gap > 60 || i2 <= bestAt) continue;
+      double p1 = s.swP[k1], p2 = s.swP[k2];
+      string osc[] = {"rsi", "macd_histogram", "stochastic_k"};
+      for(int o = 0; o < 3; o++)
+        {
+         double v1 = o == 0 ? s.rsi[i1] : o == 1 ? s.macd[i1] - s.macdSig[i1] : s.stK[i1];
+         double v2 = o == 0 ? s.rsi[i2] : o == 1 ? s.macd[i2] - s.macdSig[i2] : s.stK[i2];
+         string type = "";
+         if(kind == 1 && p2 > p1 && v2 < v1) type = "regular bearish";
+         if(kind == 1 && p2 < p1 && v2 > v1) type = "hidden bearish";
+         if(kind == -1 && p2 < p1 && v2 > v1) type = "regular bullish";
+         if(kind == -1 && p2 > p1 && v2 < v1) type = "hidden bullish";
+         if(type == "") continue;
+         bestAt = i2;
+         div = Obj(J("type", type) + "," + J("oscillator", osc[o]) + "," + Jn("price_1", p1, s.digits) + "," + Jn("price_2", p2, s.digits) + "," +
+                   Jn("osc_1", v1, 3) + "," + Jn("osc_2", v2, 3) + "," + Ji("bars_ago", Ago(s, i2)));
+         break;
+        }
+     }
+   A_Push(f, Jr("divergence_latest", div));
+   return Obj(A_Join(f));
+  }
+
+//+------------------------------------------------------------------+
+//| 8. get_volatility                                                 |
+//+------------------------------------------------------------------+
+int MinutesToSessionEnd(string sym)
+  {
+   datetime now = TimeGMT();
+   if(Is247(sym)) { MqlDateTime d; TimeToStruct(now, d); return 1440 - (d.hour * 60 + d.min); }
+   int ny = LocalMinuteOfDay(TZ_NEWYORK, now);
+   int left = 17 * 60 - ny;
+   return left > 0 ? left : left + 1440;
+  }
+
+string C_Volatility(CSlot *s)
+  {
+   int lc = s.lc; double a = Atr(s), px = s.c[lc];
+   string f[];
+   A_Push(f, J("rules", "ATR 14 Wilder; Bollinger 20/2; Keltner EMA20 +- 1.5 x ATR10; squeeze = Bollinger inside Keltner; Donchian 20 on closed candles"));
+   double atrs[]; int m = 0;
+   for(int i = MathMax(14, lc - 199); i <= lc; i++) { ArrayResize(atrs, m + 1); atrs[m++] = s.atr[i]; }
+   double sorted[]; ArrayCopy(sorted, atrs); ArraySort(sorted);
+   double med = m > 0 ? sorted[m / 2] : a;
+   int below = 0; for(int i = 0; i < m; i++) if(atrs[i] < a) below++;
+   A_Push(f, Jr("atr", Obj(Jn("value", a, s.digits) + "," + Jn("pips", ToPips(s, a), 1) + "," + Jn("vs_median_200", med > 0 ? a / med : 0, 2) + "," +
+                           Jn("percentile_200", m > 0 ? (double)below / m * 100 : 50, 0) + "," +
+                           Jn("vs_20_bars_ago", lc >= 20 && s.atr[lc - 20] > 0 ? a / s.atr[lc - 20] : 0, 2))));
+   double mid = SmaAt(s.c, lc, 20), sd = StdAt(s.c, lc, 20);
+   double bu = mid + 2 * sd, bl = mid - 2 * sd;
+   double ku = s.ema20[lc] + 1.5 * s.atr10[lc], kl = s.ema20[lc] - 1.5 * s.atr10[lc];
+   A_Push(f, Jr("bollinger", Obj(Jn("upper", bu, s.digits) + "," + Jn("middle", mid, s.digits) + "," + Jn("lower", bl, s.digits) + "," +
+                                 Jn("width_atr", a > 0 ? (bu - bl) / a : 0, 2) + "," + Jn("percent_b", bu > bl ? (px - bl) / (bu - bl) : 0.5, 2))));
+   A_Push(f, Jr("keltner", Obj(Jn("upper", ku, s.digits) + "," + Jn("lower", kl, s.digits))));
+   // squeeze history
+   int len = 0, released = -1;
+   for(int i = lc; i > 40; i--)
+     {
+      double m2 = SmaAt(s.c, i, 20), sd2 = StdAt(s.c, i, 20);
+      bool sq = (m2 + 2 * sd2) < (s.ema20[i] + 1.5 * s.atr10[i]) && (m2 - 2 * sd2) > (s.ema20[i] - 1.5 * s.atr10[i]);
+      if(i == lc && !sq) { // find when the last squeeze ended
+         for(int j = lc - 1; j > 40; j--)
+           {
+            double m3 = SmaAt(s.c, j, 20), sd3 = StdAt(s.c, j, 20);
+            if((m3 + 2 * sd3) < (s.ema20[j] + 1.5 * s.atr10[j]) && (m3 - 2 * sd3) > (s.ema20[j] - 1.5 * s.atr10[j])) { released = j + 1; break; }
+           }
+         break;
+        }
+      if(!sq) break;
+      len++;
+     }
+   A_Push(f, Jr("squeeze", Obj(Jb("on", len > 0) + "," + Ji("length_bars", len) + "," + (released >= 0 ? Ji("released_bars_ago", Ago(s, released)) : Jnull("released_bars_ago")))));
+   A_Push(f, Jr("donchian_20", Obj(Jn("high", HighestH(s, lc - 19, lc), s.digits) + "," + Jn("low", LowestL(s, lc - 19, lc), s.digits))));
+   // historical volatility (annualised stdev of log returns, 20)
+   double rets[]; ArrayResize(rets, 20);
+   for(int k = 0; k < 20; k++) rets[k] = s.c[lc - k - 1] > 0 ? MathLog(s.c[lc - k] / s.c[lc - k - 1]) : 0;
+   double mr = 0; for(int k = 0; k < 20; k++) mr += rets[k]; mr /= 20;
+   double vr = 0; for(int k = 0; k < 20; k++) vr += (rets[k] - mr) * (rets[k] - mr); vr /= 19;
+   double perYear = Is247(s.sym) ? 365.0 * 86400 / PeriodSeconds(s.tf) : 252.0 * 86400 / PeriodSeconds(s.tf);
+   if(s.tf == PERIOD_W1) perYear = 52;
+   if(s.tf == PERIOD_MN1) perYear = 12;
+   A_Push(f, Jn("historical_vol_annual_pct", MathSqrt(vr * perYear) * 100, 2));
+   A_Push(f, J("state", lc >= 20 && s.atr[lc - 20] > 0 ? (a > 1.1 * s.atr[lc - 20] ? "expanding" : a < 0.9 * s.atr[lc - 20] ? "contracting" : "steady") : "unknown"));
+   int minsLeft = MinutesToSessionEnd(s.sym);
+   double barsLeft = (double)minsLeft * 60 / PeriodSeconds(s.tf);
+   A_Push(f, Jr("expected_move_to_session_end", Obj(Jn("price", barsLeft > 0 ? a * MathSqrt(barsLeft) : 0, s.digits) + "," + Jn("pips", ToPips(s, barsLeft > 0 ? a * MathSqrt(barsLeft) : 0), 1) + "," +
+                                                   Ji("minutes_left", minsLeft) + "," + J("rule", (Is247(s.sym) ? "to 00:00 UTC" : "to 17:00 New York") + "; ATR x sqrt(candles left)"))));
+   return Obj(A_Join(f));
+  }
+
+//+------------------------------------------------------------------+
+//| 9. get_volume (tick-based -- MT5 has no buyer/seller side here)   |
+//+------------------------------------------------------------------+
+string C_Volume(CSlot *s)
+  {
+   int lc = s.lc; double a = Atr(s);
+   string f[];
+   A_Push(f, J("honesty", "MT5 forex/synthetic feeds have no buy/sell (aggressor) flags; volume = tick count (number of price changes). Buy/sell pressure below is an ESTIMATE from tick direction."));
+   double vv[]; ArrayResize(vv, s.n);
+   for(int i = 0; i < s.n; i++) vv[i] = (double)s.v[i];
+   double avg20 = SmaAt(vv, lc, 20);
+   // same hour-of-day average (intraday only)
+   double hourAvg = 0; int hn = 0;
+   if(PeriodSeconds(s.tf) < 86400)
+     {
+      MqlDateTime d0; TimeToStruct(s.t[lc], d0);
+      for(int i = lc - 1; i >= 0 && hn < 20; i--) { MqlDateTime d; TimeToStruct(s.t[i], d); if(d.hour == d0.hour && d.min == d0.min) { hourAvg += vv[i]; hn++; } }
+      if(hn > 0) hourAvg /= hn;
+     }
+   A_Push(f, Jr("tick_volume", Obj(Ji("last_closed", s.v[lc]) + "," + Jn("avg_20", avg20, 0) + "," + Jn("vs_avg_20", avg20 > 0 ? vv[lc] / avg20 : 0, 2) + "," +
+                                   (hn > 0 ? Jn("vs_same_time_of_day", hourAvg > 0 ? vv[lc] / hourAvg : 0, 2) : Jnull("vs_same_time_of_day")))));
+   string sp[];
+   for(int i = lc; i > lc - 50 && i > 20 && ArraySize(sp) < 3; i--)
+     {
+      double av = SmaAt(vv, i - 1, 20);
+      if(av <= 0 || vv[i] < 2 * av) continue;
+      bool extreme = s.h[i] >= HighestH(s, i - 19, i) || s.l[i] <= LowestL(s, i - 19, i);
+      A_Push(sp, Obj(Ji("bars_ago", Ago(s, i)) + "," + Jn("x_avg", vv[i] / av, 1) + "," + Jb("climax", vv[i] >= 3 * av && extreme) + "," + J("dir", s.c[i] > s.o[i] ? "bull" : "bear")));
+     }
+   A_Push(f, Jr("spikes", Arr(sp)));
+   // tick buffer (MT5 keeps the last 4096 ticks in memory; asked only when the symbol is synchronized)
+   MqlTick tk[];
+   int got = SymbolIsSynchronized(s.sym) ? CopyTicks(s.sym, tk, COPY_TICKS_INFO, 0, 1000) : 0;
+   int upT = 0, dnT = 0, last60 = 0; double lastP = 0;
+   long nowMsc = got > 0 ? tk[got - 1].time_msc : 0;
+   for(int i = 0; i < got; i++)
+     {
+      double p = tk[i].bid;
       if(lastP > 0) { if(p > lastP) upT++; else if(p < lastP) dnT++; }
       lastP = p;
+      if(nowMsc - tk[i].time_msc <= 60000) last60++;
      }
-   double ratio = (upT + dnT) > 0 ? (double)upT / (upT + dnT) * 100.0 : 50;
-   long spanSec = got > 1 ? (long)((ticks[got - 1].time_msc - ticks[0].time_msc) / 1000) : 0;
-   return Obj(J("note", "bid-price direction of the last ticks -- MT5 has no buyer/seller (aggressor) side for this symbol, so this is NOT order flow") + "," + Ji("ticks_sampled", got) + "," + Ji("up_ticks", upT) + "," + Ji("down_ticks", dnT) + "," +
-              Jn("uptick_pct", ratio, 2) + "," +
-              J("tape_bias", ratio > 55 ? "BULL" : ratio < 45 ? "BEAR" : "NEUTRAL") + "," +
-              Jn("last_price", lastP, g_aDigits) + "," + Ji("span_seconds", spanSec) + "," +
-              Jb("fast_tape", got >= 200 && spanSec > 0 && spanSec < 120));
-  }
-
-string A_TapeFlow()
-  {
-   int n = MathMin(30, g_anb - 1);
-   double up = 0, dn = 0;
-   for(int i = 1; i <= n; i++) { if(g_aC[i] >= g_aO[i]) up += (double)g_aV[i]; else dn += (double)g_aV[i]; }
-   double cvd = up - dn;
-   double imb = (up + dn) > 0 ? (up - dn) / (up + dn) : 0;
-   return Obj(J("source", "estimated from tick volume x candle colour -- not real order flow") + "," +
-              Jn("cvd", cvd, 0) + "," + Jn("imbalance", imb, 4) + "," +
-              J("flow_bias", imb > 0.1 ? "BUY" : imb < -0.1 ? "SELL" : "BALANCED") + "," +
-              Jn("buy_flow", up, 0) + "," + Jn("sell_flow", dn, 0) + "," +
-              Ji("window_bars", n) + "," +
-              Jb("aggressive_buyers", imb > 0.25) + "," + Jb("aggressive_sellers", imb < -0.25));
-  }
-
-//--- seasonality (hours in real UTC) --------------------------------------
-string A_Seasonality()
-  {
-   MqlDateTime d; TimeToStruct(TimeGMT(), d);
-   double hourly[24]; int hcnt[24];
-   for(int i = 0; i < 24; i++) { hourly[i] = 0; hcnt[i] = 0; }
-   for(int i = 1; i < g_anb; i++)
+   double spanSec = got > 1 ? (double)(tk[got - 1].time_msc - tk[0].time_msc) / 1000.0 : 0;
+   A_Push(f, Jr("estimated_pressure", Obj(J("basis", "estimated_from_tick_direction") + "," + Ji("ticks", got) + "," + Ji("up_ticks", upT) + "," + Ji("down_ticks", dnT) + "," +
+                                          Ji("delta", upT - dnT) + "," + Jn("up_pct", upT + dnT > 0 ? (double)upT / (upT + dnT) * 100 : 50, 1))));
+   A_Push(f, Jr("tick_speed", Obj(Jn("ticks_per_sec_last_60s", last60 / 60.0, 2) + "," + Jn("ticks_per_sec_buffer", spanSec > 0 ? got / spanSec : 0, 2))));
+   // leg participation: tick volume per bar on the last up-leg vs down-leg (external swings)
+   int ne = ArraySize(s.exI);
+   if(ne >= 2)
      {
-      MqlDateTime b; TimeToStruct((datetime)((long)g_aT[i] - g_srvOffset), b);
-      hourly[b.hour] += A_P(g_aH[i] - g_aL[i]); hcnt[b.hour]++;
+      int i0 = s.exI[ne - 2], i1 = s.exI[ne - 1];
+      double legV = 0, pbV = 0; int legN = 0, pbN = 0;
+      for(int i = i0 + 1; i <= i1; i++) { legV += vv[i]; legN++; }
+      for(int i = i1 + 1; i <= lc; i++) { pbV += vv[i]; pbN++; }
+      A_Push(f, Jr("leg_participation", Obj(J("last_leg", s.exP[ne - 1] > s.exP[ne - 2] ? "up" : "down") + "," + Jn("avg_tick_vol_last_leg", legN > 0 ? legV / legN : 0, 0) + "," +
+                                            Jn("avg_tick_vol_since", pbN > 0 ? pbV / pbN : 0, 0))));
      }
-   int bestH = 0; double bestV = -1;
-   string rows[];
-   for(int i = 0; i < 24; i++)
+   // OBV (tick volume)
+   double obv = 0, obv20 = 0;
+   for(int i = 1; i <= lc; i++) { obv += s.c[i] > s.c[i - 1] ? vv[i] : s.c[i] < s.c[i - 1] ? -vv[i] : 0; if(i == lc - 20) obv20 = obv; }
+   A_Push(f, Jr("obv", Obj(Jn("value", obv, 0) + "," + J("vs_20_bars_ago", obv > obv20 ? "higher" : obv < obv20 ? "lower" : "same"))));
+   // tick VWAP + profile over today's candles (intraday) or the last 50
+   MqlDateTime nd; TimeToStruct(s.t[s.n - 1], nd);
+   datetime dayStart = s.t[s.n - 1] - (nd.hour * 3600 + nd.min * 60 + nd.sec);
+   int from = PeriodSeconds(s.tf) < 86400 ? s.n - 1 : MathMax(0, lc - 49);
+   if(PeriodSeconds(s.tf) < 86400) while(from > 0 && s.t[from - 1] >= dayStart) from--;
+   double pv = 0, vs = 0, pv2 = 0;
+   for(int i = from; i <= lc; i++) { double tp = (s.h[i] + s.l[i] + s.c[i]) / 3; pv += tp * vv[i]; pv2 += tp * tp * vv[i]; vs += vv[i]; }
+   if(vs > 0)
      {
-      double avg = hcnt[i] > 0 ? hourly[i] / hcnt[i] : 0;
-      if(avg > bestV) { bestV = avg; bestH = i; }
-      A_Push(rows, DoubleToString(avg, 1));
+      double vw = pv / vs, vsd = MathSqrt(MathMax(0, pv2 / vs - vw * vw));
+      A_Push(f, Jr("tick_vwap", Obj(J("anchor", PeriodSeconds(s.tf) < 86400 ? "day open (server day)" : "last 50 candles") + "," + Lv(s, vw, s.c[lc]) + "," +
+                                    Jn("band1_up", vw + vsd, s.digits) + "," + Jn("band1_down", vw - vsd, s.digits) + "," + Jn("band2_up", vw + 2 * vsd, s.digits) + "," + Jn("band2_down", vw - 2 * vsd, s.digits))));
+      double hi = HighestH(s, from, lc), lo = LowestL(s, from, lc);
+      double bin = MathMax(a * 0.1, (hi - lo) / 60);
+      if(bin > 0 && hi > lo)
+        {
+         int nb = (int)MathCeil((hi - lo) / bin) + 1;
+         if(nb > 200) nb = 200;
+         double prof[]; ArrayResize(prof, nb); ArrayInitialize(prof, 0);
+         for(int i = from; i <= lc; i++)
+           {
+            int b0 = (int)((s.l[i] - lo) / bin), b1 = (int)((s.h[i] - lo) / bin);
+            b0 = MathMax(0, MathMin(nb - 1, b0)); b1 = MathMax(0, MathMin(nb - 1, b1));
+            double share = vv[i] / (b1 - b0 + 1);
+            for(int b = b0; b <= b1; b++) prof[b] += share;
+           }
+         int poc = 0; double tot = 0;
+         for(int b = 0; b < nb; b++) { tot += prof[b]; if(prof[b] > prof[poc]) poc = b; }
+         int lo_b = poc, hi_b = poc; double acc = prof[poc];
+         while(acc < 0.7 * tot && (lo_b > 0 || hi_b < nb - 1))
+           {
+            double dn = lo_b > 0 ? prof[lo_b - 1] : -1, up = hi_b < nb - 1 ? prof[hi_b + 1] : -1;
+            if(up >= dn) { hi_b++; acc += prof[hi_b]; } else { lo_b--; acc += prof[lo_b]; }
+           }
+         A_Push(f, Jr("tick_profile", Obj(Jn("poc", lo + (poc + 0.5) * bin, s.digits) + "," + Jn("value_area_high", lo + (hi_b + 1) * bin, s.digits) + "," +
+                                          Jn("value_area_low", lo + lo_b * bin, s.digits) + "," + J("basis", "tick count at price, not traded volume"))));
+        }
      }
-   string dow[7]; dow[0]="SUN"; dow[1]="MON"; dow[2]="TUE"; dow[3]="WED"; dow[4]="THU"; dow[5]="FRI"; dow[6]="SAT";
-   return Obj(J("day_of_week", dow[d.day_of_week]) + "," + Ji("hour_utc", d.hour) + "," +
-              Ji("month", d.mon) + "," + Ji("day_of_month", d.day) + "," +
-              Ji("most_volatile_hour", bestH) + "," + J("hours_are", "UTC") + "," + Jn("most_volatile_hour_pips", bestV, 1) + "," +
-              Jr("hourly_avg_range_pips", "[" + A_Join(rows) + "]") + "," +
-              Jb("is_month_end", d.day >= DaysInMonth(d.year, d.mon) - 2) + "," + Jb("is_friday", d.day_of_week == 5));
+   return Obj(A_Join(f));
   }
 
-//--- spread_analysis --------------------------------------------------------
-string A_SpreadAnalysis(string sym)
+//+------------------------------------------------------------------+
+//| 10. get_levels                                                    |
+//+------------------------------------------------------------------+
+string g_lvSrc[]; double g_lvPx[];
+void AddLv(double px, string src) { if(px <= 0) return; int n = ArraySize(g_lvPx); ArrayResize(g_lvPx, n + 1); ArrayResize(g_lvSrc, n + 1); g_lvPx[n] = px; g_lvSrc[n] = src; }
+
+string PivotJson(CSlot *ref, string name, int digits)
   {
-   double spread = SymbolInfoDouble(sym, SYMBOL_ASK) - SymbolInfoDouble(sym, SYMBOL_BID);
-   double sp = A_Pips(sym, spread);
-   double atrP = A_Pips(sym, A_ATR(14));
-   long spPts = (long)SymbolInfoInteger(sym, SYMBOL_SPREAD);
-   return Obj(Jn("spread_pips", sp, 2) + "," + Ji("spread_points", spPts) + "," +
-              Jn("spread_pct_of_atr", atrP > 0 ? sp / atrP * 100.0 : 0, 2) + "," +
-              J("cost_rating", sp < atrP * 0.05 ? "LOW" : sp < atrP * 0.15 ? "NORMAL" : "HIGH") + "," +
-              Jb("tradeable", sp < atrP * 0.2) + "," +
-              Jn("stop_level_pts", (double)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL), 0) + "," +
-              Jn("freeze_level_pts", (double)SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL), 0) + "," +
-              J("execution_mode", EnumToString((ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(sym, SYMBOL_TRADE_EXEMODE))));
+   if(ref == NULL || ref.n < 2) return Jwhy(name, "that timeframe is not loaded yet");
+   int i = ref.n - 2;
+   double H = ref.h[i], L = ref.l[i], C = ref.c[i], P = (H + L + C) / 3;
+   return Jr(name, Obj(Jn("p", P, digits) + "," + Jn("r1", 2 * P - L, digits) + "," + Jn("s1", 2 * P - H, digits) + "," +
+                       Jn("r2", P + (H - L), digits) + "," + Jn("s2", P - (H - L), digits) + "," + Jn("r3", H + 2 * (P - L), digits) + "," + Jn("s3", L - 2 * (H - P), digits)));
   }
 
-//--- gann ----------------------------------------------------------------
-string A_Gann()
+string C_Levels(CSlot *s)
   {
-   double hi = A_HighestHigh(0, 50), lo = A_LowestLow(0, 50), rng = hi - lo;
-   double g[9]; double ratios[9] = {0.125, 0.25, 0.333, 0.375, 0.5, 0.625, 0.667, 0.75, 0.875};
-   string lines[];
-   for(int i = 0; i < 9; i++) { g[i] = lo + rng * ratios[i]; A_Push(lines, DoubleToString(g[i], g_aDigits)); }
-   int bi = 0; double bd = 1e18;
-   for(int i = 0; i < 9; i++) { double dd = MathAbs(g_aC[0] - g[i]); if(dd < bd) { bd = dd; bi = i; } }
-   // Square of 9: price (in points) -> sqrt; each 45 degrees = +/-0.25 on the root.
-   double pts = g_aC[0] / MathMax(g_aPoint, 1e-9);
-   double root = MathSqrt(pts);
-   string sq[];
-   int degs[4] = {45, 90, 180, 360};
-   for(int k = 0; k < 4; k++)
+   int lc = s.lc; double px = s.c[lc], a = Atr(s);
+   ArrayFree(g_lvSrc); ArrayFree(g_lvPx);
+   string f[];
+   A_Push(f, J("rules", "pivots from the previous CLOSED D1/W1/MN1 candle; fib on the last confirmed external leg; ladder merges levels within 0.25 ATR"));
+   CSlot *d1 = GetSlot(s.sym, PERIOD_D1, 0);
+   CSlot *w1 = GetSlot(s.sym, PERIOD_W1, 0);
+   CSlot *mn = GetSlot(s.sym, PERIOD_MN1, 0);
+   A_Push(f, PivotJson(d1, "pivots_daily", s.digits)); A_Push(f, PivotJson(w1, "pivots_weekly", s.digits)); A_Push(f, PivotJson(mn, "pivots_monthly", s.digits));
+   if(d1 != NULL && d1.n >= 2)
      {
-      double step = degs[k] / 180.0;
-      double upP = MathPow(root + step, 2) * g_aPoint, dnP = MathPow(MathMax(root - step, 0), 2) * g_aPoint;
-      A_Push(sq, Obj(Ji("degrees", degs[k]) + "," + Jn("up", upP, g_aDigits) + "," + Jn("down", dnP, g_aDigits)));
+      int i = d1.n - 2; double H = d1.h[i], L = d1.l[i], C = d1.c[i], R = H - L;
+      A_Push(f, Jr("camarilla_daily", Obj(Jn("r1", C + R * 1.1 / 12, s.digits) + "," + Jn("r2", C + R * 1.1 / 6, s.digits) + "," + Jn("r3", C + R * 1.1 / 4, s.digits) + "," + Jn("r4", C + R * 1.1 / 2, s.digits) + "," +
+                                          Jn("s1", C - R * 1.1 / 12, s.digits) + "," + Jn("s2", C - R * 1.1 / 6, s.digits) + "," + Jn("s3", C - R * 1.1 / 4, s.digits) + "," + Jn("s4", C - R * 1.1 / 2, s.digits))));
+      double P = (H + L + C) / 3;
+      AddLv(P, "daily pivot"); AddLv(2 * P - L, "R1"); AddLv(2 * P - H, "S1"); AddLv(P + R, "R2"); AddLv(P - R, "S2");
+      AddLv(H, "previous day high"); AddLv(L, "previous day low");
      }
-   return Obj(J("note", "Gann levels from price arithmetic; gann_bias is only above/below the range midpoint") + "," + Jr("gann_levels", "[" + A_Join(lines) + "]") + "," +
-              Jn("nearest_gann", g[bi], g_aDigits) + "," + Jn("nearest_ratio", ratios[bi], 3) + "," +
-              Jn("dist_pips", A_P(bd), 1) + "," +
-              Jn("range_high", hi, g_aDigits) + "," + Jn("range_low", lo, g_aDigits) + "," +
-              Jn("sq9_next", MathPow(root + 1.0, 2) * g_aPoint, g_aDigits) + "," +
-              Jr("square_of_9", "[" + A_Join(sq) + "]") + "," +
-              J("gann_bias", g_aC[0] > lo + rng * 0.5 ? "BULL" : "BEAR"));
-  }
-
-//--- market_profile (each candle's tick volume spread over its own range) ---
-string A_MarketProfile()
-  {
-   int n = MathMin(g_anb, 100);
-   double hi = A_HighestHigh(0, n), lo = A_LowestLow(0, n);
-   int BINS = 24;
-   double binSize = (hi - lo) / BINS;
-   if(binSize <= 0) binSize = g_aPoint;
-   double vol[24]; for(int i = 0; i < BINS; i++) vol[i] = 0;
-   for(int i = 0; i < n; i++)
+   if(w1 != NULL && w1.n >= 2) { AddLv(w1.h[w1.n - 2], "previous week high"); AddLv(w1.l[w1.n - 2], "previous week low"); }
+   // round numbers
+   double step;
+   if(!IsSynthetic(s.sym)) step = s.digits == 3 || s.digits == 2 ? 0.5 : 0.005;
+   else step = MathPow(10, MathFloor(MathLog10(MathMax(px, 1e-9))) - 2);
+   if(step <= 0) step = s.pip * 50;
+   double base = MathFloor(px / step) * step;
+   string rn[];
+   for(int k = -2; k <= 3; k++) { double lv = base + k * step; A_Push(rn, DoubleToString(lv, s.digits)); AddLv(lv, "round number"); }
+   A_Push(f, Jr("round_numbers", Obj(Jn("step", step, s.digits) + "," + Jr("levels", "[" + A_Join(rn) + "]"))));
+   // fibonacci on the last external leg
+   int ne = ArraySize(s.exI);
+   if(ne >= 2 && s.exK[ne - 1] != s.exK[ne - 2])
      {
-      int b0 = (int)MathFloor((g_aL[i] - lo) / binSize), b1 = (int)MathFloor((g_aH[i] - lo) / binSize);
-      b0 = MathMax(0, MathMin(BINS - 1, b0)); b1 = MathMax(0, MathMin(BINS - 1, b1));
-      double share = (double)g_aV[i] / (b1 - b0 + 1);
-      for(int b = b0; b <= b1; b++) vol[b] += share;
+      double p0 = s.exP[ne - 2], p1 = s.exP[ne - 1], rngL = p1 - p0;
+      double rr[] = {0.236, 0.382, 0.5, 0.618, 0.786};
+      double ex[] = {1.27, 1.618};
+      string fr[];
+      for(int k = 0; k < 5; k++) { double lv = p1 - rngL * rr[k]; A_Push(fr, Jn(StringFormat("r%.1f", rr[k] * 100), lv, s.digits)); AddLv(lv, StringFormat("fib %.1f", rr[k] * 100)); }
+      for(int k = 0; k < 2; k++) { double lv = p0 + rngL * ex[k]; A_Push(fr, Jn(StringFormat("e%.1f", ex[k] * 100), lv, s.digits)); }
+      A_Push(f, Jr("fibonacci", Obj(Jn("anchor_from", p0, s.digits) + "," + Jn("anchor_to", p1, s.digits) + "," + J("leg", rngL > 0 ? "up" : "down") + "," + A_Join(fr))));
      }
-   int poc = 0; double total = 0;
-   for(int i = 0; i < BINS; i++) { total += vol[i]; if(vol[i] > vol[poc]) poc = i; }
-   double pocPrice = lo + (poc + 0.5) * binSize;
-   double acc = vol[poc]; int lowI = poc, hiI = poc;
-   while(acc < total * 0.7 && (lowI > 0 || hiI < BINS - 1))
+   // ladder: cluster within 0.25 ATR, 3 nearest above and below
+   int nl = ArraySize(g_lvPx);
+   bool used[]; ArrayResize(used, nl);
+   for(int i = 0; i < nl; i++) used[i] = false;
+   string above[], below[];
+   double cpx[]; string csrc[]; int ccnt[];
+   for(int i = 0; i < nl; i++)
      {
-      double below = lowI > 0 ? vol[lowI - 1] : -1;
-      double above = hiI < BINS - 1 ? vol[hiI + 1] : -1;
-      if(above >= below) { hiI++; acc += MathMax(0.0, above); }
-      else { lowI--; acc += MathMax(0.0, below); }
+      if(used[i]) continue;
+      double sum = g_lvPx[i]; int cnt = 1; string src = g_lvSrc[i]; used[i] = true;
+      for(int j = i + 1; j < nl; j++) if(!used[j] && MathAbs(g_lvPx[j] - g_lvPx[i]) <= 0.25 * a) { used[j] = true; sum += g_lvPx[j]; cnt++; if(StringFind(src, g_lvSrc[j]) < 0) src += " + " + g_lvSrc[j]; }
+      int m = ArraySize(cpx); ArrayResize(cpx, m + 1); ArrayResize(csrc, m + 1); ArrayResize(ccnt, m + 1);
+      cpx[m] = sum / cnt; csrc[m] = src; ccnt[m] = cnt;
      }
-   double vah = lo + (hiI + 1) * binSize, val = lo + lowI * binSize;
-   string bins[];
-   for(int i = 0; i < BINS; i++)
-      A_Push(bins, Obj(Jn("price", lo + (i + 0.5) * binSize, g_aDigits) + "," + Jn("volume", vol[i], 0)));
-   double pocPos = (pocPrice - lo) / MathMax(hi - lo, g_aPoint);
-   string shape = (vah - val) > (hi - lo) * 0.7 ? "D_SHAPE" : pocPos > 0.6 ? "P_SHAPE" : pocPos < 0.4 ? "B_SHAPE" : "D_SHAPE";
-   return Obj(J("volume_is", "tick volume") + "," + Jn("poc", pocPrice, g_aDigits) + "," + Jn("vah", vah, g_aDigits) + "," + Jn("val", val, g_aDigits) + "," +
-              Jn("profile_high", hi, g_aDigits) + "," + Jn("profile_low", lo, g_aDigits) + "," +
-              J("price_vs_va", g_aC[0] > vah ? "ABOVE" : g_aC[0] < val ? "BELOW" : "INSIDE") + "," +
-              Jn("dist_to_poc_pips", A_P(g_aC[0] - pocPrice), 1) + "," +
-              J("shape", shape) + "," +
-              Jr("bins", "[" + A_Join(bins) + "]"));
+   for(int pass = 0; pass < 2; pass++)
+     {
+      for(int t = 0; t < 3; t++)
+        {
+         int best = -1; double bd = DBL_MAX;
+         for(int m = 0; m < ArraySize(cpx); m++)
+           {
+            double d = pass == 0 ? cpx[m] - px : px - cpx[m];
+            if(d <= 0 || d >= bd) continue;
+            bd = d; best = m;
+           }
+         if(best < 0) break;
+         string row = Obj(Lv(s, cpx[best], px) + "," + Js("what", csrc[best]) + "," + Ji("count", ccnt[best]));
+         if(pass == 0) A_Push(above, row); else A_Push(below, row);
+         cpx[best] = pass == 0 ? -DBL_MAX : DBL_MAX; // used
+        }
+     }
+   A_Push(f, Jr("ladder_above", Arr(above)));
+   A_Push(f, Jr("ladder_below", Arr(below)));
+   // APA flip levels (H4 and above): a level touched by MORE THAN 2 swing points, then closed through
+   bool h4plus = PeriodSeconds(s.tf) >= PeriodSeconds(PERIOD_H4);
+   string flips[];
+   int ns = ArraySize(s.swI);
+   if(h4plus)
+     {
+      for(int k = ns - 1; k >= 0 && ArraySize(flips) < 3; k--)
+        {
+         int touches = 0, lastTouch = s.swI[k];
+         for(int q = 0; q < ns; q++) if(MathAbs(s.swP[q] - s.swP[k]) <= 0.1 * a) { touches++; lastTouch = MathMax(lastTouch, s.swI[q]); }
+         if(touches <= 2) continue;
+         double lvl = s.swP[k];
+         int broke = -1, dir = 0;
+         for(int j = lastTouch + 1; j <= lc; j++)
+           {
+            if(s.c[j] > lvl + 0.1 * a) { broke = j; dir = 1; break; }
+            if(s.c[j] < lvl - 0.1 * a) { broke = j; dir = -1; break; }
+           }
+         string row = Lv(s, lvl, px) + "," + Ji("touches", touches) + "," + J("tf", TfName(s.tf)) + "," + Jb("flip_confirmed", broke >= 0);
+         if(broke >= 0)
+            row += "," + Ji("broken_bars_ago", Ago(s, broke)) + "," + J("now_acts_as", dir > 0 ? "support" : "resistance") + "," +
+                   Jr("single_candle_structure", Obj(Jn("high", s.h[broke - 1], s.digits) + "," + Jn("low", s.l[broke - 1], s.digits) + "," + J("time", BarIso(s, broke - 1))));
+         bool dupe = false;
+         for(int q = 0; q < ArraySize(flips); q++) if(StringFind(flips[q], DoubleToString(lvl, s.digits)) >= 0) dupe = true;
+         if(!dupe) A_Push(flips, Obj(row));
+        }
+     }
+   A_Push(f, h4plus ? Jr("apa_flip_levels", Arr(flips)) : Jwhy("apa_flip_levels", "flip levels are read on H4 and above only (APA)"));
+   // APA flip entry type 2: flip zone (touch or near-touch with reaction) + multiple candle structure + breakout + return + higher-tf wick overlap
+   string ft2 = "null";
+   for(int k = ns - 1; k >= 0 && ft2 == "null"; k--)
+     {
+      double lvl = s.swP[k];
+      int reacts = 0, lastI = 0;
+      for(int q = 0; q < ns; q++)
+        {
+         if(MathAbs(s.swP[q] - lvl) > 0.25 * a) continue;
+         int i = s.swI[q];
+         double away = s.swK[q] == 1 ? s.swP[q] - LowestL(s, i, MathMin(lc, i + 10)) : HighestH(s, i, MathMin(lc, i + 10)) - s.swP[q];
+         if(away >= a) { reacts++; lastI = MathMax(lastI, i); }
+        }
+      if(reacts < 3) continue;
+      // breakout candle after the last reaction
+      int bo = -1, dir = 0;
+      for(int j = lastI + 3; j <= lc; j++)
+        {
+         if(s.c[j] > lvl + 0.1 * a && s.c[j - 1] <= lvl + 0.1 * a) { bo = j; dir = 1; break; }
+         if(s.c[j] < lvl - 0.1 * a && s.c[j - 1] >= lvl - 0.1 * a) { bo = j; dir = -1; break; }
+        }
+      if(bo < 4) continue;
+      double bh = HighestH(s, bo - 3, bo - 1), bl = LowestL(s, bo - 3, bo - 1);
+      bool base = bh - bl <= 1.5 * a && (dir > 0 ? bh <= lvl + 0.5 * a : bl >= lvl - 0.5 * a);
+      if(!base) continue;
+      bool returned = false; int retAt = -1;
+      for(int j = bo + 1; j <= lc; j++) if(dir > 0 ? s.l[j] <= bh : s.h[j] >= bl) { returned = true; retAt = j; break; }
+      // one higher timeframe: same-colour candles whose wicks overlap at the base
+      int wol = -1;
+      CSlot *hs = GetSlot(s.sym, HigherTf(s.tf), 0);
+      if(hs != NULL)
+        {
+         wol = 0;
+         for(int i = MathMax(1, hs.lc - 20); i <= hs.lc; i++)
+           {
+            bool g1 = hs.c[i - 1] > hs.o[i - 1], g2 = hs.c[i] > hs.o[i], r1 = hs.c[i - 1] < hs.o[i - 1], r2 = hs.c[i] < hs.o[i];
+            double olo = 0, ohi = 0;
+            if(g1 && g2 && MathMin(hs.o[i], hs.c[i]) > MathMax(hs.o[i - 1], hs.c[i - 1]) && hs.l[i] < hs.h[i - 1]) { olo = hs.l[i]; ohi = hs.h[i - 1]; }
+            if(r1 && r2 && MathMax(hs.o[i], hs.c[i]) < MathMin(hs.o[i - 1], hs.c[i - 1]) && hs.h[i] > hs.l[i - 1]) { olo = hs.l[i - 1]; ohi = hs.h[i]; }
+            if(ohi > olo && olo <= bh && ohi >= bl) { wol = 1; break; }
+           }
+        }
+      ft2 = Obj(Jr("flip_zone", Obj(Lv(s, lvl, px) + "," + Ji("reactions", reacts))) + "," +
+                Jr("multiple_candle_structure", Obj(Jn("high", bh, s.digits) + "," + Jn("low", bl, s.digits) + "," + Ji("candles", 3))) + "," +
+                Jr("breakout", Obj(J("dir", dir > 0 ? "up" : "down") + "," + Ji("bars_ago", Ago(s, bo)))) + "," +
+                Jb("returned_into_structure", returned) + (retAt >= 0 ? "," + Ji("returned_bars_ago", Ago(s, retAt)) : "") + "," +
+                (wol < 0 ? Jnull("higher_tf_wick_overlap") : Jb("higher_tf_wick_overlap", wol == 1)));
+     }
+   A_Push(f, Jr("apa_flip_entry_type2", ft2));
+   return Obj(A_Join(f));
   }
 
-//--- macro ---------------------------------------------------------------
-string A_Macro(string sym, ENUM_TIMEFRAMES tf)
+//+------------------------------------------------------------------+
+//| 14. get_chart_patterns (external swings only, max 2)              |
+//+------------------------------------------------------------------+
+string C_ChartPatterns(CSlot *s)
   {
-   double d1 = 0, w1 = 0, dxy = 0, gold = 0, jpy = 0;
-   double dC = xClose(sym, PERIOD_D1, 1), dCp = xClose(sym, PERIOD_D1, 2);
-   double wC = xClose(sym, PERIOD_W1, 1), wCp = xClose(sym, PERIOD_W1, 2);
-   bool dOk = dC > 0 && dCp > 0, wOk = wC > 0 && wCp > 0;
-   if(dOk) d1 = (dC - dCp) / dCp * 100.0;
-   if(wOk) w1 = (wC - wCp) / wCp * 100.0;
-   bool euOk = A_SymReturn("EURUSD", PERIOD_D1, 5, dxy); dxy = -dxy;
-   bool gOk = A_SymReturn("XAUUSD", PERIOD_D1, 5, gold);
-   bool jOk = A_SymReturn("USDJPY", PERIOD_D1, 5, jpy);
-   string regime = "UNKNOWN";
-   if(gOk && jOk) regime = (gold > 0.5 && jpy < 0) ? "RISK_OFF" : (gold < 0 && jpy > 0) ? "RISK_ON" : "NEUTRAL";
-   return Obj(J("note", "daily/weekly changes are real; risk_regime / safe_haven_bid are rough rules on gold and USDJPY moves, not a macro feed") + "," + (dOk ? Jn("daily_change_pct", d1, 4) : Jnull("daily_change_pct")) + "," +
-              (wOk ? Jn("weekly_change_pct", w1, 4) : Jnull("weekly_change_pct")) + "," +
-              J("changes_are", "last full day / last full week") + "," +
-              (euOk ? Jn("dxy_proxy_5d", dxy, 4) : Jnull("dxy_proxy_5d")) + "," +
-              (gOk ? Jn("gold_5d", gold, 4) : Jnull("gold_5d")) + "," +
-              (jOk ? Jn("usdjpy_5d", jpy, 4) : Jnull("usdjpy_5d")) + "," +
-              J("risk_regime", regime) + "," +
-              J("usd_bias", !euOk ? "UNKNOWN" : dxy > 0 ? "STRONG" : "WEAK") + "," +
-              Jb("safe_haven_bid", regime == "RISK_OFF"));
+   int lc = s.lc, ne = ArraySize(s.exI); double a = Atr(s), px = s.c[lc];
+   string out[];
+   // double top / bottom
+   for(int kind = 1; kind >= -1 && ArraySize(out) < 2; kind -= 2)
+     {
+      int k2 = -1, k1 = -1;
+      for(int k = ne - 1; k >= 0; k--) if(s.exK[k] == kind) { if(k2 < 0) k2 = k; else { k1 = k; break; } }
+      if(k1 < 0 || MathAbs(s.exP[k2] - s.exP[k1]) > 0.25 * a) continue;
+      double neck = kind == 1 ? LowestL(s, s.exI[k1], s.exI[k2]) : HighestH(s, s.exI[k1], s.exI[k2]);
+      int broke = -1;
+      for(int j = s.exI[k2] + 1; j <= lc; j++) if(kind == 1 ? s.c[j] < neck : s.c[j] > neck) { broke = j; break; }
+      double height = MathAbs((s.exP[k1] + s.exP[k2]) / 2 - neck);
+      A_Push(out, Obj(J("name", kind == 1 ? "double top" : "double bottom") + "," + Jn("peak_1", s.exP[k1], s.digits) + "," + Jn("peak_2", s.exP[k2], s.digits) + "," +
+                      Jn("neckline", neck, s.digits) + "," + Jn("height", height, s.digits) + "," + J("status", broke >= 0 ? "broken" : "forming") + "," +
+                      (broke >= 0 ? Ji("broken_bars_ago", Ago(s, broke)) : Jnull("broken_bars_ago")) + "," +
+                      Jn("measured_target", kind == 1 ? neck - height : neck + height, s.digits)));
+     }
+   // head and shoulders (last 3 external highs / lows)
+   for(int kind = 1; kind >= -1 && ArraySize(out) < 2; kind -= 2)
+     {
+      int ks[3]; int got = 0;
+      for(int k = ne - 1; k >= 0 && got < 3; k--) if(s.exK[k] == kind) ks[2 - got++] = k;
+      if(got < 3) continue;
+      double ls = s.exP[ks[0]], hd = s.exP[ks[1]], rs = s.exP[ks[2]];
+      bool ok = kind == 1 ? (hd > ls && hd > rs) : (hd < ls && hd < rs);
+      if(!ok || MathAbs(ls - rs) > 0.5 * a) continue;
+      double n1 = kind == 1 ? LowestL(s, s.exI[ks[0]], s.exI[ks[1]]) : HighestH(s, s.exI[ks[0]], s.exI[ks[1]]);
+      double n2 = kind == 1 ? LowestL(s, s.exI[ks[1]], s.exI[ks[2]]) : HighestH(s, s.exI[ks[1]], s.exI[ks[2]]);
+      double neck = (n1 + n2) / 2;
+      int broke = -1;
+      for(int j = s.exI[ks[2]] + 1; j <= lc; j++) if(kind == 1 ? s.c[j] < neck : s.c[j] > neck) { broke = j; break; }
+      double height = MathAbs(hd - neck);
+      A_Push(out, Obj(J("name", kind == 1 ? "head and shoulders" : "inverse head and shoulders") + "," + Jn("left_shoulder", ls, s.digits) + "," + Jn("head", hd, s.digits) + "," +
+                      Jn("right_shoulder", rs, s.digits) + "," + Jn("neckline", neck, s.digits) + "," + Jn("height", height, s.digits) + "," +
+                      J("status", broke >= 0 ? "broken" : "forming") + "," + (broke >= 0 ? Ji("broken_bars_ago", Ago(s, broke)) : Jnull("broken_bars_ago")) + "," +
+                      Jn("measured_target", kind == 1 ? neck - height : neck + height, s.digits)));
+     }
+   // triangle / wedge from the last 3 highs and 3 lows
+   if(ArraySize(out) < 2)
+     {
+      int hi[3], lo[3]; int gh = 0, gl = 0;
+      for(int k = ne - 1; k >= 0 && (gh < 3 || gl < 3); k--)
+        {
+         if(s.exK[k] == 1 && gh < 3) hi[2 - gh++] = k;
+         if(s.exK[k] == -1 && gl < 3) lo[2 - gl++] = k;
+        }
+      if(gh == 3 && gl == 3)
+        {
+         double sh = (s.exP[hi[2]] - s.exP[hi[0]]) / MathMax(1, s.exI[hi[2]] - s.exI[hi[0]]);
+         double sl = (s.exP[lo[2]] - s.exP[lo[0]]) / MathMax(1, s.exI[lo[2]] - s.exI[lo[0]]);
+         double w0 = s.exP[hi[0]] - s.exP[lo[0]], w2 = s.exP[hi[2]] - s.exP[lo[2]];
+         if(w2 < w0 * 0.8)
+           {
+            string name = (sh < 0 && sl > 0) ? "symmetrical triangle" : (MathAbs(sh) < 0.05 * a && sl > 0) ? "ascending triangle" :
+                          (MathAbs(sl) < 0.05 * a && sh < 0) ? "descending triangle" : (sh > 0 && sl > 0) ? "rising wedge" : (sh < 0 && sl < 0) ? "falling wedge" : "";
+            if(name != "")
+              {
+               double upNow = s.exP[hi[2]] + sh * (lc - s.exI[hi[2]]), dnNow = s.exP[lo[2]] + sl * (lc - s.exI[lo[2]]);
+               string st = px > upNow ? "broken up" : px < dnNow ? "broken down" : "forming";
+               A_Push(out, Obj(J("name", name) + "," + Jn("upper_line_now", upNow, s.digits) + "," + Jn("lower_line_now", dnNow, s.digits) + "," +
+                               Jn("height", w0, s.digits) + "," + J("status", st)));
+              }
+           }
+        }
+     }
+   // harmonics (H1 and above, completed only)
+   if(ArraySize(out) < 2 && PeriodSeconds(s.tf) >= 3600 && ne >= 5)
+     {
+      bool alt = true;
+      for(int k = ne - 4; k < ne; k++) if(s.exK[k] == s.exK[k - 1]) alt = false;
+      if(alt)
+        {
+         double X = s.exP[ne - 5], A = s.exP[ne - 4], B = s.exP[ne - 3], C = s.exP[ne - 2], D = s.exP[ne - 1];
+         double XA = MathAbs(A - X), AB = MathAbs(B - A), BC = MathAbs(C - B), CD = MathAbs(D - C), AD = MathAbs(D - A);
+         if(XA > 0 && AB > 0 && BC > 0)
+           {
+            double ab = AB / XA, ad = AD / XA, bc = BC / AB, cd = CD / BC;
+            string nm = ""; double err = 0;
+            if(MathAbs(ab - 0.618) <= 0.05 && MathAbs(ad - 0.786) <= 0.05) { nm = "gartley"; err = MathAbs(ab - 0.618) + MathAbs(ad - 0.786); }
+            else if(ab >= 0.382 && ab <= 0.5 && MathAbs(ad - 0.886) <= 0.05) { nm = "bat"; err = MathAbs(ad - 0.886); }
+            else if(MathAbs(ab - 0.786) <= 0.05 && ad >= 1.27 && ad <= 1.618) { nm = "butterfly"; err = MathAbs(ab - 0.786); }
+            else if(ab >= 0.382 && ab <= 0.618 && MathAbs(ad - 1.618) <= 0.08) { nm = "crab"; err = MathAbs(ad - 1.618); }
+            if(nm != "")
+               A_Push(out, Obj(J("name", nm + (D < C ? " (bullish)" : " (bearish)")) + "," + Jn("x", X, s.digits) + "," + Jn("a", A, s.digits) + "," + Jn("b", B, s.digits) + "," +
+                               Jn("c", C, s.digits) + "," + Jn("d", D, s.digits) + "," + Jn("ab_xa", ab, 3) + "," + Jn("bc_ab", bc, 3) + "," + Jn("cd_bc", cd, 3) + "," +
+                               Jn("ad_xa", ad, 3) + "," + Jn("ratio_error", err, 3) + "," + J("status", "completed")));
+           }
+        }
+     }
+   return Obj(J("rules", "external swings (fractal 5/5) only; double top/bottom peaks within 0.25 ATR; H&S shoulders within 0.5 ATR; broken = CLOSE through the neckline; harmonics H1+ completed only") + "," +
+              Jr("patterns", Arr(out)));
   }
 
-//--- news (MT5's economic calendar, which runs on BROKER SERVER time) -------
-// The calendar is read at most once every 10 minutes (a wider window than any one answer needs)
-// and kept: previous + present, so "news" answers in milliseconds. A read can make the EA wait
-// while MT5 syncs the calendar -- when one took over 3 s, the next try waits an hour.
+//+------------------------------------------------------------------+
+//| 1. get_price (live part every request + day/week/month levels)    |
+//+------------------------------------------------------------------+
+double g_sprBuf[]; string g_sprSym = "";
+string C_Price(string sym)
+  {
+   MqlTick tk; SymbolInfoTick(sym, tk);
+   int dg = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double pt = SymbolInfoDouble(sym, SYMBOL_POINT), pip = PipOf(sym);
+   double spr = tk.ask - tk.bid;
+   long qAge = tk.time > 0 ? (long)TimeTradeServer() - (long)tk.time : -1;
+   // normal spread = median over the recent ticks in MT5's memory
+   MqlTick tt[];
+   int got = SymbolIsSynchronized(sym) ? CopyTicks(sym, tt, COPY_TICKS_INFO, 0, 500) : 0;
+   double sp[]; ArrayResize(sp, got);
+   for(int i = 0; i < got; i++) sp[i] = tt[i].ask - tt[i].bid;
+   ArraySort(sp);
+   double med = got > 0 ? sp[got / 2] : spr;
+   bool open = MarketOpenNow(sym);
+   string f[];
+   A_Push(f, Jn("bid", tk.bid, dg)); A_Push(f, Jn("ask", tk.ask, dg)); A_Push(f, Jn("mid", (tk.bid + tk.ask) / 2, dg));
+   A_Push(f, Jr("spread", Obj(Jn("now_points", pt > 0 ? spr / pt : 0, 0) + "," + Jn("now_pips", spr / pip, 2) + "," + Jn("normal_points", pt > 0 ? med / pt : 0, 0) + "," +
+                              Jn("vs_normal", med > 0 ? spr / med : 1, 2) + "," + Ji("ticks_used", got))));
+   A_Push(f, J("quote_time_utc", SrvToIso((datetime)tk.time))); A_Push(f, Ji("quote_age_sec", qAge));
+   A_Push(f, Jb("market_open", open));
+   A_Push(f, Jb("feed_frozen", open && qAge > 60));
+   double chg = SymbolInfoDouble(sym, SYMBOL_PRICE_CHANGE);
+   CSlot *d1 = GetSlot(sym, PERIOD_D1, 0);
+   CSlot *w1 = GetSlot(sym, PERIOD_W1, 0);
+   CSlot *mn = GetSlot(sym, PERIOD_MN1, 0);
+   if(d1 != NULL && d1.n >= 16)
+     {
+      int t = d1.n - 1, y = d1.n - 2;
+      if(chg == 0 && d1.c[y] > 0) chg = (tk.bid - d1.c[y]) / d1.c[y] * 100;
+      A_Push(f, Jr("today", Obj(Jn("open", d1.o[t], dg) + "," + Jn("high", MathMax(d1.h[t], tk.bid), dg) + "," + Jn("low", MathMin(d1.l[t], tk.bid), dg) + "," +
+                                Jn("position_pct", d1.h[t] > d1.l[t] ? (tk.bid - d1.l[t]) / (d1.h[t] - d1.l[t]) * 100 : 50, 0))));
+      A_Push(f, Jr("yesterday", Obj(Jn("pdo", d1.o[y], dg) + "," + Jn("pdh", d1.h[y], dg) + "," + Jn("pdl", d1.l[y], dg) + "," + Jn("pdc", d1.c[y], dg))));
+      // ADR 14: closed days, skipping Sunday stubs (< 20% of the median range)
+      double rg[]; int m = 0;
+      for(int i = y; i >= 1 && i > y - 20; i--) { ArrayResize(rg, m + 1); rg[m++] = d1.h[i] - d1.l[i]; }
+      double srt[]; ArrayCopy(srt, rg); ArraySort(srt);
+      double medR = m > 0 ? srt[m / 2] : 0, sum = 0; int cnt = 0;
+      for(int i = 0; i < m && cnt < 14; i++) if(rg[i] >= 0.2 * medR) { sum += rg[i]; cnt++; }
+      double adr = cnt > 0 ? sum / cnt : 0;
+      A_Push(f, Jr("adr14", Obj(Jn("price", adr, dg) + "," + Jn("pips", adr / pip, 1) + "," + Jn("today_used_pct", adr > 0 ? (d1.h[t] - d1.l[t]) / adr * 100 : 0, 0))));
+     }
+   else A_Push(f, Jwhy("today", "daily candles not loaded yet"));
+   A_Push(f, Jn("change_vs_prev_close_pct", chg, 3));
+   if(w1 != NULL && w1.n >= 2)
+      A_Push(f, Jr("week", Obj(Jn("high", w1.h[w1.n - 1], dg) + "," + Jn("low", w1.l[w1.n - 1], dg) + "," + Jn("pwh", w1.h[w1.n - 2], dg) + "," + Jn("pwl", w1.l[w1.n - 2], dg) + "," +
+                               Jn("position_pct", w1.h[w1.n - 1] > w1.l[w1.n - 1] ? (tk.bid - w1.l[w1.n - 1]) / (w1.h[w1.n - 1] - w1.l[w1.n - 1]) * 100 : 50, 0))));
+   if(mn != NULL && mn.n >= 2)
+      A_Push(f, Jr("month", Obj(Jn("high", mn.h[mn.n - 1], dg) + "," + Jn("low", mn.l[mn.n - 1], dg) + "," + Jn("prev_high", mn.h[mn.n - 2], dg) + "," + Jn("prev_low", mn.l[mn.n - 2], dg))));
+   if(w1 != NULL && w1.n >= 53 && !IsSynthetic(sym))
+      A_Push(f, Jr("week52", Obj(Jn("high", HighestH(w1, w1.n - 52, w1.n - 1), dg) + "," + Jn("low", LowestL(w1, w1.n - 52, w1.n - 1), dg))));
+   else if(IsSynthetic(sym)) A_Push(f, Jwhy("week52", "synthetic index: generated price, a 52-week range means nothing"));
+   CSlot *m15 = GetSlot(sym, PERIOD_M15, 0);
+   CSlot *h1 = GetSlot(sym, PERIOD_H1, 0);
+   A_Push(f, Jr("spread_vs_atr", Obj((m15 != NULL ? Jn("m15", Atr(m15) > 0 ? spr / Atr(m15) : 0, 3) : Jnull("m15")) + "," + (h1 != NULL ? Jn("h1", Atr(h1) > 0 ? spr / Atr(h1) : 0, 3) : Jnull("h1")))));
+   long stl = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL), frz = SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL);
+   A_Push(f, Jr("broker_limits", Obj(Jn("stops_level_price", stl * pt, dg) + "," + Jn("freeze_level_price", frz * pt, dg) + "," +
+                                     J("note", stl == 0 ? "stops level 0 = floating: keep stops at least 3 x spread away" : "SL/TP/pending must be at least this far from price"))));
+   return Obj(A_Join(f));
+  }
+
+bool MarketOpenNow(string sym)
+  {
+   MqlDateTime sd; datetime nowSrv = TimeTradeServer(); TimeToStruct(nowSrv, sd);
+   int secOfDay = sd.hour * 3600 + sd.min * 60 + sd.sec;
+   bool any = false, inS = false;
+   for(uint k = 0; k < 10; k++)
+     {
+      datetime from, to;
+      if(!SymbolInfoSessionTrade(sym, (ENUM_DAY_OF_WEEK)sd.day_of_week, k, from, to)) break;
+      any = true;
+      int a = (int)from, b = (int)to;
+      if(secOfDay >= a && secOfDay < (b == 0 ? 86400 : b)) inS = true;
+     }
+   long qAge = (long)nowSrv - SymbolInfoInteger(sym, SYMBOL_TIME);
+   bool tradeable = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_DISABLED;
+   return tradeable && (!any || inS) && qAge < 600;
+  }
+
+//+------------------------------------------------------------------+
+//| 11. get_session                                                   |
+//+------------------------------------------------------------------+
+bool WindowHL(CSlot *m, datetime fromUtc, datetime toUtc, double &hi, double &lo, double &op)
+  {
+   hi = 0; lo = 0; op = 0;
+   if(m == NULL) return false;
+   bool any = false;
+   for(int i = 0; i < m.n; i++)
+     {
+      datetime u = (datetime)((long)m.t[i] - g_srvOffset);
+      if(u < fromUtc || u >= toUtc) continue;
+      if(!any) { hi = m.h[i]; lo = m.l[i]; op = m.o[i]; any = true; }
+      else { hi = MathMax(hi, m.h[i]); lo = MathMin(lo, m.l[i]); }
+     }
+   return any;
+  }
+string WinJson(CSlot *m, string name, datetime fromUtc, datetime toUtc, int dg)
+  {
+   double hi, lo, op;
+   if(!WindowHL(m, fromUtc, toUtc, hi, lo, op)) return Jnull(name);
+   return Jr(name, Obj(Jn("high", hi, dg) + "," + Jn("low", lo, dg) + "," + Jn("open", op, dg) + "," + J("from_utc", IsoUtc(fromUtc)) + "," + J("to_utc", IsoUtc(toUtc))));
+  }
+
+string C_Session(string sym)
+  {
+   datetime now = TimeGMT();
+   int dg = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   MqlDateTime u; TimeToStruct(now, u);
+   string f[];
+   A_Push(f, J("utc_now", IsoUtc(now)));
+   A_Push(f, J("london_time", HHMM(LocalMinuteOfDay(TZ_LONDON, now)))); A_Push(f, J("new_york_time", HHMM(LocalMinuteOfDay(TZ_NEWYORK, now))));
+   A_Push(f, J("dst_rule", "UK: last Sunday March - last Sunday October; US: 2nd Sunday March - 1st Sunday November"));
+   if(Is247(sym))
+     {
+      A_Push(f, J("sessions", "24/7 -- no forex sessions for this symbol"));
+      A_Push(f, Ji("minutes_to_utc_midnight", 1440 - (u.hour * 60 + u.min)));
+      return Obj(A_Join(f));
+     }
+   int lon = LocalMinuteOfDay(TZ_LONDON, now), ny = LocalMinuteOfDay(TZ_NEWYORK, now), tky = LocalMinuteOfDay(TZ_TOKYO, now), syd = LocalMinuteOfDay(TZ_SYDNEY, now);
+   bool sydO = syd >= 7 * 60 && syd < 16 * 60, tkyO = tky >= 9 * 60 && tky < 18 * 60, lonO = lon >= 8 * 60 && lon < 17 * 60, nyO = ny >= 8 * 60 && ny < 17 * 60;
+   string open = "";
+   if(sydO) open += "Sydney ";
+   if(tkyO) open += "Tokyo ";
+   if(lonO) open += "London ";
+   if(nyO) open += "New York ";
+   StringTrimRight(open);
+   A_Push(f, J("open_now", open == "" ? "none" : open));
+   A_Push(f, Jb("london_new_york_overlap", lonO && nyO));
+   A_Push(f, Ji("minutes_to_london_open", lon < 480 ? 480 - lon : 1440 - lon + 480));
+   A_Push(f, Ji("minutes_to_new_york_open", ny < 480 ? 480 - ny : 1440 - ny + 480));
+   A_Push(f, Ji("minutes_to_tokyo_open", tky < 540 ? 540 - tky : 1440 - tky + 540));
+   bool kzL = ny >= 120 && ny < 300, kzN = ny >= 420 && ny < 600, sb = ny >= 600 && ny < 660;
+   A_Push(f, Jr("killzones_ny_time", Obj(Jb("london_02_05", kzL) + "," + Jb("new_york_am_07_10", kzN) + "," + Jb("silver_bullet_10_11", sb) + "," + Jb("in_killzone", kzL || kzN))));
+   CSlot *m5 = GetSlot(sym, PERIOD_M5, 0);
+   if(m5 == NULL) { A_Push(f, Jwhy("ranges", "M5 candles not loaded yet")); return Obj(A_Join(f)); }
+   // Asian range 19:00-00:00 NY (the evening before today's NY date)
+   datetime asiaFrom = UtcOfLocal(TZ_NEWYORK, now, 19, 0, ny >= 19 * 60 ? 0 : -1), asiaTo = asiaFrom + 5 * 3600;
+   A_Push(f, WinJson(m5, "asian_range", asiaFrom, asiaTo, dg));
+   datetime lonOpen = UtcOfLocal(TZ_LONDON, now, 8, 0, 0), nyOpen = UtcOfLocal(TZ_NEWYORK, now, 9, 30, 0);
+   A_Push(f, WinJson(m5, "london_opening_range_30m", lonOpen, lonOpen + 1800, dg));
+   A_Push(f, WinJson(m5, "london_opening_range_60m", lonOpen, lonOpen + 3600, dg));
+   A_Push(f, WinJson(m5, "new_york_opening_range_30m", nyOpen, nyOpen + 1800, dg));
+   A_Push(f, WinJson(m5, "new_york_opening_range_60m", nyOpen, nyOpen + 3600, dg));
+   for(int d = 0; d >= -1; d--)
+     {
+      string tag = d == 0 ? "today" : "yesterday";
+      datetime lf = UtcOfLocal(TZ_LONDON, now, 8, 0, d), nf = UtcOfLocal(TZ_NEWYORK, now, 8, 0, d);
+      datetime af = UtcOfLocal(TZ_NEWYORK, now, 19, 0, d - 1);
+      A_Push(f, WinJson(m5, "asia_" + tag, af, af + 5 * 3600, dg));
+      A_Push(f, WinJson(m5, "london_" + tag, lf, lf + 9 * 3600, dg));
+      A_Push(f, WinJson(m5, "new_york_" + tag, nf, nf + 9 * 3600, dg));
+     }
+   double ah, al, ao, lh, ll, lo2;
+   bool asiaOk = WindowHL(m5, asiaFrom, asiaTo, ah, al, ao);
+   bool lonOk = WindowHL(m5, lonOpen, lonOpen + 9 * 3600, lh, ll, lo2);
+   if(asiaOk && lonOk)
+     {
+      A_Push(f, Jb("london_swept_asia_high", lh > ah)); A_Push(f, Jb("london_swept_asia_low", ll < al));
+      // Judas: one side of Asia swept, then price back beyond the London open on the other side
+      double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+      A_Push(f, Jb("judas_swing", (lh > ah && bid < lo2) || (ll < al && bid > lo2)));
+     }
+   datetime midnight = UtcOfLocal(TZ_NEWYORK, now, 0, 0, 0);
+   double mh, ml, mo;
+   if(WindowHL(m5, midnight, midnight + 300, mh, ml, mo)) A_Push(f, Jn("midnight_open_ny", mo, dg));
+   if(WindowHL(m5, lonOpen, lonOpen + 300, mh, ml, mo)) A_Push(f, Jn("london_open_price", mo, dg));
+   if(WindowHL(m5, nyOpen, nyOpen + 300, mh, ml, mo)) A_Push(f, Jn("new_york_open_price", mo, dg));
+   datetime cb = UtcOfLocal(TZ_NEWYORK, now, 14, 0, ny >= 20 * 60 ? 0 : -1);
+   A_Push(f, WinJson(m5, "cbdr_14_20_ny", cb, cb + 6 * 3600, dg));
+   // holiday today, rollover, calendar flags
+   A_Push(f, Jb("bank_holiday_today", HolidayToday(sym)));
+   MqlDateTime sd; TimeToStruct(TimeTradeServer(), sd);
+   A_Push(f, Ji("minutes_to_rollover_server_midnight", 1440 - (sd.hour * 60 + sd.min)));
+   int dim = DaysInMonth(u.year, u.mon), wdLeft = 0;
+   for(int d = u.day + 1; d <= dim; d++) { int w = DowOf(u.year, u.mon, d); if(w != 0 && w != 6) wdLeft++; }
+   A_Push(f, Jb("month_end_window", wdLeft <= 1));
+   A_Push(f, Jb("friday_late", u.day_of_week == 5 && u.hour >= 18));
+   A_Push(f, Jb("sunday_monday_open", (u.day_of_week == 0 && u.hour >= 21) || (u.day_of_week == 1 && u.hour < 1)));
+   return Obj(A_Join(f));
+  }
+
+//+------------------------------------------------------------------+
+//| 12. get_news (economic calendar, server time, cached 10 min)      |
+//+------------------------------------------------------------------+
 MqlCalendarValue g_calVals[];
 datetime g_calAt = 0, g_calRetryAt = 0;
 bool g_calOk = false;
@@ -3716,7 +3285,7 @@ bool CalendarSnapshot(datetime nowSrv, MqlCalendarValue &out[])
      {
       uint started = GetTickCount();
       MqlCalendarValue fresh[];
-      if(CalendarValueHistory(fresh, nowSrv - 12 * 3600, nowSrv + 36 * 3600, NULL, NULL))
+      if(CalendarValueHistory(fresh, nowSrv - 30 * 3600, nowSrv + 36 * 3600, NULL, NULL))
         {
          ArrayFree(g_calVals);
          ArrayCopy(g_calVals, fresh);
@@ -3728,273 +3297,433 @@ bool CalendarSnapshot(datetime nowSrv, MqlCalendarValue &out[])
      }
    ArrayFree(out);
    if(g_calOk) ArrayCopy(out, g_calVals);
-   if(g_calOk && nowLocal - g_calAt > 900) NotePrevious("economic calendar (" + IntegerToString((long)(nowLocal - g_calAt) / 60) + " min old)");
    return g_calOk;
   }
-
-string A_News(string sym)
+void PairCurrencies(string sym, string &base, string &quote)
+  {
+   base = SymbolInfoString(sym, SYMBOL_CURRENCY_BASE); quote = SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT);
+   if(base == "" || quote == "") { base = StringSubstr(sym, 0, 3); quote = StringSubstr(sym, 3, 3); }
+   if(base == quote) base = "USD"; // gold / indices quoted in USD: USD news matters
+  }
+bool HolidayToday(string sym)
   {
    MqlCalendarValue vals[];
-   string base = SymbolInfoString(sym, SYMBOL_CURRENCY_BASE), quote = SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT);
-   if(base == "" || quote == "") { base = StringSubstr(sym, 0, 3); quote = StringSubstr(sym, 3, 3); }
    datetime nowSrv = TimeTradeServer();
-   datetime from = nowSrv - 6 * 3600, to = nowSrv + 24 * 3600;
-   string items[]; int high = 0; long minsToNext = -1; long minsToNextHigh = -1;
-   bool calOk = CalendarSnapshot(nowSrv, vals);
-   if(calOk)
+   if(!CalendarSnapshot(nowSrv, vals)) return false;
+   string base, quote; PairCurrencies(sym, base, quote);
+   MqlDateTime d; TimeToStruct(nowSrv, d);
+   datetime day0 = nowSrv - (d.hour * 3600 + d.min * 60 + d.sec);
+   for(int i = 0; i < ArraySize(vals); i++)
      {
-      // Every event is counted (the next high-impact one can't be missed); only the printed list is
-      // capped. Holidays and no-importance entries are skipped -- they used to fill the list first.
-      for(int i = 0; i < ArraySize(vals); i++)
+      if(vals[i].time < day0 || vals[i].time >= day0 + 86400) continue;
+      MqlCalendarEvent ev; if(!CalendarEventById(vals[i].event_id, ev)) continue;
+      if(ev.type != CALENDAR_TYPE_HOLIDAY) continue;
+      MqlCalendarCountry co; if(!CalendarCountryById(ev.country_id, co)) continue;
+      if(co.currency == base || co.currency == quote) return true;
+     }
+   return false;
+  }
+string CalNum(string k, long raw)
+  {
+   if(raw == LONG_MIN) return Jnull(k);
+   return Jn(k, (double)raw / 1000000.0, 4);
+  }
+
+string C_News(string sym)
+  {
+   if(IsSynthetic(sym)) return Obj(J("news", "not news-driven (synthetic index)"));
+   MqlCalendarValue vals[];
+   string base, quote; PairCurrencies(sym, base, quote);
+   datetime nowSrv = TimeTradeServer();
+   bool ok = CalendarSnapshot(nowSrv, vals);
+   string f[];
+   A_Push(f, Jb("calendar_available", ok));
+   A_Push(f, J("currencies", base + "," + quote));
+   if(!ok) return Obj(A_Join(f));
+   string up[]; long nextHigh = -1; int blackout = 0;
+   string lastRel[];
+   for(int i = 0; i < ArraySize(vals); i++)
+     {
+      MqlCalendarEvent ev; if(!CalendarEventById(vals[i].event_id, ev)) continue;
+      if(ev.importance == CALENDAR_IMPORTANCE_NONE || ev.type == CALENDAR_TYPE_HOLIDAY) continue;
+      MqlCalendarCountry co; if(!CalendarCountryById(ev.country_id, co)) continue;
+      if(co.currency != base && co.currency != quote) continue;
+      long mins = (long)((vals[i].time - nowSrv) / 60);
+      bool high = ev.importance == CALENDAR_IMPORTANCE_HIGH;
+      string nm = ev.name;
+      string nmL = nm; StringToLower(nmL);
+      bool major = StringFind(nmL, "interest rate") >= 0 || StringFind(nmL, "nonfarm") >= 0 || StringFind(nmL, "non-farm") >= 0 || StringFind(nmL, "cpi") >= 0;
+      int win = major ? 30 : 15;
+      if(high && MathAbs(mins) <= win) blackout = MathMax(blackout, win);
+      if(mins >= 0 && mins <= 1440 && ArraySize(up) < 12)
+         A_Push(up, Obj(J("time_utc", SrvToIso(vals[i].time)) + "," + Ji("minutes_from_now", mins) + "," + J("currency", co.currency) + "," + Js("event", nm) + "," +
+                        J("importance", high ? "high" : ev.importance == CALENDAR_IMPORTANCE_MODERATE ? "moderate" : "low")));
+      if(high && mins >= 0 && (nextHigh < 0 || mins < nextHigh)) nextHigh = mins;
+     }
+   // latest released HIGH event per currency (scan newest first)
+   for(int pass = 0; pass < 2; pass++)
+     {
+      string cur = pass == 0 ? base : quote;
+      for(int i = ArraySize(vals) - 1; i >= 0; i--)
         {
-         if(vals[i].time < from || vals[i].time > to) continue;
-         MqlCalendarEvent ev;
-         if(!CalendarEventById(vals[i].event_id, ev)) continue;
-         MqlCalendarCountry co;
-         if(!CalendarCountryById(ev.country_id, co)) continue;
-         if(co.currency != base && co.currency != quote) continue;
-         if(ev.importance == CALENDAR_IMPORTANCE_NONE) continue;
-         bool isHigh = ev.importance == CALENDAR_IMPORTANCE_HIGH;
-         long mins = (long)((vals[i].time - nowSrv) / 60);
-         if(isHigh && mins >= 0) high++;
-         if(mins > 0 && (minsToNext < 0 || mins < minsToNext)) minsToNext = mins;
-         if(isHigh && mins > 0 && (minsToNextHigh < 0 || mins < minsToNextHigh)) minsToNextHigh = mins;
-         if(ArraySize(items) >= 15) continue;
-         A_Push(items, Obj(J("time", SrvToIso(vals[i].time)) + "," + Ji("minutes_from_now", mins) + "," + J("currency", co.currency) + "," +
-                         Js("event", ev.name) + "," +
-                         J("importance", isHigh ? "HIGH" : ev.importance == CALENDAR_IMPORTANCE_MODERATE ? "MEDIUM" : "LOW") + "," +
-                         Ji("has_actual", vals[i].HasActualValue() ? 1 : 0)));
+         if(vals[i].time > nowSrv || vals[i].actual_value == LONG_MIN) continue;
+         MqlCalendarEvent ev; if(!CalendarEventById(vals[i].event_id, ev)) continue;
+         if(ev.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+         MqlCalendarCountry co; if(!CalendarCountryById(ev.country_id, co)) continue;
+         if(co.currency != cur) continue;
+         string row = J("currency", cur) + "," + Js("event", ev.name) + "," + J("time_utc", SrvToIso(vals[i].time)) + "," +
+                      CalNum("actual", vals[i].actual_value) + "," + CalNum("forecast", vals[i].forecast_value) + "," +
+                      CalNum("previous", vals[i].prev_value) + "," + CalNum("revised_previous", vals[i].revised_prev_value);
+         if(vals[i].forecast_value != LONG_MIN)
+           {
+            double sur = (double)(vals[i].actual_value - vals[i].forecast_value) / 1000000.0;
+            double fc = MathAbs((double)vals[i].forecast_value / 1000000.0);
+            row += "," + Jn("surprise", sur, 4) + "," + (fc > 0 ? Jn("surprise_pct_of_forecast", sur / fc * 100, 1) : Jnull("surprise_pct_of_forecast"));
+           }
+         int imp = (int)vals[i].impact_type;
+         row += "," + J("impact_for_currency", imp == 1 ? "positive" : imp == 2 ? "negative" : "n/a");
+         // price reaction: move over the 15 M1 candles after the release, in M15 ATR
+         CSlot *m1 = GetSlot(sym, PERIOD_M1, 0);
+         CSlot *m15 = GetSlot(sym, PERIOD_M15, 0);
+         if(m1 != NULL && m15 != NULL)
+           {
+            int k = -1;
+            for(int q = 0; q < m1.n; q++) if(m1.t[q] >= vals[i].time) { k = q; break; }
+            if(k >= 0 && k + 1 < m1.n)
+              {
+               int e = MathMin(m1.n - 1, k + 15);
+               double mv = m1.c[e] - m1.o[k], at = Atr(m15);
+               row += "," + Jn("reaction_15m_atr_m15", at > 0 ? mv / at : 0, 2);
+              }
+           }
+         A_Push(lastRel, Obj(row));
+         break;
         }
      }
-   return Obj(Jb("calendar_available", calOk) + "," + Jr("events", "[" + A_Join(items) + "]") + "," + Ji("count", ArraySize(items)) + "," +
-              Ji("high_impact_count", high) + "," + Ji("minutes_to_next", minsToNext) + "," + Ji("minutes_to_next_high", minsToNextHigh) + "," +
-              Jb("news_blackout", minsToNextHigh >= 0 && minsToNextHigh < 30));
+   A_Push(f, Jr("upcoming_24h", Arr(up)));
+   A_Push(f, nextHigh >= 0 ? Ji("minutes_to_next_high", nextHigh) : Jnull("minutes_to_next_high"));
+   A_Push(f, Jb("blackout_now", blackout > 0));
+   A_Push(f, J("blackout_rule", "+-15 min around a high-impact event, +-30 min for rate decisions / NFP / CPI"));
+   A_Push(f, Jr("last_high_impact_release", Arr(lastRel)));
+   A_Push(f, Ji("calendar_age_min", (long)(TimeLocal() - g_calAt) / 60));
+   return Obj(A_Join(f));
   }
 
-//--- sentiment (TECHNICAL sentiment, built from indicators) ----------------
-string A_Sentiment(int confScore, string confDir)
+//+------------------------------------------------------------------+
+//| 13. get_intermarket (recomputed once per H1 candle)               |
+//+------------------------------------------------------------------+
+string g_ccy[] = {"USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"};
+string g_imCache = ""; datetime g_imBar = 0; int g_imPairs = 0;
+// % change of a cross over `bars` CLOSED H1 candles (false = not loaded)
+bool PairChange(string base, int bars, double &chg)
   {
-   double rsi = A_RSI(14);
-   double m, s, h; A_MACD(m, s, h, 0);
-   int bullBars = 0; int n = MathMin(20, g_anb - 1);
-   for(int i = 1; i <= n; i++) if(g_aC[i] >= g_aO[i]) bullBars++;
-   double pctBull = (double)bullBars / MathMax(1, n) * 100.0;
-   double score = (rsi - 50) * 1.2 + (h > 0 ? 15 : -15) + (pctBull - 50) * 0.6;
-   score = MathMax(-100, MathMin(100, score));
-   return Obj(J("source", "technical sentiment from RSI, MACD and candle colours -- not trader positioning") + "," + Jn("score", score, 1) + "," +
-              J("label", score > 40 ? "GREED" : score > 10 ? "BULLISH" : score < -40 ? "FEAR" : score < -10 ? "BEARISH" : "NEUTRAL") + "," +
-              Jn("bull_bar_pct", pctBull, 1) + "," +
-              Jn("rsi", rsi, 2) + "," +
-              J("confluence_dir", confDir) + "," + Ji("confluence_score", confScore) + "," +
-              Jb("extreme", MathAbs(score) > 70));
+   chg = 0;
+   string nm = ResolvedName(base);
+   if(nm == "" || !SeriesReady(nm, PERIOD_H1)) return false;
+   double c[];
+   if(CopyClose(nm, PERIOD_H1, 1, bars + 1, c) != bars + 1 || c[0] <= 0) return false;
+   chg = (c[bars] - c[0]) / c[0] * 100;
+   return true;
   }
-
-//--- regime (Kaufman efficiency ratio + ADX) --------------------------------
-string A_Regime()
+double Corr(const double &x[], const double &y[], int n)
   {
-   double atr = A_ATR(14), atrLong = A_ATR(MathMin(50, g_anb - 2));
-   double ma20 = A_SMA(20), ma50 = A_SMA(50);
-   int n = MathMin(50, g_anb - 2);
-   double rng = A_HighestHigh(1, n) - A_LowestLow(1, n);
-   double net = MathAbs(g_aC[1] - g_aC[1 + n]);
-   double path = 0; for(int i = 1; i <= n; i++) path += MathAbs(g_aC[i] - g_aC[i + 1]);
-   double er = path > 0 ? net / path : 0;   // Kaufman: net move / the sum of every bar's move
-   double adx, pdi, mdi; bool adxOk = A_ADXCalc(14, 0, adx, pdi, mdi);
-   bool trending = er > 0.3 || (adxOk && adx >= 25);
-   bool ranging = er < 0.15 && (!adxOk || adx < 20);
-   string regime = trending ? "TRENDING" : ranging ? "RANGING" : "TRANSITIONAL";
-   string vol = atr > atrLong * 1.25 ? "HIGH_VOL" : atr < atrLong * 0.75 ? "LOW_VOL" : "NORMAL_VOL";
-   return Obj(J("regime", regime) + "," + J("volatility_regime", vol) + "," +
-              Jn("efficiency_ratio", er, 3) + "," + J("efficiency_ratio_is", "Kaufman ER over 50 closed bars") + "," +
-              (adxOk ? Jn("adx", adx, 1) : Jnull("adx")) + "," +
-              J("direction", g_aC[0] > ma50 ? "UP" : "DOWN") + "," +
-              Jb("trending", regime == "TRENDING") + "," + Jb("ranging", regime == "RANGING") + "," +
-              Jn("range_pips", A_P(rng), 1) + "," + Jn("net_move_pips", A_P(net), 1) + "," +
-              J("suggested_style", regime == "TRENDING" ? "BREAKOUT_TREND_FOLLOW" : regime == "RANGING" ? "MEAN_REVERSION" : "WAIT_FOR_CLARITY") + "," +
-              Jn("ma_spread_pips", A_P(ma20 - ma50), 1));
+   if(n < 5) return 0;
+   double mx = 0, my = 0;
+   for(int i = 0; i < n; i++) { mx += x[i]; my += y[i]; }
+   mx /= n; my /= n;
+   double sxy = 0, sxx = 0, syy = 0;
+   for(int i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) * (x[i] - mx); syy += (y[i] - my) * (y[i] - my); }
+   return sxx > 0 && syy > 0 ? sxy / MathSqrt(sxx * syy) : 0;
   }
-
-//--- backtest (MA20/50 cross on the loaded history, spread included) -------
-string A_Backtest(string sym)
+// log returns of two symbols aligned on candle time (H1, last `n`+1 closed candles)
+bool AlignedReturns(string a, string b, int n, double &ra[], double &rb[], int &m)
   {
-   int trades = 0, wins = 0; double pnl = 0, best = 0, worst = 0, entry = 0; int dir = 0;
-   int n = MathMin(g_anb - 55, 500);
-   double spreadP = A_Pips(sym, SymbolInfoDouble(sym, SYMBOL_ASK) - SymbolInfoDouble(sym, SYMBOL_BID));
-   for(int i = n; i > 0; i--)
+   m = 0;
+   if(!SeriesReady(a, PERIOD_H1) || !SeriesReady(b, PERIOD_H1)) return false;
+   MqlRates x[], y[];
+   int gx = CopyRates(a, PERIOD_H1, 1, n + 40, x), gy = CopyRates(b, PERIOD_H1, 1, n + 40, y);
+   if(gx < 10 || gy < 10) return false;
+   ArrayResize(ra, gx); ArrayResize(rb, gx);
+   int j = 0;
+   for(int i = 1; i < gx; i++)
      {
-      double f = A_SMA(20, i), sl2 = A_SMA(50, i);
-      int sig = f > sl2 ? 1 : -1;
-      if(dir == 0) { dir = sig; entry = g_aC[i]; }
-      else if(sig != dir)
+      while(j < gy && y[j].time < x[i].time) j++;
+      if(j >= gy || j < 1 || y[j].time != x[i].time || y[j - 1].time != x[i - 1].time) continue;
+      if(x[i - 1].close <= 0 || y[j - 1].close <= 0) continue;
+      ra[m] = MathLog(x[i].close / x[i - 1].close); rb[m] = MathLog(y[j].close / y[j - 1].close); m++;
+     }
+   return m >= 10;
+  }
+
+string C_Intermarket(string sym)
+  {
+   if(IsSynthetic(sym)) return Obj(Jwhy("intermarket", "synthetic index: no real-market correlation"));
+   datetime h1bar = iTime(_Symbol, PERIOD_H1, 0);
+   string key = sym + "|" + IntegerToString((long)h1bar);
+   if(g_imCache != "" && StringFind(g_imCache, "\"_key\":\"" + key + "\"") >= 0) return g_imCache;
+   string f[];
+   A_Push(f, J("_key", key));
+   // currency strength: average % change of the 28 crosses over 1, 5, 20 H1 candles -> rank
+   int wins[] = {1, 5, 20};
+   string ranks[];
+   int pairsUsed = 0;
+   for(int w = 0; w < 3; w++)
+     {
+      double score[8]; int cnt[8];
+      ArrayInitialize(score, 0); ArrayInitialize(cnt, 0);
+      for(int a = 0; a < 8; a++)
+         for(int b = 0; b < 8; b++)
+           {
+            if(a == b) continue;
+            double chg;
+            if(!PairChange(g_ccy[a] + g_ccy[b], wins[w], chg)) continue;
+            score[a] += chg; cnt[a]++; score[b] -= chg; cnt[b]++;
+            if(w == 0) pairsUsed++;
+           }
+      double avg[8]; int idx[8];
+      for(int k = 0; k < 8; k++) { avg[k] = cnt[k] > 0 ? score[k] / cnt[k] : 0; idx[k] = k; }
+      for(int x = 0; x < 7; x++) for(int y = x + 1; y < 8; y++) if(avg[idx[y]] > avg[idx[x]]) { int t = idx[x]; idx[x] = idx[y]; idx[y] = t; }
+      string row = "";
+      for(int k = 0; k < 8; k++) row += (k > 0 ? "," : "") + "\"" + g_ccy[idx[k]] + "\"";
+      A_Push(ranks, Jr("strongest_to_weakest_" + IntegerToString(wins[w]) + "h", "[" + row + "]"));
+     }
+   A_Push(f, Jr("currency_strength", Obj(A_Join(ranks) + "," + Ji("pairs_used", pairsUsed))));
+   // correlation with majors and gold (H1 log returns, 50 and 20 vs 100 for a break)
+   string cor[];
+   string refs[] = {"EURUSD", "GBPUSD", "USDJPY", "XAUUSD"};
+   for(int k = 0; k < 4; k++)
+     {
+      string nm = ResolvedName(refs[k]);
+      if(nm == "" || nm == sym) continue;
+      double ra[], rb[]; int m;
+      if(!AlignedReturns(sym, nm, 100, ra, rb, m)) { A_Push(cor, Obj(J("with", refs[k]) + "," + Jnull("corr_50") + "," + J("why", "not loaded yet"))); continue; }
+      double c50 = Corr(ra, rb, MathMin(50, m));
+      // last 20 vs the 100 window
+      double ta[], tb[]; ArrayResize(ta, 20); ArrayResize(tb, 20);
+      int st = MathMax(0, m - 20);
+      for(int q = 0; q < 20 && st + q < m; q++) { ta[q] = ra[st + q]; tb[q] = rb[st + q]; }
+      double c20 = Corr(ta, tb, MathMin(20, m)), c100 = Corr(ra, rb, m);
+      A_Push(cor, Obj(J("with", refs[k]) + "," + Jn("corr_50", c50, 2) + "," + Jn("corr_20", c20, 2) + "," + Jn("corr_100", c100, 2) + "," + Jb("correlation_break", MathAbs(c20 - c100) > 0.5)));
+     }
+   A_Push(f, Jr("correlation_h1", Arr(cor)));
+   // DXY proxy (published weights) from daily closes
+   double w[] = {-0.576, 0.136, -0.119, 0.091, 0.042, 0.036};
+   string pr[] = {"EURUSD", "USDJPY", "GBPUSD", "USDCAD", "USDSEK", "USDCHF"};
+   double lnNow = 0, ln1 = 0, ln5 = 0, wsum = 0;
+   for(int k = 0; k < 6; k++)
+     {
+      string nm = ResolvedName(pr[k]);
+      if(nm == "" || !SeriesReady(nm, PERIOD_D1)) continue;
+      double c[];
+      if(CopyClose(nm, PERIOD_D1, 0, 7, c) != 7 || c[0] <= 0) continue;
+      lnNow += w[k] * MathLog(c[6]); ln1 += w[k] * MathLog(c[5]); ln5 += w[k] * MathLog(c[1]); wsum += MathAbs(w[k]);
+     }
+   if(wsum > 0.5)
+      A_Push(f, Jr("dxy_proxy", Obj(Jn("change_1d_pct", (MathExp(lnNow - ln1) - 1) * 100, 3) + "," + Jn("change_5d_pct", (MathExp(lnNow - ln5) - 1) * 100, 3) + "," + Jn("weights_available", wsum, 3))));
+   else A_Push(f, Jwhy("dxy_proxy", "dollar pairs not loaded yet"));
+   string gold = ResolvedName("XAUUSD"), uj = ResolvedName("USDJPY");
+   double c[];
+   if(gold != "" && SeriesReady(gold, PERIOD_D1) && CopyClose(gold, PERIOD_D1, 0, 6, c) == 6 && c[0] > 0) A_Push(f, Jn("gold_5d_pct", (c[5] - c[0]) / c[0] * 100, 2));
+   if(uj != "" && SeriesReady(uj, PERIOD_D1) && CopyClose(uj, PERIOD_D1, 0, 6, c) == 6 && c[0] > 0) A_Push(f, Jn("usdjpy_5d_pct", (c[5] - c[0]) / c[0] * 100, 2));
+   g_imCache = Obj(A_Join(f));
+   return g_imCache;
+  }
+
+//+------------------------------------------------------------------+
+//| 15. get_summary (reads the other timeframes' memory)              |
+//+------------------------------------------------------------------+
+string CycleTf(string sym, ENUM_TIMEFRAMES tf, double px, int &trend, bool &shifted, bool &transition)
+  {
+   trend = 0; shifted = false; transition = false;
+   CSlot *s = GetSlot(sym, tf, 0);
+   if(s == NULL) return Obj(J("tf", TfName(tf)) + "," + J("state", "not loaded yet (loading in the background)"));
+   MsRead r; ReadStructure(s, r);
+   trend = r.trend; shifted = r.shiftAt >= 0; transition = r.transition;
+   bool inAol = r.invalidation > 0 && px >= MathMin(r.validation, r.invalidation) && px <= MathMax(r.validation, r.invalidation);
+   return Obj(J("tf", TfName(tf)) + "," + J("trend", SideName(r.trend)) + "," +
+              (r.lastBos >= 0 ? J("last_break", (g_brChoch[r.lastBos] ? "CHoCH " : "BOS ") + SideName(g_brSide[r.lastBos])) + "," + Ji("last_break_bars_ago", Ago(s, g_brAt[r.lastBos])) : Jnull("last_break")) + "," +
+              Jb("shifted", shifted) + "," + (shifted ? J("shift_to", SideName(r.shiftSide)) + "," + Ji("shift_bars_ago", Ago(s, r.shiftAt)) + "," : "") + Jb("transition_only", shifted && transition) + "," +
+              Jb("price_inside_aol", inAol));
+  }
+
+string C_Summary(CSlot *s)
+  {
+   string sym = s.sym;
+   double px = s.c[s.lc], a = Atr(s);
+   double spread = SymbolInfoDouble(sym, SYMBOL_ASK) - SymbolInfoDouble(sym, SYMBOL_BID);
+   string f[];
+   // a. multi-timeframe bias from STRUCTURE (D1 4, H4 3, H1 2, M15 1)
+   ENUM_TIMEFRAMES mt[] = {PERIOD_D1, PERIOD_H4, PERIOD_H1, PERIOD_M15};
+   int wt[] = {4, 3, 2, 1};
+   string votes[]; int score = 0, maxScore = 0;
+   int trends[4];
+   for(int k = 0; k < 4; k++)
+     {
+      CSlot *t = GetSlot(sym, mt[k], 0);
+      trends[k] = 0;
+      if(t == NULL) { A_Push(votes, Obj(J("tf", TfName(mt[k])) + "," + J("trend", "not loaded yet"))); continue; }
+      MsRead r; ReadStructure(t, r);
+      trends[k] = r.trend; score += r.trend * wt[k]; maxScore += wt[k];
+      A_Push(votes, Obj(J("tf", TfName(mt[k])) + "," + J("trend", SideName(r.trend)) + "," + Ji("weight", wt[k]) + "," + Ji("vote", r.trend * wt[k])));
+     }
+   int bias = score > 0 ? 1 : score < 0 ? -1 : 0;
+   A_Push(f, Jr("mtf_structure", Obj(Jr("votes", Arr(votes)) + "," + Ji("score", score) + "," + Ji("max", maxScore) + "," + J("bias", SideName(bias)))));
+   // b. confluence for THIS timeframe, every factor shown
+   MsRead r; ReadStructure(s, r);
+   int lc = s.lc;
+   string fac[]; int tot = 0;
+   int v1 = r.trend; tot += v1; A_Push(fac, Obj(J("factor", "structure trend") + "," + Ji("vote", v1)));
+   int v2 = s.ema200[lc] > 0 ? (px > s.ema200[lc] ? 1 : -1) : 0; tot += v2; A_Push(fac, Obj(J("factor", "price vs EMA200") + "," + Ji("vote", v2)));
+   int v3 = s.adx[lc] > 20 ? (s.pdi[lc] > s.mdi[lc] ? 1 : -1) : 0; tot += v3; A_Push(fac, Obj(J("factor", "ADX>20 with DI side") + "," + Ji("vote", v3)));
+   int v4 = s.rsi[lc] > 55 ? 1 : s.rsi[lc] < 45 ? -1 : 0; tot += v4; A_Push(fac, Obj(J("factor", "RSI >55 / <45") + "," + Ji("vote", v4)));
+   int v5 = s.macd[lc] > s.macdSig[lc] ? 1 : -1; tot += v5; A_Push(fac, Obj(J("factor", "MACD above/below signal") + "," + Ji("vote", v5)));
+   int v6 = s.stDir[lc]; tot += v6; A_Push(fac, Obj(J("factor", "Supertrend") + "," + Ji("vote", v6)));
+   A_Push(f, Jr("confluence", Obj(Jr("factors", Arr(fac)) + "," + Ji("total", tot) + "," + Ji("of", 6))));
+   // c. ATR sizes
+   double minStop = MathMax(SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(sym, SYMBOL_POINT) + spread, spread * 3);
+   A_Push(f, Jr("atr_sizes", Obj(Jn("sl_1atr", MathMax(a, minStop), s.digits) + "," + Jn("sl_1_5atr", MathMax(1.5 * a, minStop), s.digits) + "," + Jn("sl_2atr", MathMax(2 * a, minStop), s.digits) + "," +
+                                 Jn("broker_min_stop", minStop, s.digits) + "," + Jn("atr_pips", ToPips(s, a), 1))));
+   // d. trade plan from structure (facts from the other chains)
+   if(bias != 0)
+     {
+      MsRead hr; ReadStructure(s, hr);
+      BuildZones(s, hr);
+      int best = -1; double bd = DBL_MAX;
+      for(int k = 0; k < ArraySize(g_z); k++)
         {
-         double r = A_P((g_aC[i] - entry) * dir) - spreadP;
-         trades++; pnl += r; if(r > 0) wins++;
-         best = MathMax(best, r); worst = MathMin(worst, r);
-         dir = sig; entry = g_aC[i];
+         if(g_z[k].side != bias || ClosedThrough(s, g_z[k]) >= 0 || ConsumedPct(s, g_z[k]) >= 50) continue;
+         double d = bias == 1 ? px - g_z[k].hi : g_z[k].lo - px;
+         if(d < -(g_z[k].hi - g_z[k].lo)) continue; // zone on the wrong side of price
+         if(MathAbs(d) < bd) { bd = MathAbs(d); best = k; }
         }
-     }
-   double wr = trades > 0 ? (double)wins / trades * 100.0 : 0;
-   return Obj(J("note", "an MA20/50 crossover tested on this timeframe -- NOT the active strategy and not a reason to trade") + "," + Ji("strategy_trades", trades) + "," + Ji("wins", wins) + "," +
-              Jn("win_rate_pct", wr, 1) + "," + Jn("net_pips", pnl, 1) + "," +
-              Jn("avg_pips", trades > 0 ? pnl / trades : 0, 1) + "," +
-              Jn("best_pips", best, 1) + "," + Jn("worst_pips", worst, 1) + "," +
-              Jn("spread_cost_pips_per_trade", spreadP, 2) + "," +
-              J("strategy", "MA20_50_CROSS") + "," + Ji("bars_tested", n) + "," +
-              J("edge", trades >= 5 && wr > 50 && pnl > 0 ? "POSITIVE" : trades < 5 ? "TOO_FEW_TRADES" : "NEGATIVE"));
-  }
-
-//--- swing ---------------------------------------------------------------
-string A_Swing()
-  {
-   double sh[], sl[]; int shB[], slB[];
-   A_CollectSwings(SwingLookback, 6, sh, shB, sl, slB);
-   string hs[], ls[];
-   for(int i = 0; i < ArraySize(sh); i++)
-      A_Push(hs, Obj(Jn("level", sh[i], g_aDigits) + "," + Ji("bar", shB[i]) + "," + J("time", A_BarTime(shB[i]))));
-   for(int i = 0; i < ArraySize(sl); i++)
-      A_Push(ls, Obj(Jn("level", sl[i], g_aDigits) + "," + Ji("bar", slB[i]) + "," + J("time", A_BarTime(slB[i]))));
-   double lastHi = ArraySize(sh) > 0 ? sh[0] : g_aH[0];
-   double lastLo = ArraySize(sl) > 0 ? sl[0] : g_aL[0];
-   return Obj(Jr("highs", "[" + A_Join(hs) + "]") + "," + Jr("lows", "[" + A_Join(ls) + "]") + "," +
-              Jn("last_swing_high", lastHi, g_aDigits) + "," + Jn("last_swing_low", lastLo, g_aDigits) + "," +
-              Jn("swing_range_pips", A_P(lastHi - lastLo), 1) + "," +
-              Ji("high_count", ArraySize(sh)) + "," + Ji("low_count", ArraySize(sl)) + "," +
-              J("last_leg", ArraySize(shB) > 0 && ArraySize(slB) > 0 ? (shB[0] < slB[0] ? "UP" : "DOWN") : "UNKNOWN") + "," +
-              Ji("lookback", SwingLookback));
-  }
-
-//--- order_blocks ----------------------------------------------------------
-string A_OrderBlocks()
-  {
-   double atr = A_ATR(14, 1);
-   string obs[];
-   for(int i = 3; i < MathMin(g_anb - 1, 150) && ArraySize(obs) < 8; i++)
-     {
-      bool bullOB = g_aC[i] < g_aO[i] && g_aC[i - 1] > g_aH[i] && (g_aC[i-1] - g_aO[i-1]) > atr * 0.6;
-      bool bearOB = g_aC[i] > g_aO[i] && g_aC[i - 1] < g_aL[i] && (g_aO[i-1] - g_aC[i-1]) > atr * 0.6;
-      if(!bullOB && !bearOB) continue;
-      // Mitigated = price came back into the block AFTER the displacement candle (i-1 is the move itself).
-      bool mitigated = false, broken = false;
-      for(int j = i - 2; j >= 0; j--)
+      if(best >= 0)
         {
-         if(g_aL[j] <= g_aH[i] && g_aH[j] >= g_aL[i]) mitigated = true;
-         if(j >= 1 && ((bullOB && g_aC[j] < g_aL[i]) || (bearOB && g_aC[j] > g_aH[i]))) broken = true;
+         Zone z = g_z[best];
+         bool inside = px >= z.lo && px <= z.hi;
+         double entry = inside ? px : (bias == 1 ? z.hi : z.lo);
+         double inv = z.invalid > 0 ? z.invalid : (bias == 1 ? z.lo : z.hi);
+         double buffer = MathMax(0.1 * a, 2 * spread);
+         double sl = bias == 1 ? inv - buffer : inv + buffer;
+         if(MathAbs(entry - sl) < minStop) sl = bias == 1 ? entry - minStop : entry + minStop;
+         // targets: nearest untaken pools in the bias direction
+         double tps[2]; int nt = 0;
+         for(int pass = 0; pass < 2; pass++)
+           {
+            double bestP = 0, bestD = DBL_MAX;
+            for(int k = 0; k < ArraySize(s.swI); k++)
+              {
+               if(s.swK[k] != bias || TakenAt(s, k) >= 0) continue;
+               double d = bias == 1 ? s.swP[k] - entry : entry - s.swP[k];
+               if(d <= 0 || d >= bestD || (nt > 0 && MathAbs(s.swP[k] - tps[0]) < 0.1 * a)) continue;
+               bestD = d; bestP = s.swP[k];
+              }
+            if(bestP > 0) tps[nt++] = bestP;
+           }
+         double risk = MathAbs(entry - sl);
+         string plan = J("bias", SideName(bias)) + "," + J("entry_type", inside ? "market (price inside the zone)" : "limit at the zone edge") + "," +
+                       J("zone", ZName(z.kind)) + "," + Jn("entry", entry, s.digits) + "," + Jn("sl", sl, s.digits) + "," +
+                       J("sl_rule", "beyond the zone's invalidation + max(0.1 ATR, 2 x spread), never inside the broker minimum") + "," +
+                       (nt > 0 ? Jn("tp1", tps[0], s.digits) + "," + Jn("rr_tp1_net_of_spread", risk > 0 ? (MathAbs(tps[0] - entry) - spread) / (risk + spread) : 0, 2) : Jnull("tp1")) + "," +
+                       (nt > 1 ? Jn("tp2", tps[1], s.digits) : Jnull("tp2")) + "," +
+                       (r.invalidation > 0 ? Jn("cancel_if_close_beyond", r.invalidation, s.digits) : Jnull("cancel_if_close_beyond")) + "," + Ji("valid_for_bars", 20);
+         A_Push(f, Jr("trade_plan", Obj(plan)));
         }
-      A_Push(obs, Obj(J("type", bullOB ? "BULL" : "BEAR") + "," +
-                    Jn("high", g_aH[i], g_aDigits) + "," + Jn("low", g_aL[i], g_aDigits) + "," +
-                    Jn("ce", (g_aH[i]+g_aL[i])/2, g_aDigits) + "," + Ji("bar", i) + "," +
-                    J("time", A_BarTime(i)) + "," + Jb("mitigated", mitigated) + "," + Jb("broken", broken) + "," +
-                    Jn("dist_pips", A_P(g_aC[0] - (g_aH[i]+g_aL[i])/2), 1) + "," +
-                    Jn("size_pips", A_P(g_aH[i]-g_aL[i]), 1)));
+      else A_Push(f, Jwhy("trade_plan", "no fresh zone on the bias side of price"));
      }
-   return Obj(Jr("blocks", "[" + A_Join(obs) + "]") + "," + Ji("count", ArraySize(obs)) + "," +
-              Jn("atr_ref_pips", A_P(atr), 1));
-  }
-
-//--- inducement --------------------------------------------------------------
-string A_Inducement()
-  {
-   double sh[], sl[]; int shB[], slB[];
-   A_CollectSwings(SwingLookback, 4, sh, shB, sl, slB);
-   double idmLow  = ArraySize(sl) > 1 ? sl[1] : A_LowestLow(1, 30);
-   double idmHigh = ArraySize(sh) > 1 ? sh[1] : A_HighestHigh(1, 30);
-   int lowBar = ArraySize(slB) > 1 ? slB[1] : 30, highBar = ArraySize(shB) > 1 ? shB[1] : 30;
-   bool takenLow = false, takenHigh = false;
-   for(int i = 1; i < MathMin(g_anb, lowBar); i++)  if(g_aL[i] < idmLow)  { takenLow = true; break; }
-   for(int i = 1; i < MathMin(g_anb, highBar); i++) if(g_aH[i] > idmHigh) { takenHigh = true; break; }
-   return Obj(Jn("idm_low", idmLow, g_aDigits) + "," + Jn("idm_high", idmHigh, g_aDigits) + "," +
-              Jb("idm_low_taken", takenLow) + "," + Jb("idm_high_taken", takenHigh) + "," +
-              J("next_target", takenLow && !takenHigh ? "BSL" : takenHigh && !takenLow ? "SSL" : "UNCLEAR") + "," +
-              Jn("dist_to_idm_low_pips", A_P(g_aC[0] - idmLow), 1) + "," +
-              Jn("dist_to_idm_high_pips", A_P(idmHigh - g_aC[0]), 1) + "," +
-              Jb("valid_setup", takenLow != takenHigh));
-  }
-
-//--- premium_discount ----------------------------------------------------------
-string A_PremiumDiscount()
-  {
-   double hi = A_HighestHigh(0, 50), lo = A_LowestLow(0, 50);
-   double eq = (hi + lo) / 2.0, rng = hi - lo;
-   double pos = rng > 0 ? (g_aC[0] - lo) / rng : 0.5;
-   return Obj(Jn("range_high", hi, g_aDigits) + "," + Jn("range_low", lo, g_aDigits) + "," +
-              Jn("equilibrium", eq, g_aDigits) + "," + Jn("position", pos, 4) + "," +
-              J("zone", pos > 0.7 ? "DEEP_PREMIUM" : pos > 0.5 ? "PREMIUM" : pos > 0.3 ? "DISCOUNT" : "DEEP_DISCOUNT") + "," +
-              Jn("premium_start", eq, g_aDigits) + "," +
-              Jn("discount_end", eq, g_aDigits) + "," +
-              // Buys: the 62-79% pullback in the DISCOUNT half; sells: the mirror in the PREMIUM half.
-              Jn("ote_high", lo + rng * 0.79, g_aDigits) + "," + Jn("ote_low", lo + rng * 0.62, g_aDigits) + "," +
-              Jr("ote_long",  Obj(Jn("high", lo + rng * 0.38, g_aDigits) + "," + Jn("low", lo + rng * 0.21, g_aDigits))) + "," +
-              Jr("ote_short", Obj(Jn("high", lo + rng * 0.79, g_aDigits) + "," + Jn("low", lo + rng * 0.62, g_aDigits))) + "," +
-              Jb("in_ote", (pos >= 0.62 && pos <= 0.79) || (pos >= 0.21 && pos <= 0.38)) + "," +
-              J("in_ote_side", pos >= 0.62 && pos <= 0.79 ? "SELL" : pos >= 0.21 && pos <= 0.38 ? "BUY" : "NONE") + "," +
-              Jn("dist_to_eq_pips", A_P(g_aC[0] - eq), 1) + "," +
-              J("bias", pos < 0.5 ? "LOOK_LONG" : "LOOK_SHORT"));
-  }
-
-// ============================== new endpoints ==============================
-
-//--- adx -----------------------------------------------------------------
-string A_Adx()
-  {
-   double adx, pdi, mdi, adxP, pdiP, mdiP;
-   if(!A_ADXCalc(14, 0, adx, pdi, mdi)) { g_aErr = "not enough history for ADX (needs 45+ bars)"; return ""; }
-   A_ADXCalc(14, 5, adxP, pdiP, mdiP);
-   string strength = adx < 20 ? "WEAK_OR_NO_TREND" : adx < 25 ? "EMERGING" : adx < 40 ? "STRONG" : "VERY_STRONG";
-   return Obj(J("method", "Wilder ADX(14) with +DI/-DI -- matches MT5's \"ADX Wilder\" indicator; MT5's default \"ADX\" smooths differently, so its number can differ") + "," + Jn("adx", adx, 2) + "," + Jn("plus_di", pdi, 2) + "," + Jn("minus_di", mdi, 2) + "," +
-              Jn("adx_5_bars_ago", adxP, 2) + "," + Jb("adx_rising", adx > adxP) + "," +
-              J("trend_strength", strength) + "," + J("direction", pdi > mdi ? "BULL" : "BEAR") + "," +
-              Jb("di_cross_recent", (pdi > mdi) != (pdiP > mdiP)));
-  }
-
-//--- mtf: multi-timeframe summary (NOT part of "all") ---------------------
-// One read of the trader's trend system (SMMA 6/20/100), RSI, ATR and ADX on M5, M15, H1, H4 and D1.
-string A_Mtf(string sym)
-  {
-   string tfs[5] = {"M5", "M15", "H1", "H4", "D1"};
-   string rows[]; int bullN = 0, bearN = 0, okN = 0;
-   for(int t = 0; t < 5; t++)
+   else A_Push(f, Jwhy("trade_plan", "timeframes do not agree on a direction"));
+   // e. reasons against
+   string ag[];
+   for(int k = 0; k < 2; k++) if(trends[k] != 0 && bias != 0 && trends[k] != bias) A_Push(ag, "\"" + TfName(mt[k]) + " structure is " + SideName(trends[k]) + "\"");
+   if(spread > 0 && a > 0 && spread > 0.2 * a) A_Push(ag, "\"spread is more than 20% of ATR\"");
+   string nw = C_News(sym);
+   if(StringFind(nw, "\"blackout_now\":true") >= 0) A_Push(ag, "\"high-impact news blackout now\"");
+   A_Push(f, Jr("reasons_against", "[" + A_Join(ag) + "]"));
+   // f-j. APA cycles, coordination, FTA, entry modules
+   ENUM_TIMEFRAMES mc[] = {PERIOD_MN1, PERIOD_D1, PERIOD_H1, PERIOD_M15, PERIOD_M3};
+   ENUM_TIMEFRAMES wc[] = {PERIOD_W1, PERIOD_H4, PERIOD_M30, PERIOD_M5, PERIOD_M3};
+   string mrow[], wrow[]; string agreeBull = "", agreeBear = "";
+   int tr; bool sh, trn;
+   bool h1Shift = false, h4Shift = false, h4Trans = false;
+   for(int k = 0; k < 5; k++)
      {
-      ENUM_TIMEFRAMES tf = TimeframeFromString(tfs[t]);
-      if(!LoadAnalysisSeries(sym, tf)) { A_Push(rows, "\"" + tfs[t] + "\":null"); continue; }
-      okN++;
-      double c = g_aC[0];
-      double s6 = A_SMMA(6), s20 = A_SMMA(20), s100 = A_SMMA(100);
-      int score = 0;
-      if(c > s6) score++; else score--;
-      if(c > s20) score++; else score--;
-      if(c > s100) score++; else score--;
-      if(s6 > s20) score++; else score--;
-      if(s20 > s100) score++; else score--;
-      string bias = score >= 4 ? "STRONG_BULL" : score >= 2 ? "BULL" : score <= -4 ? "STRONG_BEAR" : score <= -2 ? "BEAR" : "NEUTRAL";
-      if(score >= 2) bullN++; else if(score <= -2) bearN++;
-      double adx, pdi, mdi; bool adxOk = A_ADXCalc(14, 0, adx, pdi, mdi);
-      double atr = A_ATR(14);
-      double rsi = A_RSI(14);
-      A_Push(rows, "\"" + tfs[t] + "\":" + Obj(J("bias", bias) + "," + Ji("score", score) + "," +
-             Jn("rsi", rsi, 1) + "," + J("rsi_zone", rsi > 70 ? "OVERBOUGHT" : rsi < 30 ? "OVERSOLD" : "NEUTRAL") + "," +
-             Jn("atr", atr, g_aDigits) + "," + Jn("atr_pips", A_Pips(sym, atr), 1) + "," +
-             (adxOk ? Jn("adx", adx, 1) : Jnull("adx")) + "," + J("adx_direction", pdi > mdi ? "BULL" : "BEAR") + "," +
-             Jn("close", c, g_aDigits) + "," + Jn("smma6", s6, g_aDigits) + "," + Jn("smma20", s20, g_aDigits) + "," + Jn("smma100", s100, g_aDigits) + "," +
-             J("last_bar_open_utc", A_BarTime(0)) + "," + Jb("from_cache", g_fromCache)));
+      A_Push(mrow, CycleTf(sym, mc[k], px, tr, sh, trn));
+      if(tr > 0) agreeBull += (agreeBull == "" ? "" : ",") + "\"" + TfName(mc[k]) + "\"";
+      if(tr < 0) agreeBear += (agreeBear == "" ? "" : ",") + "\"" + TfName(mc[k]) + "\"";
+      if(mc[k] == PERIOD_H1) h1Shift = sh && !trn;
      }
-   if(okN == 0) { g_aErr = "no timeframe of " + sym + " has enough history loaded yet"; return ""; }
-   string align = bullN == okN ? "ALL_BULL" : bearN == okN ? "ALL_BEAR" : bullN > bearN ? "MOSTLY_BULL" : bearN > bullN ? "MOSTLY_BEAR" : "MIXED";
-   return Obj(Js("symbol", sym) + "," + J("method", "SMMA 6/20/100 trend score per timeframe (same as get_trend), Wilder RSI(14), ATR(14), ADX(14)") + "," +
-              Jr("timeframes", Obj(A_Join(rows))) + "," + J("alignment", align) + "," +
-              Ji("bull_timeframes", bullN) + "," + Ji("bear_timeframes", bearN) + "," + Ji("timeframes_read", okN) + "," +
-              J("computed_at_utc", A_IsoTime(TimeGMT())) + "," + J("ea_version", EA_VERSION));
+   for(int k = 0; k < 5; k++)
+     {
+      A_Push(wrow, CycleTf(sym, wc[k], px, tr, sh, trn));
+      if(k < 4 && wc[k] != PERIOD_M3)
+        {
+         if(tr > 0 && StringFind(agreeBull, TfName(wc[k])) < 0) agreeBull += (agreeBull == "" ? "" : ",") + "\"" + TfName(wc[k]) + "\"";
+         if(tr < 0 && StringFind(agreeBear, TfName(wc[k])) < 0) agreeBear += (agreeBear == "" ? "" : ",") + "\"" + TfName(wc[k]) + "\"";
+        }
+      if(wc[k] == PERIOD_H4) { h4Shift = sh && !trn; h4Trans = sh && trn; }
+     }
+   A_Push(f, Jr("apa_monthly_cycle", "[" + A_Join(mrow) + "]"));
+   A_Push(f, Jr("apa_weekly_cycle", "[" + A_Join(wrow) + "]"));
+   A_Push(f, Jr("timeframes_agreeing", Obj(Jr("bullish", "[" + agreeBull + "]") + "," + Jr("bearish", "[" + agreeBear + "]") + "," + J("rule", "the book: trade only when at least two timeframes agree"))));
+   // FTA: nearest fresh opposite-side zone of the FTA timeframes between price and the bias direction
+   ENUM_TIMEFRAMES fta[] = {PERIOD_W1, PERIOD_H4, PERIOD_D1, PERIOD_H1};
+   string ftaRow = "null"; double ftaD = DBL_MAX;
+   if(bias != 0)
+      for(int k = 0; k < 4; k++)
+        {
+         CSlot *t = GetSlot(sym, fta[k], 0);
+         if(t == NULL) continue;
+         MsRead tr2; ReadStructure(t, tr2); BuildZones(t, tr2);
+         for(int q = 0; q < ArraySize(g_z); q++)
+           {
+            if(g_z[q].side != -bias || ClosedThrough(t, g_z[q]) >= 0 || ConsumedPct(t, g_z[q]) >= 50) continue;
+            double d = bias == 1 ? g_z[q].lo - px : px - g_z[q].hi;
+            if(d <= 0 || d >= ftaD) continue;
+            ftaD = d;
+            ftaRow = Obj(J("tf", TfName(t.tf)) + "," + J("kind", ZName(g_z[q].kind)) + "," + Jn("top", g_z[q].hi, s.digits) + "," + Jn("bottom", g_z[q].lo, s.digits) + "," +
+                         Jn("dist_atr", a > 0 ? d / a : 0, 2) + "," + J("fta_tf_state", tr2.shiftAt >= 0 ? (tr2.transition ? "transition only" : "shifted") : "not shifted"));
+           }
+        }
+   A_Push(f, Jr("fta_ahead", ftaRow));
+   A_Push(f, J("fta_rule", "monthly cycle: W1 and H4 are FTAs; weekly cycle: D1 and H1 are FTAs; FTA = take or lock profit there"));
+   // entry modules: which parts are present
+   string em = Jb("shift_entry_htf_aol_plus_ltf_shift", r.shiftAt >= 0 && !r.transition) + "," +
+               Jb("fta_entry_h1_shift", h1Shift) + "," + J("fta_entry_h4", h4Shift ? "shifted (validates)" : h4Trans ? "transition only (caution)" : "no shift") + "," +
+               J("flip_type1", "see get_levels apa_flip_levels (H4+)") + "," + J("flip_type2", "see get_levels apa_flip_entry_type2") + "," +
+               J("liquidity_engineering", "see get_liquidity liquidity_engineering on the situational timeframes");
+   A_Push(f, Jr("apa_entry_modules", Obj(em)));
+   return Obj(A_Join(f));
   }
 
-//--- position_size: exact lots from entry, stop and risk, using MT5's own calculator ----
+//+------------------------------------------------------------------+
+//| Account tools                                                     |
+//+------------------------------------------------------------------+
+double A_RoundLots(string sym, double raw)
+  {
+   double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   if(step <= 0) step = 0.01;
+   double lots = MathFloor(raw / step + 1e-9) * step;
+   double vmax = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   if(vmax > 0 && lots > vmax) lots = vmax;
+   return NormalizeDouble(lots, 2);
+  }
+string A_TradeModeName(string sym)
+  {
+   long m = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+   if(m == SYMBOL_TRADE_MODE_DISABLED) return "disabled";
+   if(m == SYMBOL_TRADE_MODE_LONGONLY) return "long only";
+   if(m == SYMBOL_TRADE_MODE_SHORTONLY) return "short only";
+   if(m == SYMBOL_TRADE_MODE_CLOSEONLY) return "close only";
+   return "full";
+  }
+
 string A_PositionSize(string sym, string obj)
   {
    string side = JsonGetString(obj, "side"); StringToLower(side);
    if(side != "sell") side = "buy";
    bool buy = side == "buy";
-   double sl = JsonGetNumber(obj, "sl", 0);
-   double entry = JsonGetNumber(obj, "entry", 0);
-   double riskPct = JsonGetNumber(obj, "risk_pct", 0);
-   double riskMoney = JsonGetNumber(obj, "risk_money", 0);
+   double sl = JsonGetNumber(obj, "sl", 0), entry = JsonGetNumber(obj, "entry", 0);
+   double riskPct = JsonGetNumber(obj, "risk_pct", 0), riskMoney = JsonGetNumber(obj, "risk_money", 0);
+   int dg = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    MqlTick tk; SymbolInfoTick(sym, tk);
    if(entry <= 0) entry = buy ? tk.ask : tk.bid;
    if(sl <= 0) { g_aErr = "a stop loss price (sl) is needed to size the trade"; return ""; }
@@ -4009,37 +3738,49 @@ string A_PositionSize(string sym, string obj)
    lossPerLot = MathAbs(lossPerLot);
    if(lossPerLot <= 0) { g_aErr = "the stop is too close to the entry to size a trade"; return ""; }
    double vmin = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN), vmax = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX), vstep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
-   double raw = riskMoney / lossPerLot;
-   double lots = A_RoundLots(sym, raw);
+   double raw = riskMoney / lossPerLot, lots = A_RoundLots(sym, raw);
    bool belowMin = lots < vmin;
-   double sizedLots = belowMin ? 0 : lots;
-   double margin = 0;
+   double sized = belowMin ? 0 : lots, margin = 0;
    OrderCalcMargin(ot, sym, belowMin ? vmin : lots, entry, margin);
-   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   double freeM = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double stopsLevel = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(sym, SYMBOL_POINT);
+   // risk already open (to each position's stop) and currency exposure
+   double openRisk = 0; int noStop = 0; string expo = "";
+   string base, quote; PairCurrencies(sym, base, quote);
+   double expBase = 0, expQuote = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
+     {
+      ulong t = PositionGetTicket(i); if(t == 0) continue;
+      string ps = PositionGetString(POSITION_SYMBOL);
+      bool pb = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
+      double pv = PositionGetDouble(POSITION_VOLUME), pop = PositionGetDouble(POSITION_PRICE_OPEN), psl = PositionGetDouble(POSITION_SL);
+      if(psl > 0) { double pl = 0; if(OrderCalcProfit(pb ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, ps, pv, pop, psl, pl)) openRisk += MathMax(0, -pl); }
+      else noStop++;
+      string pbse, pq; PairCurrencies(ps, pbse, pq);
+      double sgn = pb ? 1 : -1;
+      if(pbse == base) expBase += sgn * pv; if(pq == base) expBase -= sgn * pv;
+      if(pbse == quote) expQuote += sgn * pv; if(pq == quote) expQuote -= sgn * pv;
+     }
    string f[];
    A_Push(f, Js("symbol", sym)); A_Push(f, J("side", side));
-   A_Push(f, Jn("entry", entry, g_aDigits)); A_Push(f, Jn("sl", sl, g_aDigits));
-   A_Push(f, Jn("sl_distance_pips", A_Pips(sym, MathAbs(entry - sl)), 1));
+   A_Push(f, Jn("entry", entry, dg)); A_Push(f, Jn("sl", sl, dg));
+   A_Push(f, Jn("sl_distance_pips", MathAbs(entry - sl) / PipOf(sym), 1));
    A_Push(f, Jb("sl_inside_broker_min_distance", stopsLevel > 0 && MathAbs(entry - sl) < stopsLevel));
    A_Push(f, J("account_currency", AccountInfoString(ACCOUNT_CURRENCY)));
-   A_Push(f, Jn("balance", bal, 2));
-   A_Push(f, Jn("risk_pct", riskPct, 2)); A_Push(f, Jn("risk_money_target", riskMoney, 2));
-   A_Push(f, Jn("loss_per_1_lot", lossPerLot, 2));
-   A_Push(f, Jn("lots", sizedLots, 2));
-   A_Push(f, Jn("raw_lots", raw, 4));
-   A_Push(f, Jn("actual_risk_money", sizedLots * lossPerLot, 2));
-   A_Push(f, Jb("below_min_lot", belowMin));
+   A_Push(f, Jn("balance", bal, 2)); A_Push(f, Jn("risk_pct", riskPct, 2)); A_Push(f, Jn("risk_money_target", riskMoney, 2));
+   A_Push(f, Jn("loss_per_1_lot", lossPerLot, 2)); A_Push(f, Jn("lots", sized, 2)); A_Push(f, Jn("raw_lots", raw, 4));
+   A_Push(f, Jn("actual_risk_money", sized * lossPerLot, 2)); A_Push(f, Jb("below_min_lot", belowMin));
    A_Push(f, Jn("min_lot", vmin, 2)); A_Push(f, Jn("max_lot", vmax, 2)); A_Push(f, Jn("lot_step", vstep, 2));
    A_Push(f, Jn("risk_at_min_lot", vmin * lossPerLot, 2));
-   A_Push(f, Jn("margin_required", margin, 2));
-   A_Push(f, Jn("free_margin", freeMargin, 2));
-   A_Push(f, Jb("fits_free_margin", margin <= freeMargin));
+   A_Push(f, Jn("margin_required", margin, 2)); A_Push(f, Jn("free_margin", freeM, 2)); A_Push(f, Jn("free_margin_after", freeM - margin, 2));
+   A_Push(f, Jb("fits_free_margin", margin <= freeM));
+   A_Push(f, Jn("open_risk_to_stops", openRisk, 2)); A_Push(f, Ji("open_positions_without_stop", noStop));
+   A_Push(f, Jr("currency_exposure_lots_before", Obj(Jn(base, expBase, 2) + "," + Jn(quote, expQuote, 2))));
+   A_Push(f, Jb("adds_to_existing_exposure", (buy && (expBase > 0 || expQuote < 0)) || (!buy && (expBase < 0 || expQuote > 0))));
    A_Push(f, J("method", "MT5 OrderCalcProfit (exact loss per lot at the stop) and OrderCalcMargin"));
    return Obj(A_Join(f));
   }
 
-//--- symbol_info: the contract, costs, limits and trading hours ------------------
 string A_SymbolInfo(string sym)
   {
    if(SymbolInfoDouble(sym, SYMBOL_POINT) <= 0) { g_aErr = "\"" + sym + "\" isn't on this broker"; return ""; }
@@ -4047,65 +3788,54 @@ string A_SymbolInfo(string sym)
    datetime nowSrv = TimeTradeServer();
    long qAge = tk.time > 0 ? (long)nowSrv - (long)tk.time : -1;
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
-   double pip = (digits == 3 || digits == 5) ? point * 10 : point;
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT), pip = PipOf(sym);
    double mBuy = 0, mSell = 0;
    OrderCalcMargin(ORDER_TYPE_BUY, sym, 1.0, tk.ask, mBuy);
    OrderCalcMargin(ORDER_TYPE_SELL, sym, 1.0, tk.bid, mSell);
-   // Today's trading sessions (MT5 gives them in server time -> shown in UTC).
    MqlDateTime sd; TimeToStruct(nowSrv, sd);
-   string sess[]; bool inSession = false;
-   int secOfDay = sd.hour * 3600 + sd.min * 60 + sd.sec;
+   string sess[];
    for(uint k = 0; k < 10; k++)
      {
       datetime from, to;
       if(!SymbolInfoSessionTrade(sym, (ENUM_DAY_OF_WEEK)sd.day_of_week, k, from, to)) break;
       int a = (int)from, b = (int)to;
-      if(secOfDay >= a && secOfDay < (b == 0 ? 86400 : b)) inSession = true;
       int au = (int)(((a - g_srvOffset) % 86400 + 86400) % 86400), bu = (int)(((b - g_srvOffset) % 86400 + 86400) % 86400);
-      A_Push(sess, Obj(J("from_utc", StringFormat("%02d:%02d", au / 3600, (au % 3600) / 60)) + "," +
-                      J("to_utc", StringFormat("%02d:%02d", bu / 3600, (bu % 3600) / 60))));
+      A_Push(sess, Obj(J("from_utc", StringFormat("%02d:%02d", au / 3600, (au % 3600) / 60)) + "," + J("to_utc", StringFormat("%02d:%02d", bu / 3600, (bu % 3600) / 60))));
      }
-   bool tradeable = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_DISABLED;
    long fill = SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
+   long sl = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
    string f[];
-   A_Push(f, Js("symbol", sym));
-   A_Push(f, Js("description", SymbolInfoString(sym, SYMBOL_DESCRIPTION)));
-   A_Push(f, Js("path", SymbolInfoString(sym, SYMBOL_PATH)));
-   A_Push(f, J("currency_base", SymbolInfoString(sym, SYMBOL_CURRENCY_BASE)));
-   A_Push(f, J("currency_profit", SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT)));
+   A_Push(f, Js("symbol", sym)); A_Push(f, Js("description", SymbolInfoString(sym, SYMBOL_DESCRIPTION))); A_Push(f, Js("path", SymbolInfoString(sym, SYMBOL_PATH)));
+   A_Push(f, J("currency_base", SymbolInfoString(sym, SYMBOL_CURRENCY_BASE))); A_Push(f, J("currency_profit", SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT)));
    A_Push(f, J("currency_margin", SymbolInfoString(sym, SYMBOL_CURRENCY_MARGIN)));
+   A_Push(f, Jb("synthetic_24_7", IsSynthetic(sym)));
    A_Push(f, Ji("digits", digits)); A_Push(f, Jn("point", point, 8)); A_Push(f, Jn("pip", pip, 8));
    A_Push(f, Jn("contract_size", SymbolInfoDouble(sym, SYMBOL_TRADE_CONTRACT_SIZE), 2));
-   A_Push(f, Jn("tick_size", SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 8));
-   A_Push(f, Jn("tick_value", SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE), 6));
+   A_Push(f, Jn("tick_size", SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 8)); A_Push(f, Jn("tick_value", SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE), 6));
    A_Push(f, Jn("pip_value_per_lot", SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE) > 0 ? SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE) * pip / SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE) : 0, 4));
-   A_Push(f, Jn("min_lot", SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN), 2));
-   A_Push(f, Jn("max_lot", SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX), 2));
-   A_Push(f, Jn("lot_step", SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP), 2));
+   A_Push(f, Jn("min_lot", SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN), 2)); A_Push(f, Jn("max_lot", SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX), 2));
+   A_Push(f, Jn("lot_step", SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP), 2)); A_Push(f, Jn("volume_limit", SymbolInfoDouble(sym, SYMBOL_VOLUME_LIMIT), 2));
    A_Push(f, Jn("margin_per_lot_buy", mBuy, 2)); A_Push(f, Jn("margin_per_lot_sell", mSell, 2));
    A_Push(f, J("account_currency", AccountInfoString(ACCOUNT_CURRENCY)));
-   A_Push(f, Ji("stops_level_points", SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL)));
-   A_Push(f, Jn("stops_level_pips", pip > 0 ? SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL) * point / pip : 0, 1));
+   A_Push(f, Ji("stops_level_points", sl)); A_Push(f, Jn("stops_level_price", sl * point, digits));
    A_Push(f, Ji("freeze_level_points", SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL)));
-   A_Push(f, Ji("spread_points", SymbolInfoInteger(sym, SYMBOL_SPREAD)));
-   A_Push(f, Jb("spread_floating", SymbolInfoInteger(sym, SYMBOL_SPREAD_FLOAT) != 0));
-   A_Push(f, Jn("swap_long", SymbolInfoDouble(sym, SYMBOL_SWAP_LONG), 4));
-   A_Push(f, Jn("swap_short", SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4));
+   if(sl == 0) A_Push(f, J("stops_note", "0 = floating: keep stops at least 3 x spread away"));
+   A_Push(f, Ji("spread_points", SymbolInfoInteger(sym, SYMBOL_SPREAD))); A_Push(f, Jb("spread_floating", SymbolInfoInteger(sym, SYMBOL_SPREAD_FLOAT) != 0));
+   A_Push(f, Jn("swap_long", SymbolInfoDouble(sym, SYMBOL_SWAP_LONG), 4)); A_Push(f, Jn("swap_short", SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4));
    A_Push(f, J("swap_mode", EnumToString((ENUM_SYMBOL_SWAP_MODE)SymbolInfoInteger(sym, SYMBOL_SWAP_MODE))));
+   A_Push(f, J("triple_swap_day", EnumToString((ENUM_DAY_OF_WEEK)SymbolInfoInteger(sym, SYMBOL_SWAP_ROLLOVER3DAYS))));
    A_Push(f, J("trade_mode", A_TradeModeName(sym)));
    A_Push(f, J("execution_mode", EnumToString((ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(sym, SYMBOL_TRADE_EXEMODE))));
+   A_Push(f, J("calc_mode", EnumToString((ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(sym, SYMBOL_TRADE_CALC_MODE))));
    A_Push(f, Jb("fill_fok", (fill & SYMBOL_FILLING_FOK) != 0)); A_Push(f, Jb("fill_ioc", (fill & SYMBOL_FILLING_IOC) != 0));
-   A_Push(f, Jr("sessions_today_utc", "[" + A_Join(sess) + "]"));
-   A_Push(f, J("quote_time_utc", SrvToIso((datetime)tk.time)));
-   A_Push(f, Ji("quote_age_sec", qAge));
-   A_Push(f, Jb("market_open_now", tradeable && (ArraySize(sess) == 0 || inSession) && qAge >= 0 && qAge < 600));
+   A_Push(f, Jr("sessions_today_utc", Arr(sess)));
+   A_Push(f, J("quote_time_utc", SrvToIso((datetime)tk.time))); A_Push(f, Ji("quote_age_sec", qAge));
+   A_Push(f, Jb("market_open_now", MarketOpenNow(sym)));
    A_Push(f, Jn("bid", tk.bid, digits)); A_Push(f, Jn("ask", tk.ask, digits));
    A_Push(f, J("ea_version", EA_VERSION));
    return Obj(A_Join(f));
   }
 
-//--- history: real closed trades from MT5, every fee included ---------------------
 string A_History(string obj, string symFilter)
   {
    int days = (int)JsonGetNumber(obj, "days", 7);
@@ -4121,12 +3851,7 @@ string A_History(string obj, string symFilter)
       ulong dt = HistoryDealGetTicket(d);
       if(dt == 0) continue;
       long dtype = HistoryDealGetInteger(dt, DEAL_TYPE);
-      if(dtype == DEAL_TYPE_BALANCE)
-        {
-         double amt = HistoryDealGetDouble(dt, DEAL_PROFIT);
-         if(amt > 0) deposits += amt; else withdrawals += -amt;
-         continue;
-        }
+      if(dtype == DEAL_TYPE_BALANCE) { double amt = HistoryDealGetDouble(dt, DEAL_PROFIT); if(amt > 0) deposits += amt; else withdrawals += -amt; continue; }
       if(dtype != DEAL_TYPE_BUY && dtype != DEAL_TYPE_SELL) continue;
       string s = HistoryDealGetString(dt, DEAL_SYMBOL);
       if(symFilter != "" && StringFind(s, symFilter) != 0) continue;
@@ -4158,17 +3883,33 @@ string A_History(string obj, string symFilter)
          long r = HistoryDealGetInteger(dt, DEAL_REASON);
          reasons[k] = r == DEAL_REASON_TP ? "tp" : r == DEAL_REASON_SL ? "sl" : r == DEAL_REASON_SO ? "stopout" :
                       (r == DEAL_REASON_EXPERT ? (HistoryDealGetInteger(dt, DEAL_MAGIC) == MagicNumber ? "dave" : "expert") : "manual");
-         if(types[k] == "") types[k] = dtype == DEAL_TYPE_BUY ? "sell" : "buy"; // closing deal is the opposite side
+         if(types[k] == "") types[k] = dtype == DEAL_TYPE_BUY ? "sell" : "buy";
         }
      }
    string rows[]; int wins = 0, losses = 0, closedN = 0; double net = 0, grossWin = 0, grossLoss = 0, totCom = 0, totSwap = 0;
-   for(int i = ArraySize(ids) - 1; i >= 0; i--)
+   MqlDateTime nd; datetime nowSrv = TimeTradeServer(); TimeToStruct(nowSrv, nd);
+   datetime day0 = nowSrv - (nd.hour * 3600 + nd.min * 60 + nd.sec);
+   datetime week0 = day0 - ((nd.day_of_week + 6) % 7) * 86400;
+   double today = 0, week = 0;
+   int streak = 0, streakDir = 0; bool streakDone = false;
+   // newest first (ids are in deal order, oldest first)
+   int order[]; ArrayResize(order, ArraySize(ids));
+   for(int i = 0; i < ArraySize(ids); i++) order[i] = i;
+   for(int x = 0; x < ArraySize(order) - 1; x++)
+      for(int y = x + 1; y < ArraySize(order); y++)
+         if(ct[order[y]] > ct[order[x]]) { int t = order[x]; order[x] = order[y]; order[y] = t; }
+   for(int oi = 0; oi < ArraySize(order); oi++)
      {
-      if(vols[i] <= 0) continue; // still open
+      int i = order[oi];
+      if(vols[i] <= 0) continue;
       closedN++;
       double pnl = prof[i] + swp[i] + com[i];
       net += pnl; totCom += com[i]; totSwap += swp[i];
       if(pnl > 0) { wins++; grossWin += pnl; } else if(pnl < 0) { losses++; grossLoss += -pnl; }
+      if(ct[i] >= day0) today += pnl;
+      if(ct[i] >= week0) week += pnl;
+      int d = pnl > 0 ? 1 : pnl < 0 ? -1 : 0;
+      if(!streakDone && d != 0) { if(streakDir == 0 || streakDir == d) { streakDir = d; streak++; } else streakDone = true; }
       if(ArraySize(rows) >= 100) continue;
       int dg = (int)SymbolInfoInteger(syms[i], SYMBOL_DIGITS);
       A_Push(rows, Obj(J("ticket", IntegerToString((long)ids[i])) + "," + Js("symbol", syms[i]) + "," + J("type", types[i]) + "," +
@@ -4177,480 +3918,113 @@ string A_History(string obj, string symFilter)
              Jn("profit", prof[i], 2) + "," + Jn("swap", swp[i], 2) + "," + Jn("commission", com[i], 2) + "," + Jn("net", pnl, 2) + "," +
              J("reason", reasons[i]) + "," + Jb("by_dave", mag[i] == MagicNumber) + "," + Jb("opened_before_window", ot[i] == 0)));
      }
+   double avgW = wins > 0 ? grossWin / wins : 0, avgL = losses > 0 ? grossLoss / losses : 0;
+   double wr = closedN > 0 ? (double)wins / closedN : 0;
    return Obj(Ji("days", days) + "," + J("account_currency", AccountInfoString(ACCOUNT_CURRENCY)) + "," +
               Jr("summary", Obj(Ji("closed_trades", closedN) + "," + Ji("wins", wins) + "," + Ji("losses", losses) + "," +
-                  Jn("win_rate_pct", closedN > 0 ? (double)wins / closedN * 100.0 : 0, 1) + "," +
-                  Jn("net", net, 2) + "," + Jn("gross_profit", grossWin, 2) + "," + Jn("gross_loss", grossLoss, 2) + "," +
-                  Jn("profit_factor", grossLoss > 0 ? grossWin / grossLoss : 0, 2) + "," +
-                  Jn("commissions", totCom, 2) + "," + Jn("swaps", totSwap, 2) + "," +
-                  Jn("deposits", deposits, 2) + "," + Jn("withdrawals", withdrawals, 2))) + "," +
-              J("order", "newest_first") + "," + J("times", "UTC") + "," +
-              Jr("trades", "[" + A_Join(rows) + "]"));
+                  Jn("win_rate_pct", wr * 100, 1) + "," + Jn("net", net, 2) + "," + Jn("gross_profit", grossWin, 2) + "," + Jn("gross_loss", grossLoss, 2) + "," +
+                  Jn("profit_factor", grossLoss > 0 ? grossWin / grossLoss : 0, 2) + "," + Jn("avg_win", avgW, 2) + "," + Jn("avg_loss", avgL, 2) + "," +
+                  Jn("expectancy_per_trade", wr * avgW - (1 - wr) * avgL, 2) + "," +
+                  J("current_streak", streakDir > 0 ? IntegerToString(streak) + " wins" : streakDir < 0 ? IntegerToString(streak) + " losses" : "none") + "," +
+                  Jn("today_net", today, 2) + "," + Jn("this_week_net", week, 2) + "," +
+                  Jn("commissions", totCom, 2) + "," + Jn("swaps", totSwap, 2) + "," + Jn("deposits", deposits, 2) + "," + Jn("withdrawals", withdrawals, 2))) + "," +
+              J("order", "newest_first") + "," + J("times", "UTC") + "," + Jr("trades", Arr(rows)));
   }
 
-/** "all" -- every endpoint for the requested symbol+timeframe in one response (the multi-timeframe
- * summary is deliberately NOT in here -- it is its own tool). */
-string A_All(string sym, ENUM_TIMEFRAMES tf)
+string A_OpenTrades()
   {
-   int confScore = 0; string confDir = "NEUTRAL";
-   string confluence = A_Confluence(confScore, confDir);
-   string d[];
-   A_Push(d, Jr("price",            A_Price(sym)));
-   A_Push(d, Jr("structure",        A_Structure(sym)));
-   A_Push(d, Jr("zones",            A_Zones(sym)));
-   A_Push(d, Jr("liquidity",        A_Liquidity(sym)));
-   A_Push(d, Jr("trend",            A_Trend(sym)));
-   A_Push(d, Jr("momentum",         A_Momentum()));
-   A_Push(d, Jr("volatility",       A_Volatility(sym)));
-   A_Push(d, Jr("volume",           A_Volume()));
-   string ichi = A_Ichimoku(); g_aErr = "";
-   A_Push(d, Jr("ichimoku",         ichi == "" ? "null" : ichi));
-   A_Push(d, Jr("fibonacci",        A_Fibonacci(sym)));
-   A_Push(d, Jr("candles",          A_Candles(sym, 21)));
-   string pats = A_Patterns(); g_aErr = "";
-   A_Push(d, Jr("patterns",         pats == "" ? "null" : pats));
-   A_Push(d, Jr("ict",              A_Ict(sym, tf)));
-   A_Push(d, Jr("wyckoff",          A_Wyckoff()));
-   A_Push(d, Jr("divergence",       A_Divergence()));
-   A_Push(d, Jr("session",          A_Session(sym)));
-   string piv = A_Pivots(sym); g_aErr = "";
-   A_Push(d, Jr("pivots",           piv == "" ? "null" : piv));
-   A_Push(d, Jr("levels",           A_Levels(sym)));
-   A_Push(d, Jr("orderflow",        A_OrderFlow()));
-   A_Push(d, Jr("confluence",       confluence));
-   A_Push(d, Jr("risk_metrics",     A_RiskMetrics(sym)));
-   A_Push(d, Jr("synthetic",        A_Synthetic(sym)));
-   A_Push(d, Jr("elliott",          A_Elliott()));
-   A_Push(d, Jr("correlation",      A_Correlation(sym, tf)));
-   A_Push(d, Jr("strength",         A_Strength(sym, tf)));
-   A_Push(d, Jr("heatmap",          A_Heatmap(tf)));
-   A_Push(d, Jr("fractal",          A_Fractal()));
-   A_Push(d, Jr("harmonic",         A_Harmonic()));
-   A_Push(d, Jr("mean_reversion",   A_MeanReversion()));
-   A_Push(d, Jr("tape",             A_Tape(sym)));
-   A_Push(d, Jr("seasonality",      A_Seasonality()));
-   A_Push(d, Jr("spread_analysis",  A_SpreadAnalysis(sym)));
-   A_Push(d, Jr("gann",             A_Gann()));
-   A_Push(d, Jr("market_profile",   A_MarketProfile()));
-   A_Push(d, Jr("tape_flow",        A_TapeFlow()));
-   A_Push(d, Jr("macro",            A_Macro(sym, tf)));
-   A_Push(d, Jr("news",             A_News(sym)));
-   A_Push(d, Jr("sentiment",        A_Sentiment(confScore, confDir)));
-   A_Push(d, Jr("regime",           A_Regime()));
-   A_Push(d, Jr("backtest",         A_Backtest(sym)));
-   A_Push(d, Jr("swing",            A_Swing()));
-   A_Push(d, Jr("order_blocks",     A_OrderBlocks()));
-   A_Push(d, Jr("inducement",       A_Inducement()));
-   A_Push(d, Jr("premium_discount", A_PremiumDiscount()));
-   A_Push(d, Jr("market_structure", A_MarketStructure(sym)));
-   A_Push(d, Jr("reference_levels", A_ReferenceLevels(sym)));
-   return Obj(A_Join(d));
-  }
-
-
-//--- market_structure (EA 3.6) ------------------------------------------------
-// ONE timeframe, computed ONLY from that timeframe's own raw bars (the trader: "don't use H1 and
-// weekly to calculate M5 -- get it raw, carry it one by one"). No other timeframe and no other
-// symbol is read here; reference levels from D1/W1/MN1 live in their own endpoint
-// (reference_levels), never mixed into a timeframe's numbers.
-//
-// Groups (each concept researched: ICT / SMC definitions -- see docs/ea-market-structure.md):
-//   structure    external (swing) + internal layers: trend, BOS, CHoCH, strong/weak high & low;
-//                MSS, CISD, validation / invalidation, shift / transition / reclaim, swing failure
-//                patterns, dealing range with premium / discount / equilibrium / OTE
-//   liquidity    external range (BSL above range high, SSL below range low), resting pools,
-//                equal highs / lows, trendline liquidity, sweeps vs runs, inducement,
-//                liquidity engineering (sweep -> FMD -> CHoCH), liquidity voids, draw on liquidity
-//   zones        ORDER_BLOCK, BREAKER, MITIGATION_BLOCK, REJECTION_BLOCK, FVG, IFVG, BPR,
-//                ENGULFING_AOL, FLIP -- each with fresh, mitigated %, invalidated
-//   confirmation displacement, engulfing, rejection on the last closed bar
-// Arrays here are chronological (0 = oldest); the EA series is newest-first.
-struct MsSwing { int i; double p; bool hi; };
-
-void MsPivots(const double &h[], const double &l[], int n, int len, MsSwing &out[])
-  {
-   ArrayResize(out, 0); int ns = 0;
-   for(int i = len; i < n - len; i++)
+   string rows[];
+   for(int i = 0; i < PositionsTotal(); i++)
      {
-      bool isH = true, isL = true;
-      for(int j = i - len; j <= i + len; j++)
+      ulong t = PositionGetTicket(i); if(t == 0) continue;
+      string ps = PositionGetString(POSITION_SYMBOL);
+      bool buy = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
+      double lots = PositionGetDouble(POSITION_VOLUME), op = PositionGetDouble(POSITION_PRICE_OPEN), sl = PositionGetDouble(POSITION_SL), tp = PositionGetDouble(POSITION_TP);
+      datetime otime = (datetime)PositionGetInteger(POSITION_TIME);
+      long posId = PositionGetInteger(POSITION_IDENTIFIER);
+      double prof = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      int dg = (int)SymbolInfoInteger(ps, SYMBOL_DIGITS);
+      double px = buy ? SymbolInfoDouble(ps, SYMBOL_BID) : SymbolInfoDouble(ps, SYMBOL_ASK);
+      // the stop the trade opened with (from its opening order)
+      double sl0 = 0;
+      if(HistorySelectByPosition(posId))
+         for(int k = 0; k < HistoryOrdersTotal(); k++) { ulong ot = HistoryOrderGetTicket(k); if(ot > 0) { sl0 = HistoryOrderGetDouble(ot, ORDER_SL); if(sl0 > 0) break; } }
+      if(sl0 <= 0) sl0 = sl;
+      double risk = sl0 > 0 ? MathAbs(op - sl0) : 0;
+      double move = buy ? px - op : op - px;
+      // best / worst since entry (M1 if loaded, else M5)
+      double best = 0, worst = 0; bool mm = false;
+      ENUM_TIMEFRAMES mtf = SeriesReady(ps, PERIOD_M1) ? PERIOD_M1 : PERIOD_M5;
+      if(SeriesReady(ps, mtf))
         {
-         if(j == i) continue;
-         if(h[j] > h[i] || (j > i && h[j] == h[i])) isH = false;
-         if(l[j] < l[i] || (j > i && l[j] == l[i])) isL = false;
-        }
-      if(isH) { ArrayResize(out, ns + 1); out[ns].i = i; out[ns].p = h[i]; out[ns].hi = true; ns++; }
-      if(isL) { ArrayResize(out, ns + 1); out[ns].i = i; out[ns].p = l[i]; out[ns].hi = false; ns++; }
-     }
-  }
-
-// One structure layer: trend from the last two highs / lows, the latest body-close break of a
-// swing (BOS with the trend, CHoCH against it), and the strong / weak extremes of the current leg.
-string MsLayer(const MsSwing &sw[], const double &h[], const double &l[], const double &c[], int n, int d,
-               string &trendOut, int &bosAt, double &bosLvl, bool &bosBull, bool &isChoch, double &strongLvl, double &weakLvl)
-  {
-   int ns = ArraySize(sw);
-   double h1 = 0, h2 = 0, l1 = 0, l2 = 0; int hc = 0, lc = 0;
-   for(int k = ns - 1; k >= 0; k--)
-     {
-      if(sw[k].hi && hc < 2) { if(hc == 0) h2 = sw[k].p; else h1 = sw[k].p; hc++; }
-      if(!sw[k].hi && lc < 2) { if(lc == 0) l2 = sw[k].p; else l1 = sw[k].p; lc++; }
-     }
-   bosAt = -1; bosLvl = 0; bosBull = false; isChoch = false; strongLvl = 0; weakLvl = 0;
-   int bosSw = -1;
-   for(int k = 0; k < ns; k++)
-      for(int j = sw[k].i + 1; j < n; j++)
-        {
-         bool br = sw[k].hi ? c[j] > sw[k].p : c[j] < sw[k].p;
-         if(br) { if(j >= bosAt) { bosAt = j; bosLvl = sw[k].p; bosBull = sw[k].hi; bosSw = k; } break; }
-        }
-   // trend BEFORE the latest break decides BOS vs CHoCH
-   string prior = "RANGE";
-   if(bosSw >= 0)
-     {
-      double ph1 = 0, ph2 = 0, pl1 = 0, pl2 = 0; int phc = 0, plc = 0;
-      for(int k = ns - 1; k >= 0; k--)
-        {
-         if(sw[k].i >= bosAt) continue;
-         if(sw[k].hi && phc < 2) { if(phc == 0) ph2 = sw[k].p; else ph1 = sw[k].p; phc++; }
-         if(!sw[k].hi && plc < 2) { if(plc == 0) pl2 = sw[k].p; else pl1 = sw[k].p; plc++; }
-        }
-      if(phc == 2 && plc == 2) { if(ph2 > ph1 && pl2 > pl1) prior = "BULLISH"; else if(ph2 < ph1 && pl2 < pl1) prior = "BEARISH"; }
-      isChoch = (bosBull && prior == "BEARISH") || (!bosBull && prior == "BULLISH");
-     }
-   trendOut = "RANGE";
-   if(bosAt >= 0) trendOut = bosBull ? "BULLISH" : "BEARISH";
-   else if(hc == 2 && lc == 2) { if(h2 > h1 && l2 > l1) trendOut = "BULLISH"; else if(h2 < h1 && l2 < l1) trendOut = "BEARISH"; }
-   // strong = the extreme the breaking leg started from; weak = the leg's extreme since (the target)
-   if(bosAt >= 0)
-     {
-      int from = bosSw >= 0 ? sw[bosSw].i : MathMax(0, bosAt - 20);
-      if(bosBull)
-        {
-         int lo = ArrayMinimum(l, from, bosAt - from + 1); strongLvl = l[lo];
-         int hi = ArrayMaximum(h, bosAt, n - bosAt); weakLvl = h[hi];
-        }
-      else
-        {
-         int hi = ArrayMaximum(h, from, bosAt - from + 1); strongLvl = h[hi];
-         int lo = ArrayMinimum(l, bosAt, n - bosAt); weakLvl = l[lo];
-        }
-     }
-   string bosJ = bosAt >= 0 ? Obj(J("side", bosBull ? "BULLISH" : "BEARISH") + "," + J("type", isChoch ? "CHOCH" : "BOS") + "," + Jn("level", bosLvl, d) + "," + Ji("bars_ago", n - 1 - bosAt)) : "null";
-   return Obj(J("trend", trendOut) + "," + J("trend_before_break", prior) + "," + Jr("last_break", bosJ) + "," +
-              (strongLvl > 0 ? Jn(bosBull ? "strong_low" : "strong_high", strongLvl, d) : Jnull("strong_extreme")) + "," +
-              (weakLvl > 0 ? Jn(bosBull ? "weak_high" : "weak_low", weakLvl, d) : Jnull("weak_extreme")) + "," +
-              Jp("last_swing_high", h2, d) + "," + Jp("last_swing_low", l2, d) + "," + Ji("swings_found", ns));
-  }
-
-// A zone with its state: fresh (untouched since it formed), how deep price went into it (%), and
-// invalidated (a close beyond its far side).
-void MsZone(string &arr[], string kind, bool bull, double lo, double hi, int from, int n, const double &l[], const double &h[], const double &c[], int d)
-  {
-   if(hi <= lo) return;
-   double deepest = 0; bool touched = false, dead = false;
-   for(int j = from + 1; j < n; j++)
-     {
-      if(bull)
-        {
-         if(l[j] <= hi) { touched = true; deepest = MathMax(deepest, MathMin(1.0, (hi - l[j]) / (hi - lo))); }
-         if(c[j] < lo) { dead = true; break; }
-        }
-      else
-        {
-         if(h[j] >= lo) { touched = true; deepest = MathMax(deepest, MathMin(1.0, (h[j] - lo) / (hi - lo))); }
-         if(c[j] > hi) { dead = true; break; }
-        }
-     }
-   A_Push(arr, Obj(J("type", kind) + "," + J("side", bull ? "BULLISH" : "BEARISH") + "," + Jn("low", lo, d) + "," + Jn("high", hi, d) + "," +
-                   Ji("bars_ago", n - 1 - from) + "," + Jb("fresh", !touched) + "," + Ji("mitigated_pct", (int)MathRound(deepest * 100)) + "," + Jb("invalidated", dead)));
-  }
-
-string LastN(string &arr[], int k)
-  {
-   int n = ArraySize(arr), s = MathMax(0, n - k);
-   string out = "";
-   for(int i = s; i < n; i++) { if(i > s) out += ","; out += arr[i]; }
-   return out;
-  }
-
-string A_MarketStructure(string sym)
-  {
-   // CLOSED candles only (the forming one would make pivots, breaks and sweeps flicker intra-bar);
-   // index n-1 is the last closed candle, bars_ago counts back from it. Price itself stays live.
-   int n = MathMin(g_anb - 1, 400);
-   if(n < 40) return Obj(J("error", "not enough bars"));
-   double o[], h[], l[], c[];
-   ArrayResize(o, n); ArrayResize(h, n); ArrayResize(l, n); ArrayResize(c, n);
-   for(int k = 0; k < n; k++) { int s = n - k; o[k] = g_aO[s]; h[k] = g_aH[s]; l[k] = g_aL[s]; c[k] = g_aC[s]; }
-   int d = g_aDigits;
-   double rangeSum = 0; for(int k = n - 50; k < n; k++) rangeSum += h[k] - l[k];
-   double avgR = rangeSum / 50.0;
-   if(avgR <= 0) return Obj(J("error", "flat data"));
-
-   // ---- structure: external (5-bar pivots) and internal (2-bar pivots) layers
-   MsSwing sw[], swi[];
-   MsPivots(h, l, n, 5, sw);
-   MsPivots(h, l, n, 2, swi);
-   int ns = ArraySize(sw);
-   string eTrend, iTrend; int eBos, iBos; double eLvl, iLvl, eStrong, eWeak, iStrong, iWeak; bool eBull, iBull, eCh, iCh;
-   string extJ = MsLayer(sw, h, l, c, n, d, eTrend, eBos, eLvl, eBull, eCh, eStrong, eWeak);
-   string intJ = MsLayer(swi, h, l, c, n, d, iTrend, iBos, iLvl, iBull, iCh, iStrong, iWeak);
-   // MSS = a CHoCH delivered with displacement (a big-bodied candle within 3 bars of the break)
-   bool mss = false;
-   if(eBos >= 0 && eCh)
-      for(int j = MathMax(1, eBos - 2); j <= MathMin(n - 1, eBos + 2); j++) if(MathAbs(c[j] - o[j]) > avgR * 1.5) { mss = true; break; }
-   // validation / invalidation of the external break
-   double validation = eBos >= 0 ? eLvl : 0, invalidation = 0;
-   if(eBos >= 0) for(int k = ns - 1; k >= 0; k--) if(sw[k].i < eBos && sw[k].hi != eBull) { invalidation = sw[k].p; break; }
-   // shift / transition / reclaim
-   string shift = "NONE"; double reclaimLvl = 0; bool reclaimed = false; int shiftAt = -1;
-   if(eBos >= 0 && invalidation > 0)
-      for(int j = eBos + 1; j < n; j++)
-         if(eBull ? c[j] < invalidation : c[j] > invalidation)
+         MqlRates r[];
+         int got = CopyRates(ps, mtf, otime, TimeTradeServer(), r);
+         if(got > 0 && got <= 5000)
            {
-            shiftAt = j; int after = 0; for(int k = 0; k < ns; k++) if(sw[k].i > j) after++;
-            shift = after >= 2 ? (eBull ? "SHIFT_BEARISH" : "SHIFT_BULLISH") : (eBull ? "TRANSITION_BEARISH" : "TRANSITION_BULLISH");
-            reclaimLvl = eBull ? h[ArrayMaximum(h, eBos, j - eBos + 1)] : l[ArrayMinimum(l, eBos, j - eBos + 1)];
-            for(int q = j + 1; q < n; q++) if(eBull ? c[q] > reclaimLvl : c[q] < reclaimLvl) { reclaimed = true; break; }
-            break;
+            double hi = r[0].high, lo = r[0].low;
+            for(int q = 1; q < got; q++) { hi = MathMax(hi, r[q].high); lo = MathMin(lo, r[q].low); }
+            best = buy ? hi - op : op - lo; worst = buy ? op - lo : hi - op; mm = true;
            }
-   // CISD: body close through the open of the last run of opposite candles into an extreme
-   string cisd = "null"; int cisdAt = -1;
-   for(int e = n - 2; e >= MathMax(21, n - 40) && cisd == "null"; e--)
-     {
-      for(int side = 0; side < 2 && cisd == "null"; side++)
-        {
-         bool bullC = side == 0;                         // bullish CISD = after a run of down candles
-         bool runCandle = bullC ? c[e] < o[e] : c[e] > o[e];
-         bool nextOpp = bullC ? c[e + 1] >= o[e + 1] : c[e + 1] <= o[e + 1];
-         if(!runCandle || !nextOpp) continue;
-         int r = e; while(r - 1 >= 0 && (bullC ? c[r - 1] < o[r - 1] : c[r - 1] > o[r - 1])) r--;
-         if(r < 20) continue;
-         double ext = bullC ? l[ArrayMinimum(l, r, e - r + 2)] : h[ArrayMaximum(h, r, e - r + 2)];
-         double prevExt = bullC ? l[ArrayMinimum(l, r - 20, 20)] : h[ArrayMaximum(h, r - 20, 20)];
-         if(bullC ? ext > prevExt : ext < prevExt) continue; // the run must make the local extreme
-         double lvl = o[r];
-         for(int q = e + 1; q < n; q++)
-            if(bullC ? c[q] > lvl : c[q] < lvl)
-              { cisdAt = q; cisd = Obj(J("side", bullC ? "BULLISH" : "BEARISH") + "," + Jn("level", lvl, d) + "," + Jn("extreme", ext, d) + "," + Ji("bars_ago", n - 1 - q)); break; }
         }
-     }
-   // dealing range = last external swing high / low
-   double rHi = 0, rLo = 0;
-   for(int k = ns - 1; k >= 0 && (rHi == 0 || rLo == 0); k--) { if(sw[k].hi && rHi == 0) rHi = sw[k].p; if(!sw[k].hi && rLo == 0) rLo = sw[k].p; }
-   if(rHi == 0) rHi = h[ArrayMaximum(h, n - 50, 50)];
-   if(rLo == 0) rLo = l[ArrayMinimum(l, n - 50, 50)];
-   double px = g_aC[0]; // live price
-   double eq = (rHi + rLo) / 2, pos = rHi > rLo ? (px - rLo) / (rHi - rLo) : 0.5;
-   bool bullCtx = eTrend == "BULLISH";
-   double oteA = bullCtx ? rHi - (rHi - rLo) * 0.62 : rLo + (rHi - rLo) * 0.62, oteB = bullCtx ? rHi - (rHi - rLo) * 0.79 : rLo + (rHi - rLo) * 0.79;
-   string range = Obj(Jn("high", rHi, d) + "," + Jn("low", rLo, d) + "," + Jn("equilibrium", eq, d) + "," + J("zone", pos > 0.5 ? "PREMIUM" : "DISCOUNT") + "," +
-                      Jn("position", pos, 2) + "," + Jn("ote_from", MathMin(oteA, oteB), d) + "," + Jn("ote_to", MathMax(oteA, oteB), d));
-
-   // ---- liquidity: sweeps (wick through, close back) vs runs (close through); SFP = sweep bar is itself a swing
-   string sweeps[], runs[]; int lastSweepAt = -1; bool lastSweepSellSide = false; double lastSweepLvl = 0;
-   for(int k = 0; k < ns; k++)
-      for(int j = sw[k].i + 1; j < n; j++)
+      long frz = SymbolInfoInteger(ps, SYMBOL_TRADE_FREEZE_LEVEL), stl = SymbolInfoInteger(ps, SYMBOL_TRADE_STOPS_LEVEL);
+      double pt = SymbolInfoDouble(ps, SYMBOL_POINT);
+      bool beOk = move > 0 && MathAbs(px - op) > MathMax(frz, stl) * pt;
+      CSlot *h1 = GetSlot(ps, PERIOD_H1, 0);
+      string bars = h1 != NULL ? Ji("bars_open_h1", iBarShift(ps, PERIOD_H1, otime)) : Jnull("bars_open_h1");
+      // invalidation of the H1 area of liquidity the trade sits in, and the H1 FMD if any
+      string apa = "null";
+      if(h1 != NULL)
         {
-         bool through = sw[k].hi ? h[j] > sw[k].p : l[j] < sw[k].p;
-         if(!through) continue;
-         bool back = sw[k].hi ? c[j] < sw[k].p : c[j] > sw[k].p;
-         bool sfp = false;
-         if(back && j + 2 < n) sfp = sw[k].hi ? (h[j] >= h[j + 1] && h[j] >= h[j + 2]) : (l[j] <= l[j + 1] && l[j] <= l[j + 2]);
-         string item = Obj(J("side", sw[k].hi ? "BUY_SIDE" : "SELL_SIDE") + "," + Jn("level", sw[k].p, d) + "," + Ji("bars_ago", n - 1 - j) + (back ? "," + Jb("swing_failure", sfp) : ""));
-         if(back) { A_Push(sweeps, item); if(j > lastSweepAt) { lastSweepAt = j; lastSweepSellSide = !sw[k].hi; lastSweepLvl = sw[k].p; } }
-         else A_Push(runs, item);
-         break;
-        }
-   // resting pools: untaken swing highs above / lows below price, nearest 3 each
-   string bsl[], ssl[]; double nearBsl = 0, nearSsl = 0;
-   for(int k = ns - 1; k >= 0 && (ArraySize(bsl) < 3 || ArraySize(ssl) < 3); k--)
-     {
-      bool taken = false;
-      for(int j = sw[k].i + 1; j < n; j++) if(sw[k].hi ? h[j] > sw[k].p : l[j] < sw[k].p) { taken = true; break; }
-      if(taken) continue;
-      if(sw[k].hi && sw[k].p > px && ArraySize(bsl) < 3) { A_Push(bsl, DoubleToString(sw[k].p, d)); if(nearBsl == 0 || sw[k].p < nearBsl) nearBsl = sw[k].p; }
-      if(!sw[k].hi && sw[k].p < px && ArraySize(ssl) < 3) { A_Push(ssl, DoubleToString(sw[k].p, d)); if(nearSsl == 0 || sw[k].p > nearSsl) nearSsl = sw[k].p; }
-     }
-   // equal highs / lows (within 10% of the average bar range), untaken
-   double eqh = 0, eql = 0; double tol = avgR * 0.1;
-   for(int a = ns - 1; a >= 0 && (eqh == 0 || eql == 0); a--)
-      for(int b = a - 1; b >= MathMax(0, a - 10); b--)
-         if(sw[a].hi == sw[b].hi && MathAbs(sw[a].p - sw[b].p) <= tol)
+         MsRead r; ReadStructure(h1, r);
+         if(r.invalidation > 0)
            {
-            bool taken = false; double lvl = sw[a].hi ? MathMax(sw[a].p, sw[b].p) : MathMin(sw[a].p, sw[b].p);
-            for(int j = sw[a].i + 1; j < n; j++) if(sw[a].hi ? h[j] > lvl : l[j] < lvl) { taken = true; break; }
-            if(taken) continue;
-            if(sw[a].hi && eqh == 0) eqh = lvl;
-            if(!sw[a].hi && eql == 0) eql = lvl;
+            bool closedThrough = false;
+            for(int j = h1.lc; j >= 0 && h1.t[j] >= otime; j--) if(buy ? h1.c[j] < r.invalidation : h1.c[j] > r.invalidation) { closedThrough = true; break; }
+            apa = Obj(Jn("h1_invalidation", r.invalidation, dg) + "," + Jb("closed_through_since_entry", closedThrough));
            }
-   // trendline liquidity: the last 3 rising swing lows (or falling highs) on one line
-   string tlines[];
-   for(int side = 0; side < 2; side++)
-     {
-      bool lows = side == 0; int idx[3]; int got = 0;
-      for(int k = ns - 1; k >= 0 && got < 3; k--) if(sw[k].hi != lows) { idx[got] = k; got++; }
-      if(got < 3) continue;
-      int a = idx[2], b = idx[1], z = idx[0];
-      bool mono = lows ? (sw[a].p < sw[b].p && sw[b].p < sw[z].p) : (sw[a].p > sw[b].p && sw[b].p > sw[z].p);
-      if(!mono || sw[z].i == sw[a].i) continue;
-      double slope = (sw[z].p - sw[a].p) / (sw[z].i - sw[a].i);
-      double mid = sw[a].p + slope * (sw[b].i - sw[a].i);
-      if(MathAbs(mid - sw[b].p) > avgR * 0.5) continue;
-      double now = sw[a].p + slope * (n - 1 - sw[a].i);
-      bool broken = false; for(int j = sw[z].i + 1; j < n; j++) { double v = sw[a].p + slope * (j - sw[a].i); if(lows ? c[j] < v : c[j] > v) { broken = true; break; } }
-      A_Push(tlines, Obj(J("side", lows ? "SELL_SIDE_BELOW_RISING_LOWS" : "BUY_SIDE_ABOVE_FALLING_HIGHS") + "," + Jn("level_now", now, d) + "," + Ji("touches", 3) + "," + Jb("broken", broken)));
-     }
-   // inducement: the last internal pullback swing inside the external leg
-   double idm = 0; bool idmTaken = false; int idmI = -1;
-   for(int k = ArraySize(swi) - 1; k >= 0; k--)
-      if(eTrend == "BULLISH" ? !swi[k].hi : eTrend == "BEARISH" ? swi[k].hi : false) { idm = swi[k].p; idmI = swi[k].i; break; }
-   if(idmI >= 0) for(int j = idmI + 1; j < n; j++) if(eTrend == "BULLISH" ? l[j] < idm : h[j] > idm) { idmTaken = true; break; }
-   // liquidity engineering: last sweep -> furthest-most deviation -> CHoCH back
-   string engineering = "null";
-   if(lastSweepAt >= 0)
-     {
-      double fmd = lastSweepSellSide ? l[ArrayMinimum(l, lastSweepAt, n - lastSweepAt)] : h[ArrayMaximum(h, lastSweepAt, n - lastSweepAt)];
-      double opp = 0; for(int k = ArraySize(swi) - 1; k >= 0; k--) if(swi[k].i < lastSweepAt && swi[k].hi == lastSweepSellSide) { opp = swi[k].p; break; }
-      bool ch = false; if(opp > 0) for(int j = lastSweepAt + 1; j < n; j++) if(lastSweepSellSide ? c[j] > opp : c[j] < opp) { ch = true; break; }
-      engineering = Obj(J("side", lastSweepSellSide ? "BULLISH" : "BEARISH") + "," + Jn("swept_level", lastSweepLvl, d) + "," + Jn("fmd", fmd, d) + "," +
-                        Jp("choch_level", opp, d) + "," + Jb("choch_confirmed", ch) + "," + Ji("bars_ago", n - 1 - lastSweepAt));
-     }
-   // liquidity voids: long, one-sided candles (range > 2x average, body > 70%) not yet traded back to their middle
-   string voids[];
-   for(int j = MathMax(1, n - 150); j < n - 1; j++)
-     {
-      double rg = h[j] - l[j], bd = MathAbs(c[j] - o[j]);
-      if(rg < avgR * 2 || bd < rg * 0.7) continue;
-      bool up = c[j] > o[j]; double midV = (h[j] + l[j]) / 2; bool filled = false;
-      for(int q = j + 1; q < n; q++) if(up ? l[q] <= midV : h[q] >= midV) { filled = true; break; }
-      if(!filled) A_Push(voids, Obj(J("side", up ? "BULLISH" : "BEARISH") + "," + Jn("low", l[j], d) + "," + Jn("high", h[j], d) + "," + Ji("bars_ago", n - 1 - j)));
-     }
-   // draw on liquidity: the nearest untaken pool in the external trend's direction
-   string draw = "null";
-   if(eTrend == "BULLISH" && nearBsl > 0) draw = Obj(J("side", "BUY_SIDE") + "," + Jn("level", nearBsl, d));
-   else if(eTrend == "BEARISH" && nearSsl > 0) draw = Obj(J("side", "SELL_SIDE") + "," + Jn("level", nearSsl, d));
-   string liquidity = Obj(
-      Jr("external_range", Obj(Jn("buy_side_above", rHi, d) + "," + Jn("sell_side_below", rLo, d))) + "," +
-      Jr("buy_side_pools", "[" + A_Join(bsl) + "]") + "," + Jr("sell_side_pools", "[" + A_Join(ssl) + "]") + "," +
-      (eqh > 0 ? Jn("equal_highs", eqh, d) : Jnull("equal_highs")) + "," + (eql > 0 ? Jn("equal_lows", eql, d) : Jnull("equal_lows")) + "," +
-      Jr("trendline", "[" + A_Join(tlines) + "]") + "," +
-      Jr("sweeps", "[" + LastN(sweeps, 4) + "]") + "," + Jr("runs", "[" + LastN(runs, 3) + "]") + "," +
-      (idm > 0 ? Jr("inducement", Obj(Jn("level", idm, d) + "," + Jb("taken", idmTaken))) : Jnull("inducement")) + "," +
-      Jr("engineering", engineering) + "," + Jr("voids", "[" + LastN(voids, 3) + "]") + "," + Jr("draw_on_liquidity", draw));
-
-   // ---- zones
-   string zones[];
-   double fvgLo[], fvgHi[]; bool fvgBull[]; int fvgAt[]; int nf = 0;
-   for(int i = 1; i < n - 1; i++)
-     {
-      // Type 1 engulfing area of liquidity
-      if(c[i-1] < o[i-1] && c[i] < o[i] && h[i] > h[i-1] && c[i] < l[i-1]) MsZone(zones, "ENGULFING_AOL", false, c[i], h[i], i, n, l, h, c, d);
-      if(c[i-1] > o[i-1] && c[i] > o[i] && l[i] < l[i-1] && c[i] > h[i-1]) MsZone(zones, "ENGULFING_AOL", true, l[i], c[i], i, n, l, h, c, d);
-      // fair value gaps (min 30% of the average bar range); an FVG closed through becomes an IFVG
-      bool bf = l[i+1] - h[i-1] >= avgR * 0.3, sf = l[i-1] - h[i+1] >= avgR * 0.3;
-      if(bf || sf)
-        {
-         double zl = bf ? h[i-1] : h[i+1], zh = bf ? l[i+1] : l[i-1];
-         ArrayResize(fvgLo, nf + 1); ArrayResize(fvgHi, nf + 1); ArrayResize(fvgBull, nf + 1); ArrayResize(fvgAt, nf + 1);
-         fvgLo[nf] = zl; fvgHi[nf] = zh; fvgBull[nf] = bf; fvgAt[nf] = i + 1; nf++;
-         int inv = -1; for(int q = i + 2; q < n; q++) if(bf ? c[q] < zl : c[q] > zh) { inv = q; break; }
-         if(inv < 0) MsZone(zones, "FVG", bf, zl, zh, i + 1, n, l, h, c, d);
-         else MsZone(zones, "IFVG", !bf, zl, zh, inv, n, l, h, c, d);
         }
+      A_Push(rows, Obj(J("ticket", IntegerToString((long)t)) + "," + Js("symbol", ps) + "," + J("side", buy ? "buy" : "sell") + "," + Jn("lots", lots, 2) + "," +
+                       Jn("entry", op, dg) + "," + Jn("sl", sl, dg) + "," + Jn("tp", tp, dg) + "," + Jn("opening_sl", sl0, dg) + "," + Jn("price", px, dg) + "," +
+                       Jn("profit_money", prof, 2) + "," + (risk > 0 ? Jn("profit_r", move / risk, 2) : Jnull("profit_r")) + "," +
+                       (mm && risk > 0 ? Jn("best_r", best / risk, 2) + "," + Jn("worst_r", -worst / risk, 2) : Jnull("best_r")) + "," +
+                       (sl > 0 ? Jn("to_sl_pips", MathAbs(px - sl) / PipOf(ps), 1) : Jnull("to_sl_pips")) + "," +
+                       (tp > 0 ? Jn("to_tp_pips", MathAbs(tp - px) / PipOf(ps), 1) : Jnull("to_tp_pips")) + "," +
+                       Jb("breakeven_allowed", beOk) + "," + bars + "," + J("opened_utc", SrvToIso(otime)) + "," +
+                       Jb("by_dave", PositionGetInteger(POSITION_MAGIC) == MagicNumber) + "," + Jr("apa", apa)));
      }
-   // balanced price range: a bullish and a bearish FVG within 20 bars that overlap
-   for(int a = MathMax(0, nf - 30); a < nf; a++)
-      for(int b = a + 1; b < nf && fvgAt[b] - fvgAt[a] <= 20; b++)
-         if(fvgBull[a] != fvgBull[b])
-           {
-            double ol = MathMax(fvgLo[a], fvgLo[b]), oh = MathMin(fvgHi[a], fvgHi[b]);
-            if(oh > ol) MsZone(zones, "BPR", fvgBull[b], ol, oh, fvgAt[b], n, l, h, c, d);
-           }
-   // order block = last opposite candle before the external break
-   if(eBos > 0)
-      for(int j = eBos - 1; j >= MathMax(0, eBos - 15); j--)
-        {
-         if(eBull && c[j] < o[j]) { MsZone(zones, "ORDER_BLOCK", true, l[j], h[j], eBos, n, l, h, c, d); break; }
-         if(!eBull && c[j] > o[j]) { MsZone(zones, "ORDER_BLOCK", false, l[j], h[j], eBos, n, l, h, c, d); break; }
-        }
-   // breaker = an order block whose swing SWEPT the prior extreme and was then closed through;
-   // mitigation block = the same flip WITHOUT the sweep (a failed swing)
-   for(int k = 2; k < ns; k++)
+   string pend[];
+   for(int i = 0; i < OrdersTotal(); i++)
      {
-      // bearish case: swing high k after an earlier high (k-2), then a close below the low between
-      if(sw[k].hi && sw[k-2].hi && !sw[k-1].hi)
-        {
-         bool swept = sw[k].p > sw[k-2].p;
-         int brk = -1; for(int j = sw[k].i + 1; j < n; j++) if(c[j] < sw[k-1].p) { brk = j; break; }
-         if(brk < 0) continue;
-         for(int j = sw[k].i; j >= MathMax(0, sw[k].i - 6); j--) if(c[j] > o[j]) { MsZone(zones, swept ? "BREAKER" : "MITIGATION_BLOCK", false, l[j], h[j], brk, n, l, h, c, d); break; }
-        }
-      if(!sw[k].hi && !sw[k-2].hi && sw[k-1].hi)
-        {
-         bool swept = sw[k].p < sw[k-2].p;
-         int brk = -1; for(int j = sw[k].i + 1; j < n; j++) if(c[j] > sw[k-1].p) { brk = j; break; }
-         if(brk < 0) continue;
-         for(int j = sw[k].i; j >= MathMax(0, sw[k].i - 6); j--) if(c[j] < o[j]) { MsZone(zones, swept ? "BREAKER" : "MITIGATION_BLOCK", true, l[j], h[j], brk, n, l, h, c, d); break; }
-        }
+      ulong t = OrderGetTicket(i); if(t == 0) continue;
+      string os = OrderGetString(ORDER_SYMBOL);
+      int dg = (int)SymbolInfoInteger(os, SYMBOL_DIGITS);
+      double op = OrderGetDouble(ORDER_PRICE_OPEN), cur = SymbolInfoDouble(os, SYMBOL_BID);
+      A_Push(pend, Obj(J("ticket", IntegerToString((long)t)) + "," + Js("symbol", os) + "," + J("type", OrderTypeToString((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE))) + "," +
+                       Jn("price", op, dg) + "," + Jn("sl", OrderGetDouble(ORDER_SL), dg) + "," + Jn("tp", OrderGetDouble(ORDER_TP), dg) + "," +
+                       Jn("dist_pips", MathAbs(op - cur) / PipOf(os), 1)));
      }
-   // rejection block: a swing extreme with a long wick -- the zone is the wick beyond the body
-   for(int k = MathMax(0, ns - 12); k < ns; k++)
-     {
-      int j = sw[k].i; double rg = h[j] - l[j]; if(rg <= 0) continue;
-      if(sw[k].hi && (h[j] - MathMax(o[j], c[j])) / rg >= 0.5) MsZone(zones, "REJECTION_BLOCK", false, MathMax(o[j], c[j]), h[j], j, n, l, h, c, d);
-      if(!sw[k].hi && (MathMin(o[j], c[j]) - l[j]) / rg >= 0.5) MsZone(zones, "REJECTION_BLOCK", true, l[j], MathMin(o[j], c[j]), j, n, l, h, c, d);
-     }
-   // flip zones: a level touched 2+ times, later closed through
-   for(int a = MathMax(0, ns - 40); a < ns; a++)
-     {
-      int touches = 1; int lastT = sw[a].i;
-      for(int b = a + 1; b < ns; b++) if(sw[b].hi == sw[a].hi && MathAbs(sw[b].p - sw[a].p) <= avgR * 0.3) { touches++; lastT = sw[b].i; }
-      if(touches < 2) continue;
-      for(int j = lastT + 1; j < n; j++)
-         if(sw[a].hi ? c[j] > sw[a].p + avgR * 0.3 : c[j] < sw[a].p - avgR * 0.3)
-           { MsZone(zones, "FLIP", sw[a].hi, sw[a].p - avgR * 0.15, sw[a].p + avgR * 0.15, j, n, l, h, c, d); break; }
-     }
-
-   // ---- confirmation (last closed bar)
-   int z = n - 1; // the last closed candle
-   double body = MathAbs(c[z] - o[z]), rng = h[z] - l[z];
-   bool displacement = body > avgR * 1.5;
-   bool bullEng = c[z] > o[z] && c[z-1] < o[z-1] && c[z] > o[z-1] && o[z] < c[z-1];
-   bool bearEng = c[z] < o[z] && c[z-1] > o[z-1] && c[z] < o[z-1] && o[z] > c[z-1];
-   bool pinBull = rng > 0 && (MathMin(o[z], c[z]) - l[z]) / rng > 0.6, pinBear = rng > 0 && (h[z] - MathMax(o[z], c[z])) / rng > 0.6;
-   string confirmation = Obj(Jb("displacement", displacement) + "," + J("displacement_side", displacement ? (c[z] > o[z] ? "BULLISH" : "BEARISH") : "NONE") + "," +
-      J("engulfing", bullEng ? "BULLISH" : bearEng ? "BEARISH" : "NONE") + "," + J("rejection", pinBull ? "BULLISH" : pinBear ? "BEARISH" : "NONE"));
-
-   string structure = Obj(
-      Jr("external", extJ) + "," + Jr("internal", intJ) + "," + Jb("aligned", eTrend == iTrend && eTrend != "RANGE") + "," +
-      Jb("mss", mss) + "," + Jr("cisd", cisd) + "," +
-      (validation > 0 ? Jn("validation", validation, d) : Jnull("validation")) + "," +
-      (invalidation > 0 ? Jn("invalidation", invalidation, d) : Jnull("invalidation")) + "," +
-      J("shift", shift) + "," + (shiftAt >= 0 ? Ji("shift_bars_ago", n - 1 - shiftAt) : Jnull("shift_bars_ago")) + "," +
-      (reclaimLvl > 0 ? Jr("reclaim", Obj(Jn("level", reclaimLvl, d) + "," + Jb("reclaimed", reclaimed))) : Jnull("reclaim")) + "," +
-      Jr("range", range));
-   return Obj(J("source", "this timeframe's own CLOSED bars only (bars_ago 0 = the last closed candle); price is live") + "," + Jn("price_now", g_aC[0], g_aDigits) + "," + Ji("bars_used", n) + "," +
-              Jr("structure", structure) + "," + Jr("liquidity", liquidity) + "," + Jr("zones", "[" + LastN(zones, 16) + "]") + "," +
-              Jr("confirmation", confirmation) + "," + Jn("avg_bar_range", avgR, d));
+   return Obj(Jr("positions", Arr(rows)) + "," + Jr("pending_orders", Arr(pend)) + "," + J("times", "UTC"));
   }
 
-//--- reference_levels (EA 3.6): levels OTHER timeframes define, each from that timeframe's own bars,
-// kept apart so no timeframe's analysis is computed from another's data.
-string A_ReferenceLevels(string sym)
+//+------------------------------------------------------------------+
+//| Freshness label + dispatch                                        |
+//+------------------------------------------------------------------+
+string Meta(CSlot *s, string tfStr, ulong us)
   {
-   int d = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   string day = Obj(Jp("open", xOpen(sym, PERIOD_D1, 0), d) + "," + Jp("prev_high", xHigh(sym, PERIOD_D1, 1), d) + "," + Jp("prev_low", xLow(sym, PERIOD_D1, 1), d) + "," + Jp("prev_close", xClose(sym, PERIOD_D1, 1), d));
-   string week = Obj(Jp("open", xOpen(sym, PERIOD_W1, 0), d) + "," + Jp("prev_high", xHigh(sym, PERIOD_W1, 1), d) + "," + Jp("prev_low", xLow(sym, PERIOD_W1, 1), d) + "," + Jp("prev_close", xClose(sym, PERIOD_W1, 1), d));
-   string month = Obj(Jp("open", xOpen(sym, PERIOD_MN1, 0), d) + "," + Jp("prev_high", xHigh(sym, PERIOD_MN1, 1), d) + "," + Jp("prev_low", xLow(sym, PERIOD_MN1, 1), d));
-   double adr = A_ADR(sym, 14), todayRange = xHigh(sym, PERIOD_D1, 0) - xLow(sym, PERIOD_D1, 0);
-   string ranges = Obj((adr > 0 ? Jn("avg_daily_range_14d", adr, d) : Jnull("avg_daily_range_14d")) + "," + (todayRange > 0 ? Jn("today_range", todayRange, d) : Jnull("today_range")) + "," +
-                       (adr > 0 && todayRange > 0 ? Ji("today_pct_of_avg", (int)MathRound(todayRange / adr * 100)) : Jnull("today_pct_of_avg")));
-   return Obj(J("source", "D1 / W1 / MN1 bars, each on its own") + "," + Jr("ranges", ranges) + "," + Jr("daily", day) + "," + Jr("weekly", week) + "," + Jr("monthly", month));
+   long lastTick = SymbolInfoInteger(s.sym, SYMBOL_TIME);
+   int behind = 0;
+   if(lastTick > 0 && s.n > 0 && (datetime)lastTick > s.t[s.n - 1] + PeriodSeconds(s.tf)) behind = (int)(((datetime)lastTick - s.t[s.n - 1]) / PeriodSeconds(s.tf));
+   long closesIn = (long)PeriodSeconds(s.tf) - (long)(TimeTradeServer() - s.t[s.n - 1]);
+   return Obj(Js("symbol", s.sym) + "," + J("timeframe", tfStr) + "," + Ji("bars", s.n) + "," +
+              J("last_closed_candle_utc", SrvToIso(s.t[s.lc])) + "," + J("forming_candle_open_utc", SrvToIso(s.t[s.n - 1])) + "," +
+              Jb("last_candle_still_forming", closesIn > 0) + "," + Ji("forming_closes_in_sec", MathMax((long)0, closesIn)) + "," +
+              Jb("from_cache", s.fromCache) + "," + Ji("cache_age_sec", (long)(TimeLocal() - s.loadedAt)) + "," +
+              Ji("bars_behind", behind) + "," + Jb("stale", s.stale) + "," +
+              Jb("market_open", MarketOpenNow(s.sym)) + "," + Ji("quote_age_sec", lastTick > 0 ? (long)TimeTradeServer() - lastTick : -1) + "," +
+              J("signals_on", "closed candles only") + "," + J("distances_from", "the last closed candle's close") + "," +
+              Ji("compute_us", (long)us) + "," + J("ea_version", EA_VERSION));
   }
 
-// Puts the freshness label first inside an object answer.
 string WithMeta(string data, string meta)
   {
    if(StringLen(data) < 2 || StringGetCharacter(data, 0) != '{') return data;
@@ -4658,36 +4032,98 @@ string WithMeta(string data, string meta)
    return "{\"_meta\":" + meta + (rest == "}" ? "" : ",") + rest;
   }
 
-/** Loads the REQUESTED symbol+timeframe's bars, computes the endpoint, adds the freshness label.
- * An endpoint that can't answer (bad input, not enough history) reports an honest error. */
+// cached chain answer (rebuilt on a new closed candle, or after 30 s for chains that read other timeframes)
+string Chain(CSlot *s, int ch)
+  {
+   if(s.cache[ch] != "" && (ch == CH_CANDLES || TimeLocal() - s.cacheAt[ch] < 30)) return s.cache[ch];
+   ulong t0 = GetMicrosecondCount();
+   string r = "";
+   switch(ch)
+     {
+      case CH_CANDLES:  r = C_Candles(s, 21); break;
+      case CH_MS:       r = C_MarketStructure(s); break;
+      case CH_LIQ:      r = C_Liquidity(s); break;
+      case CH_ZONES:    r = C_Zones(s); break;
+      case CH_TREND:    r = C_Trend(s); break;
+      case CH_MOM:      r = C_Momentum(s); break;
+      case CH_VOLAT:    r = C_Volatility(s); break;
+      case CH_VOLUME:   r = C_Volume(s); break;
+      case CH_LEVELS:   r = C_Levels(s); break;
+      case CH_PATTERNS: r = C_ChartPatterns(s); break;
+     }
+   s.chUs[ch] = GetMicrosecondCount() - t0;
+   s.cache[ch] = r;
+   s.cacheAt[ch] = TimeLocal();
+   if(s.chUs[ch] > 50000) Print("Dave EA: ", s.key, " chain ", ch, " took ", s.chUs[ch] / 1000, " ms");
+   return r;
+  }
+
+// old 3.x endpoint names -> the 4.0 group that now holds that data
+string Canonical(string ep)
+  {
+   if(ep == "structure" || ep == "swing" || ep == "fractal" || ep == "premium_discount" || ep == "inducement") return "market_structure";
+   if(ep == "patterns") return "candles";
+   if(ep == "order_blocks" || ep == "ict") return "zones";
+   if(ep == "pivots" || ep == "fibonacci" || ep == "gann") return "levels";
+   if(ep == "orderflow" || ep == "tape" || ep == "tape_flow" || ep == "market_profile") return "volume";
+   if(ep == "correlation" || ep == "strength" || ep == "heatmap" || ep == "macro") return "intermarket";
+   if(ep == "ichimoku" || ep == "adx" || ep == "regime") return "trend";
+   if(ep == "divergence" || ep == "mean_reversion") return "momentum";
+   if(ep == "reference_levels" || ep == "spread_analysis") return "price";
+   if(ep == "mtf" || ep == "confluence" || ep == "risk_metrics" || ep == "backtest") return "summary";
+   if(ep == "harmonic" || ep == "elliott" || ep == "wyckoff") return "chart_patterns";
+   if(ep == "synthetic") return "volatility";
+   if(ep == "seasonality" || ep == "sentiment") return "session";
+   return ep;
+  }
+
+string AllAnalysis(CSlot *s)
+  {
+   string f[];
+   A_Push(f, Jr("price", C_Price(s.sym)));
+   A_Push(f, Jr("candles", Chain(s, CH_CANDLES)));
+   A_Push(f, Jr("market_structure", Chain(s, CH_MS)));
+   A_Push(f, Jr("liquidity", Chain(s, CH_LIQ)));
+   A_Push(f, Jr("zones", Chain(s, CH_ZONES)));
+   A_Push(f, Jr("trend", Chain(s, CH_TREND)));
+   A_Push(f, Jr("momentum", Chain(s, CH_MOM)));
+   A_Push(f, Jr("volatility", Chain(s, CH_VOLAT)));
+   A_Push(f, Jr("volume", Chain(s, CH_VOLUME)));
+   A_Push(f, Jr("levels", Chain(s, CH_LEVELS)));
+   A_Push(f, Jr("session", C_Session(s.sym)));
+   A_Push(f, Jr("news", C_News(s.sym)));
+   A_Push(f, Jr("intermarket", C_Intermarket(s.sym)));
+   A_Push(f, Jr("chart_patterns", Chain(s, CH_PATTERNS)));
+   A_Push(f, Jr("summary", C_Summary(s)));
+   return Obj(A_Join(f));
+  }
+
 void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr, string obj)
   {
    g_srvOffset = SrvOffset();
    g_aErr = "";
-   ArrayFree(g_prevUsed);
    g_warmBudget = 4;
    ReleaseLoadedSeries();
-   if(endpoint == "ping")
+   ulong t0 = GetMicrosecondCount();
+   string ep = Canonical(endpoint);
+   if(ep == "ping")
      {
-      AppendResultData(commandId, Obj(J("status", "ok") + "," + J("time", A_IsoTime(TimeGMT())) + "," + J("source", "DaveEA") + "," + J("ea_version", EA_VERSION)));
+      AppendResultData(commandId, Obj(J("status", "ok") + "," + J("time", IsoUtc(TimeGMT())) + "," + J("source", "DaveEA") + "," + J("ea_version", EA_VERSION) + "," +
+                                      Jb("terminal_connected", TerminalInfoInteger(TERMINAL_CONNECTED) != 0) + "," +
+                                      Jb("algo_trading", TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && MQLInfoInteger(MQL_TRADE_ALLOWED)) + "," +
+                                      Ji("server_utc_offset_min", g_srvOffset / 60) + "," + Ji("memory_slots", ArraySize(g_slots))));
       return;
      }
    string data = "";
-   bool noSeries = true;
-   if(endpoint == "history") data = A_History(obj, symbol);
-   else if(endpoint == "symbol_info") data = A_SymbolInfo(symbol);
-   else if(endpoint == "position_size")
+   if(ep == "history") data = A_History(obj, symbol);
+   else if(ep == "open_trades") data = A_OpenTrades();
+   else if(ep == "symbol_info") data = A_SymbolInfo(symbol);
+   else if(ep == "position_size")
      {
       if(SymbolInfoDouble(symbol, SYMBOL_POINT) <= 0) g_aErr = "\"" + symbol + "\" isn't on this broker";
-      else { SetSymbolInfo(symbol); data = A_PositionSize(symbol, obj); }
+      else data = A_PositionSize(symbol, obj);
      }
-   else if(endpoint == "mtf")
-     {
-      if(SymbolInfoDouble(symbol, SYMBOL_POINT) <= 0) g_aErr = "\"" + symbol + "\" isn't on this broker";
-      else data = A_Mtf(symbol);
-     }
-   else noSeries = false;
-   if(noSeries)
+   if(ep == "history" || ep == "open_trades" || ep == "symbol_info" || ep == "position_size")
      {
       if(g_aErr != "" || data == "") AppendResult(commandId, false, g_aErr != "" ? g_aErr : "no data", "");
       else AppendResultData(commandId, data);
@@ -4699,59 +4135,29 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr,
       return;
      }
    ENUM_TIMEFRAMES tf = TimeframeFromString(tfStr);
-   if(!LoadAnalysisSeries(symbol, tf))
+   CSlot *s = GetSlot(symbol, tf, 1500);
+   if(s == NULL)
      {
-      AppendResult(commandId, false, "not enough real history loaded yet for " + symbol + " " + tfStr, "");
+      AppendResult(commandId, false, "warming_up: MT5 is still loading " + symbol + " " + tfStr + " history -- ask again in a few seconds", "");
       return;
      }
-   if(endpoint == "trend") data = A_Trend(symbol);
-   else if(endpoint == "momentum") data = A_Momentum();
-   else if(endpoint == "volatility") data = A_Volatility(symbol);
-   else if(endpoint == "price") data = A_Price(symbol);
-   else if(endpoint == "structure") data = A_Structure(symbol);
-   else if(endpoint == "zones") data = A_Zones(symbol);
-   else if(endpoint == "liquidity") data = A_Liquidity(symbol);
-   else if(endpoint == "volume") data = A_Volume();
-   else if(endpoint == "ichimoku") data = A_Ichimoku();
-   else if(endpoint == "fibonacci") data = A_Fibonacci(symbol);
-   else if(endpoint == "candles") data = A_Candles(symbol, (int)JsonGetNumber(obj, "count", 21));
-   else if(endpoint == "patterns") data = A_Patterns();
-   else if(endpoint == "ict") data = A_Ict(symbol, tf);
-   else if(endpoint == "wyckoff") data = A_Wyckoff();
-   else if(endpoint == "divergence") data = A_Divergence();
-   else if(endpoint == "session") data = A_Session(symbol);
-   else if(endpoint == "pivots") data = A_Pivots(symbol);
-   else if(endpoint == "levels") data = A_Levels(symbol);
-   else if(endpoint == "orderflow") data = A_OrderFlow();
-   else if(endpoint == "confluence") { int cs = 0; string cd = "NEUTRAL"; data = A_Confluence(cs, cd); }
-   else if(endpoint == "risk_metrics") data = A_RiskMetrics(symbol);
-   else if(endpoint == "synthetic") data = A_Synthetic(symbol);
-   else if(endpoint == "elliott") data = A_Elliott();
-   else if(endpoint == "correlation") data = A_Correlation(symbol, tf);
-   else if(endpoint == "strength") data = A_Strength(symbol, tf);
-   else if(endpoint == "heatmap") data = A_Heatmap(tf);
-   else if(endpoint == "fractal") data = A_Fractal();
-   else if(endpoint == "harmonic") data = A_Harmonic();
-   else if(endpoint == "mean_reversion") data = A_MeanReversion();
-   else if(endpoint == "tape") data = A_Tape(symbol);
-   else if(endpoint == "tape_flow") data = A_TapeFlow();
-   else if(endpoint == "seasonality") data = A_Seasonality();
-   else if(endpoint == "spread_analysis") data = A_SpreadAnalysis(symbol);
-   else if(endpoint == "gann") data = A_Gann();
-   else if(endpoint == "market_profile") data = A_MarketProfile();
-   else if(endpoint == "macro") data = A_Macro(symbol, tf);
-   else if(endpoint == "news") data = A_News(symbol);
-   else if(endpoint == "sentiment") { int cs2 = 0; string cd2 = "NEUTRAL"; A_Confluence(cs2, cd2); data = A_Sentiment(cs2, cd2); }
-   else if(endpoint == "regime") data = A_Regime();
-   else if(endpoint == "backtest") data = A_Backtest(symbol);
-   else if(endpoint == "swing") data = A_Swing();
-   else if(endpoint == "order_blocks") data = A_OrderBlocks();
-   else if(endpoint == "inducement") data = A_Inducement();
-   else if(endpoint == "premium_discount") data = A_PremiumDiscount();
-   else if(endpoint == "market_structure") data = A_MarketStructure(symbol);
-   else if(endpoint == "reference_levels") data = A_ReferenceLevels(symbol);
-   else if(endpoint == "adx") data = A_Adx();
-   else if(endpoint == "all") data = A_All(symbol, tf);
+   s.lastAsked = TimeLocal();
+   if(ep == "candles") data = C_Candles(s, (int)JsonGetNumber(obj, "count", 21));
+   else if(ep == "price") data = C_Price(symbol);
+   else if(ep == "market_structure") data = Chain(s, CH_MS);
+   else if(ep == "liquidity") data = Chain(s, CH_LIQ);
+   else if(ep == "zones") data = Chain(s, CH_ZONES);
+   else if(ep == "trend") data = Chain(s, CH_TREND);
+   else if(ep == "momentum") data = Chain(s, CH_MOM);
+   else if(ep == "volatility") data = Chain(s, CH_VOLAT);
+   else if(ep == "volume") data = Chain(s, CH_VOLUME);
+   else if(ep == "levels") data = Chain(s, CH_LEVELS);
+   else if(ep == "session") data = C_Session(symbol);
+   else if(ep == "news") data = C_News(symbol);
+   else if(ep == "intermarket") data = C_Intermarket(symbol);
+   else if(ep == "chart_patterns") data = Chain(s, CH_PATTERNS);
+   else if(ep == "summary") data = C_Summary(s);
+   else if(ep == "all") data = AllAnalysis(s);
    else
      {
       AppendResult(commandId, false, "endpoint \"" + endpoint + "\" is not an EA endpoint", "");
@@ -4762,7 +4168,26 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr,
       AppendResult(commandId, false, g_aErr != "" ? g_aErr : "no data", "");
       return;
      }
-   AppendResultData(commandId, WithMeta(data, A_Meta(symbol, tfStr)));
+   AppendResultData(commandId, WithMeta(data, Meta(s, tfStr, GetMicrosecondCount() - t0)));
+  }
+
+// Timer: keep the timeframes the bot asked for in the last 10 minutes ready before it asks again --
+// a new candle there is worked out now, within a 50 ms budget per tick.
+void PrecomputeTick()
+  {
+   ulong t0 = GetMicrosecondCount();
+   g_srvOffset = SrvOffset();
+   for(int i = 0; i < ArraySize(g_slots); i++)
+     {
+      if(GetMicrosecondCount() - t0 > 50000) return;
+      CSlot *s = g_slots[i];
+      if(CheckPointer(s) == POINTER_INVALID || TimeLocal() - s.lastAsked > 600) continue;
+      if(!SeriesInfoInteger(s.sym, s.tf, SERIES_SYNCHRONIZED)) continue;
+      if(iTime(s.sym, s.tf, 0) == s.t[s.n - 1]) continue;
+      GetSlot(s.sym, s.tf, 0);
+      for(int ch = CH_MS; ch <= CH_PATTERNS && GetMicrosecondCount() - t0 < 50000; ch++) Chain(s, ch);
+     }
+   EvictSlots();
   }
 
 
