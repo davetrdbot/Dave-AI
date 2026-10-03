@@ -5,6 +5,7 @@ import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyE
 import { speechVocabularyPrompt } from "./speech-vocabulary.js";
 import { activityAfter, activityBetween, latestActivityId, publishActivity, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
 import { getCall, setCallStatus, placeCall, callOpeningInstruction } from "./dave-calls.js";
+import { startCoderTask, stopCoder, resetCoder, isCoderRunning, readCoderLog, getCoderSettings, setCoderSettings, listWorkspace, readWorkspaceFile, startCoderLoopWatcher, type CoderSettings } from "./coding-agent.js";
 import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, appRegistry, type AppChatDeps } from "./app-chat.js";
 import { dispatchCallback } from "./command-router.js";
 import { ANSWERED_EARLIER, loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
@@ -112,6 +113,8 @@ export interface AppChatRouteDeps extends AppChatDeps {
 
 export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMessage, res: ServerResponse) => void {
   const runTurn = deps.runTurn ?? runAppChatTurn;
+  // The trader's own coding agent runs its looped task on schedule (coding-agent.ts).
+  startCoderLoopWatcher(deps.db, deps.userId);
   const registryFor = (d: AppChatRouteDeps) => d.registry ?? appRegistry(d);
   return (req, res) => {
     void handle(req, res).catch((err: Error & { status?: number }) => {
@@ -318,6 +321,49 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
       } catch (err) {
         if (err instanceof NoGeminiKeyError) return send(res, 409, { error: err.message });
         send(res, 502, { error: (err instanceof Error ? err.message : String(err)).replace(/AIza[0-9A-Za-z_-]+/g, "[key]").slice(0, 300) });
+      }
+      return;
+    }
+    // ── the coding agent (coding-agent.ts): not Dave, not trading -- the trader's own ──
+    if (method === "GET" && path === "coder/state") {
+      const after = Number(url.searchParams.get("after") ?? 0) || 0;
+      return send(res, 200, { running: isCoderRunning(userId), settings: getCoderSettings(userId), log: readCoderLog(userId, after), files: listWorkspace(userId) });
+    }
+    if (method === "POST" && path === "coder/send") {
+      const body = await readJson(req);
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (!text) return send(res, 400, { error: "Give it a task." });
+      if (isCoderRunning(userId)) return send(res, 409, { error: "It's still working -- stop it first or wait." });
+      startCoderTask(deps.db, userId, text);
+      return send(res, 202, { started: true });
+    }
+    if (method === "POST" && path === "coder/stop") return send(res, 200, { stopped: stopCoder(userId) });
+    if (method === "POST" && path === "coder/reset") {
+      resetCoder(userId);
+      return send(res, 200, { ok: true });
+    }
+    if (method === "POST" && path === "coder/settings") {
+      const body = await readJson(req);
+      const patch: Partial<CoderSettings> & Record<string, unknown> = {};
+      if ("provider" in body) patch.provider = (typeof body.provider === "string" && body.provider ? body.provider : null) as never;
+      if ("model" in body) patch.model = (typeof body.model === "string" && body.model ? body.model : null) as never;
+      if (typeof body.maxRounds === "number") patch.maxRounds = body.maxRounds;
+      if ("loop" in body) {
+        const l = body.loop as { task?: unknown; everyMinutes?: unknown } | null;
+        patch.loop = l && typeof l.task === "string" && l.task.trim() && Number(l.everyMinutes) >= 1
+          ? { task: l.task.trim(), everyMinutes: Math.round(Number(l.everyMinutes)), nextAt: Date.now() + Math.round(Number(l.everyMinutes)) * 60_000 }
+          : (null as never);
+      }
+      return send(res, 200, { settings: setCoderSettings(userId, patch) });
+    }
+    if (method === "GET" && path === "coder/file") {
+      try {
+        const p = url.searchParams.get("path") ?? "";
+        const data = readWorkspaceFile(userId, p);
+        res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(data.byteLength), "content-disposition": `attachment; filename="${p.split("/").pop()?.replace(/"/g, "") || "file"}"` });
+        res.end(data);
+      } catch (err) {
+        send(res, 404, { error: err instanceof Error ? err.message : String(err) });
       }
       return;
     }

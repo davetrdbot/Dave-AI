@@ -164,6 +164,7 @@ export type ProviderName =
   | "githubmodels"
   | "gwarden"
   | "runware"
+  | "infron"
   | "custom";
 
 function containsImage(messages: CompletionMessage[]): boolean {
