@@ -242,6 +242,9 @@ export const CORE_TOOL_NAMES: string[] = [
   "set_exit_rule",
   "list_exit_rules",
   "cancel_exit_rule",
+  // Research mode: searching and reading pages in full is the whole job there (research-mode.ts).
+  "web_search",
+  "scrape_url",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the

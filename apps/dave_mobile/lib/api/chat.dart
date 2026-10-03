@@ -180,7 +180,7 @@ class ChatApi {
 
   /// Starts a turn and returns its id. Throws [DaveBusyException] when Dave is busy, unless
   /// [whenFree] -- then it is queued and runs as soon as he's done.
-  Future<String> send(String text, {List<ChatPicture> pictures = const [], bool whenFree = false}) async {
+  Future<String> send(String text, {List<ChatPicture> pictures = const [], bool whenFree = false, bool research = false}) async {
     final body = await _post(
       'send',
       {
@@ -188,6 +188,7 @@ class ChatApi {
         if (pictures.any((p) => !p.isDocument)) 'images': [for (final p in pictures.where((p) => !p.isDocument)) {'data': base64Encode(p.bytes), 'mediaType': p.mediaType}],
         if (pictures.any((p) => p.isDocument)) 'files': [for (final p in pictures.where((p) => p.isDocument)) {'name': p.name, 'data': base64Encode(p.bytes)}],
         if (whenFree) 'whenFree': true,
+        if (research) 'research': true,
       },
       timeout: const Duration(seconds: 60),
     );

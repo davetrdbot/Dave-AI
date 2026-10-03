@@ -207,7 +207,7 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
           const until = Date.now() + WAIT_FOR_FREE_MS;
           while (stateOf(userId).busy && Date.now() < until) await new Promise((r) => setTimeout(r, 1000));
         }
-        await runTurn(deps, { text: fullText, images, ...(attached.length ? { display: { text, files: attached } } : {}) }, turnId);
+        await runTurn(deps, { text: fullText, images, ...(attached.length ? { display: { text, files: attached } } : {}), ...(body.research === true ? { research: true } : {}) }, turnId);
       })().catch((err) => console.error("[app-chat] turn failed:", err));
       send(res, 202, { turnId, queued: busy.busy });
       return;

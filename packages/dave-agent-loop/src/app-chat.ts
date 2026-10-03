@@ -21,6 +21,7 @@ import { chatEventPublisher } from "./activity-events.js";
 import { loadSystemPrompt } from "./system-prompt.js";
 import { autoSaveMemory } from "./memory-autosave.js";
 import { resumeUnfinishedTodos } from "./todos.js";
+import { getActiveResearch, startResearch, endResearch, countResearchSteps, researchBrief, researchContinuation, describeResearch } from "./research-mode.js";
 
 export { toolLabel, chatEventPublisher } from "./activity-events.js";
 
@@ -120,6 +121,15 @@ export interface AppChatInput {
   images?: ContentBlock[];
   /** What the chat bubble shows when it differs from what Dave reads (files attached). */
   display?: { text: string; files: string[] };
+  /** Research mode: research the message's topic in depth, round after round (research-mode.ts). */
+  research?: boolean;
+}
+
+/** "/research <topic>" typed in the chat starts research mode too. */
+export function researchTopicOf(input: AppChatInput): string | undefined {
+  const m = /^\/research\s+([\s\S]+)/i.exec(input.text.trim());
+  if (m) return m[1].trim();
+  return input.research && input.text.trim() ? input.text.trim() : undefined;
 }
 
 /**
@@ -141,6 +151,11 @@ export async function runAppChatTurn(deps: AppChatDeps, input: AppChatInput, tur
   else if (history[0].role === "system") history[0] = { role: "system", content: loadSystemPrompt() };
   const pendingQuestion = input.text ? getPendingQuestion(userId) : undefined;
   const pendingToolCallId = pendingQuestion ? findPendingAskUserToolCallId(history) : undefined;
+  // Research: a new topic starts it; answering Dave's question mid-research carries it on; any
+  // other new message ends it.
+  const topic = pendingQuestion && pendingToolCallId ? undefined : researchTopicOf(input);
+  if (topic) startResearch(userId, topic);
+  else if (!(pendingQuestion && pendingToolCallId)) endResearch(userId);
 
   // A new message stops the app's previous turn and any background tick -- never a Telegram reply.
   abortTurn(userId, { except: "telegram" });
@@ -157,8 +172,25 @@ export async function runAppChatTurn(deps: AppChatDeps, input: AppChatInput, tur
       result = await loop.resume({ status: "awaiting_user", question: pendingQuestion, toolCallId: pendingToolCallId, history, steps: [] }, input.text, { signal: controller.signal, onEvent });
     } else {
       const content: string | ContentBlock[] = input.images?.length ? [{ type: "text", text: input.text || "(see the picture)" }, ...input.images] : input.text;
-      history.push({ role: "user", content: withLiveContext(userId, content) });
+      const withBrief: string | ContentBlock[] = topic ? (typeof content === "string" ? `${researchBrief(topic)}\n\n${content}` : [{ type: "text", text: researchBrief(topic) }, ...content]) : content;
+      history.push({ role: "user", content: withLiveContext(userId, withBrief) });
       result = await loop.run(history, { signal: controller.signal, onEvent });
+    }
+    // Research mode: not done until enough real sources are read and Dave says it's complete.
+    const research = getActiveResearch(userId);
+    if (research) {
+      for (;;) {
+        countResearchSteps(research, result.steps);
+        if (result.status === "awaiting_user") break; // a question to the trader -- their answer resumes it
+        const next = researchContinuation(research, result);
+        if (!next) {
+          endResearch(userId);
+          break;
+        }
+        saveConversationHistory(db, historyKey, result.history);
+        publishActivity(userId, "chat", "notice", { text: describeResearch(research) }, extra);
+        result = await loop.run([...result.history, { role: "user", content: next }], { signal: controller.signal, onEvent });
+      }
     }
     // A multi-part request whose to-do list isn't finished carries on by itself (todos.ts).
     result = await resumeUnfinishedTodos(userId, turnStartedAt, result, (h) => loop.run(h, { signal: controller.signal, onEvent }), (r, progress) => {

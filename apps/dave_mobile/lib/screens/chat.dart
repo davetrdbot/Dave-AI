@@ -219,6 +219,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   bool _speakNextTurn = false;
+  /// Research mode: the next messages are topics Dave researches in depth (research-mode.ts).
+  bool _research = false;
 
   /// Reads a voice turn's answer aloud in Dave's voice.
   Future<void> _speakReply(String text) async {
@@ -247,7 +249,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
     try {
-      final turnId = await api.send(message, pictures: pictures, whenFree: whenFree);
+      final turnId = await api.send(message, pictures: pictures, whenFree: whenFree, research: _research);
       if (!mounted) return;
       setState(() => _timeline.confirmPending(pending, turnId));
       if (_speakNextTurn) _speakTurn = turnId;
@@ -493,7 +495,19 @@ class _ChatScreenState extends State<ChatScreen> {
         bottom: false,
         child: Column(
           children: [
-            _ControlsStrip(key: _controlsKey),
+            _ControlsStrip(
+              key: _controlsKey,
+              research: _research,
+              onResearch: () => setState(() => _research = !_research),
+            ),
+            if (_research)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(Space.s3, 0, Space.s3, 2),
+                child: Text(
+                  'Research mode: type a topic (a provider, an API, a strategy). Dave searches, reads the pages in full and tests with code, round after round, then saves the report.',
+                  style: TextStyle(fontSize: 11.5, color: resolve(context, CupertinoColors.secondaryLabel)),
+                ),
+              ),
             // The conversation sits in a rounded panel under the controls.
             Expanded(
               child: Container(
@@ -700,32 +714,7 @@ class _TurnView extends StatelessWidget {
       if (!turn.running) children.add(_SpeakButton(text: _looksHtml(reply) ? htmlToMarkdown(reply) : reply));
     }
     if (turn.question != null) {
-      children.add(_Bubble(fromUser: false, text: turn.question, child: MarkdownText(turn.question!, fontSize: 14.5)));
-      if (turn.options.isNotEmpty) {
-        children.add(
-          Padding(
-            padding: const EdgeInsets.only(top: 2, bottom: 4),
-            child: Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final o in turn.options)
-                  CupertinoButton(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    minimumSize: const Size(0, 36),
-                    color: Look.of(context).accent.withValues(alpha: 0.13),
-                    borderRadius: BorderRadius.circular(18),
-                    onPressed: () => onOption(o),
-                    child: Text(
-                      o,
-                      style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: Look.of(context).accent),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-      }
+      children.add(_QuestionCard(key: ValueKey('q-${turn.turnId}'), question: turn.question!, options: turn.options, onOption: onOption));
     }
     if (turn.error != null) children.add(_Note(turn.error!, warning: true));
     // New steps and the reply grow the turn smoothly instead of making the list jump.
@@ -1312,8 +1301,80 @@ class _RoundButton extends StatelessWidget {
 
 /// Under the header: the AI Dave is using right now, and the stop loss / take profit he trades
 /// with -- each one tap to change, without leaving the chat.
+/// Dave asking for an answer or a permission: one clear card -- the question, every option as a
+/// full-width button, and what was picked once it's answered (so it can't be pressed twice).
+class _QuestionCard extends StatefulWidget {
+  const _QuestionCard({super.key, required this.question, required this.options, required this.onOption});
+  final String question;
+  final List<String> options;
+  final void Function(String option) onOption;
+  @override
+  State<_QuestionCard> createState() => _QuestionCardState();
+}
+
+class _QuestionCardState extends State<_QuestionCard> {
+  String? _picked;
+
+  @override
+  Widget build(BuildContext context) {
+    final look = Look.of(context);
+    final secondary = resolve(context, CupertinoColors.secondaryLabel);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: look.accent.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: look.accent.withValues(alpha: 0.35)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Icon(CupertinoIcons.hand_raised_fill, size: 16, color: look.accent),
+          const SizedBox(width: 6),
+          Text(_picked == null ? 'Dave needs your answer' : 'Answered', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 0.3, color: look.accent)),
+        ]),
+        const SizedBox(height: 8),
+        MarkdownText(widget.question, fontSize: 14.5),
+        if (widget.options.isNotEmpty) const SizedBox(height: 10),
+        for (var i = 0; i < widget.options.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: _picked != null
+                ? Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _picked == widget.options[i] ? look.accent.withValues(alpha: 0.18) : null,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: look.line),
+                    ),
+                    child: Row(children: [
+                      if (_picked == widget.options[i]) ...[Icon(CupertinoIcons.checkmark_alt, size: 16, color: look.accent), const SizedBox(width: 6)],
+                      Expanded(child: Text(widget.options[i], style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _picked == widget.options[i] ? look.accent : secondary))),
+                    ]),
+                  )
+                : CupertinoButton(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                    minimumSize: const Size(0, 42),
+                    color: i == 0 ? look.accent : look.chip,
+                    borderRadius: BorderRadius.circular(12),
+                    onPressed: () {
+                      HapticFeedback.selectionClick();
+                      setState(() => _picked = widget.options[i]);
+                      widget.onOption(widget.options[i]);
+                    },
+                    child: Text(widget.options[i], textAlign: TextAlign.center, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: i == 0 ? look.tabActiveIcon : resolve(context, CupertinoColors.label))),
+                  ),
+          ),
+        if (_picked == null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(widget.options.isEmpty ? 'Type your answer below.' : 'Or type a different answer below.', style: TextStyle(fontSize: 11.5, color: secondary))),
+      ]),
+    );
+  }
+}
+
 class _ControlsStrip extends StatefulWidget {
-  const _ControlsStrip({super.key});
+  const _ControlsStrip({super.key, this.research = false, this.onResearch});
+  final bool research;
+  final VoidCallback? onResearch;
   @override
   State<_ControlsStrip> createState() => _ControlsStripState();
 }
@@ -1402,6 +1463,10 @@ class _ControlsStripState extends State<_ControlsStrip> with WidgetsBindingObser
         children: [
           chip(CupertinoIcons.sparkles, main == null ? 'AI…' : main.model.split('/').last, _providers == null ? null : _pickModel, strong: true),
           const SizedBox(width: 6),
+          if (widget.onResearch != null) ...[
+            chip(CupertinoIcons.search, widget.research ? 'Research on' : 'Research', widget.onResearch, strong: widget.research),
+            const SizedBox(width: 6),
+          ],
           if (s != null) ...[
             chip(CupertinoIcons.shield, 'SL ${s.stopLoss.summary}', () => _risk('stopLoss', 'Stop loss', s.stopLoss)),
             const SizedBox(width: 6),
