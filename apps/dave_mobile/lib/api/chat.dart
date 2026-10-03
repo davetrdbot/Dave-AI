@@ -210,6 +210,19 @@ class ChatApi {
   Future<Map<String, dynamic>> liveStart({bool thinking = false, String? voice, bool allowActions = true, String? callId}) =>
       _post('live/start', {'thinking': thinking, 'voice': ?voice, 'allowActions': allowActions, 'callId': ?callId}, timeout: const Duration(seconds: 30));
 
+  // --- the coding agent (the trader's own, not Dave) -------------------------------------------
+
+  Future<Map<String, dynamic>> coderState({int after = 0}) => _call(() => _http.get(_url('coder/state', {'after': '$after'}), headers: _headers));
+  Future<void> coderSend(String text) => _post('coder/send', {'text': text});
+  Future<void> coderStop() => _post('coder/stop', {});
+  Future<void> coderReset() => _post('coder/reset', {});
+  Future<Map<String, dynamic>> coderSettings(Map<String, Object?> patch) => _post('coder/settings', patch);
+  Future<List<int>> coderFile(String path) async {
+    final res = await _http.get(_url('coder/file', {'path': path}), headers: _headers).timeout(const Duration(seconds: 60));
+    if (res.statusCode != 200) throw Exception('Could not download $path (${res.statusCode}).');
+    return res.bodyBytes;
+  }
+
   /// What the trader did with a call Dave placed: answered, declined or missed.
   Future<void> callStatus(String callId, String status) => _post('call/status', {'callId': callId, 'status': status});
 

@@ -1,4 +1,6 @@
 import 'package:flutter/cupertino.dart';
+
+import 'coder.dart';
 import 'package:flutter/services.dart';
 
 import '../look.dart';
@@ -24,6 +26,7 @@ const _tabs = [
   _Tab('Live', CupertinoIcons.waveform_path_ecg, CupertinoIcons.waveform_path_ecg),
   _Tab('Brain', CupertinoIcons.lightbulb, CupertinoIcons.lightbulb_fill),
   _Tab('Skills', CupertinoIcons.square_stack_3d_up, CupertinoIcons.square_stack_3d_up_fill),
+  _Tab('Code', CupertinoIcons.chevron_left_slash_chevron_right, CupertinoIcons.chevron_left_slash_chevron_right),
   _Tab('Settings', CupertinoIcons.gear_alt, CupertinoIcons.gear_alt_fill),
 ];
 
@@ -55,7 +58,7 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   int _index = 0;
 
-  static const _pages = [HomeScreen(), ChatScreen(), LiveScreen(), BrainScreen(), SkillsScreen(), SettingsScreen()];
+  static const _pages = [HomeScreen(), ChatScreen(), LiveScreen(), BrainScreen(), SkillsScreen(), CoderScreen(), SettingsScreen()];
 
   void _goTo(int i) {
     if (i == _index) return;
@@ -79,15 +82,15 @@ class _ShellState extends State<Shell> {
             left: 0,
             right: 0,
             bottom: bottom + 12,
-            height: 62,
+            height: 58,
             child: Center(
               child: Glass(
                 radius: 40,
                 child: Padding(
-                  padding: const EdgeInsets.all(7),
+                  padding: const EdgeInsets.all(6),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     for (var i = 0; i < _tabs.length; i++) ...[
-                      if (i > 0) const SizedBox(width: 6),
+                      if (i > 0) const SizedBox(width: 3),
                       _TabButton(tab: _tabs[i], selected: i == _index, onTap: () => _goTo(i)),
                     ],
                   ]),
@@ -119,14 +122,14 @@ class _TabButton extends StatelessWidget {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
           curve: Curves.easeOut,
-          width: 48,
-          height: 48,
+          width: 44,
+          height: 44,
           decoration: BoxDecoration(
             color: selected ? look.tabActive : look.tabIdle,
             shape: BoxShape.circle,
             boxShadow: selected && look.dark ? [BoxShadow(color: look.tabActive.withValues(alpha: 0.45), blurRadius: 16)] : null,
           ),
-          child: Icon(selected ? tab.activeIcon : tab.icon, size: 22, color: selected ? look.tabActiveIcon : look.tabIcon),
+          child: Icon(selected ? tab.activeIcon : tab.icon, size: 21, color: selected ? look.tabActiveIcon : look.tabIcon),
         ),
       ),
     );

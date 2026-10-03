@@ -7,6 +7,7 @@ import 'package:dave_mobile/api/chat.dart';
 import 'package:dave_mobile/api/client.dart';
 import 'package:dave_mobile/app_scope.dart';
 import 'package:dave_mobile/look.dart';
+import 'package:dave_mobile/screens/coder.dart';
 import 'package:dave_mobile/screens/extras.dart';
 import 'package:dave_mobile/screens/growth.dart';
 import 'package:dave_mobile/screens/incoming_call.dart';
@@ -71,6 +72,28 @@ http.Client _server() => MockClient((req) async {
         g['shareUrl'] = 'https://dave-bot-production.up.railway.app/api/share/growth/q8Zk3vYp1NwH5xTfR2mLc9aB0sDe';
         return http.Response(jsonEncode(g), 200, headers: {'content-type': 'application/json'});
       }
+      if (p.endsWith('/coder/state')) {
+        var id = 0;
+        Map<String, Object?> e(String kind, Map<String, Object?> f) => {'id': ++id, 'at': 0, 'kind': kind, ...f};
+        return http.Response(jsonEncode({
+          'running': true,
+          'settings': {'provider': 'infron', 'model': 'deepseek/deepseek-v4-pro', 'maxRounds': 30, 'loop': {'task': 'check the price feed scraper', 'everyMinutes': 60, 'nextAt': 0}},
+          'files': [{'path': 'scraper/main.py', 'bytes': 2310}, {'path': 'scraper/requirements.txt', 'bytes': 31}],
+          'log': [
+            e('user', {'text': 'Build a Python scraper that pulls the gold price every minute from a free source and saves it to prices.csv'}),
+            e('text', {'text': "I'll find a free source first, then write and test the scraper."}),
+            e('tool_start', {'name': 'web_search', 'args': '{"query":"free gold spot price API json"}'}),
+            e('tool_end', {'name': 'web_search', 'result': '[{"title":"metals.live API","url":"https://api.metals.live/v1/spot"}]', 'ms': 2100}),
+            e('tool_start', {'name': 'write_file', 'args': '{"path":"scraper/main.py"}'}),
+            e('tool_end', {'name': 'write_file', 'result': '{"written":"scraper/main.py","bytes":2310}', 'ms': 12}),
+            e('tool_start', {'name': 'run', 'args': '{"code":"pip install -q requests && python scraper/main.py --once"}'}),
+            e('tool_end', {'name': 'run', 'result': '{"exitCode":1,"stderr":"KeyError: price"}', 'isError': false, 'ms': 8400}),
+            e('notice', {'text': 'Round 2 -- carrying on.'}),
+            e('text', {'text': 'The API returns a list, not an object. Fixing the parser and running it again.'}),
+            e('tool_start', {'name': 'edit_file', 'args': '{"path":"scraper/main.py"}'}),
+          ],
+        }), 200, headers: {'content-type': 'application/json'});
+      }
       if (p.endsWith('/analysis-scope')) return http.Response(File(Platform.environment['SCOPE_JSON']!).readAsStringSync(), 200, headers: {'content-type': 'application/json'});
       return http.Response('{}', 200, headers: {'content-type': 'application/json'});
     });
@@ -111,6 +134,17 @@ void main() {
   });
 
   for (final look in [Look.midnightLime, Look.pearl]) {
+    testWidgets('coding agent (${look.name})', (t) async {
+      await phone(t);
+      final api = DaveApi(base: Uri.parse('https://x'), token: 't', client: _server());
+      await t.pumpWidget(_app(AppScope(api: api, onUnpaired: (_) async {}, child: const CoderScreen()), null, look: look));
+      await run(t);
+      await _shot(t, 'coder_${look.name}');
+      expect(find.text('Coding agent'), findsOneWidget);
+      expect(find.text('Working…'), findsOneWidget);
+      await t.pumpWidget(const SizedBox());
+    });
+
     testWidgets('growth share (${look.name})', (t) async {
       await phone(t);
       final api = DaveApi(base: Uri.parse('https://x'), token: 't', client: _server());
