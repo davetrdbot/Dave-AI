@@ -67,11 +67,18 @@ jobs:
         run: |
           flutter build apk --release --build-number=${{ github.run_number }}
           cp build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/Dave.apk"
+          # Also one APK per phone type (smaller): arm64 for most phones, armv7 for 32-bit ones.
+          flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "$RUNNER_TEMP/Dave-arm64.apk"
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk "$RUNNER_TEMP/Dave-armv7-32bit.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: Dave-apk
-          path: ${{ runner.temp }}/Dave.apk
+          path: |
+            ${{ runner.temp }}/Dave.apk
+            ${{ runner.temp }}/Dave-arm64.apk
+            ${{ runner.temp }}/Dave-armv7-32bit.apk
 
       # Every build gets a download link (the trader installs from the phone): a normal release on
       # main, a pre-release on any other branch -- same as the iOS workflow.
@@ -81,11 +88,18 @@ jobs:
           tag_name: app-build-${{ github.run_number }}
           name: Dave app (build ${{ github.run_number }})
           body: |
-            Android admin app for Dave. Download **Dave.apk** on the phone and open it to install
-            (allow "install unknown apps" for your browser when Android asks).
+            Android admin app for Dave. Download ONE of these on the phone and open it to install
+            (allow "install unknown apps" for your browser when Android asks):
+            - **Dave-arm64.apk** -- most phones (64-bit)
+            - **Dave-armv7-32bit.apk** -- older 32-bit phones
+            - **Dave.apk** -- works on both (bigger download)
+            The iPhone build (Dave.ipa) is in the matching "iOS app" release.
 
             First time: in the web panel open **Phone App**, tap **Get a pairing code**, then enter
             your server address and the code in the app.
-          files: ${{ runner.temp }}/Dave.apk
+          files: |
+            ${{ runner.temp }}/Dave.apk
+            ${{ runner.temp }}/Dave-arm64.apk
+            ${{ runner.temp }}/Dave-armv7-32bit.apk
           prerelease: ${{ github.ref != 'refs/heads/main' }}
           make_latest: ${{ github.ref == 'refs/heads/main' }}

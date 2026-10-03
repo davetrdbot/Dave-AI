@@ -30,6 +30,10 @@ export interface TradeLevels {
   /** The price the trade opens at: the pending entry, or the live ask (buy) / bid (sell). */
   entry: number;
   sl?: number;
+  /** SL "off": Dave's invalidation level -- NOT placed at the broker (the trader: "I turned off
+   *  SL and it was still putting SL"). Used for the R:R target and the trade's written plan; Dave
+   *  closes the trade himself if price closes beyond it. */
+  planSl?: number;
   /** Placed at the broker. */
   tp?: number;
   /** What the ratio is measured against: tp, or the planned target when TP is off. */
@@ -94,10 +98,11 @@ export function resolveTradeLevels(input: {
     out.sl = decision.sl;
     out.slSource = "model";
   } else if (decision.sl !== undefined) {
-    // SL "off" means no fixed rule -- not "trade without a stop". The stop Dave gives is used.
-    out.sl = decision.sl;
-    out.slSource = "model";
+    // SL "off" = no stop at the broker (the trader, 3 Oct). Dave's stop is kept as his invalidation
+    // level only: the target is measured from it and he closes the trade himself beyond it.
+    out.planSl = decision.sl;
   }
+  const riskFrom = out.sl ?? out.planSl;
 
   // The target.
   if (risk.tpMode === "on" && risk.tpValue !== undefined) {
@@ -105,11 +110,11 @@ export function resolveTradeLevels(input: {
     out.tp = round(entry + dir * risk.tpValue * pip, entry);
     out.rrTarget = out.tp;
     out.tpSource = "fixed";
-  } else if (out.sl !== undefined && minRiskReward > 0) {
+  } else if (riskFrom !== undefined && minRiskReward > 0) {
     // Exact risk:reward (the trader: "exact R:R, not minimum"): the target is placed at exactly the
     // stop's distance times the ratio. Whatever target the model wrote is replaced.
-    const risked = dir * (entry - out.sl);
-    if (!(risked > 0)) return { ...out, problem: `the stop loss (${out.sl}) is on the wrong side of the ${buy ? "BUY" : "SELL"} entry (${entry})` };
+    const risked = dir * (entry - riskFrom);
+    if (!(risked > 0)) return { ...out, problem: `the stop loss (${riskFrom}) is on the wrong side of the ${buy ? "BUY" : "SELL"} entry (${entry})` };
     out.tp = round(entry + dir * risked * minRiskReward, entry);
     out.rrTarget = out.tp;
     out.tpSource = "rr";
@@ -132,10 +137,10 @@ export function resolveTradeLevels(input: {
   }
 
   // The checks, on exactly the numbers that will be used.
-  if (out.sl !== undefined && out.rrTarget === undefined && risk.tpMode === "off") {
+  if (riskFrom !== undefined && out.rrTarget === undefined && risk.tpMode === "off") {
     return { ...out, problem: `no target was named -- give tp (placed at the broker) or target (where you expect price to go, not placed); the ${minRiskReward}:1 floor is checked against it` };
   }
-  const rr = assessRiskReward({ symbol: "", type: ORDER_TYPE[action], lots: 1, sl: out.sl, tp: out.rrTarget }, entry, minRiskReward);
+  const rr = assessRiskReward({ symbol: "", type: ORDER_TYPE[action], lots: 1, sl: riskFrom, tp: out.rrTarget }, entry, minRiskReward);
   if (rr.ratio !== undefined) out.ratio = Math.round(rr.ratio * 100) / 100;
   if (!rr.ok) {
     const fixedNote =
@@ -160,7 +165,7 @@ export function levelsGuidance(risk: Pick<RiskSettings, "slMode" | "slValue" | "
   const parts = [];
   if (risk.slMode === "on") parts.push(`your stop is FIXED at ${risk.slValue} pips from the entry (set automatically -- don't give sl)`);
   else if (risk.slMode === "auto") parts.push("you set the stop (sl) where the idea is proven wrong");
-  else parts.push("there's no fixed stop rule (SL off) -- still give sl where the idea is proven wrong");
+  else parts.push("SL is OFF -- NO stop is placed at the broker; give sl as your INVALIDATION level (the target is measured from it) and YOU close the trade if price closes beyond it, or when the move is done");
   if (risk.tpMode === "on") {
     parts.push(`the target is FIXED at ${risk.tpValue} pips (set automatically)`);
     return `LEVELS: ${parts.join("; ")}. Market orders are measured from the live price they fill at (ask for a buy, bid for a sell), pending orders from their entry. The target must be at least ${minRiskReward}x as far from the entry as the stop, or the trade is refused.`;

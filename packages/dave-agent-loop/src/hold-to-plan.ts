@@ -35,6 +35,8 @@ export function holdOrClose(p: HoldPosition): HoldVerdict {
   // The trader (2 Oct): "it's not compulsory it must hit TP -- sometimes it should close a trade
   // when in profit". A winner may be banked; only a losing trade is held to its stop.
   if (inProfit) return { close: true };
+  // No stop at the broker (SL off): Dave IS the stop -- he closes it when his invalidation breaks.
+  if (!(typeof p.sl === "number" && p.sl > 0)) return { close: true };
   return {
     close: false,
     inProfit: false,

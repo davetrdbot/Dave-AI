@@ -207,7 +207,7 @@ assert.match(prompt, /ORIGINAL IDEA: sweep|ORIGINAL IDEA:/);
 assert.match(prompt, /M5 candles/);
 assert.match(prompt, /-0\.1R/, "the trade's R is in the review");
 
-// Act mode: an exit rule is a close armed in advance -- Dave doesn't kill trades, so it isn't armed.
+// Act mode: Dave arms the exit himself (the trader, 3 Oct: he manages exits).
 trading.setSelfAwareMode(R, "act");
 resetReviewLimits();
 rSent.length = 0;
@@ -216,8 +216,8 @@ for (let i = 11; i <= 21; i++) {
   setSnapshot(R, T + min(i));
   await sweep.runTradeMonitorSweep(deps, T + min(i));
 }
-assert.match(rSent.find((m) => /SELF-REVIEW/.test(m))!, /Not armed: Dave doesn't close trades on his own/);
-assert.equal(listExitRules(R).length, 0);
+assert.match(rSent.find((m) => /SELF-REVIEW/.test(m))!, /✅ Done: exit rule armed -- closes at \+2, cuts at -8/);
+assert.equal(listExitRules(R)[0].ticket, "10");
 
 // Act mode, a CLOSE on an idea that's only weakened: refused, stays a suggestion.
 resetReviewLimits();

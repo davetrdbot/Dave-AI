@@ -59,11 +59,11 @@ console.log("[1] THE BUG: with no executor the sweep could only ever talk...\n")
   const sent: string[] = [];
   const fired = await runTradeMonitorSweep({ db, userId: OWNER, notify: async (t) => void sent.push(t) });
   assert.ok(fired.some((a) => a.kind === "breakeven"), "the breakeven alert itself always did fire");
-  assert.match(sent.join("\n"), /enough to move the stop to breakeven/, "…and only ever suggested it");
+  assert.match(sent.join("\n"), /Trail it/, "the alert asks Dave to trail the stop");
   console.log("    confirmed: reproduced -- alert fires, nothing moves (no executor wired)");
 }
 
-console.log("\n[2] THE FIX: with a real executor the stop is genuinely moved to entry...\n");
+console.log("\n[2] The trader, 3 Oct: NO automatic breakeven -- even with an executor nothing moves by itself; Dave trails it...\n");
 {
   seedPosition({ pnl: 24.29, currentPrice: 196500 });
   writeMonitors(OWNER, []);
@@ -80,13 +80,9 @@ console.log("\n[2] THE FIX: with a real executor the stop is genuinely moved to 
 
   await runTradeMonitorSweep({ db, userId: OWNER, executor, notify: async (t) => void sent.push(t) });
   // The breakeven move first; the profit lock (half of a +1.5R run) may follow in the same sweep.
-  assert.ok(calls.length >= 1 && calls.length <= 2, `modifyOrder: breakeven, then at most the profit lock -- got ${calls.length}`);
-  assert.equal(calls[0].ticket, TICKET, "on the real ticket from the alert");
-  assert.equal(calls[0].changes.sl, 196800, "stop moved to the ENTRY price -- that is what breakeven means");
-  assert.match(sent.join("\n"), /I've moved the stop to breakeven \(196800\)/, "the message states what happened");
-  assert.match(sent.join("\n"), /risk-free/i);
-  assert.ok(!sent.join("\n").includes("enough to move the stop"), "it must no longer merely suggest it");
-  console.log(`    confirmed: real modifyOrder(#${TICKET}, sl=196800) + a message that reports the fact`);
+  assert.equal(calls.length, 0, "no automatic stop move");
+  assert.match(sent.join("\n"), /Trail it: move the stop up behind the last structure/);
+  console.log("    confirmed: no automatic move; the alert asks for a trail");
 }
 
 console.log("\n[3] A broker that REFUSES the move is reported honestly, never glossed over...\n");
@@ -105,9 +101,7 @@ console.log("\n[3] A broker that REFUSES the move is reported honestly, never gl
 
   await runTradeMonitorSweep({ db, userId: OWNER, executor, notify: async (t) => void sent.push(t) });
   const msg = sent.join("\n");
-  assert.match(msg, /could NOT move the stop to breakeven/, "a failed move must say so");
-  assert.match(msg, /invalid stops/, "…with the real broker reason");
-  assert.match(msg, /still carrying full risk/, "…and must not imply the trade is protected");
+  assert.match(msg, /Trail it/, "nothing was attempted, so nothing failed -- the alert asks for a trail");
   console.log("    confirmed: failure surfaces the real reason and the real risk state");
 }
 
@@ -129,7 +123,7 @@ console.log("\n[4] A failed move is never retried every 30 seconds...\n");
   await runTradeMonitorSweep(deps);
   await runTradeMonitorSweep(deps);
   // One breakeven attempt + one profit-lock attempt at its own level -- neither repeated.
-  assert.ok(attempts >= 1 && attempts <= 2, `a broker refusing this stop will keep refusing it -- got ${attempts} attempts`);
+  assert.equal(attempts, 0, `no automatic stop moves at all -- got ${attempts}`);
   console.log("    confirmed: latched after one attempt across 3 sweeps");
 }
 

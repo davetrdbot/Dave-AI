@@ -1,7 +1,7 @@
 import { getLastKnownState, getLastKnownAccountSnapshot, createEaAnalysisSource } from "@dave/ea-bridge";
 import { ownerTag } from "./trade-owner.js";
 import { getTradeLifecycle } from "@dave/feedback";
-import { breakevenStop, recordOutcome, getDeepLossAlertProgress, getSlAlertLevels, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
+import { getRiskSettings, breakevenStop, recordOutcome, getDeepLossAlertProgress, getSlAlertLevels, getAlertToggles, getWinStreak, type AlertCategory, type TradeExecutor } from "@dave/trading";
 import type { DaveDatabase } from "@dave/db";
 import {
   readMonitors,
@@ -283,7 +283,7 @@ function buildAlertBody(a: MonitorAlert, now: number, breakeven?: BreakevenOutco
       if (breakeven?.status === "failed") {
         return `🎯 ${head} is up about 1R, but I could NOT move the stop to breakeven (${breakeven.level}) — ${breakeven.error}. The trade is still carrying full risk; move it by hand if you want it locked in.${pnl}${why}`;
       }
-      return `🎯 ${head} is up about 1R — enough to move the stop to breakeven and make it a risk-free trade.${pnl}${why}`;
+      return `🎯 ${head} is up about 1R.${pnl} Trail it: move the stop up behind the last structure (the last higher low for a buy / lower high for a sell, beyond its FMD) -- step by step as price makes new structure, not a jump to breakeven that the next pullback takes out. If the move is done (FTA / opposing AOL reached), close it or arm an exit at a price.${why}`;
     }
     case "stuck":
       return `😴 ${head} has sat flat near breakeven for ${flatFor}.${pnl} It's tying up capital doing nothing — consider closing and freeing the margin.${why}`;
@@ -547,7 +547,9 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
 
   // Push per-trade alerts, silencing any whose category the user switched off -- one message per
   // trade per sweep, however many thresholds it crossed at once.
-  const delivered = fired.filter((a) => toggles[alertCategoryOf(a.kind)]);
+  // SL off is the trader's choice: no "no stop loss" warnings for it.
+  const slOff = getRiskSettings(deps.userId).slMode === "off";
+  const delivered = fired.filter((a) => toggles[alertCategoryOf(a.kind)] && !(slOff && a.kind === "noStop"));
   const byTrade = new Map<string, MonitorAlert[]>();
   for (const a of delivered) byTrade.set(a.monitor.ticket, [...(byTrade.get(a.monitor.ticket) ?? []), a]);
   const reviews: Promise<unknown>[] = [];
@@ -556,8 +558,11 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
     // telling the trader about it, so the message reports a fact rather than a suggestion. The
     // alert's latch was already set in advanceMonitor, so a failed move is reported once and never
     // retried every 30s -- a broker that refuses this stop will keep refusing it.
-    const be = list.find((a) => a.kind === "breakeven");
-    const breakeven = be ? await moveStopToBreakeven(deps, be.monitor) : undefined;
+    // No automatic breakeven any more (the trader, 3 Oct: "remove the one that automatically puts
+    // it to breakeven -- the bot should do it, and trail it, not jump to breakeven"). The alert goes
+    // to Dave's scan for this pair; he trails the stop behind structure himself.
+    const breakeven = undefined as BreakevenOutcome | undefined;
+    void moveStopToBreakeven;
     const price = positions.find((p) => p.ticket === ticket)?.currentPrice;
     const text = buildTradeMessage(deps.userId, list, now, { breakeven, exitRule: exitRuleFor(deps.userId, ticket), price });
     try {
@@ -567,7 +572,7 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
     }
     // An alert that calls for a decision gets one: Dave reviews the trade (self-aware-review.ts).
     const decide = list.filter((a) => REVIEW_KINDS.has(a.kind)).map((a) => a.kind);
-    if (deps.review && decide.length && breakeven?.status !== "moved") {
+    if (deps.review && decide.length) {
       const job = reviewTrade({ ...deps.review, userId: deps.userId, executor: deps.executor, notify: deps.notify }, list[0].monitor, decide, text, now);
       reviews.push(job);
     }
@@ -576,7 +581,9 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
 
   // Profit lock (the trader: "in profit for a long time, then it hit SL -- from 20 to 0.38"). After
   // the breakeven moves above, so it only ever tightens past them.
-  for (const { m, p } of lockQueue) await lockProfit(deps, m, p).catch((err) => console.error(`[trade-monitor] ${deps.userId}: profit lock #${m.ticket} failed:`, err));
+  // The automatic profit lock is OFF (the trader, 3 Oct: no automatic stop moves -- Dave trails it).
+  // Kept callable for a future opt-in switch.
+  void lockQueue;
 
   // Account heat: the trades together, not one at a time.
   const heat = portfolioHeat(deps.userId, positions, now);

@@ -342,9 +342,11 @@ async function carryOut(deps: ReviewDeps, v: VerdictArgs, pos: { ticket: string;
         }
         await ex.closePosition(pos.ticket);
         return "✅ Done: closed in profit.";
-      case "EXIT_RULE":
-        // An exit rule is a close armed in advance -- Dave doesn't close trades on his own.
-        return "✋ Not armed: Dave doesn't close trades on his own -- the stop and target do. Tell me \"do it\" if you want this exit rule.";
+      case "EXIT_RULE": {
+        // The trader (3 Oct): Dave manages exits himself -- an exit at a price or P/L is his tool.
+        const rule = setExitRule(deps.userId, { ticket: pos.ticket, closeAtProfit: v.closeAtProfit, closeAtLoss: v.closeAtLoss, note: `self-review: ${v.reason.slice(0, 150)}` });
+        return `✅ Done: exit rule armed -- ${describeExitRule(rule)}.`;
+      }
       default:
         return "";
     }

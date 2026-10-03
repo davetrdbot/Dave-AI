@@ -21,6 +21,10 @@ export interface ExitRule {
   symbol: string;
   closeAtProfit?: number;
   closeAtLoss?: number;
+  /** Close when the price trades at or above / at or below this level (the trader: "when so-so
+   *  price it is, it should close" -- an exit Dave sets himself instead of a broker stop or TP). */
+  exitAbove?: number;
+  exitBelow?: number;
   note?: string;
   armedAt: number;
   /** P/L when the rule was armed -- for the message when it fires. */
@@ -52,7 +56,7 @@ const num = (v: unknown): number | undefined => (v === undefined || v === null |
 
 export function setExitRule(
   userId: string,
-  input: { ticket: string; closeAtProfit?: unknown; closeAtLoss?: unknown; note?: unknown; expiresMinutes?: unknown },
+  input: { ticket: string; closeAtProfit?: unknown; closeAtLoss?: unknown; exitAbove?: unknown; exitBelow?: unknown; note?: unknown; expiresMinutes?: unknown },
   now = Date.now()
 ): ExitRule {
   const ticket = String(input.ticket ?? "").trim();
@@ -60,8 +64,13 @@ export function setExitRule(
   if (!pos) throw new Error(`#${ticket} isn't an open position right now.`);
   const profit = num(input.closeAtProfit);
   const loss = num(input.closeAtLoss);
-  if (Number.isNaN(profit) || Number.isNaN(loss)) throw new Error("closeAtProfit / closeAtLoss must be numbers (money, as P/L shows it).");
-  if (profit === undefined && loss === undefined) throw new Error("Give closeAtProfit (close when P/L is back to at least this) and/or closeAtLoss (close if it falls to this loss).");
+  const above = num(input.exitAbove);
+  const below = num(input.exitBelow);
+  if (Number.isNaN(profit) || Number.isNaN(loss) || Number.isNaN(above) || Number.isNaN(below)) throw new Error("closeAtProfit / closeAtLoss (money) and exitAbove / exitBelow (prices) must be numbers.");
+  if (profit === undefined && loss === undefined && above === undefined && below === undefined) throw new Error("Give exitAbove / exitBelow (close when price reaches that level) and/or closeAtProfit / closeAtLoss (money).");
+  const px = typeof pos.currentPrice === "number" ? pos.currentPrice : undefined;
+  if (above !== undefined && px !== undefined && px >= above) throw new Error(`Price ${px} is already at or above ${above} -- close it now instead if that's the plan.`);
+  if (below !== undefined && px !== undefined && px <= below) throw new Error(`Price ${px} is already at or below ${below} -- close it now instead if that's the plan.`);
   // A loss level is a loss: -8 and 8 both mean "close at -8".
   const lossLevel = loss === undefined ? undefined : -Math.abs(loss);
   const pnl = typeof pos.pnl === "number" ? pos.pnl : undefined;
@@ -74,6 +83,8 @@ export function setExitRule(
     symbol: pos.symbol,
     ...(profit !== undefined ? { closeAtProfit: profit } : {}),
     ...(lossLevel !== undefined ? { closeAtLoss: lossLevel } : {}),
+    ...(above !== undefined ? { exitAbove: above } : {}),
+    ...(below !== undefined ? { exitBelow: below } : {}),
     ...(typeof input.note === "string" && input.note.trim() ? { note: input.note.trim().slice(0, 200) } : {}),
     armedAt: now,
     ...(pnl !== undefined ? { armedPnl: pnl } : {}),
@@ -95,11 +106,17 @@ export function describeExitRule(r: ExitRule): string {
   const parts = [];
   if (r.closeAtProfit !== undefined) parts.push(r.closeAtProfit === 0 ? "closes at breakeven" : `closes at ${r.closeAtProfit > 0 ? "+" : ""}${r.closeAtProfit}`);
   if (r.closeAtLoss !== undefined) parts.push(`cuts at ${r.closeAtLoss}`);
+  if (r.exitAbove !== undefined) parts.push(`closes if price reaches ${r.exitAbove} or above`);
+  if (r.exitBelow !== undefined) parts.push(`closes if price reaches ${r.exitBelow} or below`);
   return parts.join(", ") || "no levels";
 }
 
 /** Which way a rule fires for a P/L, or null. */
-export function exitRuleHit(r: ExitRule, pnl: number | undefined): "profit" | "loss" | null {
+export function exitRuleHit(r: ExitRule, pnl: number | undefined, price?: number): "profit" | "loss" | "above" | "below" | null {
+  if (price !== undefined && Number.isFinite(price)) {
+    if (r.exitAbove !== undefined && price >= r.exitAbove) return "above";
+    if (r.exitBelow !== undefined && price <= r.exitBelow) return "below";
+  }
   if (pnl === undefined || !Number.isFinite(pnl)) return null;
   if (r.closeAtProfit !== undefined && pnl >= r.closeAtProfit) return "profit";
   if (r.closeAtLoss !== undefined && pnl <= r.closeAtLoss) return "loss";
@@ -128,7 +145,7 @@ export async function runExitRules(userId: string, executor: TradeExecutor | und
       out.push(`⌛ Exit rule on ${r.symbol} #${r.ticket} (${describeExitRule(r)}) expired after ${ago(now - r.armedAt)} without firing.`);
       continue;
     }
-    const hit = exitRuleHit(r, pos.pnl);
+    const hit = exitRuleHit(r, pos.pnl, pos.currentPrice);
     if (!hit) {
       keep.push(r);
       continue;
@@ -140,7 +157,9 @@ export async function runExitRules(userId: string, executor: TradeExecutor | und
     try {
       await fullClose(executor, r.ticket);
       out.push(
-        hit === "profit"
+        hit === "above" || hit === "below"
+          ? `${(pos.pnl ?? 0) >= 0 ? "✅" : "🛑"} Closed ${r.symbol} #${r.ticket} at ${pos.pnl} -- price ${pos.currentPrice} reached the exit level ${hit === "above" ? r.exitAbove : r.exitBelow}.${r.note ? `\n📌 ${r.note}` : ""}`
+          : hit === "profit"
           ? `✅ Closed ${r.symbol} #${r.ticket} at ${pos.pnl! > 0 ? "+" : ""}${pos.pnl} -- it recovered to your ${r.closeAtProfit === 0 ? "breakeven" : `+${r.closeAtProfit}`} exit (armed ${ago(now - r.armedAt)} ago${r.armedPnl !== undefined ? ` at ${r.armedPnl}` : ""}).${r.note ? `\n📌 ${r.note}` : ""}`
           : `🛑 Closed ${r.symbol} #${r.ticket} at ${pos.pnl} -- it hit the ${r.closeAtLoss} cut-loss on its exit rule.${r.note ? `\n📌 ${r.note}` : ""}`
       );
@@ -165,15 +184,17 @@ export function createExitRuleTools(userId: string) {
     {
       name: "set_exit_rule",
       description:
-        "Arm an automatic exit on an open trade, checked every ~30 s. closeAtProfit: close once P/L is back to at least this much (money as P/L shows it; 0 = breakeven) -- " +
+        "Arm an automatic exit on an open trade, checked every ~30 s. exitAbove / exitBelow: close when PRICE reaches that level (your own target or invalidation -- the way to manage a trade with SL off, or to bank at an FTA before the TP). closeAtProfit: close once P/L is back to at least this much (money as P/L shows it; 0 = breakeven) -- " +
         "the tool for a trade stuck ranging in loss: 'if it recovers to +6, close it'. closeAtLoss: close if P/L falls to this loss (e.g. -15), a money stop. Either or both. " +
-        "Setting a rule on a ticket replaces its old one. Optional expiresMinutes and a short note (why). Use it when the trader asks, or when a self-aware alert says a trade is chopping in loss and a scratch exit beats hoping -- say what you armed.",
+        "Setting a rule on a ticket replaces its old one. Optional expiresMinutes and a short note (why). Use it yourself: an exit at the FTA / opposing AOL, an exit at your invalidation when SL is off, or a scratch exit on a trade chopping in loss -- say what you armed.",
       parameters: {
         type: "object",
         properties: {
           ticket: { type: "string" },
           closeAtProfit: { type: "number", description: "close when P/L >= this (money). 0 = breakeven" },
           closeAtLoss: { type: "number", description: "close when P/L <= this loss (money), e.g. -15" },
+          exitAbove: { type: "number", description: "close when price trades at or above this level" },
+          exitBelow: { type: "number", description: "close when price trades at or below this level" },
           expiresMinutes: { type: "number" },
           note: { type: "string" },
         },

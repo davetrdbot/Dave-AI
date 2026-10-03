@@ -23,7 +23,9 @@ export interface RiskSettings {
   maxDailyLossPct?: number; // protected
 }
 
-const DEFAULT_SETTINGS: RiskSettings = { slMode: "off", tpMode: "off", lotMode: "off" };
+// SL "auto" by default: "off" now means NO stop at the broker (the trader, 3 Oct), so an account that
+// never chose a stop rule keeps Dave's stop.
+const DEFAULT_SETTINGS: RiskSettings = { slMode: "auto", tpMode: "off", lotMode: "off" };
 
 function settingsPath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "risk-settings.json");

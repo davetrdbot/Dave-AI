@@ -44,7 +44,7 @@ try {
 
   console.log("[3] 'I don't like it killing trades': near target, no stop, no live price -- still never closed\n");
   assert.equal(holdOrClose({ ...boom, currentPrice: 969 }).close, true, "31 of 35 to target, in profit: may be banked");
-  assert.equal(holdOrClose({ ...boom, sl: undefined }).close, false);
+  assert.equal(holdOrClose({ ...boom, sl: undefined }).close, true, "no stop (SL off): Dave is the stop -- he may close it");
   assert.equal(holdOrClose({ ...boom, currentPrice: undefined }).close, false);
   calls.length = 0;
   const partial = await runTickActions(executor, [{ type: "PARTIAL_CLOSE", ticket: "1238463957", lots: 0.05 }] as never, [boom] as never, []);

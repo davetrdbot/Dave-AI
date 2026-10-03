@@ -147,7 +147,7 @@ try {
     }
   }
 
-  console.log("\n[3] DELETE_TICKET on a real open position is refused -- Dave never closes trades (the trader: 'it just like killing trades')...\n");
+  console.log("\n[3] DELETE_TICKET on an open trade with no stop: Dave manages its exit, so it closes...\n");
   {
     const OWNER = "user-mgmt-3";
     upsertGroup(OWNER, { id: "majors", name: "Majors", symbols: ["EURUSD"] });
@@ -175,10 +175,11 @@ try {
     const { provider } = mockToolProvider([{ action: "DELETE_TICKET", ticket: "500", reason: "closing manually" }]);
     try {
       const outcome = await runAutonomousTick({ userId: OWNER, db, executor, provider });
-      assert.equal(outcome.action, "NONE");
-      assert.deepEqual(closedTickets, [], "an open trade is never closed by Dave");
+      // This position has NO stop (SL off): Dave is its stop, so his close goes through.
+      assert.equal(outcome.action, "DELETE_TICKET");
+      assert.deepEqual(closedTickets, ["500"]);
       assert.deepEqual(deletedTickets, [], "must not touch deletePendingOrder for an open position's ticket");
-      console.log("    confirmed: DELETE_TICKET on an open position was held, not closed");
+      console.log("    confirmed: DELETE_TICKET closed a trade with no stop (Dave manages its exit)");
     } finally {
       await ea.stop();
     }

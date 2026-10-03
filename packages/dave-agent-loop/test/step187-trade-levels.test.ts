@@ -55,8 +55,9 @@ console.log("[6] A stop on the wrong side is still refused; SL off never strips 
 lv = resolveTradeLevels({ action: "BUY", decision: { sl: 1.101 }, risk: auto, price, pip, minRiskReward: 2 });
 assert.match(lv.problem!, /wrong side/);
 lv = resolveTradeLevels({ action: "BUY", decision: { sl: 1.098, tp: 1.106 }, risk: { slMode: "off", tpMode: "off" }, price, pip, minRiskReward: 2 });
-assert.equal(lv.sl, 1.098);
-assert.equal(lv.slSource, "model");
+// SL "off" = no broker stop (the trader, 3 Oct): the stop is the plan's invalidation only.
+assert.equal(lv.sl, undefined, "SL off -> nothing at the broker");
+assert.equal(lv.planSl, 1.098, "kept as the invalidation level");
 assert.equal(lv.tp, 1.1046, "22 pips risked from the 1.1002 fill, 44 pips target");
 
 console.log("[7] A fixed stop on an instrument whose pip size is unknown is refused outright, never guessed");

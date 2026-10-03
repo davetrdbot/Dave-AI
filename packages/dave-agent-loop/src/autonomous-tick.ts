@@ -2055,7 +2055,8 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
       entryPrice: order.price ?? lv.entry,
       sl: order.sl,
       tp: order.tp,
-      reasoning: reason ? [reason] : [],
+      // SL off: the invalidation lives in the plan, not at the broker -- every alert quotes it back.
+      reasoning: [...(reason ? [reason] : []), ...(lv.planSl !== undefined ? [`INVALIDATION ${lv.planSl} (SL is off -- no broker stop; close it myself if price closes beyond this)`] : [])],
       confluenceScore: confidence,
     });
   } catch {
