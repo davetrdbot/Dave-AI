@@ -101,10 +101,11 @@ try {
   assert.match(trading, /The lot ceiling/i, "and it must appear in the precedence order");
   console.log("    confirmed: enthusiasm and growth targets are both explicitly barred from raising it");
 
-  console.log("\n[5] The spike entry model the trader asked for is the PRIMARY model...\n");
-  assert.match(trading, /This is your primary entry model/i, "the spike model must be stated as primary, not an aside");
-  assert.match(trading, /point of ignition/i, "it must say where to enter, not just what to look for");
-  console.log("    confirmed: spike entry stated as the primary model, with the ignition-not-mid-move rule");
+  console.log("\n[5] The trader's active strategy skill is followed strictly; no method is hard-wired (the trader, 3 Oct)...\n");
+  assert.match(trading, /The strategy is the trader's, and you follow it strictly/i);
+  assert.ok(!/\bAPA\b/.test(trading), "no specific strategy hard-wired into the trading rules");
+  assert.ok(!/This is your primary entry model/i.test(trading), "the old spike-first model must be gone");
+  console.log("    confirmed: strategy-neutral, active skill followed strictly");
 
   console.log("\n[6] A real clock, and prompts that tell Dave to actually use it...\n");
   const clock = buildClockLine(new Date("2026-09-18T14:30:00Z"));

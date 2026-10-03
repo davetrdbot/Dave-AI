@@ -21,11 +21,13 @@ export interface RiskSettings {
   lotValue?: number;
   maxOpenTrades?: number; // protected -- see requestProtectedLimitChange
   maxDailyLossPct?: number; // protected
+  /** The trader chose SL "off" in their saved settings -- then no stop goes to the broker. An
+   *  account that never saved risk settings keeps Dave's stop (computed, not stored). */
+  slOffChosen?: boolean;
 }
 
-// SL "auto" by default: "off" now means NO stop at the broker (the trader, 3 Oct), so an account that
-// never chose a stop rule keeps Dave's stop.
-const DEFAULT_SETTINGS: RiskSettings = { slMode: "auto", tpMode: "off", lotMode: "off" };
+// Note: SL "off" means NO stop at the broker (the trader, 3 Oct) -- choose "auto" for Dave's stop.
+const DEFAULT_SETTINGS: RiskSettings = { slMode: "off", tpMode: "off", lotMode: "off" };
 
 function settingsPath(userId: string): string {
   return join(process.env.DAVE_DATA_ROOT ?? process.cwd(), "data", "trading", userId, "risk-settings.json");
@@ -33,8 +35,9 @@ function settingsPath(userId: string): string {
 
 export function getRiskSettings(userId: string): RiskSettings {
   const path = settingsPath(userId);
-  if (!existsSync(path)) return { ...DEFAULT_SETTINGS };
-  return JSON.parse(readFileSync(path, "utf8"));
+  if (!existsSync(path)) return { ...DEFAULT_SETTINGS, slOffChosen: false };
+  const saved = JSON.parse(readFileSync(path, "utf8")) as RiskSettings;
+  return { ...saved, slOffChosen: saved.slMode === "off" };
 }
 
 function saveRiskSettings(userId: string, settings: RiskSettings): void {

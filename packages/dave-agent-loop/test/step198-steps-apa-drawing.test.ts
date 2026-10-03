@@ -66,7 +66,7 @@ try {
   const skill = skills.seedApaSkill(U) as { name: string; content: string };
   for (const m of ["Validation point", "Invalidation point", "Shift point", "Transition", "Reclaim point", "FMD", "Type 1 engulfing", "50% of it", "FTA", "Shift entry", "Flip entry type 1", "Liquidity engineering entry"]) assert.ok(skill.content.includes(m), m);
   assert.ok(!skill.content.includes("TRADE THAT PULLBACK"), "the pullback section the trader never asked for is gone");
-  for (const m of ["`mark_level`", "`set_reminder`", "`setup_create`", "`BUY_LIMIT`", "`SELL_LIMIT`", "APA STRUCTURE", "STALE LIMIT"]) assert.ok(skill.content.includes(m), `the skill says: ${m}`);
+  for (const m of ["`mark_level`", "`set_reminder`", "`setup_create`", "`BUY_LIMIT`", "`SELL_LIMIT`", "MARKET STRUCTURE", "STALE LIMIT"]) assert.ok(skill.content.includes(m), `the skill says: ${m}`);
   assert.equal((skills.seedApaSkill(U) as { name: string }).name, skill.name, "seeding twice keeps one");
   assert.equal(skills.listSkills(U).filter((s: { name: string }) => s.name === skill.name).length, 1);
   console.log("   ✓\n");

@@ -10,7 +10,7 @@ export const APA_SKILL_NAME = "APA -- Advanced Price Action (7 entry models)";
 
 export const APA_SKILL_CONTENT = `# APA -- Advanced Price Action (Lowkey Forex Trader)
 
-This is THE strategy. Follow it step by step; never improvise a different setup (a "possible pullback", an indicator signal) and call it APA. Every scan carries an **APA STRUCTURE** block computed from the W1, D1, H4, H1 and M15 candles -- per timeframe: trend, last BOS, VALIDATION and INVALIDATION points, SHIFT / TRANSITION / RECLAIM, liquidity sweeps, equal highs/lows, LIQUIDITY ENGINEERING (swept level, FMD, CHoCH confirmed or not), flip zones, and the FRESH (unconsumed) zones: Type 1 engulfing AOLs, FVGs, order blocks; plus COORDINATION (do two timeframes agree?) and the FTA in the way. Read the setup from THAT block. RSI, MACD, Ichimoku, Bollinger and the other endpoints are background only -- never the reason for an APA trade.
+This is THE strategy. Follow it step by step; never improvise a different setup (a "possible pullback", an indicator signal) and call it APA. Every scan carries an **MARKET STRUCTURE** block computed from the W1, D1, H4, H1 and M15 candles -- per timeframe: trend, last BOS, VALIDATION and INVALIDATION points, SHIFT / TRANSITION / RECLAIM, liquidity sweeps, equal highs/lows, LIQUIDITY ENGINEERING (swept level, FMD, CHoCH confirmed or not), flip zones, and the FRESH (unconsumed) zones: Type 1 engulfing AOLs, FVGs, order blocks; plus COORDINATION (do two timeframes agree?) and the FTA in the way. Read the setup from THAT block. RSI, MACD, Ichimoku, Bollinger and the other endpoints are background only -- never the reason for an APA trade.
 
 ## 1. The core idea: liquidity
 Price moves to fill orders. It travels from one **area of liquidity (AOL)** to the next. Trade only from AOLs -- outside them there is no order flow and no edge.
@@ -36,7 +36,7 @@ Spot it with all four:
 2. a **thrust candle** -- above the level and back inside it (the sweep);
 3. the **FMD (furthest-most deviation)** -- the extreme of that sweep. The stop loss goes beyond the FMD;
 4. a **CHoCH** (change of character) back in your direction on the lower timeframe.
-In the APA STRUCTURE block this shows as a "sweep" plus a fresh shift/BOS the other way.
+In the MARKET STRUCTURE block this shows as a "sweep" plus a fresh shift/BOS the other way.
 
 ## 5. Areas of liquidity -- Type 1 engulfing
 - **Bearish**: two bearish candles; the second wicks ABOVE the first's high and closes BELOW the first's close/low, engulfing it wick and all. Powerful sell zone.
@@ -64,7 +64,7 @@ An AOL is fresh until price has used **50% of it**. A consumed zone is no longer
 
 ## 9. Running it with your tools -- exactly when to do what
 - **You find a fresh AOL (engulfing AOL, OB, FVG, flip zone) that price hasn't reached** -> \`mark_level\` it at once (name the module, the side, the validation and invalidation points). A level you found and didn't mark is a trade you'll miss.
-- **STRICT: no order of any kind before the confirmation.** A fresh AOL with a clear bias is NOT an entry -- it is a level to mark and a setup to arm. The code refuses every BUY, SELL, BUY_LIMIT and SELL_LIMIT unless the APA STRUCTURE shows (a) at least two timeframes coordinated in that direction and (b) on H1 or M15: liquidity engineering with its CHoCH CONFIRMED, or a real SHIFT (not a transition), or a BOS right after the opposite liquidity was swept.
+- **STRICT: no order of any kind before the confirmation.** A fresh AOL with a clear bias is NOT an entry -- it is a level to mark and a setup to arm. The code refuses every BUY, SELL, BUY_LIMIT and SELL_LIMIT unless the MARKET STRUCTURE shows (a) at least two timeframes coordinated in that direction and (b) on H1 or M15: liquidity engineering with its CHoCH CONFIRMED, or a real SHIFT (not a transition), or a BOS right after the opposite liquidity was swept.
 - **When that confirmation is there** -> the shift / engineering leaves a NEW formation: that is your refined AOL. Enter at market if price is in it now, or put the \`BUY_LIMIT\` / \`SELL_LIMIT\` in THAT formation (not in an older zone). Stop beyond the FMD / invalidation; target the next opposing AOL or FTA.
 - **The setup needs something to happen first** (the sweep, then the CHoCH, then the retest) -> \`setup_create\` with those steps in order and \`cancelIf\` = a close beyond the invalidation point.
 - **It depends on a candle close or a session** (the H1/H4 close that would confirm the shift, a session open) -> \`set_reminder\` for that time with the AOL, the module and what you are waiting for.

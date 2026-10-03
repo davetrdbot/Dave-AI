@@ -377,8 +377,8 @@ function buildDecisionTool(risk: RiskSettings, minRiskReward: number): ToolSpec 
       enum: DECISION_ACTIONS,
       description:
         "BUY/SELL are market orders. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders -- include entry. " +
-        "DELETE_TICKET removes an existing pending order (needs ticket) -- it NEVER closes an open trade: you don't close trades, the stop and target do (a close order on an open trade is refused; a winner gets breakeven instead). " +
-        "PARTIAL_CLOSE is refused too -- you never cut a trade, not even part of it. " +
+        "DELETE_TICKET removes a pending order, or closes an open trade (needs ticket): allowed on a WINNER (bank it at the FTA / when the move is done) and on a trade with no stop (SL off -- you are its stop); a LOSING trade that has a stop is held to it (refused). " +
+        "PARTIAL_CLOSE banks part of a winner (same rule). " +
         "MODIFY adjusts SL/TP on an existing open position (needs ticket; optional newSl/newTp -- pass a number to set it, null to explicitly remove it, or omit to leave it unchanged). " +
         "PAUSE stops you from opening new trades for a short while when you judge exposure is already high (optional pauseMinutes, 1-5). " +
         "CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second opinion before you commit -- optional, never required; you'll be asked to decide again right after with its answer in hand. " +
@@ -606,13 +606,13 @@ You are in an autonomous trading TICK right now, not a conversation -- there is 
 
 You receive one symbol's full real multi-timeframe analysis below, plus this account's real current settings, and a real summary of what's already open -- including, per open position that has both a real SL and TP, a visual progress bar toward each. Decide right now: BUY, SELL, BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, DELETE_TICKET, PARTIAL_CLOSE, MODIFY, PAUSE, CONSULT_JOURNAL, REQUEST_CANDLES, RUN_SCRIPT, SKIP, or ASK -- call the ${DECISION_TOOL_NAME} tool with your decision, always with your own honest confidence and reasoning.
 
-BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are real pending orders at a specific entry you set. PREFER LIMIT ORDERS: put a BUY_LIMIT/SELL_LIMIT at the level where the spike starts (the sweep, the order block, the zone) with its stop and target, and let price come to you -- that is how you avoid a wrong entry. Use BUY/SELL only when price is at the ignition point right now. OPTIONAL with a BUY_LIMIT/SELL_LIMIT: a PULLBACK SCALP at market riding price into the limit (a BUY under a SELL_LIMIT, a SELL over a BUY_LIMIT): TP1 = the limit entry exactly (automatic), TP2 past the limit (the overshoot) but short of the limit's own SL, and an SL where the pullback idea is wrong -- include pullbackScalp {sl, tp2} only when there is a real pullback to ride. It is never compulsory: leave it out when many trades are already open or two more positions would pass max open trades, when free margin/leverage is already stretched, or when TP1 can't pay the risk:reward floor. A clean limit alone is fine.
+BUY/SELL are market orders, right now. BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP are pending orders at an entry you set. Your active strategy decides: take a trade only when ALL its conditions are met -- at market if price is at the entry, a limit if it's just away. Conditions not met yet -> no order: mark the level, arm a setup or a reminder instead. OPTIONAL with a limit: a PULLBACK SCALP at market riding price into it (pullbackScalp {sl, tp2}) -- only with room for two more positions and margin to spare.
 
-THE SPIKE RULE (the trader's own): entries go on spike levels -- the price a spike launches from (the swept high/low, the order-block edge, the range boundary after compression, the level BOOM/CRASH keep firing from) -- never just "where price is". There is never a perfect level: pick the best one your analysis shows and TAKE it, with the stop tight behind it; unsure between two levels, take the better one or place limits on both. With no sniper setup, scalp: small, fast profits off the spikes. YOUR DEFAULT IS TO TRADE. A SKIP needs a concrete reason you can name (the stop can't fit, margin is gone, structure broke against you); "not perfect", "want more confirmation", "not fully sure" are not reasons -- the trader has told you plainly that you are too scared and they are begging you to place trades. Be aggressive and decisive.
+ENTRY LEVELS come from your strategy and the MARKET STRUCTURE block, never from "where price is": the level, its validation and invalidation prices, the swept level, the FTA. Name your strategy's setup in your reason. A SKIP names the unmet condition ("not coordinated", "no CHoCH yet") and says what you staged.
 
 SETUPS: when the right entry needs price to do something first (sweep the high THEN come back to the level; break the range THEN retest it), don't just walk away -- arm it with setup_create (steps in order, cancelIf for the move that kills the idea, the order with SL/TP). It runs on its own against the live price and places the order the moment the last step happens. Check setup_list first so you don't arm duplicates.
 
-CLEAN SETUP = TAKE IT: bias clear + price at (or a limit on) a real key level + liquidity swept or right behind it + a trigger (CHoCH/rejection, or the level itself for a limit) -> trade, at your scale's size, no further conditions. "No ignition yet", "overbought", "deep premium", "R:R can't be met" (the TP is set at your exact R:R automatically) and "not perfect" are NOT reasons to skip. The only skip reasons: no key level within reach, structure broke against the idea on closed candles, the stop can't fit, a hard gate.
+CONDITIONS MET = TAKE IT, at the top of the size your scale allows -- no further conditions ("overbought", "deep premium", "not perfect" are not reasons). Not met yet -> stage it (mark_level / setup_create / set_reminder), never a trade.
 
 You are never idle. A SKIP is never empty: if there is no trade here right now, stage the next one -- a limit at the level your analysis supports, or a setReminder (with the idea as the reason) for the candle close or session the setup is waiting on. Say in your reason what you staged. A bare SKIP is only for a symbol with genuinely nothing forming.
 
@@ -624,7 +624,7 @@ CONSULT_JOURNAL asks Journal, your trade-review sidekick, for a second, honest o
 
 REQUEST_CANDLES gets you one fresh real batch of candle data for the symbol you're analyzing right now before you finalize your decision -- entirely optional, never required, available on any cycle, at most once. After the candles come back, you'll be asked to decide again with them in hand -- do not request candles a second time.
 
-You can also do SEVERAL things in one scan with the optional "actions" list on the decision tool: move a winner to breakeven, tighten another trade's stop -- all together, alongside your main action -- and/or ask for several fresh reads at once (candles, volatility, momentum, zones... on any symbol/timeframe). Reads come back together and you decide once more with them. Use it when it genuinely saves a cycle, not as a routine step.
+You can also do SEVERAL things in one scan with the optional "actions" list on the decision tool: trail a winner's stop behind structure, tighten another's -- all together, alongside your main action -- and/or ask for several fresh reads at once (candles, volatility, momentum, zones... on any symbol/timeframe). Reads come back together and you decide once more with them. Use it when it genuinely saves a cycle, not as a routine step.
 
 RUN_SCRIPT runs one real script (bash/python/node) and hands you its genuine output before you finalize -- entirely optional, never required, at most once per cycle. This symbol's full analysis suite is written into the sandbox as market.json, so your script reads real numbers rather than you eyeballing them. Reach for it ONLY when the decision genuinely hinges on something you cannot work out reliably in your head -- a risk:reward or position-size calculation you want exact, a spread or ratio across the timeframes below, a level derived from a real series. Do NOT use it as a routine step before every trade: it costs a real round trip on a live cycle, and nearly every decision here is already answerable from the suite in front of you. These symbols are synthetic pairs that exist only in this terminal and on no public API, so never have a script try to fetch their price from the internet -- everything you need is in market.json. After the output comes back you'll be asked to decide again -- do not run a second script.
 
@@ -1157,7 +1157,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
           pendingOrders.filter((o) => o.symbol.toUpperCase() === symbol.toUpperCase()).map((o) => `${o.type} @ ${o.price} #${o.ticket}`).join("; ") || "none"
         }. The full multi-timeframe analysis for ${symbol} is below.\n` +
         (picked.focus.manage
-          ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade: hold (say why the idea still holds), move the stop to breakeven, or tighten it -- via actions/MODIFY. You NEVER close or part-close a trade: only its stop, its target or the trader closes it (the code refuses a close). The market deceives. No new entry on ${symbol} in this scan.`
+          ? `You have an open trade on ${symbol} (see OPEN POSITIONS). Decide what to do with THAT trade from the data: hold (say why the AOL / structure still holds); TRAIL the stop behind the last structure via MODIFY once it has run ~1R (never a plain jump to breakeven); bank it (DELETE_TICKET / PARTIAL_CLOSE) at the FTA or when the move is done; with SL off, close it if price has closed beyond your invalidation. The market deceives -- a pullback is not a broken idea. No new entry on ${symbol} in this scan.`
           : pendingOrders.some((o) => o.symbol.toUpperCase() === symbol.toUpperCase())
             ? `You have a pending order on ${symbol} (above). Recheck it on this fresh analysis: keep it (say in one line why the level and idea still hold), cancel it with DELETE_TICKET, or cancel and place it where price will really come. Never stack a second pending order on the same idea.`
             : `If the level/setup is live, take the trade now; if price isn't there yet, arm a limit on the level. SKIP only for a reason on your skip list (no level in reach, structure broke against it, stop can't fit, a hard gate).`)
@@ -1181,7 +1181,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     // maxOpenTrades ceiling above.
     `OPEN POSITIONS (${positions.length}${risk.maxOpenTrades !== undefined ? `/${risk.maxOpenTrades} max` : ""}): ${positionsSummary}`,
     `PENDING ORDERS: ${pendingSummary}`,
-    ...(apaLines.length ? [`APA STRUCTURE for ${symbol} (computed from the candles -- THIS is what your APA strategy reads; the other indicator endpoints are background only):\n${apaLines.map((l) => `- ${l}`).join("\n")}`] : []),
+    ...(apaLines.length ? [`MARKET STRUCTURE for ${symbol} (computed from the candles -- facts your strategy reads from):\n${apaLines.map((l) => `- ${l}`).join("\n")}`] : []),
     selfPause
       ? `SELF-PAUSE ACTIVE until ${new Date(selfPause.pausedUntil).toISOString()} (${selfPause.reason}) -- you may still ASK, DELETE_TICKET, or PARTIAL_CLOSE, but you may NOT open a new BUY/SELL/pending order until this expires.`
       : null,
@@ -1790,7 +1790,13 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // STRICT APA (the trader, 3 Oct: "follow it strictly, very strictly"): no trade -- market or
   // pending -- unless the candles show coordination AND a confirmation (apa-structure.ts apaGate).
   // The AI's opinion alone is never enough; when it fails, the level gets marked for later.
-  {
+  // Only when the trader has made the APA skill the active strategy (the trader, 3 Oct: "I've
+  // never tested APA -- don't force it"). Any other strategy is followed through its own skill.
+  const apaActive = (() => {
+    const id = getActiveStrategySkillId(userId);
+    return !!id && /\bAPA\b/i.test(getSkill(userId, id)?.name ?? "");
+  })();
+  if (apaActive) {
     const side = action.startsWith("BUY") ? "bullish" : "bearish";
     // No candles at all (the EA didn't answer) can't be judged either way -- that case is logged;
     // whenever the read exists, it decides.

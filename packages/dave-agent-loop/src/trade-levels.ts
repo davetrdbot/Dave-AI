@@ -76,7 +76,7 @@ export function exitPrice(action: TradeAction, price: { bid?: number; ask?: numb
 export function resolveTradeLevels(input: {
   action: TradeAction;
   decision: { entry?: number; sl?: number; tp?: number; target?: number };
-  risk: Pick<RiskSettings, "slMode" | "slValue" | "tpMode" | "tpValue">;
+  risk: Pick<RiskSettings, "slMode" | "slValue" | "tpMode" | "tpValue" | "slOffChosen">;
   price: { bid?: number; ask?: number; close?: number } | undefined;
   pip?: number;
   minRiskReward: number;
@@ -95,6 +95,10 @@ export function resolveTradeLevels(input: {
     out.slSource = "fixed";
   } else if (risk.slMode === "auto") {
     if (decision.sl === undefined) return { ...out, problem: "no stop loss was given (SL is set to Dave decides)" };
+    out.sl = decision.sl;
+    out.slSource = "model";
+  } else if (decision.sl !== undefined && risk.slOffChosen === false) {
+    // Never chose a stop rule (no saved settings): Dave's stop is placed, as before.
     out.sl = decision.sl;
     out.slSource = "model";
   } else if (decision.sl !== undefined) {
@@ -161,10 +165,11 @@ function round(v: number, like: number): number {
 
 
 /** The line for the model: how the levels work under THIS trader's settings. */
-export function levelsGuidance(risk: Pick<RiskSettings, "slMode" | "slValue" | "tpMode" | "tpValue">, minRiskReward: number): string {
+export function levelsGuidance(risk: Pick<RiskSettings, "slMode" | "slValue" | "tpMode" | "tpValue" | "slOffChosen">, minRiskReward: number): string {
   const parts = [];
   if (risk.slMode === "on") parts.push(`your stop is FIXED at ${risk.slValue} pips from the entry (set automatically -- don't give sl)`);
   else if (risk.slMode === "auto") parts.push("you set the stop (sl) where the idea is proven wrong");
+  else if (risk.slOffChosen === false) parts.push("there's no fixed stop rule -- give sl where the idea is proven wrong (it is placed)");
   else parts.push("SL is OFF -- NO stop is placed at the broker; give sl as your INVALIDATION level (the target is measured from it) and YOU close the trade if price closes beyond it, or when the move is done");
   if (risk.tpMode === "on") {
     parts.push(`the target is FIXED at ${risk.tpValue} pips (set automatically)`);

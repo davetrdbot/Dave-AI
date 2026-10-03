@@ -161,7 +161,7 @@ const ea = startSimulatedEa(OWNER, { CRASH_200: { bid: 627681, ask: 627701, spre
 try {
   upsertGroup(OWNER, { id: "synthetic", name: "Synthetic", symbols: ["CRASH_200"] });
   setActiveGroup(OWNER, "synthetic");
-  setRiskMode(OWNER, "sl", "off");
+  setRiskMode(OWNER, "sl", "auto"); // Dave's own stop (SL off now means no broker stop)
   setRiskMode(OWNER, "tp", "off");
   setRiskMode(OWNER, "lot", "off");
   // The owner's own real live configuration from the screenshot: a 70% threshold, auto-approval

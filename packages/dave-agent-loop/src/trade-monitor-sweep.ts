@@ -548,7 +548,7 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
   // Push per-trade alerts, silencing any whose category the user switched off -- one message per
   // trade per sweep, however many thresholds it crossed at once.
   // SL off is the trader's choice: no "no stop loss" warnings for it.
-  const slOff = getRiskSettings(deps.userId).slMode === "off";
+  const slOff = getRiskSettings(deps.userId).slOffChosen === true;
   const delivered = fired.filter((a) => toggles[alertCategoryOf(a.kind)] && !(slOff && a.kind === "noStop"));
   const byTrade = new Map<string, MonitorAlert[]>();
   for (const a of delivered) byTrade.set(a.monitor.ticket, [...(byTrade.get(a.monitor.ticket) ?? []), a]);
