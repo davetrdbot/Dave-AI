@@ -32,6 +32,12 @@ export interface SetupDrawing {
   arrows: { fromIndex: number; fromPrice: number; toIndex: number; toPrice: number; label?: string }[];
   notes: { index: number; price: number; text: string }[];
   caption?: string;
+  /** The trade itself, drawn like a position tool: a green reward box (entry -> TP), a red risk box
+   *  (entry -> SL) and the R:R on the chart. */
+  position?: { side: "buy" | "sell"; entry: number; sl?: number; tp?: number; rr?: number; fromIndex: number };
+  /** The explanation, drawn INSIDE the picture under the chart (the trader: "it's not explaining
+   *  it inside the drawing, just a caption after"): the strategy, then each numbered step and why. */
+  explain?: string[];
 }
 
 const MAX_CANDLES = 80;
@@ -52,16 +58,40 @@ export function parseDrawing(args: Record<string, unknown>): SetupDrawing {
   }
   if (candles.length < 2) throw new Error("draw_setup needs at least 2 candles, each {o, h, l, c} (add projected: true for the ones you expect next).");
   const kinds: LineKind[] = ["entry", "sl", "tp", "level"];
+  // The trade: top-level entry/sl/tp, or the entry/sl/tp lines if that's how they were sent.
+  const lineOf = (k: LineKind) => n(arr(args.lines).find((x) => x.kind === k)?.price);
+  const entry = n(args.entry) ?? lineOf("entry");
+  const sl = n(args.sl) ?? lineOf("sl");
+  const tp = n(args.tp) ?? lineOf("tp");
+  if (entry === undefined || tp === undefined) {
+    throw new Error("draw_setup needs the trade on the picture: give entry and tp (and sl, or your invalidation level when SL is off) -- they're drawn as the entry line, a green reward box to the target and a red risk box to the stop.");
+  }
+  const side: "buy" | "sell" = args.side === "sell" || args.side === "buy" ? args.side : tp >= entry ? "buy" : "sell";
+  const lastReal = Math.max(0, candles.map((c, i) => (c.projected ? -1 : i)).reduce((a, b) => Math.max(a, b), 0));
+  const rr = sl !== undefined && sl !== entry ? Math.abs(tp - entry) / Math.abs(entry - sl) : undefined;
+  const position = { side, entry, ...(sl !== undefined ? { sl } : {}), tp, ...(rr !== undefined ? { rr: Math.round(rr * 10) / 10 } : {}), fromIndex: lastReal };
   const zoneKinds: ZoneKind[] = ["demand", "supply", "fvg", "ob", "range"];
+  const given = arr(args.lines)
+    .map((x) => ({ price: n(x.price)!, label: s(x.label, 40), kind: (kinds.includes(x.kind as LineKind) ? x.kind : "level") as LineKind }))
+    .filter((x) => x.price !== undefined && x.kind !== "entry" && x.kind !== "sl" && x.kind !== "tp")
+    .slice(0, 9);
+  const tradeLines: SetupDrawing["lines"] = [
+    { price: entry, label: `${side === "buy" ? "Buy" : "Sell"} entry`, kind: "entry" },
+    ...(sl !== undefined ? [{ price: sl, label: "SL", kind: "sl" as const }] : []),
+    { price: tp, label: rr !== undefined ? `TP (1:${rr.toFixed(1)})` : "TP", kind: "tp" },
+  ];
+  const givenArrows = arr(args.arrows)
+    .map((x) => ({ fromIndex: n(x.fromIndex)!, fromPrice: n(x.fromPrice)!, toIndex: n(x.toIndex)!, toPrice: n(x.toPrice)!, label: s(x.label, 40) }))
+    .filter((x) => [x.fromIndex, x.fromPrice, x.toIndex, x.toPrice].every((v) => v !== undefined))
+    .slice(0, 8);
   return {
     title: s(args.title, 80) ?? "Setup",
     symbol: s(args.symbol, 24),
     timeframe: s(args.timeframe, 8),
     candles,
-    lines: arr(args.lines)
-      .map((x) => ({ price: n(x.price)!, label: s(x.label, 40), kind: (kinds.includes(x.kind as LineKind) ? x.kind : "level") as LineKind }))
-      .filter((x) => x.price !== undefined)
-      .slice(0, 12),
+    lines: [...tradeLines, ...given],
+    position,
+    explain: drawingExplain(args),
     zones: arr(args.zones)
       .map((x) => {
         const a = n(x.from);
@@ -72,10 +102,8 @@ export function parseDrawing(args: Record<string, unknown>): SetupDrawing {
       })
       .filter((x): x is NonNullable<typeof x> => !!x)
       .slice(0, 8),
-    arrows: arr(args.arrows)
-      .map((x) => ({ fromIndex: n(x.fromIndex)!, fromPrice: n(x.fromPrice)!, toIndex: n(x.toIndex)!, toPrice: n(x.toPrice)!, label: s(x.label, 40) }))
-      .filter((x) => [x.fromIndex, x.fromPrice, x.toIndex, x.toPrice].every((v) => v !== undefined))
-      .slice(0, 8),
+    // The expected path: Dave's own arrows, or entry -> target when he drew none.
+    arrows: givenArrows.length ? givenArrows : [{ fromIndex: lastReal, fromPrice: entry, toIndex: Math.min(candles.length + 2, lastReal + 6), toPrice: tp, label: "target" }],
     // The story steps go on the chart as numbered notes (1, 2, 3...) -- the picture reads in order.
     notes: [
       ...storySteps(args).map((st, i) => ({ index: st.index, price: st.price, text: `${i + 1} ${st.label}` })),
@@ -99,6 +127,16 @@ function storySteps(args: Record<string, unknown>): StoryStep[] {
     .map((x) => ({ index: n(x.index)!, price: n(x.price)!, label: s(x.label, 34)!, why: s(x.why, 140) }))
     .filter((x) => x.index !== undefined && x.price !== undefined && !!x.label)
     .slice(0, 9);
+}
+
+/** The explanation drawn inside the picture: the strategy, each numbered step with why, the note. */
+function drawingExplain(args: Record<string, unknown>): string[] | undefined {
+  const lines = [
+    s(args.strategy, 300),
+    ...storySteps(args).map((st, i) => `${i + 1}. ${st.label}${st.why ? ` -- ${st.why}` : ""}`),
+    s(args.caption, 240),
+  ].filter((x): x is string => !!x);
+  return lines.length ? lines.slice(0, 12) : undefined;
 }
 
 /** The strategy in words under the picture: what the setup is, then the numbered steps and why. */
@@ -148,13 +186,15 @@ export function tradeDrawing(t: {
     arrows,
     notes: [],
     caption: [rr ? `Risk:reward 1:${rr.toFixed(1)}` : null, reason ? (reason.length > 200 ? `${reason.slice(0, 197)}...` : reason) : null].filter(Boolean).join(" -- ") || undefined,
+    ...(t.tp && t.tp > 0 ? { position: { side: t.side, entry: t.entry, ...(t.sl && t.sl > 0 ? { sl: t.sl } : {}), tp: t.tp, ...(rr ? { rr: Math.round(rr * 10) / 10 } : {}), fromIndex: last } } : {}),
+    ...(reason ? { explain: [reason.length > 600 ? `${reason.slice(0, 597)}...` : reason] } : {}),
   };
 }
 
 // --- SVG --------------------------------------------------------------------------------------
 
 const W = 1000;
-const H = 620;
+const CHART_H = 620;
 const PAD = { l: 24, r: 118, t: 70, b: 56 };
 const C = {
   bg: "#0B0D0E",
@@ -181,7 +221,24 @@ function fmtPrice(p: number, span: number): string {
   return p.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
+/** Splits text into lines of at most `max` characters, on spaces. */
+function wrap(text: string, max: number): string[] {
+  const out: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/)) {
+    if ((line + " " + word).trim().length > max && line) {
+      out.push(line);
+      line = word;
+    } else line = (line + " " + word).trim();
+  }
+  if (line) out.push(line);
+  return out;
+}
+
 export function drawingToSvg(d: SetupDrawing): string {
+  const explainLines = (d.explain ?? []).flatMap((t, i) => wrap(t, 96).map((l, k) => ({ text: l, first: k === 0, strategy: i === 0 && !/^\d+\./.test(t) })));
+  const panelH = explainLines.length ? 46 + explainLines.length * 22 : 0;
+  const H = CHART_H + panelH;
   const idxMax = Math.max(d.candles.length - 1, ...d.arrows.flatMap((a) => [a.fromIndex, a.toIndex]), ...d.notes.map((x) => x.index), ...d.zones.map((z) => z.toIndex ?? 0));
   const slots = Math.max(idxMax + 2, d.candles.length + 1);
   const prices = [
@@ -190,6 +247,7 @@ export function drawingToSvg(d: SetupDrawing): string {
     ...d.zones.flatMap((z) => [z.from, z.to]),
     ...d.arrows.flatMap((a) => [a.fromPrice, a.toPrice]),
     ...d.notes.map((x) => x.price),
+    ...(d.position ? [d.position.entry, d.position.tp ?? d.position.entry, d.position.sl ?? d.position.entry] : []),
   ];
   let lo = Math.min(...prices);
   let hi = Math.max(...prices);
@@ -201,7 +259,7 @@ export function drawingToSvg(d: SetupDrawing): string {
   hi += span * 0.08;
   lo -= span * 0.08;
   const plotW = W - PAD.l - PAD.r;
-  const plotH = H - PAD.t - PAD.b;
+  const plotH = CHART_H - PAD.t - PAD.b;
   const slotW = plotW / slots;
   const x = (i: number) => PAD.l + slotW * (i + 0.5);
   const y = (p: number) => PAD.t + ((hi - p) / (hi - lo)) * plotH;
@@ -228,6 +286,24 @@ export function drawingToSvg(d: SetupDrawing): string {
     const h = Math.max(y(z.from) - y0, 3);
     out.push(`<rect x="${x0.toFixed(1)}" y="${y0.toFixed(1)}" width="${(x1 - x0).toFixed(1)}" height="${h.toFixed(1)}" fill="${col}" fill-opacity="0.14" stroke="${col}" stroke-opacity="0.5" stroke-width="1"/>`);
     if (z.label) out.push(`<text x="${(x0 + 8).toFixed(1)}" y="${(y0 + 17).toFixed(1)}" font-size="13" font-weight="bold" fill="${col}">${esc(z.label)}</text>`);
+  }
+  // the trade, like a position tool: reward box (entry -> TP) and risk box (entry -> SL)
+  if (d.position) {
+    const p = d.position;
+    const x0 = x(p.fromIndex) - slotW / 2;
+    const x1 = W - PAD.r;
+    if (p.tp !== undefined) {
+      const top = y(Math.max(p.entry, p.tp)), bottom = y(Math.min(p.entry, p.tp));
+      out.push(`<rect x="${x0.toFixed(1)}" y="${top.toFixed(1)}" width="${(x1 - x0).toFixed(1)}" height="${Math.max(bottom - top, 2).toFixed(1)}" fill="${C.tp}" fill-opacity="0.16"/>`);
+      const ry = p.side === "buy" ? top + 20 : bottom - 10;
+      out.push(`<text x="${(x0 + 8).toFixed(1)}" y="${ry.toFixed(1)}" font-size="15" font-weight="bold" fill="${C.tp}">${esc(`Reward ${fmtPrice(Math.abs(p.tp - p.entry), span)}${p.rr !== undefined ? `  ·  R:R 1:${p.rr}` : ""}`)}</text>`);
+    }
+    if (p.sl !== undefined) {
+      const top = y(Math.max(p.entry, p.sl)), bottom = y(Math.min(p.entry, p.sl));
+      out.push(`<rect x="${x0.toFixed(1)}" y="${top.toFixed(1)}" width="${(x1 - x0).toFixed(1)}" height="${Math.max(bottom - top, 2).toFixed(1)}" fill="${C.sl}" fill-opacity="0.16"/>`);
+      const ry = p.side === "buy" ? bottom - 8 : top + 18;
+      out.push(`<text x="${(x0 + 8).toFixed(1)}" y="${ry.toFixed(1)}" font-size="14" font-weight="bold" fill="${C.sl}">${esc(`Risk ${fmtPrice(Math.abs(p.entry - p.sl), span)}`)}</text>`);
+    }
   }
   // candles
   const bodyW = Math.max(Math.min(slotW * 0.62, 26), 3);
@@ -274,8 +350,16 @@ export function drawingToSvg(d: SetupDrawing): string {
     out.push(`<rect x="${left.toFixed(1)}" y="${(ny - 36).toFixed(1)}" width="${tw.toFixed(1)}" height="24" rx="12" fill="#1E2326" stroke="#3A4146"/>`);
     out.push(`<text x="${(left + 8).toFixed(1)}" y="${(ny - 19).toFixed(1)}" font-size="13" fill="${C.text}">${esc(nt.text)}</text>`);
   }
-  if (d.caption) out.push(`<text x="${PAD.l + 4}" y="${H - 22}" font-size="15" fill="${C.muted}">${esc(d.caption.length > 110 ? `${d.caption.slice(0, 108)}…` : d.caption)}</text>`);
-  out.push(`<text x="${W - 24}" y="${H - 22}" font-size="12" text-anchor="end" fill="#4A5156">Dave</text>`);
+  if (explainLines.length) {
+    // The explanation, inside the picture: the strategy, then each numbered step and why.
+    out.push(`<line x1="${PAD.l}" x2="${W - 24}" y1="${CHART_H - 14}" y2="${CHART_H - 14}" stroke="${C.grid}" stroke-width="1"/>`);
+    out.push(`<text x="${PAD.l + 4}" y="${CHART_H + 16}" font-size="15" font-weight="bold" fill="${C.entry}">How this trade works</text>`);
+    explainLines.forEach((ln, i) => {
+      const yy = CHART_H + 44 + i * 22;
+      out.push(`<text x="${PAD.l + (ln.first ? 4 : 22)}" y="${yy}" font-size="15" ${ln.strategy ? `font-weight="bold" ` : ""}fill="${ln.strategy ? C.text : "#C9CED1"}">${esc(ln.text)}</text>`);
+    });
+  } else if (d.caption) out.push(`<text x="${PAD.l + 4}" y="${H - 22}" font-size="15" fill="${C.muted}">${esc(d.caption.length > 110 ? `${d.caption.slice(0, 108)}…` : d.caption)}</text>`);
+  out.push(`<text x="${W - 24}" y="${H - 12}" font-size="12" text-anchor="end" fill="#4A5156">Dave</text>`);
   out.push("</svg>");
   return out.join("");
 }
@@ -301,13 +385,18 @@ export const DRAW_SETUP_TOOL_DESCRIPTION =
   "Use it whenever the trader asks you to draw, show or illustrate something (\"draw what you mean\", \"show me the setup\"), and whenever a picture explains a setup better than words: " +
   "the sweep-then-reversal you're waiting for, where a limit sits, what a Setup's steps look like. Candles can be the real recent ones (from get_candles) or illustrative -- " +
   "keep them few (8-30) and mark the ones you EXPECT with projected: true. Use real prices for lines and zones. Put an arrow for the move you expect and a note or two, not a paragraph. " +
-  "The picture is the message: after it, answer in one short line.";
+  "ALWAYS give the trade: entry, sl and tp (with SL off, sl = your invalidation level) -- they are drawn as the entry line, a green reward box, a red risk box and the R:R. " +
+  "The strategy and each story step's `why` are written INSIDE the picture under the chart, so make them clear. The picture is the message: after it, answer in one short line.";
 
 export const DRAW_SETUP_PARAMETERS = {
   type: "object",
-  required: ["title", "candles"],
+  required: ["title", "candles", "entry", "tp"],
   properties: {
     title: { type: "string", description: "e.g. 'Sweep of the Asian high, then short'" },
+    side: { type: "string", enum: ["buy", "sell"] },
+    entry: { type: "number", description: "entry price -- always" },
+    sl: { type: "number", description: "stop loss (or the invalidation level when SL is off)" },
+    tp: { type: "number", description: "take profit / target -- always" },
     symbol: { type: "string" },
     timeframe: { type: "string" },
     candles: {

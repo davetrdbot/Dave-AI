@@ -32,6 +32,15 @@ export function focusScanOnAlert(userId: string, symbol: string, alertText: stri
   return true;
 }
 
+/** An alert about no pair in particular (an exit rule closed a trade, account heat): ends a rest
+ *  and starts the next scan now instead of after the interval. */
+export function wakeForAlert(userId: string, alertText: string): boolean {
+  if (!isAutonomousTradingEnabled(userId)) return false;
+  const woke = wakeFromSelfPause(userId);
+  if (woke) publishActivity(userId, "loop", "self_pause_end", { text: `▶ Woke up: ${alertText.replace(/\s+/g, " ").slice(0, 160)}` });
+  return runScanSoon(userId) || !!woke;
+}
+
 /** Test seam. */
 export function resetAlertFocus(): void {
   lastFocus.clear();

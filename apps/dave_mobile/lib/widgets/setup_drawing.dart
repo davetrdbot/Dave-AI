@@ -14,7 +14,9 @@ class SetupDrawingView extends StatelessWidget {
   Widget build(BuildContext context) {
     final title = '${drawing['title'] ?? 'Setup'}';
     final sub = [drawing['symbol'], drawing['timeframe']].where((x) => x != null && '$x'.isNotEmpty).join(' · ');
-    final note = drawing['caption'] as String?;
+    final explain = (drawing['explain'] is List) ? (drawing['explain'] as List).map((e) => '$e').where((e) => e.isNotEmpty).toList() : <String>[];
+    // Older bots only sent a caption; newer ones send the explanation to draw inside the picture.
+    final note = explain.isEmpty ? drawing['caption'] as String? : null;
     return Container(
       decoration: BoxDecoration(color: const Color(0xFF0B0D0E), borderRadius: BorderRadius.circular(18)),
       padding: const EdgeInsets.fromLTRB(12, 12, 8, 10),
@@ -30,6 +32,30 @@ class SetupDrawingView extends StatelessWidget {
         ]),
         const SizedBox(height: 8),
         AspectRatio(aspectRatio: 1.45, child: CustomPaint(painter: _DrawingPainter(drawing, DefaultTextStyle.of(context).style.fontFamily), size: Size.infinite)),
+        if (explain.isNotEmpty)
+          Container(
+            key: const ValueKey('drawing-explain'),
+            margin: const EdgeInsets.only(top: 8, right: 4),
+            padding: const EdgeInsets.only(top: 8),
+            decoration: const BoxDecoration(border: Border(top: BorderSide(color: _grid))),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('How this trade works', style: TextStyle(color: Color(0xFFC6F36B), fontSize: 13, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              for (var i = 0; i < explain.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: Text(
+                    explain[i],
+                    style: TextStyle(
+                      color: i == 0 && !RegExp(r'^\d+\.').hasMatch(explain[i]) ? _text : const Color(0xFFC9CED1),
+                      fontSize: 12.5,
+                      height: 1.3,
+                      fontWeight: i == 0 && !RegExp(r'^\d+\.').hasMatch(explain[i]) ? FontWeight.w600 : FontWeight.w400,
+                    ),
+                  ),
+                ),
+            ]),
+          ),
         if (note != null && note.isNotEmpty)
           Padding(padding: const EdgeInsets.only(top: 6, right: 4), child: Text(note, style: const TextStyle(color: Color(0xFF8E959A), fontSize: 12.5, height: 1.3))),
       ]),
@@ -146,6 +172,9 @@ class _DrawingPainter extends CustomPainter {
       for (final z in zones) ...[_n(z['from']) ?? 0, _n(z['to']) ?? 0],
       for (final a in arrows) ...[_n(a['fromPrice']) ?? 0, _n(a['toPrice']) ?? 0],
       for (final x in notes) _n(x['price']) ?? 0,
+      if (d['position'] is Map) ...[
+        for (final k in ['entry', 'sl', 'tp']) _n((d['position'] as Map)[k]) ?? 0,
+      ],
     ].where((p) => p != 0).toList();
     if (prices.isEmpty) return;
     var lo = prices.reduce(math.min);
@@ -191,6 +220,29 @@ class _DrawingPainter extends CustomPainter {
         ..color = col.withValues(alpha: 0.5)
         ..style = PaintingStyle.stroke);
       if (z['label'] != null) _label(canvas, '${z['label']}', r.topLeft + const Offset(5, 3), color: col, size: 10, weight: FontWeight.w700);
+    }
+    // the trade, like a position tool: green reward box (entry -> TP), red risk box (entry -> SL)
+    if (d['position'] is Map) {
+      final p = Map<String, dynamic>.from(d['position'] as Map);
+      final entry = _n(p['entry']);
+      final from = x((_n(p['fromIndex']) ?? (candles.length - 1)).toDouble()) - slotW / 2;
+      final buy = p['side'] != 'sell';
+      if (entry != null) {
+        final tp = _n(p['tp']);
+        final sl = _n(p['sl']);
+        if (tp != null) {
+          final r = Rect.fromLTRB(from, y(math.max(entry, tp)), plotW, y(math.min(entry, tp)));
+          canvas.drawRect(r, Paint()..color = _kinds['tp']!.withValues(alpha: 0.16));
+          final rr = _n(p['rr']);
+          _label(canvas, 'Reward ${_fmt((tp - entry).abs(), span)}${rr != null ? '  ·  R:R 1:$rr' : ''}', Offset(from + 5, buy ? r.top + 3 : r.bottom - 16),
+              color: _kinds['tp']!, size: 10.5, weight: FontWeight.w700);
+        }
+        if (sl != null) {
+          final r = Rect.fromLTRB(from, y(math.max(entry, sl)), plotW, y(math.min(entry, sl)));
+          canvas.drawRect(r, Paint()..color = _kinds['sl']!.withValues(alpha: 0.16));
+          _label(canvas, 'Risk ${_fmt((entry - sl).abs(), span)}', Offset(from + 5, buy ? r.bottom - 16 : r.top + 3), color: _kinds['sl']!, size: 10, weight: FontWeight.w700);
+        }
+      }
     }
     // candles
     final bodyW = (slotW * 0.62).clamp(2.0, 16.0);

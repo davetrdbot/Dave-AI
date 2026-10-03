@@ -214,11 +214,64 @@ const ANALYSIS_TIMEFRAMES = ALL_ANALYSIS_TIMEFRAMES;
  *  than its answer is worth. Matches the REQUEST_CANDLES fetch budget. */
 const TICK_SCRIPT_TIMEOUT_MS = 60_000;
 
+/** How much of the merged analysis goes into one scan prompt (characters, ~40k tokens). */
+export const SUITE_PROMPT_BUDGET = 160_000;
+/** Dropped first when a timeframe is too big to fit -- the least-used extras. Structure, liquidity,
+ *  zones, price and candles always stay. */
+const SUITE_DROP_ORDER = [
+  "backtest", "seasonality", "gann", "harmonic", "elliott", "heatmap", "correlation", "macro", "sentiment", "news",
+  "tape_flow", "tape", "market_profile", "fractal", "wyckoff", "pivots", "levels", "strength", "mean_reversion",
+  "ichimoku", "divergence", "patterns", "regime", "confluence", "risk_metrics", "spread_analysis", "session", "volume",
+];
+
+/**
+ * The merged suite for the prompt, never cut off mid-way (the trader: "confirm it's sending ALL of
+ * get_all_analysis"). It used to be one JSON string sliced at 60,000 characters, so once the EA's
+ * answers grew, the later timeframes (M5, M3, M1) silently fell off the end. Now every timeframe
+ * gets an equal share; one that's still too big drops its least-used extras first (named in the
+ * text, and logged), never its structure, liquidity, zones, price or candles.
+ */
+export function fitSuite(suite: Record<string, unknown>, userId?: string, symbol?: string, budget = SUITE_PROMPT_BUDGET): string {
+  const full = JSON.stringify(suite);
+  if (full.length <= budget) return full;
+  const tfs = Object.keys(suite);
+  const share = Math.floor(budget / Math.max(1, tfs.length));
+  const out: Record<string, unknown> = {};
+  const dropped: string[] = [];
+  for (const tf of tfs) {
+    const data = suite[tf];
+    if (!data || typeof data !== "object" || JSON.stringify(data).length <= share) {
+      out[tf] = data;
+      continue;
+    }
+    const copy: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+    const gone: string[] = [];
+    for (const key of SUITE_DROP_ORDER) {
+      if (JSON.stringify(copy).length <= share) break;
+      if (key in copy) {
+        delete copy[key];
+        gone.push(key);
+      }
+    }
+    if (gone.length) {
+      copy._left_out_for_space = gone;
+      dropped.push(`${tf}: ${gone.join(", ")}`);
+    }
+    out[tf] = copy;
+  }
+  if (dropped.length && userId) logTick(userId, `${symbol ?? ""}: analysis too big for one prompt -- left out ${dropped.join(" | ")}`);
+  return JSON.stringify(out);
+}
+
 /** Builds the honest warning line when the active strategy skill names timeframes the current
  *  analysis scope will not fetch, so an unsatisfiable strategy announces itself instead of
  *  producing an endless, error-free stand-down. Returns null when the scope genuinely covers it. */
 function scopeWarningFor(userId: string, skillContent: string): string | null {
-  const check = isAnalysisScopeSufficientFor(userId, skillContent);
+  const raw = isAnalysisScopeSufficientFor(userId, skillContent);
+  // Standard timeframes the strategy names are fetched for it now (see activeTimeframes) -- only
+  // ones MT5 can't serve are still worth a warning.
+  const missing = raw.missing.filter((t) => !/^(MN1|W1|D1|H12|H8|H6|H4|H3|H2|H1|M30|M20|M15|M10|M5|M3|M2|M1)$/.test(t));
+  const check = { ...raw, missing, sufficient: missing.length === 0 };
   if (check.sufficient) return null;
   console.warn(`[autonomous-tick] ${userId}: active strategy names ${check.missing.join(", ")}, which the analysis scope does NOT fetch (scope: ${check.active.join(", ")}) -- the strategy cannot be followed as written`);
   return (
@@ -914,7 +967,16 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     return { action: "NONE", notable: false };
   }
   const { symbol } = picked;
-  const activeTimeframes = analysisConfig.mode === "custom" && analysisConfig.timeframes.length > 0 ? analysisConfig.timeframes : ANALYSIS_TIMEFRAMES;
+  const scopeTimeframes = analysisConfig.mode === "custom" && analysisConfig.timeframes.length > 0 ? analysisConfig.timeframes : ANALYSIS_TIMEFRAMES;
+  // The timeframes the active strategy itself names (W1, M30...) are fetched too -- a strategy that
+  // reads the weekly can't be followed from data that never includes it. Each is its own "all" call.
+  const strategyTimeframes = (() => {
+    const id = getActiveStrategySkillId(userId);
+    const sk = id ? getSkill(userId, id) : undefined;
+    return sk ? isAnalysisScopeSufficientFor(userId, sk.content).missing.filter((t) => /^(MN1|W1|D1|H12|H8|H6|H4|H3|H2|H1|M30|M20|M15|M10|M5|M3|M2|M1)$/.test(t)) : [];
+  })();
+  const TF_ORDER = ["MN1", "W1", "D1", "H12", "H8", "H6", "H4", "H3", "H2", "H1", "M30", "M20", "M15", "M10", "M5", "M3", "M2", "M1"];
+  const activeTimeframes = [...new Set([...scopeTimeframes, ...strategyTimeframes])].sort((a, b) => TF_ORDER.indexOf(a) - TF_ORDER.indexOf(b));
   logTick(userId, `picked ${symbol}${picked.usingFallback ? " (fallback group)" : ""} -- requesting full analysis across ${activeTimeframes.join("/")}...`);
   publishActivity(userId, "loop", "analysis", { symbol, timeframes: activeTimeframes, stage: "reading" });
 
@@ -1193,7 +1255,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     // endpoints across 6 real timeframes the real JSON is far larger, so most of what
     // ANALYSIS_TIMEFRAMES actually requested was silently cut before the model ever saw it.
     // Raised well past any real single-request's actual size instead of an arbitrary small slice.
-    `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${activeTimeframes.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${JSON.stringify(suite).slice(0, 60_000)}`,
+    `FULL ANALYSIS SUITE, genuinely one real "all" call per timeframe (${activeTimeframes.join(", ")}), merged below -- check for real alignment or conflict across them, not just one: ${fitSuite(suite, userId, symbol)}`,
     mtfAlignmentLine,
     mtfConfluenceLine,
     basketRiskLine,

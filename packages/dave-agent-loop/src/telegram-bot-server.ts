@@ -36,7 +36,7 @@ import { deliverDueReminders } from "./reminder-delivery.js";
 import { setupGaps } from "./setup-gaps.js";
 import { tryHandleMt5Entry } from "./mt5-cloud-flow.js";
 import { publishActivity } from "./activity-bus.js";
-import { focusScanOnAlert } from "./alert-focus.js";
+import { focusScanOnAlert, wakeForAlert } from "./alert-focus.js";
 import { chatEventPublisher, newTurnId, publishFinal } from "./app-chat.js";
 import { tryHandleNousEntry } from "./nous/flow.js";
 import { startNous } from "./nous/service.js";
@@ -1256,6 +1256,8 @@ export async function startTelegramBotServer(deps: TelegramBotServerDeps): Promi
       // Also in the app's Live tab (the trader: "the self aware messages should be in the live").
       publishActivity(deps.ownerUserId, "background", "self_aware", { text });
       if (about) focusScanOnAlert(deps.ownerUserId, about.symbol, text);
+      // No pair named (an exit rule fired, account heat) -- still acted on now, not next interval.
+      else if (!/^🧠 SELF-REVIEW/.test(text)) wakeForAlert(deps.ownerUserId, text);
       const chatId = getPrimaryChatId(deps.db, deps.ownerUserId);
       if (chatId === undefined) return;
       await client.sendMessage({ chat_id: chatId, text }).catch(() => undefined);

@@ -387,7 +387,8 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
         parameters: DRAW_SETUP_PARAMETERS,
         execute: async (args: Record<string, unknown>) => {
           const drawing = parseDrawing(args);
-          const caption = [drawing.title, drawing.caption].filter(Boolean).join("\n");
+          // The explanation is drawn inside the picture now; the caption only names it.
+          const caption = drawing.explain?.length ? drawing.title : [drawing.title, drawing.caption].filter(Boolean).join("\n");
           const sink = tg.client as unknown as { sendDrawing?: (p: Record<string, unknown>) => Promise<unknown> };
           if (tg.chatId === 0 && typeof sink.sendDrawing === "function") {
             await sink.sendDrawing({ drawing, caption });

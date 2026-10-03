@@ -15,7 +15,7 @@ process.env.DAVE_DATA_ROOT = workDir;
 const trading = await import("@dave/trading");
 const skills = await import("@dave/skills");
 const { runSequentialThinking } = await import("../src/sequential-thinking.js");
-const { parseDrawing } = await import("../src/setup-drawing.js");
+const { parseDrawing, drawingToSvg } = await import("../src/setup-drawing.js");
 
 try {
   console.log("[1] Steps: switch off, delete, add your own -- and the thinking pass must cover every one that's on\n");
@@ -76,6 +76,9 @@ try {
   const d = parseDrawing({
     title: "OCL buy on VOL_75",
     candles,
+    entry: 105,
+    sl: 102,
+    tp: 112,
     strategy: "APA OCL buy: the H4 open-close line nearest the last bullish BOS, fresh, with sell-side liquidity under it.",
     story: [
       { index: 2, price: 103, label: "BOS", why: "bias is up" },
@@ -86,6 +89,11 @@ try {
   });
   assert.deepEqual(d.notes.slice(0, 4).map((x: { text: string }) => x.text), ["1 BOS", "2 OCL key level", "3 Sweep", "4 CHoCH M5"]);
   assert.match(d.caption!, /^APA OCL buy[\s\S]*1\. BOS -- bias is up[\s\S]*4\. CHoCH M5 -- confirmation/);
+  assert.equal(d.explain?.[0].startsWith("APA OCL buy"), true, "the explanation is drawn inside the picture");
+  assert.equal(d.explain?.[1], "1. BOS -- bias is up");
+  assert.deepEqual(d.lines.slice(0, 3).map((l: { kind: string }) => l.kind), ["entry", "sl", "tp"], "entry, SL and TP always drawn");
+  assert.equal(d.position?.rr, 2.3);
+  assert.match(drawingToSvg(d), /How this trade works/);
   console.log("   ✓\n");
 
   console.log("=== step198: ALL ASSERTIONS PASSED ===");

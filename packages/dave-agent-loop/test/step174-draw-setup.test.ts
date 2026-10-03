@@ -41,7 +41,10 @@ assert.equal(d.lines.length, 3, "a line without a real price is dropped");
 assert.deepEqual([d.zones[0].from, d.zones[0].to], [4.6, 5.2], "zone edges put in order");
 assert.equal(d.candles[3].projected, true);
 assert.throws(() => parseDrawing({ title: "x", candles: [{ o: 1, h: 2, l: 0, c: 1 }] }), /at least 2 candles/);
-const fixed = parseDrawing({ candles: [{ o: 5, h: 1, l: 9, c: 6 }, { o: 1, h: 2, l: 0, c: 1 }] });
+const fixed = parseDrawing({ entry: 1, tp: 2, candles: [{ o: 5, h: 1, l: 9, c: 6 }, { o: 1, h: 2, l: 0, c: 1 }] });
+assert.throws(() => parseDrawing({ candles: [{ o: 1, h: 2, l: 0, c: 1 }, { o: 1, h: 2, l: 0, c: 1 }] }), /entry and tp/, "a drawing without the trade is refused -- entry and TP are always drawn");
+assert.deepEqual([d.position?.side, d.position?.entry, d.position?.sl, d.position?.tp], ["sell", 4.9, 5.5, 1], "the trade comes from the lines when sent that way");
+assert.ok(d.position?.rr && d.position.rr > 6, "R:R worked out");
 assert.ok(fixed.candles[0].h >= 6 && fixed.candles[0].l <= 5, "a high below the body is widened, never drawn broken");
 console.log("   ✓\n");
 
