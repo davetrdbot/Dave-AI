@@ -278,3 +278,30 @@ export function describeApaCoordination(byTf: { tf: string; bars: Bar[] }[]): st
   }
   return parts.join(" | ");
 }
+
+/**
+ * The STRICT APA gate (the trader: "let it follow it strictly, very strictly"). A trade is allowed
+ * only when the candles themselves show the book's conditions in the trade's direction:
+ *   1. coordination -- at least two timeframes trend that way, and more agree than disagree;
+ *   2. a confirmation on a situational timeframe (H1 or M15): liquidity engineering with its CHoCH
+ *      confirmed, or a real SHIFT (not a transition), or a fresh BOS right after the opposite side's
+ *      liquidity was swept.
+ * Anything less is not an entry yet -- mark the level, set the setup/reminder, wait.
+ */
+export function apaGate(byTf: { tf: string; bars: Bar[] }[], side: "bullish" | "bearish"): { ok: true; why: string } | { ok: false; why: string } {
+  const reads = byTf.map((x) => ({ tf: x.tf, r: readApa(x.bars) })).filter((x): x is { tf: string; r: ApaRead } => !!x.r);
+  if (!reads.length) return { ok: false, why: "no APA read (no candles from the EA this scan)" };
+  const withSide = reads.filter((x) => x.r.trend === side).map((x) => x.tf);
+  const against = reads.filter((x) => x.r.trend !== side && x.r.trend !== "range").map((x) => x.tf);
+  if (withSide.length < 2 || withSide.length <= against.length) {
+    return { ok: false, why: `timeframes not coordinated ${side} (with: ${withSide.join(", ") || "none"}; against: ${against.join(", ") || "none"})` };
+  }
+  const sweptSide = side === "bullish" ? "sell-side" : "buy-side";
+  for (const x of reads.filter((y) => y.tf === "H1" || y.tf === "M15" || y.tf === "M5")) {
+    const r = x.r;
+    if (r.engineering && r.engineering.side === side && r.engineering.choch) return { ok: true, why: `${x.tf} liquidity engineering ${side} with CHoCH confirmed` };
+    if (r.shift && !r.shift.transition && r.shift.side === side) return { ok: true, why: `${x.tf} shift to ${side} confirmed` };
+    if (r.lastBos && r.lastBos.side === side && r.sweeps.some((s) => s.side === sweptSide && s.at < r.lastBos!.at)) return { ok: true, why: `${x.tf} BOS ${side} after ${sweptSide} liquidity was swept` };
+  }
+  return { ok: false, why: `coordinated ${side} (${withSide.join(", ")}), but no confirmation yet on H1/M15 -- no liquidity engineering with CHoCH, no shift, no BOS after a sweep` };
+}

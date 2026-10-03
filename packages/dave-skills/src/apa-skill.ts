@@ -64,10 +64,11 @@ An AOL is fresh until price has used **50% of it**. A consumed zone is no longer
 
 ## 9. Running it with your tools -- exactly when to do what
 - **You find a fresh AOL (engulfing AOL, OB, FVG, flip zone) that price hasn't reached** -> \`mark_level\` it at once (name the module, the side, the validation and invalidation points). A level you found and didn't mark is a trade you'll miss.
-- **The bias is clear on two timeframes and the AOL is fresh** -> place the order AT the AOL: \`BUY_LIMIT\` at a bullish AOL below price, \`SELL_LIMIT\` at a bearish AOL above price. Stop beyond the invalidation point / FMD; take profit at the next opposing AOL or FTA. Price not there yet = a limit, not a skip.
+- **STRICT: no order of any kind before the confirmation.** A fresh AOL with a clear bias is NOT an entry -- it is a level to mark and a setup to arm. The code refuses every BUY, SELL, BUY_LIMIT and SELL_LIMIT unless the APA STRUCTURE shows (a) at least two timeframes coordinated in that direction and (b) on H1 or M15: liquidity engineering with its CHoCH CONFIRMED, or a real SHIFT (not a transition), or a BOS right after the opposite liquidity was swept.
+- **When that confirmation is there** -> the shift / engineering leaves a NEW formation: that is your refined AOL. Enter at market if price is in it now, or put the \`BUY_LIMIT\` / \`SELL_LIMIT\` in THAT formation (not in an older zone). Stop beyond the FMD / invalidation; target the next opposing AOL or FTA.
 - **The setup needs something to happen first** (the sweep, then the CHoCH, then the retest) -> \`setup_create\` with those steps in order and \`cancelIf\` = a close beyond the invalidation point.
 - **It depends on a candle close or a session** (the H1/H4 close that would confirm the shift, a session open) -> \`set_reminder\` for that time with the AOL, the module and what you are waiting for.
-- **Price is at the AOL with the sweep and the CHoCH done right now** -> enter at market (BUY/SELL), stop beyond the FMD.
+- **Price is at the AOL with the sweep and the CHoCH done right now** -> enter at market (BUY/SELL), stop beyond the FMD. Name the entry module (shift, flip 1/2, FTA, liquidity engineering) in your reason.
 - **A pending limit that price ran away from** -> you'll get a STALE LIMIT reminder: if the idea is still valid, cancel the limit and enter at market; if the target is already used up, cancel and say "missed entry, no chase".
 - **Transition only, consumed zone, timeframes disagreeing, or no AOL near price** -> no entry. Mark the next fresh AOL instead and set the reminder.
 - **Show it**: \`draw_setup\` -- AOL, validation, invalidation, sweep/FMD, shift, entry, SL, TP.

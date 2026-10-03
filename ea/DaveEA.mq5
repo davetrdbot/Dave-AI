@@ -33,7 +33,7 @@
 // it -- moved here, to the top, so every real use compiles regardless of where it appears below.
 #define DAVEEA_BARS 1000
 // Reported with every heartbeat so the bot can tell the trader when this file is out of date.
-#define EA_VERSION "3.3"
+#define EA_VERSION "3.4"
 // Docker-mode file bridge (see UseFileBridge) -- defined up here for the same reason.
 #define BRIDGE_DIR "dave_bridge"
 #define BRIDGE_TIMEOUT_MS 5000
@@ -1314,10 +1314,11 @@ double LastGood(string k, double v, bool fresh, string label = "")
 string XKey(string f, string s, ENUM_TIMEFRAMES tf, int sh) { return f + "|" + s + "|" + IntegerToString((int)tf) + "|" + IntegerToString(sh); }
 double xGet(string f, string s, ENUM_TIMEFRAMES tf, int sh)
   {
-   bool r = SeriesReady(s, tf);
-   double v = 0;
-   if(r) v = f == "o" ? iOpen(s, tf, sh) : f == "h" ? iHigh(s, tf, sh) : f == "l" ? iLow(s, tf, sh) : iClose(s, tf, sh);
-   return LastGood(XKey(f, s, tf, sh), v, r, s + " " + TfName(tf));
+   SeriesReady(s, tf); // starts the download if needed
+   // Present first: read the live value even before MT5 flags the series synchronized; only a real
+   // 0 (no data at all) falls back to the remembered value, and that is labelled as previous data.
+   double v = f == "o" ? iOpen(s, tf, sh) : f == "h" ? iHigh(s, tf, sh) : f == "l" ? iLow(s, tf, sh) : iClose(s, tf, sh);
+   return LastGood(XKey(f, s, tf, sh), v, v > 0, s + " " + TfName(tf));
   }
 double xOpen(string s, ENUM_TIMEFRAMES tf, int sh)  { return xGet("o", s, tf, sh); }
 double xHigh(string s, ENUM_TIMEFRAMES tf, int sh)  { return xGet("h", s, tf, sh); }
@@ -1331,7 +1332,19 @@ bool LoadAnalysisSeries(string sym, ENUM_TIMEFRAMES tf)
    g_fromCache = false;
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   int copied = SeriesReady(sym, tf) ? CopyRates(sym, tf, 0, DAVEEA_BARS, rates) : 0;
+   // PRESENT first (the trader: "the EA gives the bot recent information instead of present").
+   // Always ask MT5 for the live series -- even when it isn't flagged synchronized yet, CopyRates
+   // returns what the terminal has, and that is newer than any cache. If the newest bar is behind
+   // the last tick (MT5 still catching up), give it up to a second to catch up before answering.
+   SeriesReady(sym, tf); // starts the download if this pair/timeframe was never opened
+   int copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
+   long lastTick = SymbolInfoInteger(sym, SYMBOL_TIME);
+   int period = PeriodSeconds(tf);
+   for(int wait = 0; wait < 10 && copied > 0 && lastTick > 0 && (long)rates[0].time + 2 * period < lastTick; wait++)
+     {
+      Sleep(100);
+      copied = CopyRates(sym, tf, 0, DAVEEA_BARS, rates);
+     }
    if(copied > 60)
      {
       CopySeries(rates, copied);

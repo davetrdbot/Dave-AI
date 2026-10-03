@@ -85,7 +85,7 @@ try {
     MCP_MANAGER_TOOLS.length +
     FIRECRAWL_TOOLS.length +
     FEEDBACK_TOOLS.length + // Step 18 re-verification: record_skip/record_hypothesis/record_observation/etc, now genuinely wired into the registry
-    3 + 1 /* set_breakeven */ + 5 /* growth_status, brain_learn, brain_recall, reflect_now, set_growth_goals */ + 1 /* update_todos */ + 3 /* set_exit_rule, list_exit_rules, cancel_exit_rule */ + 1 /* self_aware_stats */; // +1 ask_user, +1 search_tools, +1 get_tool_catalog (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
+    3 + 1 /* set_breakeven */ + 1 /* fit_analysis_to_skill */ + 5 /* growth_status, brain_learn, brain_recall, reflect_now, set_growth_goals */ + 1 /* update_todos */ + 3 /* set_exit_rule, list_exit_rules, cancel_exit_rule */ + 1 /* self_aware_stats */; // +1 ask_user, +1 search_tools, +1 get_tool_catalog (no telegram client supplied in this test, so PUSH_TOOLS/TELEGRAM_TOOLS/NOTIFICATION_TOOLS are not registered)
   assert.equal(registry.list().length, expectedTotal);
   console.log(`    real registry has ${registry.list().length} tools = sum of every package's own real array + ask_user + search_tools`);
 

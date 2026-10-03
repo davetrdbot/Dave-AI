@@ -210,8 +210,14 @@ export function staleLimitChecks(
     }
     if (gap <= 0) rec.touched = true; // price came back to the level
     if (rec.touched) continue;
-    // Running away: further from the level than when the order was first seen.
-    if (!(gap > rec.firstGap)) continue;
+    // Ran away (seen live 2 Oct: VOL_10 BUY LIMIT 1046960 never filled, price went straight to its
+    // TP 1048045 and beyond, and no reminder came because "further than first seen" never held
+    // after a restart). Stale = a third of the way to the order's own TP, or a full stop-distance
+    // away from the entry, or -- with neither set -- half again further than when first seen.
+    const tpWay = o.tp && o.tp > 0 ? (buy ? (price - o.price) / (o.tp - o.price) : (o.price - price) / (o.price - o.tp)) : undefined;
+    const r1 = o.sl && o.sl > 0 ? Math.abs(o.price - o.sl) : undefined;
+    const ranAway = tpWay !== undefined ? tpWay >= 0.33 : r1 !== undefined ? gap >= r1 : gap > rec.firstGap * 1.5 && gap > 0;
+    if (!ranAway) continue;
     if (rec.toldAt !== undefined && now - rec.toldAt < STALE_LIMIT_EVERY_MS) continue;
     const lastGap = rec.lastGap;
     rec.toldAt = now;
@@ -224,7 +230,7 @@ export function staleLimitChecks(
       symbol: o.symbol,
       text:
         `🏃 STALE LIMIT: ${o.symbol} ${side} LIMIT at ${o.price} (ticket ${o.ticket}) has been pending for ${mins} minutes.\n` +
-        `Price is now ${price}, ${pts} points past the limit level${lastGap !== undefined ? ` (was ${+lastGap.toFixed(5)} points at the last reminder)` : ""}.\n` +
+        `Price is now ${price}, ${pts} points past the limit level${lastGap !== undefined ? ` (was ${+lastGap.toFixed(5)} points at the last reminder)` : ""}${tpWay !== undefined ? ` -- ${Math.round(tpWay * 100)}% of the way to its own TP ${o.tp}` : ""}.\n` +
         `It has not come back to the level and is unlikely to reach it.\n` +
         `Entry reason: ${reasonOf(key)}\n` +
         `Should I place a ${side} at market instead?\n` +
@@ -232,4 +238,16 @@ export function staleLimitChecks(
     });
   }
   return out;
+}
+
+/** A BUY/SELL LIMIT whose own take profit was reached without it ever filling: the move is gone.
+ *  The trader's spec, step 3 -- cancel it, "missed entry, no chase". Plain code: it doesn't wait for
+ *  an AI that may be out of credit. */
+export function limitsPastTarget(pending: EaPendingOrder[], priceOf: (symbol: string) => number | undefined): EaPendingOrder[] {
+  return pending.filter((o) => {
+    if ((o.type !== "buy_limit" && o.type !== "sell_limit") || !o.tp || !(o.tp > 0)) return false;
+    const p = priceOf(o.symbol);
+    if (p === undefined) return false;
+    return o.type === "buy_limit" ? p >= o.tp : p <= o.tp;
+  });
 }

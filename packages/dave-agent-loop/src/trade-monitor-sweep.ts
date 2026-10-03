@@ -24,7 +24,7 @@ import {
 import { outcomeLine, recordTradeClosed } from "./alert-outcomes.js";
 import { reviewTrade, REVIEW_KINDS, type ReviewDeps } from "./self-aware-review.js";
 import { exitRuleFor, describeExitRule, runExitRules, type ExitRule } from "./exit-rules.js";
-import { safetyChecks, stalePendingChecks, staleLimitChecks, resetSafetyState } from "./safety-alerts.js";
+import { safetyChecks, stalePendingChecks, staleLimitChecks, limitsPastTarget, resetSafetyState } from "./safety-alerts.js";
 
 /**
  * The runtime half of the Self-Aware Trade Monitor. On its own timer it reads every live open
@@ -596,8 +596,21 @@ export async function runTradeMonitorSweep(deps: TradeMonitorSweepDeps, now: num
     for (const sym of new Set(limits.map((o) => o.symbol))) {
       const p = positions.find((x) => x.symbol === sym && typeof x.currentPrice === "number")?.currentPrice ?? (deps.limitPrice ? await deps.limitPrice(sym) : await quoteFor(deps.userId, sym));
       if (p !== undefined) prices.set(sym, p);
+      else console.warn(`[trade-monitor] ${deps.userId}: no live price for ${sym} -- stale-limit check skipped this sweep`);
+    }
+    // Target reached without a fill: cancel it (missed entry, no chase) -- no AI needed.
+    for (const o of limitsPastTarget(limits, (s) => prices.get(s))) {
+      if (!deps.executor) break;
+      try {
+        await deps.executor.deletePendingOrder(String(o.ticket));
+        console.log(`[trade-monitor] ${deps.userId}: cancelled ${o.symbol} ${o.type} ${o.ticket} -- price ${prices.get(o.symbol)} reached its TP ${o.tp} without filling`);
+        await deps.notify(`🚫 MISSED ENTRY, NO CHASE: ${o.symbol} ${o.type.toUpperCase().replace("_", " ")} at ${o.price} (ticket ${o.ticket}) never filled and price already reached its take profit ${o.tp} (now ${prices.get(o.symbol)}). The limit is cancelled. Mark the next fresh area of liquidity instead.`, { symbol: o.symbol }).catch(() => undefined);
+      } catch (err) {
+        console.error(`[trade-monitor] ${deps.userId}: couldn't cancel stale limit ${o.ticket}:`, err);
+      }
     }
     for (const a of staleLimitChecks(deps.userId, limits, (s) => prices.get(s), (t) => { const r = reasonFor(deps.db, deps.userId, t); return r === REASON_NOT_RECORDED ? "(no reason recorded)" : r; }, now, toggles.pending_stale)) {
+      console.log(`[trade-monitor] ${deps.userId}: ${a.text.split("\n")[0]}`);
       await deps.notify(a.text, { symbol: a.symbol }).catch((err) => console.error(`[trade-monitor] ${deps.userId}: stale-limit alert failed:`, err));
     }
   }
