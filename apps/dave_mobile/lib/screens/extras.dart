@@ -544,7 +544,7 @@ class AnalysisScopePage extends StatelessWidget {
                     if (e is Map)
                       CupertinoListTile(
                         title: Text('${e['id']}'.replaceAll('_', ' ')),
-                        subtitle: Text('${e['contains'] ?? ''}', maxLines: 6, style: TextStyle(fontSize: 12, color: resolve(context, CupertinoColors.secondaryLabel))),
+                        subtitle: Text('${e['contains'] ?? ''}', maxLines: 20, style: TextStyle(fontSize: 12, color: resolve(context, CupertinoColors.secondaryLabel))),
                         trailing: CupertinoSwitch(
                           activeTrackColor: Look.of(context).accent,
                           value: eps.contains('${e['id']}'),
