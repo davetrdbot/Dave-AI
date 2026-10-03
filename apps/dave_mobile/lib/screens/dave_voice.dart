@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/cupertino.dart';
 
+import '../api/chat.dart';
 import '../app_scope.dart';
 import '../look.dart';
 import '../theme.dart';
@@ -266,13 +267,32 @@ class _GeminiLiveCard extends StatelessWidget {
                 )
               : null,
         ),
+        const SizedBox(height: Space.s2),
+        Text('Dave can also CALL you: your phone rings like a WhatsApp call (even with the app closed) and answering opens this live call, with Dave saying why he called.',
+            style: TextStyle(fontSize: 12.5, color: secondary)),
+        _Row(
+          key: const ValueKey('test-call'),
+          icon: CupertinoIcons.phone_arrow_down_left,
+          title: 'Ring me now (test call)',
+          value: key == null ? 'Add the key first' : '',
+          enabled: key != null,
+          onTap: key == null
+              ? null
+              : () async {
+                  try {
+                    await ChatApi.of(AppScope.of(context).api).testCall();
+                  } catch (e) {
+                    if (context.mounted) await showError(context, e);
+                  }
+                },
+        ),
       ]),
     );
   }
 }
 
 class _Row extends StatelessWidget {
-  const _Row({required this.icon, required this.title, required this.value, this.onTap, this.trailing, this.enabled = true});
+  const _Row({super.key, required this.icon, required this.title, required this.value, this.onTap, this.trailing, this.enabled = true});
   final IconData icon;
   final String title;
   final String value;

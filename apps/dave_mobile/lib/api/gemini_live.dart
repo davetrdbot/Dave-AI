@@ -48,6 +48,10 @@ class LiveCall extends ChangeNotifier {
   final LiveAudio audio;
   final Future<LiveSocket> Function(String url) connect;
 
+  /// Runs once, the first time the session is ready (a call Dave placed: he speaks first).
+  VoidCallback? onReady;
+  bool _readyOnce = false;
+
   VoicePhase phase = VoicePhase.connecting;
   String model = 'Gemini Live';
   bool thinking = false;
@@ -130,6 +134,10 @@ class LiveCall extends ChangeNotifier {
       _ready = true;
       _reconnects = 0;
       if (phase == VoicePhase.connecting) phase = VoicePhase.listening;
+      if (!_readyOnce) {
+        _readyOnce = true;
+        onReady?.call();
+      }
     }
     final sc = m['serverContent'] as Map?;
     if (sc != null) _content(sc.cast<String, dynamic>());

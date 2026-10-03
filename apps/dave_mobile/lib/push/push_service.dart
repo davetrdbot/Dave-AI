@@ -35,6 +35,9 @@ import '../theme.dart';
 const _tradeChannelId = 'dave_trades';
 const _reminderChannelId = 'dave_reminders';
 const _chatChannelId = 'dave_chat';
+const _callChannelId = 'dave_calls';
+/// A call older than this when the phone hears about it is over -- never ring for it.
+const _callFreshFor = Duration(seconds: 50);
 const _serviceChannelId = 'dave_connection';
 const _serviceId = 7300;
 
@@ -219,6 +222,16 @@ class TradeStreamHandler extends TaskHandler {
           description: 'Dave answered a message you sent from the app.',
           importance: Importance.high,
         ));
+    await _notifications
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(const AndroidNotificationChannel(
+          _callChannelId,
+          'Calls from Dave',
+          description: 'Dave calling you -- rings like a phone call.',
+          importance: Importance.max,
+          sound: UriAndroidNotificationSound('content://settings/system/ringtone'),
+          audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
+        ));
     unawaited(_run());
     unawaited(_chatRun());
   }
@@ -361,7 +374,10 @@ class TradeStreamHandler extends TaskHandler {
       final d = describeTradeEvent(r);
       await _show(r.id, d.title, d.body, reminder: true);
     }
-    final trades = result.events.where((e) => !e.isReminder).toList();
+    for (final c in result.events.where((e) => e.isCall)) {
+      await _ring(c);
+    }
+    final trades = result.events.where((e) => !e.isReminder && !e.isCall).toList();
     if (trades.length > _maxIndividualCatchUp) {
       final s = describeCatchUp(trades);
       await _show(trades.last.id, s.title, s.body);
@@ -420,12 +436,58 @@ class TradeStreamHandler extends TaskHandler {
       }
       return;
     }
+    if (frame.event == 'call') {
+      final e = TradeEvent.fromJson(data);
+      await _ring(e);
+      await Session.setLastEventId(e.id);
+      return;
+    }
     if (frame.event == 'trade' || frame.event == 'reminder') {
       final e = TradeEvent.fromJson(data);
       final d = describeTradeEvent(e);
       await _show(e.id, d.title, d.body, reminder: e.isReminder);
       await Session.setLastEventId(e.id);
     }
+  }
+
+  /// Dave is calling. On screen: the app shows its own ringing page. Off screen: a full-screen
+  /// call notification that rings (looping ringtone) with Answer / Decline.
+  Future<void> _ring(TradeEvent e) async {
+    if (e.at != null && DateTime.now().millisecondsSinceEpoch - e.at! > _callFreshFor.inMilliseconds) return;
+    final call = {'id': e.ticket, 'reason': e.text ?? '', 'symbol': e.symbol == '?' ? '' : e.symbol, 'urgent': e.reason == 'urgent'};
+    if (_appVisible) {
+      FlutterForegroundTask.sendDataToMain({'call': call});
+      return;
+    }
+    await _notifications.show(
+      id: callNotificationId(e.ticket),
+      title: e.reason == 'urgent' ? 'Dave -- urgent call' : 'Dave is calling',
+      body: e.text ?? 'Incoming call',
+      payload: jsonEncode({'call': call}),
+      notificationDetails: NotificationDetails(
+        android: AndroidNotificationDetails(
+          _callChannelId,
+          'Calls from Dave',
+          channelDescription: 'Dave calling you -- rings like a phone call.',
+          importance: Importance.max,
+          priority: Priority.max,
+          category: AndroidNotificationCategory.call,
+          fullScreenIntent: true,
+          ongoing: true,
+          autoCancel: false,
+          timeoutAfter: 45000,
+          sound: const UriAndroidNotificationSound('content://settings/system/ringtone'),
+          audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
+          additionalFlags: Int32List.fromList([4]), // FLAG_INSISTENT: the ringtone loops until answered
+          styleInformation: BigTextStyleInformation(e.text ?? ''),
+          actions: const [
+            AndroidNotificationAction('decline', 'Decline', cancelNotification: true),
+            AndroidNotificationAction('answer', 'Answer', showsUserInterface: true, cancelNotification: true),
+          ],
+        ),
+        iOS: const DarwinNotificationDetails(interruptionLevel: InterruptionLevel.timeSensitive, presentSound: true),
+      ),
+    );
   }
 
   Future<void> _show(int id, String title, String body, {bool reminder = false}) => _notifications.show(
@@ -454,6 +516,33 @@ class TradeStreamHandler extends TaskHandler {
           iOS: DarwinNotificationDetails(threadIdentifier: reminder ? _reminderChannelId : _tradeChannelId, interruptionLevel: InterruptionLevel.timeSensitive),
         ),
       );
+}
+
+/// One notification id per call, so answering or declining can clear exactly that one.
+int callNotificationId(String callId) => (callId.hashCode & 0x3fffffff) | 0x40000000;
+
+/// Decline tapped on the call notification while the app was closed: tell Dave, from the
+/// notification's own isolate.
+@pragma('vm:entry-point')
+void onCallActionInBackground(NotificationResponse r) {
+  unawaited(reportCallFromNotification(r, 'declined'));
+}
+
+Future<void> reportCallFromNotification(NotificationResponse r, String status) async {
+  try {
+    final p = jsonDecode(r.payload ?? '{}');
+    final id = p is Map && p['call'] is Map ? '${(p['call'] as Map)['id'] ?? ''}' : '';
+    if (id.isEmpty) return;
+    final session = await Session.load();
+    if (session == null) return;
+    await http.post(
+      session.endpoint.replace(path: '/api/app/chat/call/status'),
+      headers: {'authorization': 'Bearer ${session.token}', 'content-type': 'application/json'},
+      body: jsonEncode({'callId': id, 'status': status}),
+    );
+  } catch (_) {
+    // best effort -- the server marks an unanswered call missed by itself
+  }
 }
 
 /// The app's side: start, stop and ask for what the service needs.

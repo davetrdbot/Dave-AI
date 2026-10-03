@@ -207,8 +207,14 @@ class ChatApi {
   }
 
   /// A live voice call: a one-use Gemini token and the session setup (the Gemini key stays on the bot).
-  Future<Map<String, dynamic>> liveStart({bool thinking = false, String? voice, bool allowActions = true}) =>
-      _post('live/start', {'thinking': thinking, 'voice': ?voice, 'allowActions': allowActions}, timeout: const Duration(seconds: 30));
+  Future<Map<String, dynamic>> liveStart({bool thinking = false, String? voice, bool allowActions = true, String? callId}) =>
+      _post('live/start', {'thinking': thinking, 'voice': ?voice, 'allowActions': allowActions, 'callId': ?callId}, timeout: const Duration(seconds: 30));
+
+  /// What the trader did with a call Dave placed: answered, declined or missed.
+  Future<void> callStatus(String callId, String status) => _post('call/status', {'callId': callId, 'status': status});
+
+  /// "Ring me now" -- checks the phone really rings.
+  Future<void> testCall() => _post('call/test', {});
 
   /// One tool Gemini asked for, run by the bot.
   Future<Map<String, dynamic>> liveTool(String name, Map<String, dynamic> args) =>

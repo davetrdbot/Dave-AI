@@ -1,10 +1,18 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'api/chat.dart';
 import 'api/client.dart';
 import 'app_scope.dart';
 import 'push/push_service.dart';
 import 'screens/connect.dart';
+import 'screens/incoming_call.dart';
+import 'screens/voice.dart';
 import 'screens/shell.dart';
 import 'session.dart';
 import 'look.dart';
@@ -33,6 +41,8 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
   DaveApi? _api;
   final _look = LookController();
   String? _notice;
+  final _nav = GlobalKey<NavigatorState>();
+  final _notifications = FlutterLocalNotificationsPlugin();
 
   @override
   void initState() {
@@ -40,12 +50,82 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _look.load();
     _restore();
+    // Dave calling while the app is open: the background service hands the call straight here.
+    FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+    unawaited(_initCallNotifications());
   }
 
   @override
   void dispose() {
+    FlutterForegroundTask.removeTaskDataCallback(_onTaskData);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _onTaskData(Object data) {
+    if (data is Map && data['call'] is Map) _ringInApp((data['call'] as Map).cast<String, dynamic>());
+  }
+
+  /// Taps on the call notification (Answer, or the notification itself) and an app launched by
+  /// its full-screen intent all end up here.
+  Future<void> _initCallNotifications() async {
+    try {
+      await _notifications.initialize(
+        settings: const InitializationSettings(
+          android: AndroidInitializationSettings('@drawable/ic_stat_dave'),
+          iOS: DarwinInitializationSettings(requestAlertPermission: false, requestBadgePermission: false, requestSoundPermission: false),
+        ),
+        onDidReceiveNotificationResponse: _onNotificationTap,
+        onDidReceiveBackgroundNotificationResponse: onCallActionInBackground,
+      );
+      final launch = await _notifications.getNotificationAppLaunchDetails();
+      final r = launch?.notificationResponse;
+      if (launch?.didNotificationLaunchApp == true && r != null) {
+        // Wait for the session to load before showing anything.
+        for (var i = 0; i < 40 && (_loading || _api == null); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+        }
+        _onNotificationTap(r);
+      }
+    } catch (_) {
+      // notifications unavailable (tests, desktop) -- calls still ring in the app
+    }
+  }
+
+  Map<String, dynamic>? _callOf(NotificationResponse r) {
+    try {
+      final p = jsonDecode(r.payload ?? '');
+      return p is Map && p['call'] is Map ? (p['call'] as Map).cast<String, dynamic>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _onNotificationTap(NotificationResponse r) {
+    final call = _callOf(r);
+    if (call == null) return;
+    unawaited(_notifications.cancel(id: callNotificationId('${call['id']}')));
+    if (r.actionId == 'decline') {
+      unawaited(reportCallFromNotification(r, 'declined'));
+      return;
+    }
+    final api = _api, nav = _nav.currentState;
+    if (api == null || nav == null) return;
+    if (r.actionId == 'answer') {
+      unawaited(LiveOptions.load().then((o) => nav.push(CupertinoPageRoute<void>(
+            fullscreenDialog: true,
+            builder: (_) => LiveCallPage(api: ChatApi.of(api), options: o, callId: '${call['id']}'),
+          ))));
+      return;
+    }
+    _ringInApp(call);
+  }
+
+  void _ringInApp(Map<String, dynamic> call) {
+    final api = _api, nav = _nav.currentState;
+    if (api == null || nav == null || '${call['id'] ?? ''}'.isEmpty) return;
+    unawaited(IncomingCallPage.show(nav,
+        api: ChatApi.of(api), callId: '${call['id']}', reason: '${call['reason'] ?? ''}', symbol: '${call['symbol'] ?? ''}', urgent: call['urgent'] == true));
   }
 
   /// The notification service skips "Dave replied" while the app is on screen.
@@ -143,6 +223,7 @@ class _DaveAppState extends State<DaveApp> with WidgetsBindingObserver {
             statusBarBrightness: look.brightness,
           ),
           child: CupertinoApp(
+            navigatorKey: _nav,
             title: 'Dave',
             debugShowCheckedModeBanner: false,
             theme: CupertinoThemeData(

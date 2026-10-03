@@ -268,10 +268,10 @@ class BotState {
 
 /// One trade open or close from /api/app/events.
 class TradeEvent {
-  TradeEvent({required this.id, required this.type, required this.ticket, required this.symbol, this.isBuy, this.lots, this.openPrice, this.sl, this.tp, this.pnl, this.reason, this.text});
+  TradeEvent({required this.id, required this.type, required this.ticket, required this.symbol, this.isBuy, this.lots, this.openPrice, this.sl, this.tp, this.pnl, this.reason, this.text, this.at});
 
   final int id;
-  final String type; // "opened" | "closed" | "reminder"
+  final String type; // "opened" | "closed" | "reminder" | "call"
   final String ticket;
   final String symbol;
   final bool? isBuy;
@@ -286,6 +286,10 @@ class TradeEvent {
 
   bool get isOpen => type == 'opened';
   bool get isReminder => type == 'reminder';
+  /// Dave calling the trader (the server's dave-calls.ts). `ticket` is the call id, `text` why.
+  bool get isCall => type == 'call';
+  /// When it happened on the server (ms), when known.
+  final int? at;
 
   factory TradeEvent.fromJson(Map<String, dynamic> j) => TradeEvent(
         id: _int(j['id']) ?? 0,
@@ -300,6 +304,7 @@ class TradeEvent {
         pnl: _num(j['pnl']),
         reason: j['reason'] is String ? j['reason'] as String : null,
         text: j['text'] is String ? j['text'] as String : null,
+        at: _int(j['at']),
       );
 }
 

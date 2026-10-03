@@ -150,7 +150,7 @@ export class NoGeminiKeyError extends Error {
 /** Mints the one-use token and builds the session setup the app sends first on the socket. */
 export async function startLiveSession(
   deps: { db: DaveDatabase; userId: string; registry: ToolRegistry },
-  opts: { thinking?: boolean; voice?: string; allowActions?: boolean } = {},
+  opts: { thinking?: boolean; voice?: string; allowActions?: boolean; extraInstruction?: string } = {},
   fetchImpl: typeof fetch = fetch,
   now = Date.now()
 ): Promise<LiveSession> {
@@ -165,7 +165,7 @@ export async function startLiveSession(
       responseModalities: ["AUDIO"],
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
     },
-    systemInstruction: { parts: [{ text: liveSystemInstruction(deps.userId, opts.allowActions !== false) }] },
+    systemInstruction: { parts: [{ text: [liveSystemInstruction(deps.userId, opts.allowActions !== false), opts.extraInstruction].filter(Boolean).join("\n\n") }] },
     tools: [{ functionDeclarations: liveFunctionDeclarations(deps.registry, opts.allowActions !== false) }],
     inputAudioTranscription: {},
     outputAudioTranscription: {},

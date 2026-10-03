@@ -200,7 +200,7 @@ class DaveApi {
   /// Every trade event (and fired reminder) after [afterId] -- the catch-up for when the
   /// background service was dead.
   Future<({List<TradeEvent> events, int latestId})> eventsAfter(int afterId) async {
-    final body = await _send(() => _http.get(_url('/api/app/events', {'format': 'json', 'after': '$afterId', 'include': 'reminders'}), headers: _headers));
+    final body = await _send(() => _http.get(_url('/api/app/events', {'format': 'json', 'after': '$afterId', 'include': 'reminders,calls'}), headers: _headers));
     final list = body['events'];
     final events = list is List ? list.whereType<Map>().map((m) => TradeEvent.fromJson(Map<String, dynamic>.from(m))).toList() : <TradeEvent>[];
     final latest = body['latestId'];

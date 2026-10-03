@@ -104,6 +104,7 @@ Your monitor watches every trade and order and sends each alert to a scan of tha
 ## 6. Optional tools that ride on your limits
 
 - **Pullback mode / pullback scalp** -- when the trader has it on, every BUY_LIMIT / SELL_LIMIT also opens the opposite trade at market riding price into your limit, managed in $20 rounds. Give `pullbackScalp {sl, tp2}` when you want to set its levels.
+- **Calling the trader** -- `call_trader` rings their phone like a WhatsApp call; when they answer you speak first. Call when they asked you to ("call me when gold hits 2650"), when a decision only they can make can't wait, or a trade is in real danger. Everything else is a message. Declined or missed → write it instead.
 - **Several things in one scan** -- trail one trade, arm an exit on another, ask for fresh candles -- through the ACTIONS list on your decision tool.
 
 ---

@@ -4,6 +4,7 @@ import type { CompletionMessage, ContentBlock } from "@dave/brain";
 import { buildImageContentBlock, transcribeAudioBytesWithKeyFailover, NoGroqKeyError } from "@dave/vision";
 import { speechVocabularyPrompt } from "./speech-vocabulary.js";
 import { activityAfter, activityBetween, latestActivityId, publishActivity, subscribeActivity, type ActivityEvent, type ActivityFeed } from "./activity-bus.js";
+import { getCall, setCallStatus, placeCall, callOpeningInstruction } from "./dave-calls.js";
 import { runAppChatTurn, sharedHistoryKey, newTurnId, createAppSink, appRegistry, type AppChatDeps } from "./app-chat.js";
 import { dispatchCallback } from "./command-router.js";
 import { ANSWERED_EARLIER, loadConversationHistory, saveConversationHistory } from "./conversation-store.js";
@@ -308,14 +309,34 @@ export function createAppChatHandler(deps: AppChatRouteDeps): (req: IncomingMess
       // A live voice call (live-voice.ts): a one-use Gemini token plus the whole session setup.
       const body = await readJson(req);
       try {
-        const session = await startLiveSession({ db: deps.db, userId, registry: registryFor(deps) }, { thinking: body.thinking === true, voice: typeof body.voice === "string" ? body.voice : undefined, allowActions: body.allowActions !== false }, deps.fetchImpl ?? fetch);
-        publishActivity(userId, "background", "voice_call", { text: "📞 Voice call with Dave started." });
+        // Answering a call Dave placed: the session opens knowing why he called (dave-calls.ts).
+        const call = typeof body.callId === "string" ? getCall(userId, body.callId) : undefined;
+        const session = await startLiveSession({ db: deps.db, userId, registry: registryFor(deps) }, { thinking: body.thinking === true, voice: typeof body.voice === "string" ? body.voice : undefined, allowActions: body.allowActions !== false, extraInstruction: call ? callOpeningInstruction(call) : undefined }, deps.fetchImpl ?? fetch);
+        if (call) setCallStatus(userId, call.id, "answered");
+        publishActivity(userId, "background", "voice_call", { text: call ? `📞 You answered Dave's call: ${call.reason}` : "📞 Voice call with Dave started." });
         send(res, 200, session);
       } catch (err) {
         if (err instanceof NoGeminiKeyError) return send(res, 409, { error: err.message });
         send(res, 502, { error: (err instanceof Error ? err.message : String(err)).replace(/AIza[0-9A-Za-z_-]+/g, "[key]").slice(0, 300) });
       }
       return;
+    }
+    if (method === "POST" && path === "call/status") {
+      // The phone says what happened to a call Dave placed: declined, or nobody answered.
+      const body = await readJson(req);
+      const status = body.status === "declined" || body.status === "missed" || body.status === "answered" ? body.status : undefined;
+      if (typeof body.callId !== "string" || !status) return send(res, 400, { error: "callId and status (answered, declined or missed) are needed." });
+      const c = setCallStatus(userId, body.callId, status);
+      return c ? send(res, 200, { call: c }) : send(res, 404, { error: "No such call." });
+    }
+    if (method === "GET" && path.startsWith("call/")) {
+      const c = getCall(userId, path.slice(5));
+      return c ? send(res, 200, { call: c }) : send(res, 404, { error: "No such call." });
+    }
+    if (method === "POST" && path === "call/test") {
+      // "Ring me now" from Settings: checks the phone really rings, inside and outside the app.
+      const c = placeCall(userId, { reason: "Test call -- checking that your phone rings when I call.", urgent: true });
+      return send(res, 200, { call: c });
     }
     if (method === "POST" && path === "live/tool") {
       const body = await readJson(req);

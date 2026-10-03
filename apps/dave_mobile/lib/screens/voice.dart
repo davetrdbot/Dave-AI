@@ -1212,17 +1212,19 @@ class _VoiceSettingsSheetState extends State<VoiceSettingsSheet> {
 /// A real call: opens the line (bot -> one-use token -> Google), drives [VoiceScreen] from it, and
 /// saves the transcript into the chat when it ends.
 class LiveCallPage extends StatefulWidget {
-  const LiveCallPage({super.key, required this.api, required this.options});
+  const LiveCallPage({super.key, required this.api, required this.options, this.callId});
   final ChatApi api;
   final LiveOptions options;
+  /// Set when this is a call Dave placed and the trader answered: he opens it himself.
+  final String? callId;
 
-  static Future<void> open(BuildContext context, ChatApi api) async {
+  static Future<void> open(BuildContext context, ChatApi api, {String? callId}) async {
     final options = await LiveOptions.load();
     if (!context.mounted) return;
     await Navigator.of(context, rootNavigator: true).push(
       CupertinoPageRoute<void>(
         fullscreenDialog: true,
-        builder: (_) => LiveCallPage(api: api, options: options),
+        builder: (_) => LiveCallPage(api: api, options: options, callId: callId),
       ),
     );
   }
@@ -1238,6 +1240,7 @@ class _LiveCallPageState extends State<LiveCallPage> {
       thinking: _options.thinking,
       voice: _options.voice,
       allowActions: _options.allowActions,
+      callId: widget.callId,
     ),
     runTool: widget.api.liveTool,
     onEnd: widget.api.liveEnd,
@@ -1248,6 +1251,8 @@ class _LiveCallPageState extends State<LiveCallPage> {
   void initState() {
     super.initState();
     _call.addListener(_changed);
+    // Dave called: once the line is open, he speaks first (his reason is in his instructions).
+    if (widget.callId != null) _call.onReady = () => _call.sendText('(I picked up your call. Go ahead -- tell me why you called.)', show: false);
     unawaited(_call.begin());
   }
 

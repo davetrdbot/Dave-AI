@@ -245,6 +245,8 @@ export const CORE_TOOL_NAMES: string[] = [
   // Research mode: searching and reading pages in full is the whole job there (research-mode.ts).
   "web_search",
   "scrape_url",
+  // Dave phoning the trader (dave-calls.ts): the moment is now, never after a discovery step.
+  "call_trader",
 ];
 
 /** Real bounds check -- CORE_TOOL_NAMES itself must always stay well under the hard cap, or the

@@ -2,6 +2,7 @@ import type { DaveDatabase } from "@dave/db";
 import type { TradeExecutor } from "@dave/trading";
 import { createGrowthTools } from "./growth-tools.js";
 import { createTodoTool } from "./todos.js";
+import { createCallTraderTool } from "./dave-calls.js";
 import { createExitRuleTools } from "./exit-rules.js";
 import { createSelfAwareStatsTool } from "./alert-outcomes.js";
 import { TRADING_TOOLS, HUNT_MODE_MIN_SCORE, getRiskSettings, evaluateAccountAwareness, pullbackScalpRoom, getPullbackMode, isLimitType, ALL_ANALYSIS_ENDPOINTS, getAnalysisConfig, setCustomEndpoints, resetAnalysisConfigToAll } from "@dave/trading";
@@ -484,6 +485,7 @@ export function buildFullToolRegistry(deps: FullRegistryDeps): ToolRegistry {
   ] as AgentTool[]);
   registry.register(createGrowthTools({ userId: deps.userId, db: deps.db }) as AgentTool[]);
   registry.register([createTodoTool(deps.userId)] as AgentTool[]);
+  registry.register([createCallTraderTool(deps.userId)]);
   registry.register(createExitRuleTools(deps.userId) as AgentTool[]);
   registry.register([createSelfAwareStatsTool(deps.userId, () => getSelfAwareMode(deps.userId))] as AgentTool[]);
   registry.register([createAskUserTool(deps.userId)] as AgentTool[]);
