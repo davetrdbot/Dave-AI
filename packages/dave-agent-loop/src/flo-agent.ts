@@ -67,7 +67,7 @@ const FLO_ENDPOINT_REFERENCE = `Your analysis tools (EA 4.0 groups -- raw facts 
 - get_session / get_news: session timing, killzones; upcoming high-impact events and blackout.
 - get_intermarket: currency strength ranking and correlations.
 - get_chart_patterns: double tops/bottoms, H&S, triangles, harmonics.
-- get_summary: structure bias across D1/H4/H1/M15, APA cycles, FTA ahead, a trade plan from structure, reasons against.
+- get_summary: structure bias across D1/H4/H1/M15, APA cycles, FTA ahead.
 - get_candles / get_price: raw candles; live price, spread vs normal, day/week levels.
 
 Pull only what tests the specific claim in Dave's reasoning (structure claim -> get_market_structure/get_zones/get_liquidity; momentum claim -> get_momentum; risk claim -> get_volatility/get_summary; timing claim -> get_session/get_news).`;

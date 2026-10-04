@@ -277,7 +277,7 @@ export const ANALYSIS_ENDPOINT_GROUPS: { group: string; endpoints: { id: (typeof
   {
     group: "Across timeframes",
     endpoints: [
-      { id: "summary", contains: "Structure bias D1/H4/H1/M15, confluence factors, ATR stop sizes, trade plan from structure, reasons against, APA cycles, coordination, FTA, entry modules" },
+      { id: "summary", contains: "Structure bias D1/H4/H1/M15, confluence factors, ATR stop sizes, APA cycles, coordination, FTA, entry modules" },
     ],
   },
 ];

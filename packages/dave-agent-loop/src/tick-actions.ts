@@ -49,7 +49,7 @@ export const ACTIONS_SCHEMA = {
     "{type:'BREAKEVEN', ticket, offset?} moves a winning trade's stop to its entry (offset = extra price distance in the trade's favour); " +
     "{type:'MODIFY', ticket, sl?, tp?}; {type:'PARTIAL_CLOSE', ticket, lots}; {type:'CLOSE', ticket} (closes a position or deletes a pending order). " +
     "Data: {type:'GET', endpoint, symbol? (default: the pair you're scanning), timeframe? (default M5)} -- endpoint is one of price, candles, market_structure, liquidity, zones, trend, momentum, volatility, volume, levels, session, news, intermarket, chart_patterns, " +
-    "summary (structure bias across D1/H4/H1/M15, APA cycles, FTA, a trade plan from structure), symbol_info (contract, stop distance, trading hours, market open?), open_trades (R, best/worst, breakeven allowed, invalidation). " +
+    "summary (structure bias across D1/H4/H1/M15, APA cycles, FTA), symbol_info (contract, stop distance, trading hours, market open?), open_trades (R, best/worst, breakeven allowed, invalidation). " +
     "If you list ANY GET item, all of them are fetched together and you decide ONCE more with the results -- your main action this time is only a placeholder (SKIP is fine), " +
     "and on that second decision GET items are ignored. Use it when you genuinely need 2+ fresh reads, not as a routine step.",
   items: {

@@ -73,8 +73,8 @@ Every call takes `symbol` (required) and `timeframe` (optional, default M15).
 - **get_chart_patterns** -- double top/bottom, head and shoulders,
   triangles/wedges, completed harmonics (H1+).
 - **get_summary** -- structure bias D1/H4/H1/M15 (weighted votes shown),
-  confluence factors with votes, ATR stop sizes vs the broker minimum, a trade
-  plan from structure, reasons against, APA monthly and weekly cycles,
+  confluence factors with votes, ATR stop sizes vs the broker minimum, APA
+  monthly and weekly cycles,
   timeframes agreeing, the FTA ahead, which entry-module parts are present.
 - **get_all_analysis** -- all 15 groups in one call.
 

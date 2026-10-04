@@ -3589,61 +3589,8 @@ string C_Summary(CSlot *s)
    double minStop = MathMax(SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(sym, SYMBOL_POINT) + spread, spread * 3);
    A_Push(f, Jr("atr_sizes", Obj(Jn("sl_1atr", MathMax(a, minStop), s.digits) + "," + Jn("sl_1_5atr", MathMax(1.5 * a, minStop), s.digits) + "," + Jn("sl_2atr", MathMax(2 * a, minStop), s.digits) + "," +
                                  Jn("broker_min_stop", minStop, s.digits) + "," + Jn("atr_pips", ToPips(s, a), 1))));
-   // d. trade plan from structure (facts from the other chains)
-   if(bias != 0)
-     {
-      MsRead hr; ReadStructure(s, hr);
-      BuildZones(s, hr);
-      int best = -1; double bd = DBL_MAX;
-      for(int k = 0; k < ArraySize(g_z); k++)
-        {
-         if(g_z[k].side != bias || ClosedThrough(s, g_z[k]) >= 0 || ConsumedPct(s, g_z[k]) >= 50) continue;
-         double d = bias == 1 ? px - g_z[k].hi : g_z[k].lo - px;
-         if(d < -(g_z[k].hi - g_z[k].lo)) continue; // zone on the wrong side of price
-         if(MathAbs(d) < bd) { bd = MathAbs(d); best = k; }
-        }
-      if(best >= 0)
-        {
-         Zone z = g_z[best];
-         bool inside = px >= z.lo && px <= z.hi;
-         double entry = inside ? px : (bias == 1 ? z.hi : z.lo);
-         double inv = z.invalid > 0 ? z.invalid : (bias == 1 ? z.lo : z.hi);
-         double buffer = MathMax(0.1 * a, 2 * spread);
-         double sl = bias == 1 ? inv - buffer : inv + buffer;
-         if(MathAbs(entry - sl) < minStop) sl = bias == 1 ? entry - minStop : entry + minStop;
-         // targets: nearest untaken pools in the bias direction
-         double tps[2]; int nt = 0;
-         for(int pass = 0; pass < 2; pass++)
-           {
-            double bestP = 0, bestD = DBL_MAX;
-            for(int k = 0; k < ArraySize(s.swI); k++)
-              {
-               if(s.swK[k] != bias || TakenAt(s, k) >= 0) continue;
-               double d = bias == 1 ? s.swP[k] - entry : entry - s.swP[k];
-               if(d <= 0 || d >= bestD || (nt > 0 && MathAbs(s.swP[k] - tps[0]) < 0.1 * a)) continue;
-               bestD = d; bestP = s.swP[k];
-              }
-            if(bestP > 0) tps[nt++] = bestP;
-           }
-         double risk = MathAbs(entry - sl);
-         string plan = J("bias", SideName(bias)) + "," + J("entry_type", inside ? "market (price inside the zone)" : "limit at the zone edge") + "," +
-                       J("zone", ZName(z.kind)) + "," + Jn("entry", entry, s.digits) + "," + Jn("sl", sl, s.digits) + "," +
-                       J("sl_rule", "beyond the zone's invalidation + max(0.1 ATR, 2 x spread), never inside the broker minimum") + "," +
-                       (nt > 0 ? Jn("tp1", tps[0], s.digits) + "," + Jn("rr_tp1_net_of_spread", risk > 0 ? (MathAbs(tps[0] - entry) - spread) / (risk + spread) : 0, 2) : Jnull("tp1")) + "," +
-                       (nt > 1 ? Jn("tp2", tps[1], s.digits) : Jnull("tp2")) + "," +
-                       (r.invalidation > 0 ? Jn("cancel_if_close_beyond", r.invalidation, s.digits) : Jnull("cancel_if_close_beyond")) + "," + Ji("valid_for_bars", 20);
-         A_Push(f, Jr("trade_plan", Obj(plan)));
-        }
-      else A_Push(f, Jwhy("trade_plan", "no fresh zone on the bias side of price"));
-     }
-   else A_Push(f, Jwhy("trade_plan", "timeframes do not agree on a direction"));
-   // e. reasons against
-   string ag[];
-   for(int k = 0; k < 2; k++) if(trends[k] != 0 && bias != 0 && trends[k] != bias) A_Push(ag, "\"" + TfName(mt[k]) + " structure is " + SideName(trends[k]) + "\"");
-   if(spread > 0 && a > 0 && spread > 0.2 * a) A_Push(ag, "\"spread is more than 20% of ATR\"");
-   string nw = C_News(sym);
-   if(StringFind(nw, "\"blackout_now\":true") >= 0) A_Push(ag, "\"high-impact news blackout now\"");
-   A_Push(f, Jr("reasons_against", "[" + A_Join(ag) + "]"));
+   // (no trade plan and no "reasons against" here: the EA gives facts, Dave builds the plan himself
+   //  from his strategy -- the trader's choice)
    // f-j. APA cycles, coordination, FTA, entry modules
    ENUM_TIMEFRAMES mc[] = {PERIOD_MN1, PERIOD_D1, PERIOD_H1, PERIOD_M15, PERIOD_M3};
    ENUM_TIMEFRAMES wc[] = {PERIOD_W1, PERIOD_H4, PERIOD_M30, PERIOD_M5, PERIOD_M3};
