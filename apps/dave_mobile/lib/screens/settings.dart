@@ -1,4 +1,6 @@
 import 'package:flutter/cupertino.dart';
+
+import 'coder.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -73,6 +75,7 @@ class SettingsScreen extends StatelessWidget {
               _MenuRow(CupertinoIcons.person_crop_circle_badge_checkmark, 'How Dave behaves', 'Self-pause, two-step, deeper thinking, memory',
                   () => open('How Dave behaves', (c, d, r) => [_BehaviourSection(s: d.settings, reload: r)])),
               _MenuRow(CupertinoIcons.doc_text, 'Dave\'s prompt', 'Read and edit how Dave thinks and trades', () => pushScoped<void>(context, const PromptPage())),
+              _MenuRow(CupertinoIcons.chevron_left_slash_chevron_right, 'Coding agent', 'Ask an AI to change Dave\'s code', () => pushScoped<void>(context, const CoderScreen())),
               _MenuRow(CupertinoIcons.gauge, 'Context & usage', 'How full Dave\'s context is, and today\'s AI use', () => pushScoped<void>(context, const ContextScreen())),
             ]),
           ),

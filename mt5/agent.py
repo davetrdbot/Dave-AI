@@ -43,6 +43,33 @@ WINE = os.environ.get("WINE_BIN", "wine")
 MT5_DIR = os.environ.get("MT5_DIR", os.path.join(WINEPREFIX, "drive_c", "Program Files", "MetaTrader 5"))
 STATE_DIR = os.environ.get("DAVE_STATE_DIR", "/config/dave")
 EA_SOURCE = os.environ.get("DAVE_EA_SOURCE", "/opt/dave/DaveEA.mq5")
+# Earlier EA versions, one file each (DaveEA-3.7.mq5 ...). The trader picks one in the app; "latest"
+# (or nothing picked) is EA_SOURCE, the newest.
+EA_VERSIONS_DIR = os.environ.get("DAVE_EA_VERSIONS_DIR", "/opt/dave/ea-versions")
+
+
+def ea_versions():
+    """Every EA version this image carries, newest first, plus "latest"."""
+    found = []
+    try:
+        for name in os.listdir(EA_VERSIONS_DIR):
+            m = re.match(r"^DaveEA-([0-9.]+)\.mq5$", name)
+            if m:
+                found.append(m.group(1))
+    except OSError:
+        pass
+    found.sort(key=lambda v: [int(x) for x in v.split(".")], reverse=True)
+    return ["latest"] + found
+
+
+def ea_source_for(state):
+    """The EA file to build: the version the trader picked, or the newest."""
+    v = str((state or {}).get("eaVersion") or "latest")
+    if v != "latest":
+        path = os.path.join(EA_VERSIONS_DIR, "DaveEA-%s.mq5" % v)
+        if os.path.exists(path):
+            return path
+    return EA_SOURCE
 PORT = int(os.environ.get("AGENT_PORT", "8081"))
 def _derived_secret():
     """No MT5_AGENT_SECRET set (a one-file Railway deploy can't keep a generated one): both this
@@ -151,11 +178,11 @@ def ex5_path():
     return os.path.join(MT5_DIR, "MQL5", "Experts", "Dave", "DaveEA.ex5")
 
 
-def compile_ea():
+def compile_ea(source=None):
     """Copies the EA source in and compiles it with MetaEditor. Returns (ok, message)."""
     dst_dir = os.path.join(MT5_DIR, "MQL5", "Experts", "Dave")
     os.makedirs(dst_dir, exist_ok=True)
-    shutil.copyfile(EA_SOURCE, os.path.join(dst_dir, "DaveEA.mq5"))
+    shutil.copyfile(source or EA_SOURCE, os.path.join(dst_dir, "DaveEA.mq5"))
     log_path = os.path.join(dst_dir, "compile.log")
     # Keep the working EA until the new one has built: a compile that fails must never leave the
     # terminal with no EA at all.
@@ -176,13 +203,13 @@ def compile_ea():
     return ok, summary.strip()
 
 
-def ea_source_changed():
+def ea_source_changed(source=None):
     """True when the EA in this image differs from the one last compiled. The compiled EA lives on
     the volume and outlives redeploys -- without this check a new EA version was never built: the
     terminal kept running the first one ever compiled."""
     dst = os.path.join(MT5_DIR, "MQL5", "Experts", "Dave", "DaveEA.mq5")
     try:
-        with open(dst, "rb") as a, open(EA_SOURCE, "rb") as b:
+        with open(dst, "rb") as a, open(source or EA_SOURCE, "rb") as b:
             return a.read() != b.read()
     except OSError:
         return True
@@ -557,6 +584,8 @@ def status():
     return {
         "installed": installed(),
         "compiled": os.path.exists(ex5_path()),
+        "eaVersion": str(state.get("eaVersion") or "latest"),
+        "eaVersions": ea_versions(),
         "running": terminal_running(),
         "login": login,
         "loginDetail": login_detail,
@@ -713,6 +742,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/stop":
             stop_terminal()
             return self._json(200, {"ok": True})
+        if self.path == "/ea-version":
+            v = str(body.get("version") or "latest")
+            if v not in ea_versions():
+                return self._json(400, {"error": "no EA version %s here -- choose one of: %s" % (v, ", ".join(ea_versions()))})
+            state["eaVersion"] = v
+            save_state(state)
+            was_running = bool(state.get("login")) and installed()
+            if was_running:
+                stop_terminal()
+            ok, summary = compile_ea(ea_source_for(state))
+            log("EA %s compiled" % v if ok else "EA %s did NOT compile -- kept the previous build" % v, summary[-300:])
+            if was_running:
+                start_terminal(state)
+            return self._json(200 if ok else 409, {"ok": ok, "version": v, "compileLog": summary[-600:]})
         return self._json(404, {"error": "not found"})
 
 
@@ -832,8 +875,9 @@ def main():
     threading.Thread(target=relay_loop, daemon=True).start()
     state = load_state()
     if state.get("login") and installed():
-        if not os.path.exists(ex5_path()) or ea_source_changed():
-            ok, summary = compile_ea()
+        src = ea_source_for(state)
+        if not os.path.exists(ex5_path()) or ea_source_changed(src):
+            ok, summary = compile_ea(src)
             log("EA compiled -- new version loaded" if ok else "EA did NOT compile -- kept the previous version", summary[-300:])
         start_terminal(state)
     threading.Thread(target=supervise, daemon=True).start()

@@ -203,6 +203,31 @@ class Mt5Page extends StatelessWidget {
                           if (n != v.pushSeconds) await act('settings', {'inputs': {'PushSeconds': n}});
                         },
                       ),
+                      if (v.eaVersions.length > 1)
+                        CupertinoListTile(
+                          title: const Text('EA version'),
+                          additionalInfo: Text(v.eaVersion == 'latest' ? 'Latest' : v.eaVersion),
+                          trailing: const CupertinoListTileChevron(),
+                          onTap: () async {
+                            final picked = await showCupertinoModalPopup<String>(
+                              context: context,
+                              builder: (ctx) => CupertinoActionSheet(
+                                title: const Text('EA version'),
+                                message: const Text('MT5 builds the version you pick and restarts on it, about a minute. Dave\'s scans are made for the latest; older versions name some analysis differently.'),
+                                actions: [
+                                  for (final e in v.eaVersions)
+                                    CupertinoActionSheetAction(
+                                      isDefaultAction: e == v.eaVersion,
+                                      onPressed: () => Navigator.pop(ctx, e),
+                                      child: Text(e == 'latest' ? 'Latest' : 'Version $e'),
+                                    ),
+                                ],
+                                cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                              ),
+                            );
+                            if (picked != null && picked != v.eaVersion && context.mounted) await act('ea-version', {'version': picked});
+                          },
+                        ),
                       CupertinoListTile(
                         leading: Icon(CupertinoIcons.arrow_clockwise, color: Look.of(context).accent),
                         title: Text('Restart MT5', style: TextStyle(color: Look.of(context).accent)),

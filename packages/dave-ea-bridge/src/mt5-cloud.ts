@@ -37,6 +37,9 @@ export interface Mt5CloudStatus {
    *  every start, and the EA confirms it (eaReports). state: on | off | applying | set | failed | not set. */
   phonePush?: { state: string; detail: string | null; eaReports?: boolean | null };
   relay: { count: number; errors: number; lastAt: number | null; lastStatus: number | null; lastError: string | null };
+  /** The EA version MT5 runs ("latest" = the newest), and every version the container carries. */
+  eaVersion?: string;
+  eaVersions?: string[];
 }
 
 export interface Mt5CloudResult {
@@ -160,6 +163,11 @@ export function mt5CloudSettings(
   settings: { symbol?: string; period?: string; marketWatch?: string[]; metaquotesIds?: string[]; inputs?: Record<string, string | number | boolean> },
 ): Promise<Mt5CloudResult> {
   return call<Mt5CloudResult>(userId, "POST", "/settings", settings, 360_000);
+}
+
+/** Builds and loads another EA version ("latest" or e.g. "3.7"), then restarts MT5 on it. */
+export function mt5CloudEaVersion(userId: string, version: string): Promise<Mt5CloudResult> {
+  return call<Mt5CloudResult>(userId, "POST", "/ea-version", { version }, 360_000);
 }
 
 export function mt5CloudRestart(userId: string): Promise<Mt5CloudResult> {

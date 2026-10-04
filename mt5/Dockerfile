@@ -37,6 +37,7 @@ RUN apt-get update \
 
 COPY mt5/agent.py mt5/start.sh mt5/install-mt5.sh /opt/dave/
 COPY ea/DaveEA.mq5 /opt/dave/DaveEA.mq5
+COPY ea/versions/ /opt/dave/ea-versions/
 RUN chmod +x /opt/dave/*.sh && /opt/dave/install-mt5.sh
 
 EXPOSE 8081 6080

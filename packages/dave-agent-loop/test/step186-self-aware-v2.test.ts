@@ -165,7 +165,7 @@ assert.match(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 75 }, pos, 
 assert.match(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 105 }, pos, "act").problem!, /wrong side/);
 assert.equal(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 98 }, pos, "act").act, true);
 assert.equal(checkVerdict({ ...base, verdict: "TIGHTEN_STOP", newSl: 98 }, pos, "advise").act, false, "advise never acts");
-assert.match(checkVerdict({ ...base, verdict: "BREAKEVEN" }, { ...pos, currentPrice: 97, pnl: -3 }, "act").problem!, /in profit/);
+assert.match(checkVerdict({ ...base, verdict: "BREAKEVEN" }, { ...pos, currentPrice: 103, pnl: 3 }, "act").problem!, /never moves a stop to breakeven/, "the review never jumps the stop to breakeven, even in profit");
 assert.equal(checkVerdict({ ...base, verdict: "CLOSE" }, pos, "act").act, true, "a winner may be banked");
 assert.match(checkVerdict({ ...base, verdict: "CLOSE" }, { ...pos, currentPrice: 97 }, "act").problem!, /losing trade stays open/, "a loser is held to its stop");
 assert.equal(checkVerdict({ ...base, thesis: "broken", verdict: "CLOSE" }, pos, "act").act, true);

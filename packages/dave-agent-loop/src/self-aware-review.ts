@@ -47,7 +47,9 @@ export const REVIEW_TICKET_COOLDOWN_MS = 10 * 60_000;
 export const REVIEW_MAX_PER_HOUR = 6;
 
 export type Verdict = "HOLD" | "BREAKEVEN" | "TIGHTEN_STOP" | "PARTIAL_CLOSE" | "CLOSE" | "EXIT_RULE";
-const VERDICTS: Verdict[] = ["HOLD", "BREAKEVEN", "TIGHTEN_STOP", "PARTIAL_CLOSE", "CLOSE", "EXIT_RULE"];
+// No BREAKEVEN here: the trader never wants the self-aware review to jump the stop to breakeven
+// on its own -- Dave trails it behind structure himself (TIGHTEN_STOP to a real level).
+const VERDICTS: Verdict[] = ["HOLD", "TIGHTEN_STOP", "PARTIAL_CLOSE", "CLOSE", "EXIT_RULE"];
 
 export interface VerdictArgs {
   verdict: Verdict;
@@ -140,10 +142,7 @@ export function checkVerdict(
     case "HOLD":
       return { act: false };
     case "BREAKEVEN": {
-      const inProfit = price !== undefined && (pos.type === "buy" ? price > pos.openPrice : price < pos.openPrice);
-      if (!inProfit) return { act: false, problem: "breakeven needs the trade in profit (a stop there would sit on the wrong side)" };
-      if (sl !== undefined && (pos.type === "buy" ? sl >= pos.openPrice : sl <= pos.openPrice)) return { act: false, problem: "the stop is already at or past breakeven" };
-      return { act: mode === "act" };
+      return { act: false, problem: "the self-aware review never moves a stop to breakeven by itself -- trail it behind structure instead" };
     }
     case "TIGHTEN_STOP": {
       const n = v.newSl;
@@ -241,7 +240,7 @@ export async function reviewTrade(deps: ReviewDeps, m: TradeMonitor, alertKinds:
               "Judge the ORIGINAL idea against what price is doing now in the candles -- structure, the levels the idea depended on, momentum. " +
               "Rules: you may extend (widen) a stop ONCE when the alert is about the stop and the idea is still valid -- to the real invalidation point (the furthest-most deviation), never past double its distance. HOLD is a real answer when the structure still supports the idea -- then name the price that would change your mind. " +
               "A LOSING trade is never closed -- the stop is its invalidation. A trade IN PROFIT may be closed (CLOSE) when the move is done: it reached an FTA / opposing area of liquidity, momentum died, or it is giving the profit back -- bank it rather than let a winner turn into a loss. " +
-              "Your tools: HOLD, BREAKEVEN, TIGHTEN_STOP (lock profit, or extend the stop once on a stop alert), CLOSE (winners only). The market deceives: a pullback is not a broken idea. " +
+              "Your tools: HOLD, TIGHTEN_STOP (trail the stop behind a real structure level, or extend it once on a stop alert -- never jump it to breakeven), CLOSE (winners only). The market deceives: a pullback is not a broken idea. " +
               "Use your history numbers: if most trades that hit this alert still closed green, cutting needs a strong reason. Evidence = prices from the candles.",
           },
           {

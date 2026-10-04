@@ -1,6 +1,5 @@
 import 'package:flutter/cupertino.dart';
 
-import 'coder.dart';
 import 'package:flutter/services.dart';
 
 import '../look.dart';
@@ -26,7 +25,6 @@ const _tabs = [
   _Tab('Live', CupertinoIcons.waveform_path_ecg, CupertinoIcons.waveform_path_ecg),
   _Tab('Brain', CupertinoIcons.lightbulb, CupertinoIcons.lightbulb_fill),
   _Tab('Skills', CupertinoIcons.square_stack_3d_up, CupertinoIcons.square_stack_3d_up_fill),
-  _Tab('Code', CupertinoIcons.chevron_left_slash_chevron_right, CupertinoIcons.chevron_left_slash_chevron_right),
   _Tab('Settings', CupertinoIcons.gear_alt, CupertinoIcons.gear_alt_fill),
 ];
 
@@ -58,7 +56,7 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   int _index = 0;
 
-  static const _pages = [HomeScreen(), ChatScreen(), LiveScreen(), BrainScreen(), SkillsScreen(), CoderScreen(), SettingsScreen()];
+  static const _pages = [HomeScreen(), ChatScreen(), LiveScreen(), BrainScreen(), SkillsScreen(), SettingsScreen()];
 
   void _goTo(int i) {
     if (i == _index) return;

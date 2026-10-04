@@ -5,6 +5,7 @@ import {
   mt5CloudConnect,
   mt5CloudSettings,
   mt5CloudRestart,
+  mt5CloudEaVersion,
   describeMt5CloudStatus,
   mt5CloudEaBaseUrl,
   MT5_CLOUD_EDITABLE_INPUTS,
@@ -188,8 +189,14 @@ export async function mt5CloudAction(userId: string, body: Record<string, unknow
       case "restart":
         result = await mt5CloudRestart(userId);
         break;
+      case "ea-version": {
+        const version = str("version");
+        if (!version || !/^(latest|\d+(\.\d+)?)$/.test(version)) return NextResponse.json({ error: "Pick an EA version, e.g. latest or 3.7." }, { status: 400 });
+        result = await mt5CloudEaVersion(userId, version);
+        break;
+      }
       default:
-        return NextResponse.json({ error: "action must be one of: connect, switch, forget, settings, restart." }, { status: 400 });
+        return NextResponse.json({ error: "action must be one of: connect, switch, forget, settings, restart, ea-version." }, { status: 400 });
     }
     if (result && !result.ok) return NextResponse.json({ error: result.error ?? "The MT5 container refused.", compileLog: result.compileLog }, { status: 409 });
     return NextResponse.json(await mt5CloudView(userId));

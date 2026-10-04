@@ -780,7 +780,11 @@ class ContextUsage {
 
 /// MetaTrader 5 running in Dave's own container (no VPS).
 class Mt5View {
-  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt, this.marketWatch = const [], this.pairGroup = const [], this.metaquotesIds = const [], this.phonePush = 'not set', this.phonePushDetail, this.accountName, this.accounts = const []});
+  Mt5View({required this.summary, this.agentUrl, this.installed = false, this.running = false, this.login = 'unknown', this.loginDetail, this.configured = false, this.account, this.inputs = const {}, this.lastReportAt, this.marketWatch = const [], this.pairGroup = const [], this.metaquotesIds = const [], this.phonePush = 'not set', this.phonePushDetail, this.accountName, this.accounts = const [], this.eaVersion = 'latest', this.eaVersions = const []});
+
+  /// The EA version MT5 runs ('latest' = the newest) and every version the container carries.
+  final String eaVersion;
+  final List<String> eaVersions;
 
   /// The holder's name on the live account, from the EA's own report.
   final String? accountName;
@@ -836,6 +840,8 @@ class Mt5View {
         for (final a in _list(j['accounts']))
           (login: _str(a['login']), server: _str(a['server']), name: a['name'] is String ? a['name'] as String : null, active: a['active'] == true),
       ],
+      eaVersion: _str(st?['eaVersion'], 'latest'),
+      eaVersions: st?['eaVersions'] is List ? [for (final s in st!['eaVersions'] as List) '$s'] : const [],
       phonePushDetail: st?['phonePush'] is Map && (st!['phonePush'] as Map)['detail'] is String ? (st['phonePush'] as Map)['detail'] as String : null,
     );
   }
