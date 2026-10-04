@@ -1085,6 +1085,11 @@ void ExecuteOneCommand(string obj)
       g_pushIntervalSeconds = seconds; // the full-report cadence; the 1 s poll timer stays
       AppendResult(id, true, "push interval set to " + IntegerToString(g_pushIntervalSeconds) + "s", "");
      }
+   else if(action == "market_watch" && !TerminalInfoInteger(TERMINAL_CONNECTED))
+     {
+      // Not logged in to the broker: every pair would look missing -- say so instead.
+      AppendResult(id, false, "mt5_not_connected: MT5 is not connected to the broker right now -- Market Watch not checked", "");
+     }
    else if(action == "market_watch")
      {
       // Every pair from every pair group goes into MT5's own Market Watch (the trader: "all those

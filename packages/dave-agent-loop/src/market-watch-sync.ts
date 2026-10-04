@@ -44,6 +44,8 @@ export function createMarketWatchSync(userId: string, enqueue = enqueueCommand):
     },
     describeResult(result) {
       if (!sentIds.delete(result.commandId)) return undefined;
+      // Not done (MT5 not logged in to the broker yet): send it again on the next minute's check.
+      if (result.status !== "ok") lastSent = "";
       return `${result.status === "ok" ? "" : "failed: "}${result.message ?? ""}`;
     },
   };

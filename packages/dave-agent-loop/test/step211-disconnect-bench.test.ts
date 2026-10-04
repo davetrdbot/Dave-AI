@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.DAVE_DATA_ROOT = mkdtempSync(join(tmpdir(), "dave-disc-"));
-const { recordNoData, clearBenchesFromDisconnect, benchSymbols, clearNoDataBenches, isSymbolUnavailable } = await import("../src/symbol-availability.js");
+const { recordNoData, clearBenchesFromDisconnect, benchSymbols, clearNoDataBenches, isSymbolUnavailable, liftBrokerBenchesExcept } = await import("../src/symbol-availability.js");
 const src = (await import("node:fs")).readFileSync(new URL("../src/autonomous-tick.ts", import.meta.url), "utf8");
 
 /** MT5 not logged in made pairs look "not on this broker" and they got benched for 6 h. */
@@ -21,5 +21,9 @@ assert.ok(isSymbolUnavailable(U, "VOL_20"));
 assert.deepEqual(clearNoDataBenches(U), ["VOL_20"]);
 assert.ok(isSymbolUnavailable(U, "XPTUSD"), "the broker's own missing-pairs bench stays");
 assert.match(src, /benches lifted, scanning again next cycle/);
+// Market Watch said "not on this broker" while MT5 was disconnected; a real answer later lifts the pairs it has
+benchSymbols(U, ["STORM_500", "XRPUSD"], "not offered by this broker (MT5 couldn't add it to Market Watch)", 24);
+assert.deepEqual(liftBrokerBenchesExcept(U, ["XRPUSD"]), ["STORM_500"]);
+assert.ok(isSymbolUnavailable(U, "XRPUSD") && !isSymbolUnavailable(U, "STORM_500"));
 console.log("=== step211: ALL ASSERTIONS PASSED ===");
 process.exit(0);

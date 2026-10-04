@@ -130,6 +130,18 @@ export function clearNoDataBenches(userId: string): string[] {
   return lifted;
 }
 
+/** A Market Watch check came back: every pair it did NOT list as missing is on the broker -- lift a
+ *  "not offered by this broker" bench on it (it was set while MT5 was disconnected). */
+export function liftBrokerBenchesExcept(userId: string, missing: string[]): string[] {
+  const s = load(userId);
+  const miss = new Set(missing.map((m) => key(m)));
+  const lifted = s.benched.filter((e) => /not offered by this broker/i.test(e.reason) && !miss.has(e.symbol)).map((e) => e.symbol);
+  if (!lifted.length) return [];
+  s.benched = s.benched.filter((e) => !lifted.includes(e.symbol));
+  save(userId, s);
+  return lifted;
+}
+
 /** "66 of 84 pairs in Market Watch (not on this broker: XRPUSD, XPTUSD, ...)" -> the missing ones. */
 export function parseNotOnBroker(message: string): string[] {
   const m = message.match(/not on this broker:\s*([^)]*)\)/i);
