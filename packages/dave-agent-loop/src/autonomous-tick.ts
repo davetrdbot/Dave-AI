@@ -85,7 +85,7 @@ import { knowledgeList, knowledgeView } from "@dave/knowledge";
 import { publishActivity } from "./activity-bus.js";
 import { holdOrClose, protectInstead } from "./hold-to-plan.js";
 import { ownerTag } from "./trade-owner.js";
-import { describeApa, describeApaCoordination, apaGate } from "./apa-structure.js";
+import { describeApa, describeApaCoordination } from "./apa-structure.js";
 import { tradeDrawing } from "./setup-drawing.js";
 import { getAutoDrawTrades } from "@dave/trading";
 import { resolveTradeLevels, levelsGuidance, exitPrice, type TradeLevels, type TradeAction as LevelAction } from "./trade-levels.js";
@@ -1212,7 +1212,7 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     const activeSkill = getSkill(userId, activeSkillId);
     if (activeSkill) {
       activeStrategySkillLine = [
-        `ACTIVE STRATEGY SKILL: "${activeSkill.name}" -- follow this explicitly for this decision. Use only the timeframes, endpoints, and signals this strategy actually calls for -- do NOT supplement it with other tools, timeframes, or indicators "just to be safe". That is not extra diligence, it is silently trading a different strategy than the one the user activated. This does not change whether you trade -- it only changes what you're allowed to base the decision on.`,
+        `ACTIVE STRATEGY SKILL: "${activeSkill.name}" -- follow it STRICTLY, very strictly, for this decision: enter only when EVERY condition it requires is present in the data in front of you (for APA: timeframes coordinated, and the confirmation it asks for, such as liquidity engineering with its CHoCH, a confirmed shift, or a BOS after a sweep). If any condition is missing, SKIP, name the missing condition, and mark the level or set a reminder for it. Use only the timeframes, endpoints, and signals this strategy actually calls for -- do NOT supplement it with other tools, timeframes, or indicators "just to be safe". That is not extra diligence, it is silently trading a different strategy than the one the user activated. This does not change whether you trade -- it only changes what you're allowed to base the decision on.`,
         activeSkill.description ? `Summary: ${activeSkill.description}` : null,
         `Full instructions: ${activeSkill.content}`,
         // Real, live failure this exists to surface (see analysis-config.ts's own account): this
@@ -1908,28 +1908,6 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
   // SL/entry/direction/TP the model chose, just discards this cycle's decision back to a SKIP so
   // it can recompute on retry, exactly like the existing "SL mode is auto but didn't compute one"
   // rejection below.
-  // STRICT APA (the trader, 3 Oct: "follow it strictly, very strictly"): no trade -- market or
-  // pending -- unless the candles show coordination AND a confirmation (apa-structure.ts apaGate).
-  // The AI's opinion alone is never enough; when it fails, the level gets marked for later.
-  // Only when the trader has made the APA skill the active strategy (the trader, 3 Oct: "I've
-  // never tested APA -- don't force it"). Any other strategy is followed through its own skill.
-  const apaActive = (() => {
-    const id = getActiveStrategySkillId(userId);
-    return !!id && /\bAPA\b/i.test(getSkill(userId, id)?.name ?? "");
-  })();
-  if (apaActive) {
-    const side = action.startsWith("BUY") ? "bullish" : "bearish";
-    // No candles at all (the EA didn't answer) can't be judged either way -- that case is logged;
-    // whenever the read exists, it decides.
-    const gate = apaSets.length ? apaGate(apaSets, side) : ({ ok: true, why: "no candles from the EA this scan -- APA gate could not run" } as const);
-    if (!gate.ok) {
-      logTick(userId, `${symbol}: ${action} refused by the strict APA gate -- ${gate.why}`);
-      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: `APA not confirmed: ${gate.why}. Mark the AOL and set a setup/reminder for the confirmation instead.` });
-      return { action: "NONE", notable: false };
-    }
-    logTick(userId, `${symbol}: APA gate passed -- ${gate.why}`);
-  }
-
   // The resolved levels (trade-levels.ts): fixed settings applied, market orders from the live price.
   let lv = levels ?? levelsFor(decision);
   // "Too tight" is measured from where the stop is triggered: the bid for a buy, the ask for a sell

@@ -82,7 +82,6 @@ console.log("   ✓");
 
 console.log("[6] The VOL_10 case: BUY LIMIT 1046960, TP 1048045, price runs to 1048155 untouched");
 const { limitsPastTarget } = await import("../src/safety-alerts.js");
-const { apaGate } = await import("../src/apa-structure.js");
 resetSafetyState();
 const vol = { ticket: "1248569690", symbol: "VOL_10", type: "buy_limit" as const, lots: 0.01, price: 1046960, sl: 1046650, tp: 1048045 };
 let px = 1047400;
@@ -94,10 +93,6 @@ assert.match(chk(T + 6 * MIN)[0].text, /\d+% of the way to its own TP 1048045/);
 px = 1048155;
 assert.deepEqual(limitsPastTarget([vol], () => px).map((o) => o.ticket), ["1248569690"], "TP reached unfilled -> cancel");
 assert.deepEqual(limitsPastTarget([vol], () => 1047000), []);
-console.log("   ✓");
-
-console.log("[7] Strict gate: no candles' confirmation -> refused");
-assert.equal(apaGate([], "bullish").ok, false);
 console.log("   ✓");
 
 console.log("=== step200: ALL ASSERTIONS PASSED ===");

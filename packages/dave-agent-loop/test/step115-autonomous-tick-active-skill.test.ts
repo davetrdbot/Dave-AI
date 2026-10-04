@@ -121,7 +121,7 @@ try {
     assert.ok(sentText.includes("ACTIVE STRATEGY SKILL"), "the real autonomous decision request must genuinely include the active-skill line");
     assert.ok(sentText.includes(skill.name), "the real skill's name must reach the model call");
     assert.ok(sentText.includes(skill.content), "the real skill's full content must reach the model call, not just its name");
-    assert.match(sentText, /follow this explicitly/i, "the explicit-adherence instruction must genuinely be present in the autonomous tick");
+    assert.match(sentText, /follow it STRICTLY/i, "the explicit-adherence instruction must genuinely be present in the autonomous tick");
     console.log("    confirmed: the active skill's name, content, and explicit-adherence instruction all genuinely reached the autonomous decision call");
 
     console.log("\n[2] With that same skill active, a real BUY decision still fires and executes -- the fix does not gate or slow trading...\n");
