@@ -35,6 +35,24 @@ interface ConfluenceData {
   direction: string;
 }
 
+/** EA 4.0: the setup score comes from the summary group -- the structure bias across D1/H4/H1/M15
+ *  (weighted votes) and this timeframe's confluence votes, both as raw counts the EA shows. */
+interface SummaryData {
+  mtf_structure?: { score?: number; max?: number; bias?: string };
+  confluence?: { total?: number; of?: number };
+}
+export function summaryToConfluence(d: SummaryData | ConfluenceData | undefined): ConfluenceData {
+  if (d && typeof (d as ConfluenceData).score === "number" && typeof (d as ConfluenceData).direction === "string") return d as ConfluenceData;
+  const s = (d ?? {}) as SummaryData;
+  const mtf = s.mtf_structure ?? {};
+  const conf = s.confluence ?? {};
+  const bias = String(mtf.bias ?? "range");
+  const mtfPart = mtf.max ? Math.abs(Number(mtf.score ?? 0)) / Number(mtf.max) : 0;
+  const sign = bias === "bullish" ? 1 : bias === "bearish" ? -1 : 0;
+  const confPart = conf.of ? Math.max(0, (sign * Number(conf.total ?? 0)) / Number(conf.of)) : 0;
+  return { score: Math.round((mtfPart * 0.6 + confPart * 0.4) * 100), direction: sign > 0 ? "BULLISH" : sign < 0 ? "BEARISH" : "NEUTRAL" };
+}
+
 export async function findSetup(userId: string, analysis: AnalysisSource, tf = "H1"): Promise<SetupScanResult> {
   // Real bug fixed (user: "the bot doesn't even know the pair to trade"): a user who never
   // manually visited /settings -> Pair Group had zero groups and no active one, so a real scan
@@ -104,7 +122,7 @@ async function scanSymbols(analysis: AnalysisSource, symbols: string[], tf: stri
       const index = cursor++;
       const symbol = targets[index];
       try {
-        const data = await analysis.get<ConfluenceData>("confluence", symbol, tf, { timeoutMs: GROUP_SCAN_TIMEOUT_MS });
+        const data = summaryToConfluence(await analysis.get<SummaryData>("summary", symbol, tf, { timeoutMs: GROUP_SCAN_TIMEOUT_MS }));
         results[index] = { symbol, score: data.score, direction: data.direction };
       } catch (err) {
         results[index] = { symbol, score: -1, direction: "unknown", error: err instanceof Error ? err.message : String(err) };

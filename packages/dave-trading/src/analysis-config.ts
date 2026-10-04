@@ -39,53 +39,37 @@ export const ALL_ANALYSIS_TIMEFRAMES = ["D1", "H4", "H1", "M15", "M5", "M3", "M1
  *  each analysisTool() entry in dave-ea-bridge/src/tools.ts registers (the second constructor
  *  argument), not a re-invented or approximate list. */
 export const ALL_ANALYSIS_ENDPOINTS = [
+  "price",
+  "candles",
+  "market_structure",
+  "liquidity",
+  "zones",
   "trend",
   "momentum",
   "volatility",
-  "price",
-  "structure",
-  "zones",
-  "liquidity",
   "volume",
-  "ichimoku",
-  "fibonacci",
-  "candles",
-  "patterns",
-  "ict",
-  "wyckoff",
-  "divergence",
-  "session",
-  "pivots",
   "levels",
-  "orderflow",
-  "confluence",
-  "risk_metrics",
-  "synthetic",
-  "elliott",
-  "correlation",
-  "strength",
-  "heatmap",
-  "fractal",
-  "harmonic",
-  "mean_reversion",
-  "tape",
-  "tape_flow",
-  "seasonality",
-  "spread_analysis",
-  "gann",
-  "market_profile",
-  "macro",
+  "session",
   "news",
-  "sentiment",
-  "regime",
-  "backtest",
-  "swing",
-  "order_blocks",
-  "inducement",
-  "premium_discount",
-  "market_structure",
-  "reference_levels",
+  "intermarket",
+  "chart_patterns",
+  "summary",
 ] as const;
+
+/** EA 3.x endpoint names a saved custom scope may still hold -> the EA 4.0 group that holds that data now. */
+export const LEGACY_ANALYSIS_ENDPOINTS: Record<string, (typeof ALL_ANALYSIS_ENDPOINTS)[number]> = {
+  structure: "market_structure", swing: "market_structure", fractal: "market_structure", premium_discount: "market_structure", inducement: "market_structure",
+  patterns: "candles", order_blocks: "zones", ict: "zones", pivots: "levels", fibonacci: "levels", gann: "levels",
+  orderflow: "volume", tape: "volume", tape_flow: "volume", market_profile: "volume",
+  correlation: "intermarket", strength: "intermarket", heatmap: "intermarket", macro: "intermarket",
+  ichimoku: "trend", adx: "trend", regime: "trend", divergence: "momentum", mean_reversion: "momentum",
+  reference_levels: "price", spread_analysis: "price", confluence: "summary", risk_metrics: "summary", backtest: "summary", mtf: "summary",
+  harmonic: "chart_patterns", elliott: "chart_patterns", wyckoff: "chart_patterns", synthetic: "volatility", seasonality: "session", sentiment: "session",
+};
+export function canonicalEndpoint(e: string): string {
+  const k = e.trim().toLowerCase();
+  return LEGACY_ANALYSIS_ENDPOINTS[k] ?? k;
+}
 
 export interface AnalysisConfig {
   mode: "all" | "custom";
@@ -132,7 +116,7 @@ export function setCustomTimeframes(userId: string, timeframes: string[]): Analy
 /** Sets a custom endpoint subset, switching mode to "custom". Same reject-invalid-entries
  *  behavior as setCustomTimeframes. */
 export function setCustomEndpoints(userId: string, endpoints: string[]): AnalysisConfig {
-  const valid = endpoints.map((e) => e.trim().toLowerCase()).filter((e) => (ALL_ANALYSIS_ENDPOINTS as readonly string[]).includes(e));
+  const valid = [...new Set(endpoints.map((e) => canonicalEndpoint(e)).filter((e) => (ALL_ANALYSIS_ENDPOINTS as readonly string[]).includes(e)))];
   const current = getAnalysisConfig(userId);
   const next: AnalysisConfig = { mode: "custom", timeframes: current.timeframes, endpoints: valid.length > 0 ? valid : current.endpoints };
   setAnalysisConfig(userId, next);
@@ -176,7 +160,7 @@ export function toggleEndpoint(userId: string, endpoint: string): AnalysisConfig
  *  drops anything the EA genuinely returned. */
 export function filterSuiteToConfig(suite: Record<string, unknown>, config: AnalysisConfig): Record<string, unknown> {
   if (config.mode === "all") return suite;
-  const allowed = new Set(config.endpoints);
+  const allowed = new Set(config.endpoints.map((e) => canonicalEndpoint(e)));
   const filtered: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(suite)) {
     // _meta is the freshness label (cached? still forming? market closed? previous data?) -- always kept.
@@ -257,84 +241,43 @@ function isOfferedAsAlternative(upper: string, index: number, token: string, act
  *  endpoint in ALL_ANALYSIS_ENDPOINTS appears exactly once (asserted in step202). */
 export const ANALYSIS_ENDPOINT_GROUPS: { group: string; endpoints: { id: (typeof ALL_ANALYSIS_ENDPOINTS)[number]; contains: string }[] }[] = [
   {
-    group: "Market structure",
+    group: "Price and candles",
     endpoints: [
-      { id: "market_structure", contains: "From THIS timeframe's own bars only. STRUCTURE: external + internal layers (trend, BOS / CHoCH, strong & weak high/low), aligned or not, MSS, CISD, validation / invalidation, shift / transition / reclaim, dealing range with premium / discount / OTE. LIQUIDITY: external range (BSL / SSL), resting pools, equal highs / lows, trendline liquidity, sweeps (with swing failure) vs runs, inducement, liquidity engineering (sweep, FMD, CHoCH), liquidity voids, draw on liquidity. ZONES: order block, breaker, mitigation block, rejection block, FVG, inverse FVG, balanced price range, engulfing area, flip -- each fresh / mitigated % / invalidated. CONFIRMATION: displacement, engulfing, rejection" },
-      { id: "structure", contains: "HH/HL/LH/LL trend, BOS, CHoCH, MSS, CISD, dealing range, premium/discount, OTE" },
-      { id: "swing", contains: "Swing highs and lows with time, last leg direction" },
-      { id: "fractal", contains: "Williams fractal up/down points" },
-      { id: "premium_discount", contains: "Where price sits in the dealing range, OTE zone, bias" },
-      { id: "elliott", contains: "Wave count, impulse or correction, wave target and invalidation" },
-      { id: "wyckoff", contains: "Accumulation / distribution phase, spring / UTAD, effort vs result" },
+      { id: "price", contains: "Bid / ask, spread now vs normal, quote age, market open, frozen feed, today / yesterday / week / month / 52-week levels, ADR and % used, spread vs ATR, broker stop and freeze levels" },
+      { id: "candles", contains: "Candles newest first (still-forming one marked): OHLC, tick volume, body / wicks, size vs ATR, close position, gaps, 6 patterns, same-direction run, APA Type 1 flag" },
     ],
   },
   {
-    group: "Liquidity and flow",
+    group: "Structure, liquidity and zones",
     endpoints: [
-      { id: "liquidity", contains: "Buy-side / sell-side liquidity, equal highs/lows, sweeps, liquidity voids" },
-      { id: "inducement", contains: "Inducement levels, taken or not, next liquidity target" },
-      { id: "orderflow", contains: "Buy/sell volume delta, absorption, climax, stop runs" },
-      { id: "volume", contains: "Volume vs average, bull/bear delta, spikes" },
-      { id: "tape", contains: "Tick tape: up/down tick ratio, tape bias, fast tape" },
-      { id: "tape_flow", contains: "Cumulative volume delta, aggressive buyers/sellers" },
-      { id: "market_profile", contains: "Point of control, value area high/low, profile shape" },
-    ],
-  },
-  {
-    group: "Zones and levels",
-    endpoints: [
-      { id: "zones", contains: "Supply/demand zones: fresh or tested, strength, mitigation %" },
-      { id: "order_blocks", contains: "Bullish/bearish order blocks, mitigated or not, distance" },
-      { id: "ict", contains: "FVG / iFVG, order and breaker blocks, killzones, silver bullet, Judas swing, AMD" },
-      { id: "fibonacci", contains: "Retracement / extension levels, nearest level, OTE" },
-      { id: "pivots", contains: "Classic, Fibonacci, Camarilla, weekly and monthly pivots" },
-      { id: "levels", contains: "Round numbers, half figures, 52-week high/low distance" },
-      { id: "gann", contains: "Gann fan ratios, nearest Gann level, Square of 9" },
-      { id: "harmonic", contains: "Gartley / Bat / Butterfly / Crab, PRZ, confidence" },
-    ],
-  },
-  {
-    group: "Candles",
-    endpoints: [
-      { id: "candles", contains: "Real candles newest first: OHLC, volume, body/wick, size vs ATR, candle type, gaps" },
-      { id: "patterns", contains: "Candle patterns (single, double, triple), strongest one, bias" },
+      { id: "market_structure", contains: "From this timeframe's own closed candles: wick swings, trend, BOS / CHoCH (body close, displacement), CISD, swing failures, dealing range, premium / discount, OTE, inducement, trendline, legs, higher timeframe; APA shift point, shift / transition, reclaim, pure vs different" },
+      { id: "liquidity", contains: "Untaken buy-side / sell-side pools, equal highs / lows, untouched old levels, sweeps, side swept today, draw on liquidity, APA liquidity engineering (thrust, FMD, CHoCH)" },
+      { id: "zones", contains: "Order blocks, breakers, FVG / IFVG / BPR, opening gaps, APA areas of liquidity (Types 1-4) with validation, invalidation, consumed %, SL size, refinement" },
     ],
   },
   {
     group: "Indicators",
     endpoints: [
-      { id: "trend", contains: "Moving averages, EMA alignment, golden/death cross, bias score" },
-      { id: "momentum", contains: "RSI, MACD, Stochastic, CCI, Williams %R" },
-      { id: "volatility", contains: "ATR, Bollinger, Keltner, expansion / contraction" },
-      { id: "ichimoku", contains: "Tenkan, kijun, cloud, chikou, TK cross" },
-      { id: "divergence", contains: "RSI / MACD / Stochastic divergences, regular and hidden" },
-      { id: "confluence", contains: "Agreement score across MA, RSI, MACD, ADX and price action" },
-      { id: "mean_reversion", contains: "Z-score vs the 20-bar mean, overextension" },
-      { id: "sentiment", contains: "Fear/greed-style blend of RSI, MACD and bull-bar %" },
-      { id: "regime", contains: "Trending / ranging / transitional, suggested style" },
+      { id: "trend", contains: "EMA 20/50/200, SMA200, SMMA 6/20/100, crosses, ADX / DI, Supertrend, Ichimoku, regression slope, efficiency ratio, regime" },
+      { id: "momentum", contains: "RSI (and higher timeframe), MACD, stochastic, ROC, z-score, latest divergence" },
+      { id: "volatility", contains: "ATR and percentile, Bollinger, Keltner, squeeze, Donchian, historical volatility, expected move" },
+      { id: "volume", contains: "Tick volume vs average and time of day, spikes, estimated pressure, tick speed, OBV, tick VWAP, tick profile" },
     ],
   },
   {
-    group: "Market context",
+    group: "Levels, time and markets",
     endpoints: [
-      { id: "reference_levels", contains: "Levels other timeframes define, each from its own bars: daily / weekly / monthly open, previous high / low / close, average daily range and today's range" },
-      { id: "price", contains: "Bid / ask / spread, day-week-month highs and lows, swap, lot limits" },
-      { id: "session", contains: "Tokyo / London / New York status, overlaps, Asian range" },
-      { id: "seasonality", contains: "Most volatile hour, hourly average range" },
-      { id: "spread_analysis", contains: "Spread vs ATR, cost rating, tradeable or not" },
-      { id: "news", contains: "Upcoming economic events for the pair, news blackout" },
-      { id: "macro", contains: "Daily/weekly change, DXY / gold / USDJPY proxies, risk-on/off" },
-      { id: "correlation", contains: "Correlation vs EURUSD / DXY proxy, safe-haven status" },
-      { id: "strength", contains: "Base vs quote currency strength" },
-      { id: "heatmap", contains: "Strength of all 8 major currencies" },
-      { id: "synthetic", contains: "Boom / Crash / Volatility spike timing, spike probability" },
+      { id: "levels", contains: "Pivots, Camarilla, round numbers, Fibonacci, merged ladder above / below, APA flip levels and flip entry type 2" },
+      { id: "session", contains: "Sessions, killzones, Asian range, opening ranges, session highs / lows, opens, Judas swing, CBDR, holidays, rollover" },
+      { id: "news", contains: "Upcoming events for both currencies, blackout, last high-impact result with surprise and price reaction" },
+      { id: "intermarket", contains: "Currency strength ranking, correlations and breaks, DXY proxy, gold, USDJPY" },
+      { id: "chart_patterns", contains: "Double top / bottom, head and shoulders, triangles, wedges, completed harmonics" },
     ],
   },
   {
-    group: "Risk and testing",
+    group: "Across timeframes",
     endpoints: [
-      { id: "risk_metrics", contains: "ATR stop/target distances, R:R, pip value, spread vs stop, lot per % risk (this timeframe only)" },
-      { id: "backtest", contains: "Quick MA20/50 cross backtest: win rate, net pips" },
+      { id: "summary", contains: "Structure bias D1/H4/H1/M15, confluence factors, ATR stop sizes, trade plan from structure, reasons against, APA cycles, coordination, FTA, entry modules" },
     ],
   },
 ];

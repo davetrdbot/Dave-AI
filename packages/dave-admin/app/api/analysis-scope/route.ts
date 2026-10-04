@@ -4,12 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 const ALL_TIMEFRAMES = ["D1", "H4", "H1", "M15", "M5", "M3", "M1"];
 const ALL_ENDPOINTS = [
-  "trend","momentum","volatility","price","structure","zones","liquidity","volume","ichimoku",
-  "fibonacci","candles","patterns","ict","wyckoff","divergence","session","pivots","levels",
-  "orderflow","confluence","risk_metrics","synthetic","elliott","correlation","strength","heatmap",
-  "fractal","harmonic","mean_reversion","tape","tape_flow","seasonality","spread_analysis","gann",
-  "market_profile","macro","news","sentiment","regime","backtest","swing","order_blocks",
-  "inducement","premium_discount",
+  "price","candles","market_structure","liquidity","zones","trend","momentum","volatility","volume",
+  "levels","session","news","intermarket","chart_patterns","summary",
 ];
 const DEFAULT_CONFIG = { mode: "all", timeframes: ALL_TIMEFRAMES, endpoints: ALL_ENDPOINTS };
 

@@ -37,7 +37,7 @@ try {
   console.log(`    confirmed: default mode=all, ${initial.timeframes.length} timeframes, ${initial.endpoints.length} endpoints`);
 
   console.log("\n[2] filterSuiteToConfig is a genuine no-op in 'all' mode -- nothing narrowed by default...\n");
-  const rawSuite = { trend: { bias: "BULL" }, momentum: { rsi: 61 }, ichimoku: { cloudPosition: "above" } };
+  const rawSuite = { trend: { bias: "BULL" }, momentum: { rsi: 61 }, zones: { demand: [] } };
   assert.deepEqual(filterSuiteToConfig(rawSuite, initial), rawSuite);
   console.log("    confirmed: full suite passes through unchanged when mode=all");
 
@@ -48,10 +48,10 @@ try {
   console.log(`    confirmed: custom timeframes = ${tfResult.timeframes.join(", ")}`);
 
   console.log("\n[4] A real custom endpoint subset genuinely narrows what filterSuiteToConfig keeps...\n");
-  const epResult = setCustomEndpoints(USER, ["trend", "ichimoku"]);
-  assert.deepEqual(epResult.endpoints, ["trend", "ichimoku"]);
+  const epResult = setCustomEndpoints(USER, ["trend", "ichimoku", "zones"]);
+  assert.deepEqual(epResult.endpoints, ["trend", "zones"], "ichimoku is part of trend in EA 4.0");
   const filtered = filterSuiteToConfig(rawSuite, epResult);
-  assert.deepEqual(filtered, { trend: { bias: "BULL" }, ichimoku: { cloudPosition: "above" } });
+  assert.deepEqual(filtered, { trend: { bias: "BULL" }, zones: { demand: [] } });
   assert.ok(!("momentum" in filtered), "an unselected endpoint must genuinely be dropped");
   console.log(`    confirmed: filtered suite keeps only ${Object.keys(filtered).join(", ")}`);
 

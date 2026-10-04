@@ -18,10 +18,10 @@ assert.match(src, /name: "fit_analysis_to_skill"/);
 // Exercise the same calls the tool makes.
 const { setCustomEndpoints, resetAnalysisConfigToAll, ALL_ANALYSIS_ENDPOINTS } = await import("@dave/trading");
 const next = setCustomEndpoints(U, ["structure", "zones", "liquidity", "order_blocks", "price", "candles", "made_up"]);
-assert.deepEqual(next.endpoints.sort(), ["candles", "liquidity", "order_blocks", "price", "structure", "zones"]);
+assert.deepEqual(next.endpoints.sort(), ["candles", "liquidity", "market_structure", "price", "zones"], "older names map to the 4.0 groups, no duplicates");
 assert.equal(getAnalysisConfig(U).mode, "custom");
 assert.equal(resetAnalysisConfigToAll(U).mode, "all");
-assert.ok(ALL_ANALYSIS_ENDPOINTS.length > 30);
+assert.equal(ALL_ANALYSIS_ENDPOINTS.length, 15);
 void buildFullRegistry;
 console.log("=== step201: ALL ASSERTIONS PASSED ===");
 process.exit(0);

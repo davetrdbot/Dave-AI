@@ -1437,7 +1437,14 @@ CSlot *GetSlot(string sym, ENUM_TIMEFRAMES tf, int waitMs)
      {
       for(int w = 0; w < waitMs / 100 && !ready; w++) { Sleep(100); ready = SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED) != 0; }
      }
-   if(!ready && waitMs <= 0 && s == NULL) return NULL;
+   // Never ask MT5 for candles it has not loaded: CopyRates would then WAIT for the download
+   // (tens of seconds -- live, a first W1 read froze the EA ~45 s). Not loaded = keep what we have
+   // (marked from_cache) or answer "warming up"; the background load started above finishes it.
+   if(!ready)
+     {
+      if(s != NULL) { s.fromCache = true; s.lastUsed = TimeLocal(); return s; }
+      return NULL;
+     }
 
    datetime bar0 = ready ? iTime(sym, tf, 0) : 0;
    bool needLoad = s == NULL || (ready && bar0 > 0 && (s.n < 2 || s.t[s.n - 1] != bar0)) || (ready && TimeLocal() - s.loadedAt >= 1);
@@ -1445,7 +1452,6 @@ CSlot *GetSlot(string sym, ENUM_TIMEFRAMES tf, int waitMs)
 
    MqlRates r[];
    int got = -1;
-   if(ready || waitMs > 0)
      {
       got = CopyRates(sym, tf, 0, SLOT_BARS, r); // oldest first
       long lastTick = SymbolInfoInteger(sym, SYMBOL_TIME);

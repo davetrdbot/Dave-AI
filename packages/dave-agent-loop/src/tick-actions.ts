@@ -1,7 +1,7 @@
 import type { TradeExecutor } from "@dave/trading";
 import { tradeModify, partialClose, fullClose, deletePendingOrder, breakevenStop } from "@dave/trading";
 import { holdOrClose, protectInstead } from "./hold-to-plan.js";
-import { ALL_ANALYSIS_ENDPOINTS } from "@dave/trading";
+import { ALL_ANALYSIS_ENDPOINTS, canonicalEndpoint } from "@dave/trading";
 
 /**
  * Several things in one scan (the trader: "mode 2 -- make sure the agent can call 2 tools and more
@@ -16,10 +16,9 @@ import { ALL_ANALYSIS_ENDPOINTS } from "@dave/trading";
 
 export const MAX_TICK_ACTIONS = 6;
 
-/** Reads mode 2 can ask for that are NOT part of the per-timeframe analysis suite (get_all_analysis):
- *  mtf = the multi-timeframe summary (M5/M15/H1/H4/D1 in one read; the trader: "add this as a tool in
- *  the mode 2 -- it shouldn't be in the get all analysis"), adx, and the symbol's contract/hours. */
-export const MODE2_EXTRA_ENDPOINTS = ["mtf", "adx", "symbol_info"];
+/** Reads mode 2 can ask for besides one timeframe's groups: the symbol's contract/hours and the open
+ *  trades with their management facts (EA 4.0). The cross-timeframe read is the summary group. */
+export const MODE2_EXTRA_ENDPOINTS = ["symbol_info", "open_trades"];
 
 export type TickAction =
   | { type: "BREAKEVEN"; ticket: string; offset?: number }
@@ -49,8 +48,8 @@ export const ACTIONS_SCHEMA = {
     "Trade management runs immediately and in parallel, whatever your main action is: " +
     "{type:'BREAKEVEN', ticket, offset?} moves a winning trade's stop to its entry (offset = extra price distance in the trade's favour); " +
     "{type:'MODIFY', ticket, sl?, tp?}; {type:'PARTIAL_CLOSE', ticket, lots}; {type:'CLOSE', ticket} (closes a position or deletes a pending order). " +
-    "Data: {type:'GET', endpoint, symbol? (default: the pair you're scanning), timeframe? (default M5)} -- endpoint is one of candles, volatility, momentum, trend, structure, zones, liquidity, divergence, session, levels, patterns, ict, synthetic, risk_metrics, strength, correlation (and the other analysis categories), " +
-    "or mtf (the multi-timeframe summary: SMMA trend score, RSI, ATR and ADX on M5/M15/H1/H4/D1 in one read -- timeframe is ignored), adx, symbol_info (contract, stop distance, trading hours, market open?). " +
+    "Data: {type:'GET', endpoint, symbol? (default: the pair you're scanning), timeframe? (default M5)} -- endpoint is one of price, candles, market_structure, liquidity, zones, trend, momentum, volatility, volume, levels, session, news, intermarket, chart_patterns, " +
+    "summary (structure bias across D1/H4/H1/M15, APA cycles, FTA, a trade plan from structure), symbol_info (contract, stop distance, trading hours, market open?), open_trades (R, best/worst, breakeven allowed, invalidation). " +
     "If you list ANY GET item, all of them are fetched together and you decide ONCE more with the results -- your main action this time is only a placeholder (SKIP is fine), " +
     "and on that second decision GET items are ignored. Use it when you genuinely need 2+ fresh reads, not as a routine step.",
   items: {
@@ -89,7 +88,7 @@ export function coerceTickActions(raw: unknown): TickAction[] | undefined {
     } else if (type === "PARTIAL_CLOSE" && ticket && typeof a.lots === "number" && a.lots > 0) out.push({ type, ticket, lots: a.lots });
     else if (type === "CLOSE" && ticket) out.push({ type, ticket });
     else if (type === "GET" && typeof a.endpoint === "string") {
-      const endpoint = a.endpoint.trim().toLowerCase().replace(/^get_/, "");
+      const endpoint = canonicalEndpoint(a.endpoint.trim().toLowerCase().replace(/^get_/, ""));
       if (!(ALL_ANALYSIS_ENDPOINTS as readonly string[]).includes(endpoint) && !MODE2_EXTRA_ENDPOINTS.includes(endpoint)) continue;
       const tf = typeof a.timeframe === "string" ? a.timeframe.trim().toUpperCase() : undefined;
       out.push({ type, endpoint, symbol: typeof a.symbol === "string" && a.symbol.trim() ? a.symbol.trim() : undefined, timeframe: tf && TIMEFRAMES.has(tf) ? tf : undefined });

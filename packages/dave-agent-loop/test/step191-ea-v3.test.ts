@@ -116,12 +116,12 @@ await run("get_position_size", { symbol: "XAUUSD", side: "sell", sl: 2665.5, ris
 assert.deepEqual({ e: lastCmd().endpoint, side: lastCmd().side, sl: lastCmd().sl, risk: lastCmd().risk_pct, entry: lastCmd().entry }, { e: "position_size", side: "sell", sl: 2665.5, risk: 0.5, entry: undefined });
 await run("get_deal_history", { days: 400 });
 assert.deepEqual({ e: lastCmd().endpoint, days: lastCmd().days, symbol: lastCmd().symbol }, { e: "history", days: 90, symbol: "" });
-await run("get_mtf", { symbol: "EURUSD" });
-assert.equal(lastCmd().endpoint, "mtf");
+await run("get_summary", { symbol: "EURUSD" });
+assert.equal(lastCmd().endpoint, "summary");
 await run("get_symbol_info", { symbol: "BOOM_100" });
 assert.equal(lastCmd().endpoint, "symbol_info");
-await run("get_adx", { symbol: "EURUSD", timeframe: "H1" });
-assert.equal(lastCmd().endpoint, "adx");
+await run("get_open_trades", {});
+assert.equal(lastCmd().endpoint, "open_trades");
 // Settings can never overwrite the command's own fields.
 const { requestAnalysis } = bridge;
 await requestAnalysis(userId, "trend", "EURUSD", "H1", { timeoutMs: 50, params: { action: "open", endpoint: "evil", id: "x" } }).catch(() => undefined);
@@ -130,20 +130,20 @@ assert.equal(lastCmd().endpoint, "trend");
 assert.notEqual(lastCmd().id, "x");
 console.log("   ✓\n");
 
-console.log("[5] Mode 2 can ask for the multi-timeframe summary -- and it is NOT in get_all_analysis");
-assert.deepEqual(MODE2_EXTRA_ENDPOINTS, ["mtf", "adx", "symbol_info"]);
-const acts = coerceTickActions([{ type: "GET", endpoint: "get_mtf" }, { type: "GET", endpoint: "adx", timeframe: "h4" }, { type: "GET", endpoint: "history" }, { type: "GET", endpoint: "position_size" }]);
-assert.deepEqual(acts?.map((a) => (a as { endpoint: string }).endpoint), ["mtf", "adx"], "history/position_size need settings, not mode-2 reads");
-assert.ok(!(ALL_ANALYSIS_ENDPOINTS as readonly string[]).includes("mtf"), "mtf is not part of the analysis suite");
+console.log("[5] Mode 2 reads the summary group; older names map to the group that holds that data now");
+assert.deepEqual(MODE2_EXTRA_ENDPOINTS, ["symbol_info", "open_trades"]);
+const acts = coerceTickActions([{ type: "GET", endpoint: "get_summary" }, { type: "GET", endpoint: "adx", timeframe: "h4" }, { type: "GET", endpoint: "history" }, { type: "GET", endpoint: "position_size" }]);
+assert.deepEqual(acts?.map((a) => (a as { endpoint: string }).endpoint), ["summary", "trend"], "history/position_size need settings, not mode-2 reads; adx lives in trend now");
+assert.ok((ALL_ANALYSIS_ENDPOINTS as readonly string[]).includes("summary"), "summary is one of the 15 groups");
 const asked: string[] = [];
 const g = await gatherData({ get: async (e: string, s: string) => { asked.push(`${e}:${s}`); return { timeframes: { M5: { bias: "BULL" } }, alignment: "ALL_BULL" } as never; } }, acts!, "EURUSD");
-assert.deepEqual(asked, ["mtf:EURUSD", "adx:EURUSD"]);
-assert.match(g.lines[0], /^MTF EURUSD/);
+assert.deepEqual(asked, ["summary:EURUSD", "trend:EURUSD"]);
+assert.match(g.lines[0], /^SUMMARY EURUSD/);
 assert.match(g.lines[0], /ALL_BULL/);
 console.log("   ✓\n");
 
 console.log("[6] Listed for chat, the tool catalog and voice calls");
-for (const n of ["get_mtf", "get_adx", "get_symbol_info", "get_position_size", "get_deal_history"]) {
+for (const n of ["get_summary", "get_open_trades", "get_symbol_info", "get_position_size", "get_deal_history"]) {
   assert.ok(TOOL_CATALOG_CATEGORIES.Analysis.includes(n), `${n} in the catalog`);
   assert.ok(LIVE_TOOL_NAMES.has(n), `${n} on voice calls`);
 }

@@ -102,24 +102,15 @@ function analysisTool(toolName: string, endpoint: string, summary: string): EaTo
 }
 
 export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
-  analysisTool("get_trend", "trend", "trend analysis (moving averages, EMA alignment, golden/death cross, bias score)"),
-  analysisTool("get_momentum", "momentum", "momentum analysis (RSI/MACD/Stochastic/CCI/Williams %R, overall bull/bear signal)"),
-  analysisTool("get_volatility", "volatility", "volatility analysis (ATR, Bollinger Bands, Keltner Channel, expansion/contraction, volatility regime)"),
-  analysisTool("get_price", "price", "price snapshot (bid/ask/spread, day/week/month/52w high-low, swap, lot size limits)"),
-  analysisTool("get_structure", "structure", "market structure (HH/HL/LH/LL trend, BOS, CHoCH, MSS, CISD, dealing range, premium/discount, OTE zone)"),
-  analysisTool("get_zones", "zones", "supply/demand zones (fresh/tested, strength score, mitigation %, nearest/strongest zone)"),
-  analysisTool("get_market_structure", "market_structure", "GROUPED market structure for ONE timeframe, computed only from that timeframe's own bars (nothing from other timeframes): structure {external + internal layers: trend, last_break BOS/CHoCH, strong/weak high-low; aligned, mss, cisd, validation, invalidation, shift, reclaim, range premium/discount/OTE}, liquidity {external_range, buy/sell-side pools, equal highs/lows, trendline, sweeps (swing_failure) vs runs, inducement, engineering sweep->FMD->CHoCH, voids, draw_on_liquidity}, zones [ORDER_BLOCK, BREAKER, MITIGATION_BLOCK, REJECTION_BLOCK, FVG, IFVG, BPR, ENGULFING_AOL, FLIP with fresh, mitigated_pct, invalidated], confirmation {displacement, engulfing, rejection}"),
-  analysisTool("get_reference_levels", "reference_levels", "reference levels from the higher timeframes, each from its OWN bars and kept apart from any timeframe's analysis: daily/weekly/monthly open, previous high/low/close, average daily range, today's range"),
-  analysisTool("get_liquidity", "liquidity", "liquidity levels (BSL/SSL, equal highs/lows, sweeps, liquidity voids)"),
-  analysisTool("get_volume", "volume", "volume analysis (current vs average, bull/bear volume delta, spikes/climax)"),
-  analysisTool("get_ichimoku", "ichimoku", "Ichimoku Cloud (tenkan/kijun/senkou A+B/chikou, cloud position, TK cross, signal score)"),
-  analysisTool("get_fibonacci", "fibonacci", "Fibonacci retracement/extension levels, nearest level, OTE zone, golden-ratio bounce"),
+  // EA 4.0 groups: each one holds raw facts (rules printed inside), worked out on CLOSED candles from one
+  // shared memory per symbol+timeframe -- no duplicates across groups.
+  analysisTool("get_price", "price", "live price: bid/ask, spread now vs normal, quote age, market open, frozen-feed check, today/yesterday (pdh/pdl), week (pwh/pwl), month and 52-week levels, ADR14 and % used today, spread vs ATR, broker stop/freeze levels"),
   {
     name: "get_candles",
     description:
-      "Real candles computed LIVE by the connected MT5 EA, newest first: the still-forming candle (closed:false, seconds_left) plus closed ones, " +
-      "each with UTC time, OHLC, tick volume, body/wick ratios, size vs ATR, candle type (hammer vs hanging man uses the trend before it), gap and imbalance. " +
-      "count = how many (default 21, up to 300).",
+      "Candles from the MT5 EA, newest first: the still-forming candle (closed:false, seconds_left) plus closed ones, each with UTC time, OHLC, tick volume, " +
+      "body/wicks, size vs ATR, close position in the range, gap, and a pattern name on closed candles (doji, pin bar, engulfing, inside/outside bar, morning/evening star); " +
+      "plus the same-direction run and an APA Type 1 engulfing flag. count = how many (default 21, up to 300).",
     parameters: {
       type: "object",
       properties: { symbol: { type: "string" }, timeframe: { type: "string" }, count: { type: "number", description: "how many candles, 1-300 (default 21)" } },
@@ -131,39 +122,23 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
         params: { count: Math.max(1, Math.min(300, Math.round(Number(args.count) || 21))) },
       }),
   },
-  analysisTool("get_patterns", "patterns", "candlestick pattern recognition (single/double/triple patterns, strongest pattern, bias, reliability)"),
-  analysisTool("get_ict", "ict", "ICT concepts (FVG/iFVG, order blocks, breaker blocks, killzones, silver bullet, Judas swing, AMD phase, OTE zone)"),
-  analysisTool("get_wyckoff", "wyckoff", "Wyckoff phase analysis (accumulation/distribution/markup, spring/UTAD events, effort-vs-result)"),
-  analysisTool("get_divergence", "divergence", "RSI/MACD/Stochastic divergence detection (regular and hidden, bull/bear, strongest/confirmed)"),
-  analysisTool("get_session", "session", "trading session status (Tokyo/London/NY/Sydney, overlaps, time to next session, Asian range)"),
-  analysisTool("get_pivots", "pivots", "pivot points (classic/Fibonacci/Camarilla/weekly/monthly, nearest pivot, price vs pivot)"),
-  analysisTool("get_levels", "levels", "round-number/psychological levels (big/half figures, nearby round levels, 52-week high/low distance)"),
-  analysisTool("get_orderflow", "orderflow", "order-flow analysis (buy/sell volume delta, absorption, climax, stop runs, momentum ignition)"),
-  analysisTool("get_confluence", "confluence", "multi-signal confluence score (MA trend/RSI/MACD/ADX/price-action agreement, direction, strength)"),
-  analysisTool("get_risk_metrics", "risk_metrics", "risk sizing metrics (ATR-based SL/TP levels, R:R ratios, pip value, recommended lot size per % risk)"),
-  analysisTool("get_synthetic", "synthetic", "synthetic-index analysis (Boom/Crash/Volatility spike detection, due/overdue, spike probability)"),
-  analysisTool("get_elliott", "elliott", "Elliott Wave analysis (current wave count, impulse/correction, wave target/invalidation)"),
-  analysisTool("get_correlation", "correlation", "cross-market correlation (vs EURUSD/DXY proxy, risk-on/off, safe-haven status)"),
-  analysisTool("get_strength", "strength", "currency strength for this pair's base/quote currencies (differential, bias, strongest/weakest)"),
-  analysisTool("get_heatmap", "heatmap", "currency strength heatmap across all 8 majors"),
-  analysisTool("get_fractal", "fractal", "Williams fractal up/down points"),
-  analysisTool("get_harmonic", "harmonic", "harmonic pattern detection (Gartley/Bat/Butterfly/Crab, XABCD ratios, PRZ, confidence)"),
-  analysisTool("get_mean_reversion", "mean_reversion", "mean-reversion analysis (z-score vs 20-period mean, overextension, revert-long/short signal)"),
-  analysisTool("get_tape", "tape", "real tick-tape analysis (up/down tick ratio, tape bias, fast-tape detection)"),
-  analysisTool("get_tape_flow", "tape_flow", "cumulative volume delta and aggressive buyer/seller flow"),
-  analysisTool("get_seasonality", "seasonality", "seasonality (most volatile hour of day, hourly average range, month/day-of-week context)"),
-  analysisTool("get_spread_analysis", "spread_analysis", "spread cost analysis (spread vs ATR, cost rating, tradeable flag, execution mode)"),
-  analysisTool("get_gann", "gann", "Gann level analysis (fan ratios, nearest Gann level, Square of 9 projection)"),
-  analysisTool("get_market_profile", "market_profile", "market/volume profile (POC, value area high/low, price vs value area, profile shape)"),
-  analysisTool("get_macro", "macro", "macro context (daily/weekly change, DXY/gold/USDJPY proxies, risk-on/off regime)"),
-  analysisTool("get_news", "news", "upcoming real economic-calendar events for this pair's currencies (high-impact count, news blackout window)"),
-  analysisTool("get_sentiment", "sentiment", "composite sentiment score (RSI + MACD + bull-bar % blended into a fear/greed-style label)"),
-  analysisTool("get_regime", "regime", "market regime classification (trending/ranging/transitional, volatility regime, suggested trading style)"),
-  analysisTool("get_backtest", "backtest", "a quick real MA20/50-cross backtest over the loaded history (win rate, net pips, edge)"),
-  analysisTool("get_swing", "swing", "real swing highs/lows with bar index and timestamp, last leg direction"),
-  analysisTool("get_order_blocks", "order_blocks", "bullish/bearish order blocks (high/low, center, mitigated status, distance)"),
-  analysisTool("get_inducement", "inducement", "inducement/IDM levels (taken status, next liquidity target, valid-setup flag)"),
-  analysisTool("get_premium_discount", "premium_discount", "premium/discount zone position within the dealing range, OTE zone, bias"),
+  analysisTool("get_market_structure", "market_structure", "market structure of ONE timeframe from its own closed candles: wick swings (HH/HL/LH/LL), trend, BOS/CHoCH with body close and displacement, CISD, swing failures, dealing range + premium/discount + OTE, inducement, trendline, legs and pullback depth, the higher timeframe's trend, and APA: validation, shift point, shifted/transition, shift type, reclaim point, pure vs different trend"),
+  analysisTool("get_liquidity", "liquidity", "liquidity: untaken buy-side pools above / sell-side below (touches, distance), equal highs/lows, untouched old highs/lows, sweeps and the move after, side swept today, pdh/pdl taken, draw on liquidity, and APA liquidity engineering (level, thrust candle, FMD for the stop, CHoCH, complete or what is missing)"),
+  analysisTool("get_zones", "zones", "zones sorted by distance: order blocks, breakers, FVG/IFVG/BPR, opening gaps, with top/bottom, width, age, touches, fresh, consumed % (50% = consumed), invalidation and SL size; APA areas of liquidity (AOL between validation and invalidation, Types 1-4 per the book), price inside AOL, lower-timeframe refinement zones inside the AOL"),
+  analysisTool("get_trend", "trend", "trend facts: EMA 20/50/200, SMA200, SMMA 6/20/100 (value, price above/below, slope), SMA50/200 cross, distance from EMA20 in ATR, Wilder ADX/DI, Supertrend(10,3), Ichimoku (price vs cloud, colour, TK cross), regression slope, efficiency ratio, higher-timeframe EMA200, regime"),
+  analysisTool("get_momentum", "momentum", "momentum on closed candles: RSI 14 (last 5, bars since >70/<30, higher-timeframe RSI), MACD 12/26/9 (+ last cross), stochastic 14/3/3, ROC 10, z-score, latest divergence between confirmed swings"),
+  analysisTool("get_volatility", "volatility", "volatility: ATR (pips, vs median, percentile), Bollinger, Keltner, squeeze (length, released), Donchian 20, historical volatility, expanding/contracting, expected move to session end"),
+  analysisTool("get_volume", "volume", "tick-volume facts (MT5 has no buyer/seller side on forex/synthetics -- estimates are labelled): volume vs average and vs the same time of day, spikes/climax, estimated tick-direction pressure, tick speed, leg participation, OBV, tick VWAP with bands, tick profile POC/value area"),
+  analysisTool("get_levels", "levels", "levels: daily/weekly/monthly pivots, Camarilla, round numbers, Fibonacci on the last external leg, one merged ladder of the nearest levels above/below with what meets there, APA flip levels (H4+, >2 touches, flip confirmed, single candle structure) and APA flip entry type 2 (flip zone, multiple candle structure, breakout, return, higher-timeframe wick overlap)"),
+  analysisTool("get_session", "session", "sessions (UTC, London/New York local time with DST): open now, minutes to opens, killzones/silver bullet, Asian range, London/NY opening ranges, Asia/London/NY highs and lows today and yesterday, opens (midnight/London/NY), London swept Asia, Judas swing, CBDR, bank holiday, rollover, month-end/Friday/Sunday flags. 24/7 symbols: no sessions"),
+  analysisTool("get_news", "news", "economic calendar for both currencies of the pair: next 24 h events, minutes to next high-impact, blackout now (rule printed), last high-impact release with actual/forecast/previous, surprise and the 15-minute price reaction. Synthetics: not news-driven"),
+  analysisTool("get_intermarket", "intermarket", "currency strength ranking (1/5/20 hours, 28 crosses), correlation with EURUSD/GBPUSD/USDJPY/XAUUSD (50, 20 vs 100 + break flag), DXY proxy change, gold and USDJPY 5-day change"),
+  analysisTool("get_chart_patterns", "chart_patterns", "chart patterns from external swings only (max 2): double top/bottom, head and shoulders, triangles/wedges, completed harmonics (H1+), with key prices, height, status and measured target"),
+  analysisTool("get_summary", "summary", "summary across timeframes: structure bias D1/H4/H1/M15 (weighted votes shown), confluence factors with votes, ATR stop sizes vs the broker minimum, a trade plan from structure (entry/SL/TP from zones and untaken liquidity, R:R net of spread, cancel level), reasons against, APA monthly and weekly cycles, timeframes agreeing, FTA ahead, entry-module parts"),
+  // Older names used by saved strategy skills -- they answer from the group that holds that data now.
+  analysisTool("get_structure", "market_structure", "older name of get_market_structure (same answer)"),
+  analysisTool("get_swing", "market_structure", "older name: swings are in get_market_structure (same answer)"),
+  analysisTool("get_patterns", "candles", "older name: candle patterns are in get_candles (same answer)"),
   // Real gap fixed (user, live: wants get_all_analysis to also show whether a position/pending
   // order already exists on this symbol, so the model can't "forget" it just placed something).
   // A dedicated definition, not the shared analysisTool() factory, since this one merges in real
@@ -171,7 +146,7 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
   {
     name: "get_all_analysis",
     description:
-      "Every one of the 44 real analysis endpoints above, in ONE response, for the given symbol/timeframe -- use when you need a full market read, not a single indicator. " +
+      "All 15 analysis groups above in ONE response (price, candles, market_structure, liquidity, zones, trend, momentum, volatility, volume, levels, session, news, intermarket, chart_patterns, summary) for the given symbol/timeframe, with a freshness label. " +
       "Also reports whether you already have a real open position or pending order on this symbol, so you never propose a duplicate trade on something you've already placed. " +
       "ALSO includes full account-wide awareness on every call: every open position and pending order across ALL symbols (not just this one), and real account margin data " +
       "(balance/equity/margin/freeMargin/leverage plus a computed marginLevel), so you're never tunnel-visioned on just the current symbol.",
@@ -235,17 +210,6 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
     },
   },
   analysisTool("ping_ea", "ping", "a trivial health check confirming the connected EA is alive and responsive -- no market data"),
-  analysisTool("get_adx", "adx", "Wilder ADX(14) trend strength with +DI/-DI (weak/emerging/strong/very strong, direction, rising or falling)"),
-  {
-    name: "get_mtf",
-    description:
-      "Multi-timeframe summary in ONE call, computed LIVE by the MT5 EA: for M5, M15, H1, H4 and D1 -- the SMMA 6/20/100 trend score and bias " +
-      "(the same system as get_trend), Wilder RSI(14), ATR(14) and ADX(14) -- plus the overall alignment (ALL_BULL / ALL_BEAR / MOSTLY_... / MIXED). " +
-      "Use it to check whether the timeframes agree before a trade. Not included in get_all_analysis.",
-    parameters: { type: "object", properties: { symbol: { type: "string" } }, required: ["symbol"] },
-    execute: async (args, ctx) =>
-      requestAnalysis(ctx.userId, "mtf", args.symbol as string, "M15", ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined),
-  },
   {
     name: "get_position_size",
     description:
@@ -280,6 +244,14 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
     parameters: { type: "object", properties: { symbol: { type: "string" } }, required: ["symbol"] },
     execute: async (args, ctx) =>
       requestAnalysis(ctx.userId, "symbol_info", args.symbol as string, "M15", ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined),
+  },
+  {
+    name: "get_open_trades",
+    description:
+      "Every open trade and pending order straight from MT5 with management facts: profit in money and in R (from the opening stop), best/worst R reached, distance to SL/TP, " +
+      "whether breakeven is allowed by the broker's freeze/stop levels, candles open (H1), and the H1 area-of-liquidity invalidation with whether it was closed through since entry.",
+    parameters: { type: "object", properties: {} },
+    execute: async (_args, ctx) => requestAnalysis(ctx.userId, "open_trades", "", "H1", ctx.timeoutMs !== undefined ? { timeoutMs: ctx.timeoutMs } : undefined),
   },
   {
     name: "get_deal_history",

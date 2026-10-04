@@ -18,40 +18,29 @@ import { EA_ANALYSIS_TOOLS } from "../src/tools.js";
 
 console.log("=== Real proof: all 46 DAVEMA endpoints are real, callable tools ===\n");
 
-const REAL_ENDPOINT_NAMES = [
-  "price", "structure", "zones", "liquidity", "trend", "momentum", "volatility", "volume",
-  "ichimoku", "fibonacci", "candles", "patterns", "ict", "wyckoff", "divergence", "session",
-  "pivots", "levels", "orderflow", "confluence", "risk_metrics", "synthetic", "elliott",
-  "correlation", "strength", "heatmap", "fractal", "harmonic", "mean_reversion", "tape",
-  "seasonality", "spread_analysis", "gann", "market_profile", "tape_flow", "macro", "news",
-  "sentiment", "regime", "backtest", "swing", "order_blocks", "inducement", "premium_discount",
-  "all", "ping",
-];
+// EA 4.0: 15 analysis groups (no duplicates) + all + ping + the account tools, plus three older
+// names kept for saved strategy skills (they ask the EA for the group that holds that data now).
+const GROUPS = ["price", "candles", "market_structure", "liquidity", "zones", "trend", "momentum", "volatility", "volume", "levels", "session", "news", "intermarket", "chart_patterns", "summary"];
+const ACCOUNT = ["all", "ping", "position_size", "symbol_info", "open_trades", "history"];
+const ALIASES: Record<string, string> = { get_structure: "market_structure", get_swing: "market_structure", get_patterns: "candles" };
 
-// EA 3.0 added 5 more on top of the original 46 (the trader: "add more endpoints"): ADX, the
-// multi-timeframe summary, exact position size, symbol details and MT5's own trade history.
-const EA3_ENDPOINT_NAMES = ["adx", "mtf", "position_size", "symbol_info", "history", "market_structure", "reference_levels"];
-const ALL_NAMES = [...REAL_ENDPOINT_NAMES, ...EA3_ENDPOINT_NAMES];
-
-console.log(`[1] Exactly ${REAL_ENDPOINT_NAMES.length} real DAVEMA endpoints (+${EA3_ENDPOINT_NAMES.length} from EA 3.0), each a real, separate tool...\n`);
-assert.equal(REAL_ENDPOINT_NAMES.length, 46, "the real DAVEMA API has exactly 46 endpoints");
-assert.equal(EA_ANALYSIS_TOOLS.length, 53, "every one of the 46 real endpoints plus the 5 new ones must be a real, registered tool");
+console.log("[1] Exactly the 15 groups + account tools + 3 older names, each a real tool...\n");
+assert.equal(GROUPS.length, 15);
+assert.equal(EA_ANALYSIS_TOOLS.length, GROUPS.length + ACCOUNT.length + Object.keys(ALIASES).length);
 const toolNames = EA_ANALYSIS_TOOLS.map((t) => t.name);
-assert.equal(new Set(toolNames).size, 53, "no duplicate tool names");
-for (const name of toolNames) assert.match(name, /^(get_|ping_)/, `tool "${name}" must follow the real get_/ping_ naming convention`);
-console.log(`    real registered tools: ${toolNames.join(", ")}`);
+assert.equal(new Set(toolNames).size, toolNames.length, "no duplicate tool names");
+for (const name of toolNames) assert.match(name, /^(get_|ping_)/, `tool "${name}" must follow the get_/ping_ naming convention`);
+console.log(`    tools: ${toolNames.join(", ")}`);
 
-console.log("\n[2] Every one of Dave's real tools maps to a real, distinct DAVEMA endpoint...\n");
-const dispatchedEndpoints = new Set<string>();
+console.log("\n[2] Every group has one tool; the older names point at the group that holds their data...\n");
+const dispatched = new Set<string>();
 for (const tool of EA_ANALYSIS_TOOLS) {
-  // Recover the endpoint each tool actually calls by inspecting a real dispatch (see below) --
-  // simpler and just as real: assert the closed-over endpoint set (by name convention) covers
-  // the full real list.
+  if (ALIASES[tool.name]) continue;
   const guessed = tool.name === "get_all_analysis" ? "all" : tool.name === "ping_ea" ? "ping" : tool.name === "get_deal_history" ? "history" : tool.name.replace(/^get_/, "");
-  dispatchedEndpoints.add(guessed);
+  dispatched.add(guessed);
 }
-assert.deepEqual([...dispatchedEndpoints].sort(), [...ALL_NAMES].sort(), "every real endpoint must have exactly one real tool, no gaps");
-console.log("    every real endpoint name accounted for -- no gaps, no extras");
+assert.deepEqual([...dispatched].sort(), [...GROUPS, ...ACCOUNT].sort(), "every group and account tool exactly once, no gaps");
+console.log("    every group accounted for -- no gaps, no extras");
 
 // --- Real end-to-end round trip (same simulated-EA pattern step9 uses) for a real sample
 // spanning the whole list, not just the original 3, proving the request/response plumbing
@@ -92,12 +81,11 @@ try {
 
   console.log("\n[3] A sample spanning the whole endpoint list -- structure, ict, gann, all, ping -- genuinely round-trips real data...\n");
   const samples: { endpoint: string; data: unknown }[] = [
-    { endpoint: "structure", data: { trend: "HH_HL", bos: "BULL" } },
-    { endpoint: "ict", data: { killzone: "LONDON_OPEN", silver_bullet: false } },
-    { endpoint: "gann", data: { gann_bias: "BULL", nearest_ratio: 0.5 } },
-    { endpoint: "market_profile", data: { poc: 1.095, shape: "D_SHAPE" } },
-    { endpoint: "premium_discount", data: { zone: "DISCOUNT", bias: "LOOK_LONG" } },
-    { endpoint: "all", data: { price: {}, structure: {}, ict: {} } },
+    { endpoint: "market_structure", data: { trend: "bullish", breaks: [] } },
+    { endpoint: "zones", data: { demand: [], supply: [] } },
+    { endpoint: "intermarket", data: { currency_strength: {} } },
+    { endpoint: "summary", data: { mtf_structure: { bias: "bullish" } } },
+    { endpoint: "all", data: { price: {}, market_structure: {}, zones: {} } },
     { endpoint: "ping", data: { status: "ok" } },
   ];
   for (const { endpoint, data } of samples) {

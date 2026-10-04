@@ -55,65 +55,22 @@ const FLO_FALLBACK: FloVerdict = {
  * needs to know WHICH tools actually answer "is this real" for a given concern, not just that 44
  * tools exist.
  */
-const FLO_ENDPOINT_REFERENCE = `Your real analysis tools, grouped by what they actually tell you (each takes a symbol and an optional timeframe -- default timeframe is M15 unless you pass one):
+const FLO_ENDPOINT_REFERENCE = `Your analysis tools (EA 4.0 groups -- raw facts with their rules, closed candles only; each takes a symbol and an optional timeframe, default M15):
 
-TREND & MOMENTUM
-- get_trend: moving-average alignment (EMA stack), golden/death cross, a real bias score -- use to confirm the proposed direction actually matches the prevailing trend, not just one candle.
-- get_momentum: RSI/MACD/Stochastic/CCI/Williams %R rolled into one bull/bear signal -- use to check the move still has real fuel, not already exhausted.
-- get_divergence: real RSI/MACD/Stochastic divergence (regular = reversal warning, hidden = continuation) -- a proposed continuation trade against a confirmed regular divergence is a real red flag.
-- get_ichimoku: cloud position, TK cross, chikou -- a second independent trend/momentum read.
-- get_mean_reversion: z-score vs. a 20-period mean -- flags when price is genuinely overextended and a "continuation" trade is really chasing.
+- get_market_structure: wick swings HH/HL/LH/LL, trend, BOS/CHoCH (body close, displacement), CISD, dealing range, premium/discount, OTE, inducement, higher timeframe; APA shift point, shifted/transition, reclaim -- a BUY into a fresh bearish CHoCH is a real conflict.
+- get_liquidity: untaken pools above/below, equal highs/lows, sweeps, draw on liquidity, liquidity engineering (thrust, FMD, CHoCH) -- did the setup form after a real sweep?
+- get_zones: order blocks, breakers, FVG/IFVG/BPR, APA areas of liquidity with validation/invalidation, consumed % -- is the entry at a fresh zone or a consumed one?
+- get_trend / get_momentum: moving averages, ADX/DI, Supertrend, Ichimoku; RSI/MACD/stochastic, divergence -- does momentum back the direction?
+- get_volatility: ATR, Bollinger/Keltner, squeeze -- is the stop sized to real volatility?
+- get_volume: tick-volume facts (estimates labelled).
+- get_levels: pivots, round numbers, fib, the merged ladder, APA flip levels.
+- get_session / get_news: session timing, killzones; upcoming high-impact events and blackout.
+- get_intermarket: currency strength ranking and correlations.
+- get_chart_patterns: double tops/bottoms, H&S, triangles, harmonics.
+- get_summary: structure bias across D1/H4/H1/M15, APA cycles, FTA ahead, a trade plan from structure, reasons against.
+- get_candles / get_price: raw candles; live price, spread vs normal, day/week levels.
 
-STRUCTURE & SMC/ICT
-- get_structure: real HH/HL/LH/LL sequence, BOS/CHoCH/MSS/CISD, dealing range, premium/discount, OTE zone -- the core real market-structure read; a BUY proposed inside a confirmed bearish CHoCH is a real conflict.
-- get_zones: supply/demand zones with a freshness/strength score and mitigation % -- is the proposed entry actually AT a real, unmitigated zone, or just near a stale one?
-- get_liquidity: BSL/SSL levels, equal highs/lows, real sweeps, liquidity voids -- did the setup form AFTER a real liquidity grab (higher-quality), or is it walking straight into unswept liquidity against it?
-- get_order_blocks: real bullish/bearish order blocks with mitigated status and distance -- the actual OB the proposed entry claims to be reacting to, if any.
-- get_inducement: whether the real IDM (inducement) high/low has been taken, next real liquidity target, and a valid_setup flag -- Flo's single most direct "is this a genuine ICT setup or a premature entry" check.
-- get_premium_discount: real equilibrium/OTE zone position (0=range low, 1=range high) -- a BUY proposed deep in premium (or a SELL deep in discount) is buying/selling into the wrong half of the range.
-- get_ict: FVG/iFVG, breaker blocks, killzones, silver bullet window, Judas swing, AMD phase, OTE zone all in one -- the fullest single ICT-concept read.
-- get_wyckoff: accumulation/distribution/markup phase, spring/UTAD events, effort-vs-result -- catches a setup that's really still inside accumulation/distribution, not a genuine breakout.
-- get_fractal: Williams fractal swing points -- the raw real swing points several of the above are built from.
-- get_swing: real swing highs/lows with bar index/timestamp and the last leg's direction.
-
-VOLATILITY, RISK & EXECUTION QUALITY
-- get_volatility: ATR, Bollinger Bands, Keltner Channel, expansion/contraction, volatility regime -- is the proposed SL sized to genuine current volatility, or dangerously tight/loose for right now?
-- get_risk_metrics: ATR-based SL/TP levels, real R:R ratios, pip value, a recommended lot size per % risk -- your real cross-check against the proposed sl/tp/lots.
-- get_spread_analysis: spread vs. ATR, a cost rating, a tradeable flag -- a real setup can still be a bad trade if the spread genuinely eats the edge right now.
-- get_candles: 20 candles + the present forming candle, with body/wick ratios, size vs. ATR, gap/imbalance detection -- ground-truth current price action, not a summarized indicator.
-- get_price: bid/ask/spread, day/week/month/52w high-low, swap, lot-size limits -- the real current price context every other read is measured against.
-- get_levels: round-number/psychological levels and 52-week high/low distance -- real "why would price stall/react exactly here" context.
-- get_pivots: classic/Fibonacci/Camarilla/weekly/monthly pivots and price's real position vs. them.
-- get_fibonacci: real retracement/extension levels, nearest level, OTE zone, golden-ratio bounce -- a second, independent way to check the proposed entry sits at a real confluent level.
-
-VOLUME & ORDER FLOW
-- get_volume: current vs. average volume, bull/bear volume delta, real spikes/climax.
-- get_orderflow: buy/sell volume delta, absorption, climax, stop runs, momentum ignition -- did real aggressive flow actually confirm the move, or is it thin?
-- get_tape: real tick-tape up/down ratio and fast-tape detection -- very short-term flow confirmation.
-- get_tape_flow: cumulative volume delta and aggressive buyer/seller flow over a longer window.
-- get_market_profile: POC, value area high/low, price vs. value area, profile shape -- is price trading with or against where real volume has actually built up?
-
-PATTERNS & CONFLUENCE
-- get_patterns: real candlestick pattern recognition (single/double/triple), strongest pattern, bias, reliability.
-- get_harmonic: real harmonic pattern detection (Gartley/Bat/Butterfly/Crab), XABCD ratios, PRZ, confidence.
-- get_elliott: current real Elliott wave count, impulse/correction, wave target/invalidation.
-- get_gann: Gann fan ratios, nearest Gann level, Square of 9 projection.
-- get_confluence: a real multi-signal confluence score (MA/RSI/MACD/ADX/price-action agreement) with direction and strength -- a fast, single-number cross-check against everything above.
-- get_backtest: a quick real MA20/50-cross backtest over loaded history (win rate, net pips, edge) -- context on whether this instrument/timeframe combo has a real historical edge at all.
-
-CONTEXT: SESSION, NEWS, MACRO, REGIME
-- get_session: real Tokyo/London/NY/Sydney session status, overlaps, time to next session, Asian range -- is this even a real liquid session for this pair right now?
-- get_news: real upcoming economic-calendar events for this pair's currencies, high-impact count, news blackout window -- never approve into a real, imminent high-impact release blind.
-- get_seasonality: most volatile hour of day, hourly average range, month/day-of-week context.
-- get_macro: daily/weekly change, DXY/gold/USDJPY proxies, real risk-on/off regime.
-- get_correlation: this pair vs. EURUSD/DXY proxy, risk-on/off, safe-haven status -- catches a setup that's really just correlated noise from another market.
-- get_strength: currency strength differential for this pair's own base/quote, bias, strongest/weakest.
-- get_heatmap: currency strength across all 8 majors -- broader real confirmation than get_strength alone.
-- get_sentiment: a composite RSI+MACD+bull-bar% sentiment score, fear/greed-style label.
-- get_regime: trending/ranging/transitional classification plus volatility regime and a suggested trading style -- a trend-following setup proposed inside a real ranging regime deserves real scrutiny.
-- get_synthetic: Boom/Crash/Volatility synthetic-index spike detection (due/overdue, spike probability) -- only meaningful on synthetic-index symbols.
-
-Use only what the proposed setup actually needs to genuinely verify -- you do not need to call all 44 on every review. Pick the handful that actually test the specific claim in Dave's reasoning (structure claim -> get_structure/get_order_blocks/get_inducement; momentum claim -> get_momentum/get_divergence; risk claim -> get_risk_metrics/get_volatility; timing claim -> get_session/get_news).`;
+Pull only what tests the specific claim in Dave's reasoning (structure claim -> get_market_structure/get_zones/get_liquidity; momentum claim -> get_momentum; risk claim -> get_volatility/get_summary; timing claim -> get_session/get_news).`;
 
 function buildFloSystemPrompt(): string {
   return `You are Flo, the second, INDEPENDENT approver in Dave's two-step trading review. Dave (the autonomous trading AI) has already made a real trade decision and wants your genuine, independent sign-off before it fires -- not a rubber stamp, not automatic agreement.

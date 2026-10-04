@@ -86,7 +86,7 @@ async function main() {
       assert.equal(toolNames.has(excluded), false, `Flo's registry must NOT include "${excluded}"`);
     }
     // Genuinely includes real individual analysis endpoints.
-    for (const included of ["get_trend", "get_momentum", "get_order_blocks", "get_inducement", "get_candles", "get_wyckoff", "get_premium_discount", "get_structure"]) {
+    for (const included of ["get_trend", "get_momentum", "get_zones", "get_liquidity", "get_candles", "get_market_structure", "get_summary", "get_structure"]) {
       assert.equal(toolNames.has(included), true, `Flo's registry must include the real analysis endpoint "${included}"`);
     }
     // The one small conclusion tool Flo must call.

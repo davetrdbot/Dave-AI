@@ -218,11 +218,7 @@ const TICK_SCRIPT_TIMEOUT_MS = 60_000;
 export const SUITE_PROMPT_BUDGET = 160_000;
 /** Dropped first when a timeframe is too big to fit -- the least-used extras. Structure, liquidity,
  *  zones, price and candles always stay. */
-const SUITE_DROP_ORDER = [
-  "backtest", "seasonality", "gann", "harmonic", "elliott", "heatmap", "correlation", "macro", "sentiment", "news",
-  "tape_flow", "tape", "market_profile", "fractal", "wyckoff", "pivots", "levels", "strength", "mean_reversion",
-  "ichimoku", "divergence", "patterns", "regime", "confluence", "risk_metrics", "spread_analysis", "session", "volume",
-];
+const SUITE_DROP_ORDER = ["chart_patterns", "intermarket", "volume", "news", "session", "levels", "volatility", "summary"];
 
 /**
  * The merged suite for the prompt, never cut off mid-way (the trader: "confirm it's sending ALL of
@@ -232,7 +228,7 @@ const SUITE_DROP_ORDER = [
  * text, and logged), never its structure, liquidity, zones, price or candles.
  */
 /** Never dropped from a timeframe, whatever its size. */
-const SUITE_KEEP = new Set(["_meta", "price", "candles", "structure", "market_structure", "liquidity", "zones", "trend", "momentum"]);
+const SUITE_KEEP = new Set(["_meta", "price", "candles", "market_structure", "liquidity", "zones", "trend", "momentum"]);
 
 export function fitSuite(suite: Record<string, unknown>, userId?: string, symbol?: string, budget = SUITE_PROMPT_BUDGET): string {
   const full = JSON.stringify(suite);

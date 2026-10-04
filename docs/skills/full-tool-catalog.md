@@ -21,62 +21,16 @@ why this doc and `search_tools`/`get_tool_catalog` exist.
 
 ## Analysis (EA-computed, on demand)
 
-`get_all_analysis` — every one of the 44 endpoints below, in ONE response, for
-a symbol/timeframe, plus whether you already have an open position/pending
-order on it and full account-wide awareness (all positions, margin/equity/
-leverage). Always loaded; call before any real trade decision.
+EA 4.0: 15 groups from one shared memory per symbol+timeframe, closed candles only, raw facts
+with their rules (see the `ea-analysis` skill for what each holds).
 
-The 44 individual endpoints (each `get_<name>`, on-demand, for any symbol in
-Market Watch):
-
-- `get_trend` — moving averages, EMA alignment, golden/death cross, bias score
-- `get_momentum` — RSI/MACD/Stochastic/CCI/Williams %R, overall bull/bear signal
-- `get_volatility` — ATR, Bollinger Bands, Keltner Channel, expansion/contraction, regime
-- `get_price` — bid/ask/spread, day/week/month/52w high-low, swap, lot size limits
-- `get_structure` — HH/HL/LH/LL trend, BOS, CHoCH, MSS, CISD, dealing range, premium/discount, OTE zone
-- `get_zones` — supply/demand zones, fresh/tested, strength score, mitigation %, nearest/strongest zone
-- `get_liquidity` — BSL/SSL, equal highs/lows, sweeps, liquidity voids
-- `get_volume` — volume vs average, bull/bear volume delta, spikes/climax
-- `get_ichimoku` — tenkan/kijun/senkou A+B/chikou, cloud position, TK cross, signal score
-- `get_fibonacci` — retracement/extension levels, nearest level, OTE zone, golden-ratio bounce
-- `get_candles` — 20 candles + present forming candle, body/wick ratios, size vs ATR, gap/imbalance detection
-- `get_patterns` — candlestick pattern recognition, strongest pattern, bias, reliability
-- `get_ict` — FVG/iFVG, order blocks, breaker blocks, killzones, silver bullet, Judas swing, AMD phase, OTE zone
-- `get_wyckoff` — accumulation/distribution/markup phase, spring/UTAD events, effort-vs-result
-- `get_divergence` — RSI/MACD/Stochastic divergence, regular and hidden, bull/bear, strongest/confirmed
-- `get_session` — Tokyo/London/NY/Sydney status, overlaps, time to next session, Asian range
-- `get_pivots` — classic/Fibonacci/Camarilla/weekly/monthly pivots, nearest pivot, price vs pivot
-- `get_levels` — round-number/psychological levels, big/half figures, 52-week high/low distance
-- `get_orderflow` — buy/sell volume delta, absorption, climax, stop runs, momentum ignition
-- `get_confluence` — MA trend/RSI/MACD/ADX/price-action agreement, direction, strength
-- `get_risk_metrics` — ATR-based SL/TP levels, R:R ratios, pip value, recommended lot size per % risk
-- `get_synthetic` — Boom/Crash/Volatility spike detection, due/overdue, spike probability
-- `get_elliott` — current wave count, impulse/correction, wave target/invalidation
-- `get_correlation` — cross-market correlation vs EURUSD/DXY proxy, risk-on/off, safe-haven status
-- `get_strength` — currency strength for the pair's base/quote, differential, bias, strongest/weakest
-- `get_heatmap` — currency strength heatmap across all 8 majors
-- `get_fractal` — Williams fractal up/down points
-- `get_harmonic` — Gartley/Bat/Butterfly/Crab detection, XABCD ratios, PRZ, confidence
-- `get_mean_reversion` — z-score vs 20-period mean, overextension, revert-long/short signal
-- `get_tape` — up/down tick ratio, tape bias, fast-tape detection
-- `get_tape_flow` — cumulative volume delta, aggressive buyer/seller flow
-- `get_seasonality` — most volatile hour of day, hourly average range, month/day-of-week context
-- `get_spread_analysis` — spread vs ATR, cost rating, tradeable flag, execution mode
-- `get_gann` — fan ratios, nearest Gann level, Square of 9 projection
-- `get_market_profile` — POC, value area high/low, price vs value area, profile shape
-- `get_macro` — daily/weekly change, DXY/gold/USDJPY proxies, risk-on/off regime
-- `get_news` — upcoming economic-calendar events for the pair's currencies, high-impact count, blackout window
-- `get_sentiment` — RSI + MACD + bull-bar % blended fear/greed-style score
-- `get_regime` — trending/ranging/transitional classification, volatility regime, suggested trading style
-- `get_backtest` — quick MA20/50-cross backtest over loaded history (win rate, net pips, edge)
-- `get_swing` — swing highs/lows with bar index and timestamp, last leg direction
-- `get_order_blocks` — bullish/bearish order blocks, high/low, center, mitigated status, distance
-- `get_inducement` — IDM levels, taken status, next liquidity target, valid-setup flag
-- `get_premium_discount` — premium/discount zone position, OTE zone, bias
-
-Also: `get_live_state` — current tick/positions/pending-orders right now, without
-waiting for the periodic push. `get_account_balance` — balance/equity/margin/
-freeMargin/leverage standalone.
+- `get_all_analysis` — all 15 groups in one call, plus your open positions/pending orders and account margin
+- `get_price`, `get_candles`, `get_market_structure`, `get_liquidity`, `get_zones`
+- `get_trend`, `get_momentum`, `get_volatility`, `get_volume`, `get_levels`
+- `get_session`, `get_news`, `get_intermarket`, `get_chart_patterns`, `get_summary`
+- `get_structure` / `get_swing` (= get_market_structure), `get_patterns` (= get_candles) — older names kept for saved skills
+- `get_open_trades`, `get_symbol_info`, `get_position_size`, `get_deal_history`, `ping_ea`
+- `get_live_state`, `get_account_balance` — the last EA report, instantly
 
 ## Trading
 
