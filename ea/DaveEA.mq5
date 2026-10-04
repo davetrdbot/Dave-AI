@@ -4135,6 +4135,13 @@ void RunAnalysis(string commandId, string endpoint, string symbol, string tfStr,
       else AppendResultData(commandId, data);
       return;
      }
+   // MT5 not logged in to the broker (restart, update, server down): symbols look missing then --
+   // say so, so the bot never decides a pair is "not on this broker" because of it.
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+     {
+      AppendResult(commandId, false, "mt5_not_connected: MT5 is not connected to the broker right now -- no prices until it logs in again", "");
+      return;
+     }
    if(symbol == "" || SymbolInfoDouble(symbol, SYMBOL_POINT) <= 0)
      {
       AppendResult(commandId, false, "\"" + symbol + "\" isn't on this broker (not in its symbol list)", "");

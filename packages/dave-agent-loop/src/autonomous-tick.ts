@@ -76,7 +76,7 @@ import { computeMtfAlignment, computeMtfConfluenceScore, computeBasketCurrencyRi
 import { runSequentialThinking } from "./sequential-thinking.js";
 import { buildClockLine } from "./live-context.js";
 import { loadFrozenSnapshot } from "@dave/memory";
-import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData } from "./symbol-availability.js";
+import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData, clearBenchesFromDisconnect } from "./symbol-availability.js";
 import { activeAiOutage, aiSetupFingerprint, clearAiOutage, markAiOutage } from "./ai-outage.js";
 import { slProgress as directionalSlProgress } from "./trade-monitor-store.js";
 import { selfAwareFeedBlock } from "./self-aware-feed.js";
@@ -1068,6 +1068,17 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     // picked again and again. Now it moves on, and after NO_DATA_STRIKES misses the pair is
     // benched and the trader is told once.
     const firstError = suiteByTimeframe.find((r) => r.error)?.error ?? "no data";
+    // MT5 itself not logged in to the broker (restart, update, server down) or still loading the
+    // history: that says nothing about the pair -- never count it against it, and lift benches that
+    // were set because the disconnected terminal made pairs look missing.
+    if (/mt5_not_connected|warming_up/i.test(String(firstError))) {
+      const disconnected = /mt5_not_connected/i.test(String(firstError));
+      const lifted = disconnected ? clearBenchesFromDisconnect(userId) : [];
+      logTick(userId, `${symbol}: ${disconnected ? "MT5 is not connected to the broker" : "MT5 is still loading this pair's history"} -- skipped, not counted against the pair${lifted.length ? ` (lifted benches set while disconnected: ${lifted.join(", ")})` : ""}`);
+      recordTickDecision(userId, { ts: Date.now(), symbol, action: "SKIP", reason: disconnected ? "MT5 not connected to the broker" : "MT5 loading history" });
+      advanceCursor(userId, primarySymbols.length, fallbackSymbols.length);
+      return { action: "NONE", notable: false };
+    }
     const strike = recordNoData(userId, symbol, String(firstError).slice(0, 160));
     if (positions.length === 0 || strike.benched) {
       const reason = `no analysis data from the EA for ${symbol} on any timeframe`;

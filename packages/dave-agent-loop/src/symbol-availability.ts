@@ -106,6 +106,18 @@ export function clearUnavailable(userId: string, symbol?: string): void {
   save(userId, s);
 }
 
+/** MT5 was not connected to the broker: pairs benched as "isn't on this broker" in that state were
+ *  not really missing -- lift those benches (a pair that truly is missing gets benched again). */
+export function clearBenchesFromDisconnect(userId: string): string[] {
+  const s = load(userId);
+  const lifted = s.benched.filter((e) => /isn't on this broker|not in its symbol list/i.test(e.reason)).map((e) => e.symbol);
+  if (!lifted.length) return [];
+  s.benched = s.benched.filter((e) => !lifted.includes(e.symbol));
+  for (const sym of lifted) delete s.strikes[key(sym)];
+  save(userId, s);
+  return lifted;
+}
+
 /** "66 of 84 pairs in Market Watch (not on this broker: XRPUSD, XPTUSD, ...)" -> the missing ones. */
 export function parseNotOnBroker(message: string): string[] {
   const m = message.match(/not on this broker:\s*([^)]*)\)/i);
