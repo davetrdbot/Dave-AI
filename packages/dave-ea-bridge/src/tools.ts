@@ -101,6 +101,8 @@ function analysisTool(toolName: string, endpoint: string, summary: string): EaTo
   };
 }
 
+const lastSampleAt = new Map<string, number>();
+
 export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
   // EA 4.0 groups: each one holds raw facts (rules printed inside), worked out on CLOSED candles from one
   // shared memory per symbol+timeframe -- no duplicates across groups.
@@ -204,6 +206,13 @@ export const EA_ANALYSIS_TOOLS: EaToolDefinition[] = [
         rawSuite: finalResult,
       };
       console.log("[analysis-debug] " + JSON.stringify({ symbol, timeframesRequested: [timeframe], timeframesReceived: [timeframe], endpointKeysPerTimeframe, totalPayloadBytes, fetchedAt: debugEntry.fetchedAt }));
+      // One real EA answer (H1) in the log every 30 minutes, in pieces short enough for the log
+      // viewer -- so what the EA actually sends can be read back, not guessed.
+      if (timeframe === "H1" && Date.now() - (lastSampleAt.get(ctx.userId) ?? 0) > 30 * 60_000) {
+        lastSampleAt.set(ctx.userId, Date.now());
+        const text = JSON.stringify(resultObj);
+        for (let i = 0, part = 1; i < text.length; i += 1500, part++) console.log(`[analysis-sample ${symbol} H1 ${part}/${Math.ceil(text.length / 1500)}] ${text.slice(i, i + 1500)}`);
+      }
       ctx.onAnalysisDebug?.(debugEntry);
 
       return finalResult;

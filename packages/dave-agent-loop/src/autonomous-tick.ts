@@ -215,6 +215,8 @@ const ANALYSIS_TIMEFRAMES = ALL_ANALYSIS_TIMEFRAMES;
 const TICK_SCRIPT_TIMEOUT_MS = 60_000;
 
 /** How much of the merged analysis goes into one scan prompt (characters, ~40k tokens). */
+const lastSuiteSampleAt = new Map<string, number>();
+
 export const SUITE_PROMPT_BUDGET = 160_000;
 /** Dropped first when a timeframe is too big to fit -- the least-used extras. Structure, liquidity,
  *  zones, price and candles always stay. */
@@ -1043,6 +1045,14 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     endpointKeysPerTimeframe[tf] = d && typeof d === "object" ? Object.keys(d as Record<string, unknown>) : [];
   }
   const totalPayloadBytes = Buffer.byteLength(JSON.stringify(rawMergedSuite), "utf8");
+  // One real EA answer (H1) in the log every 30 minutes, in pieces short enough for the log viewer,
+  // so what the EA actually sends can be read back.
+  if (rawMergedSuite.H1 && Date.now() - (lastSuiteSampleAt.get(userId) ?? 0) > 30 * 60_000) {
+    lastSuiteSampleAt.set(userId, Date.now());
+    const text = JSON.stringify(rawMergedSuite.H1);
+    const parts = Math.ceil(text.length / 1500);
+    for (let i = 0, part = 1; i < text.length; i += 1500, part++) console.log(`[analysis-sample ${symbol} H1 ${part}/${parts}] ${text.slice(i, i + 1500)}`);
+  }
   const analysisDebugFetchedAt = Date.now();
   console.log(
     "[analysis-debug] " +
