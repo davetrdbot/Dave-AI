@@ -2365,7 +2365,9 @@ string ZoneJson(CSlot *s, Zone &z, double px)
    for(int k = 0; k < ArraySize(g_z); k++)
      {
       if(g_z[k].kind == z.kind && g_z[k].at == z.at) continue;
-      if(g_z[k].lo <= z.hi && g_z[k].hi >= z.lo) ov += (ov == "" ? "" : ",") + "\"" + ZName(g_z[k].kind) + "\"";
+      if(g_z[k].lo > z.hi || g_z[k].hi < z.lo) continue;
+      string nm = "\"" + ZName(g_z[k].kind) + "\"";
+      if(StringFind(ov, nm) < 0) ov += (ov == "" ? "" : ",") + nm; // each kind once
      }
    f += "," + Jr("overlaps", "[" + ov + "]");
    return Obj(f);
