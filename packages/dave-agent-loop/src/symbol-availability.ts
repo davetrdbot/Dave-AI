@@ -118,6 +118,18 @@ export function clearBenchesFromDisconnect(userId: string): string[] {
   return lifted;
 }
 
+/** Benches set by "no data from MT5 N scans in a row" (not the broker's own missing-pairs list):
+ *  lifted when they would leave nothing to scan -- a pair that truly has no data is benched again. */
+export function clearNoDataBenches(userId: string): string[] {
+  const s = load(userId);
+  const lifted = s.benched.filter((e) => /no data from MT5/i.test(e.reason)).map((e) => e.symbol);
+  if (!lifted.length) return [];
+  s.benched = s.benched.filter((e) => !lifted.includes(e.symbol));
+  for (const sym of lifted) delete s.strikes[key(sym)];
+  save(userId, s);
+  return lifted;
+}
+
 /** "66 of 84 pairs in Market Watch (not on this broker: XRPUSD, XPTUSD, ...)" -> the missing ones. */
 export function parseNotOnBroker(message: string): string[] {
   const m = message.match(/not on this broker:\s*([^)]*)\)/i);

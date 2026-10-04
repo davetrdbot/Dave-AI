@@ -76,7 +76,7 @@ import { computeMtfAlignment, computeMtfConfluenceScore, computeBasketCurrencyRi
 import { runSequentialThinking } from "./sequential-thinking.js";
 import { buildClockLine } from "./live-context.js";
 import { loadFrozenSnapshot } from "@dave/memory";
-import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData, clearBenchesFromDisconnect } from "./symbol-availability.js";
+import { BENCH_HOURS, isSymbolUnavailable, recordHasData, recordNoData, clearBenchesFromDisconnect, clearNoDataBenches } from "./symbol-availability.js";
 import { activeAiOutage, aiSetupFingerprint, clearAiOutage, markAiOutage } from "./ai-outage.js";
 import { slProgress as directionalSlProgress } from "./trade-monitor-store.js";
 import { selfAwareFeedBlock } from "./self-aware-feed.js";
@@ -989,7 +989,19 @@ async function runAutonomousTickInner(deps: RunTickDeps, sideNotes: string[]): P
     return { action: "NONE", notable: false };
   }
   if (!picked) {
-    logTick(userId, `no trade -- every symbol in the active group already has an open position or a closed market (${[...openSymbols].join(", ") || "none tracked"})`);
+    // Every pair benched only because MT5 gave no data (it was disconnected, restarting or updating)
+    // would stop the scan for hours -- live, the whole group sat benched after a night of MetaTrader
+    // update restarts. Lift those benches and scan again on the next cycle.
+    const benched = [...primarySymbols, ...fallbackSymbols].filter((s) => isSymbolUnavailable(userId, s));
+    if (benched.length > 0) {
+      const lifted = clearNoDataBenches(userId);
+      if (lifted.length) {
+        logTick(userId, `no pair to scan -- ${lifted.length} pair(s) were benched only because MT5 gave no data (${lifted.join(", ")}); benches lifted, scanning again next cycle`);
+        return { action: "NONE", notable: false };
+      }
+    }
+    const why = benched.length ? `benched: ${benched.join(", ")}` : [...openSymbols].join(", ") || "none tracked";
+    logTick(userId, `no trade -- every symbol in the active group already has an open position, a closed market or is benched (${why})`);
     return { action: "NONE", notable: false };
   }
   const { symbol } = picked;
